@@ -1,0 +1,971 @@
+package service
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"novel-server/internal/deepseek"
+	"novel-server/internal/domain"
+	"novel-server/internal/repository"
+	"os"
+	"sort"
+	"strings"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/sashabaranov/go-openai"
+)
+
+// NovelContentService предоставляет функциональность для генерации контента новеллы
+type NovelContentService struct {
+	deepseekClient *deepseek.Client
+	novelRepo      repository.NovelRepository
+	systemPrompt   string
+}
+
+// NewNovelContentService создает новый экземпляр сервиса
+func NewNovelContentService(deepseekClient *deepseek.Client, novelRepo repository.NovelRepository) (*NovelContentService, error) {
+	// Загружаем системный промпт для генерации новеллы
+	promptBytes, err := os.ReadFile("promts/novel_creator.md")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read novel creator prompt: %w", err)
+	}
+
+	return &NovelContentService{
+		deepseekClient: deepseekClient,
+		novelRepo:      novelRepo,
+		systemPrompt:   string(promptBytes),
+	}, nil
+}
+
+// GenerateNovelContent генерирует или продолжает новеллу на основе запроса
+func (s *NovelContentService) GenerateNovelContent(ctx context.Context, request domain.NovelContentRequest) (*domain.NovelContentResponse, error) {
+	log.Printf("[GenerateNovelContent] Received request. NovelID: %s, UserID: %s, HasUserChoice: %t, RestartFromSceneIndex: %v",
+		request.NovelID, request.UserID, request.UserChoice != nil, request.RestartFromSceneIndex)
+
+	if request.NovelID == uuid.Nil {
+		return nil, fmt.Errorf("novel_id is required")
+	}
+
+	if request.UserID == "" {
+		return nil, fmt.Errorf("user_id is required")
+	}
+
+	var state *domain.NovelState
+	var sceneIndex int
+	var err error
+
+	// Стандартный случай - получаем последнее сохраненное состояние
+	stateData, latestSceneIndex, err := s.novelRepo.GetLatestNovelState(ctx, request.NovelID, request.UserID)
+	if err != nil {
+		// Ошибка при получении состояния (не pgx.ErrNoRows)
+		log.Printf("[GenerateNovelContent] Error getting latest state: %v", err)
+		// Не выходим, возможно, это первый запуск или другая ошибка,
+		// которую обработаем ниже (state будет nil)
+	}
+
+	if stateData != nil {
+		// Состояние найдено, десериализуем
+		var latestState domain.NovelState // Используем временную переменную
+		if err := json.Unmarshal(stateData, &latestState); err != nil {
+			log.Printf("[GenerateNovelContent] Error unmarshaling latest state: %v", err)
+			return nil, fmt.Errorf("failed to unmarshal latest state: %w", err)
+		}
+		state = &latestState // Присваиваем указатель
+		sceneIndex = latestSceneIndex
+	} else {
+		// Состояние не найдено (первый запуск или нет прогресса)
+		log.Printf("[GenerateNovelContent] No latest state found for user %s in novel %s", request.UserID, request.NovelID)
+		sceneIndex = -1
+		state = nil // Убедимся, что state равен nil
+	}
+
+	// Формируем запрос к модели в зависимости от типа запроса (первый или продолжение)
+	var requestJSON []byte
+
+	// Если нет сохраненного состояния (первый запрос) - получаем конфигурацию и формируем начальный запрос
+	if state == nil || (sceneIndex == -1 && request.RestartFromSceneIndex == nil) {
+		log.Printf("[GenerateNovelContent] No saved state found. Getting config for first request.")
+		config, err := s.novelRepo.GetNovelConfigByID(ctx, request.NovelID, request.UserID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get novel config: %w", err)
+		}
+
+		// Создаем начальное состояние
+		state = &domain.NovelState{
+			CurrentStage:         domain.StageSetup,
+			SceneCount:           s.determineSceneCount(config.StoryConfig.Length),
+			CurrentSceneIndex:    0,
+			Language:             config.Language,
+			PlayerName:           config.PlayerName,
+			PlayerGender:         config.PlayerGender,
+			EndingPreference:     config.EndingPreference,
+			WorldContext:         config.WorldContext,
+			OriginalStorySummary: config.StorySummary,
+			StorySummary:         "",
+			GlobalFlags:          []string{},
+			Relationship:         make(map[string]int),
+			StoryVariables:       make(map[string]interface{}),
+			PreviousChoices:      []string{},
+			StorySummarySoFar:    config.StorySummarySoFar,
+			FutureDirection:      config.FutureDirection,
+			Backgrounds:          []domain.Background{},
+			Characters:           []domain.Character{},
+			Scenes:               []domain.Scene{},
+		}
+
+		// Формируем первоначальный запрос на основе конфигурации
+		requestJSON, err = s.prepareInitialRequest(*config)
+		if err != nil {
+			return nil, fmt.Errorf("failed to prepare initial request: %w", err)
+		}
+		log.Printf("[GenerateNovelContent] Prepared initial request for NovelID: %s", request.NovelID)
+	} else {
+		log.Printf("[GenerateNovelContent] Found saved state for NovelID: %s, SceneIndex: %d, Stage: %s",
+			request.NovelID, sceneIndex, state.CurrentStage)
+
+		// Если пользователь сделал выбор, обрабатываем его
+		if request.UserChoice != nil && state.CurrentStage == domain.StageSceneReady {
+			// Обрабатываем выбор пользователя и применяем последствия к текущему состоянию
+			// Важно сделать это до поиска существующих сцен, чтобы иметь актуальное состояние
+			updatedState := *state // Копируем состояние
+
+			// Проверяем, был ли выбор сделан в текущей сцене
+			if len(updatedState.Scenes) > updatedState.CurrentSceneIndex {
+				scene := updatedState.Scenes[updatedState.CurrentSceneIndex]
+				// Применяем последствия выбора к состоянию
+				processUserChoice(&updatedState, scene, request.UserChoice.ChoiceText)
+				log.Printf("[GenerateNovelContent] Processed user choice and updated state")
+			}
+
+			// Подготавливаем данные текущего состояния для поиска
+			nextSceneIndex := sceneIndex + 1
+
+			// Вычисляем хеш состояния, которое *должно* получиться после выбора пользователя
+			expectedStateHash, err := hashStateKey(
+				request.UserChoice.ChoiceText,
+				updatedState.GlobalFlags,
+				updatedState.Relationship,
+				updatedState.StoryVariables,
+			)
+			if err != nil {
+				log.Printf("[GenerateNovelContent] Error calculating state hash: %v", err)
+				// Не критично, продолжим генерацию через ИИ
+			} else {
+				log.Printf("[GenerateNovelContent] Calculated expected state hash for scene %d: %s", nextSceneIndex, expectedStateHash)
+				// Ищем готовое состояние по хешу
+				existingStateData, err := s.novelRepo.GetNovelStateByHash(ctx, expectedStateHash)
+
+				if err == nil {
+					// Нашли! Используем кеш
+					log.Printf("[GenerateNovelContent] Found compatible state by hash for scene %d", nextSceneIndex)
+
+					// TODO: Возможно, нужно сохранить состояние текущей сцены ДО применения кеша,
+					// если это важно для истории пользователя, но это усложнит логику.
+					// Пока что мы его не сохраняем отдельно.
+
+					// Десериализуем найденное состояние из кеша
+					var existingState domain.NovelState
+					if err := json.Unmarshal(existingStateData, &existingState); err != nil {
+						log.Printf("[GenerateNovelContent] Error unmarshaling existing state data from hash: %v", err)
+						// Ошибка распаковки, не можем использовать кеш, идем к ИИ
+					} else {
+						// Обновляем состояние текущего игрока данными из кеша
+						playerName := updatedState.PlayerName
+						playerGender := updatedState.PlayerGender
+						previousChoices := updatedState.PreviousChoices // Сохраняем историю выборов текущего игрока
+
+						// Применяем состояние мира из кеша
+						updatedState = existingState
+
+						// Восстанавливаем личные данные и историю выборов
+						updatedState.PlayerName = playerName
+						updatedState.PlayerGender = playerGender
+						updatedState.PreviousChoices = previousChoices // Восстанавливаем выборы ТЕКУЩЕГО игрока
+						updatedState.StateHash = expectedStateHash     // Сохраняем хеш в состоянии
+
+						// Устанавливаем правильный индекс сцены
+						updatedState.CurrentSceneIndex = nextSceneIndex
+
+						// Создаем ответ на основе обновленного состояния
+						response := &domain.NovelContentResponse{
+							State:      updatedState,
+							NewContent: nil,
+						}
+
+						// Извлекаем содержимое сцены из обновленного состояния
+						sceneContent, err := s.extractSceneContent(&updatedState, nextSceneIndex)
+						if err != nil {
+							log.Printf("[GenerateNovelContent] Error extracting scene content from cached state: %v", err)
+						} else {
+							response.NewContent = sceneContent
+						}
+
+						// Сохраняем итоговое состояние для текущего пользователя
+						finalStateData, err := json.Marshal(updatedState)
+						if err != nil {
+							log.Printf("[GenerateNovelContent] Error marshaling final state after cache: %v", err)
+							// Критическая ошибка, не можем сохранить
+							return nil, fmt.Errorf("failed to marshal final state after cache: %w", err)
+						}
+						err = s.novelRepo.SaveNovelState(ctx, request.NovelID, nextSceneIndex, request.UserID, expectedStateHash, finalStateData)
+						if err != nil {
+							log.Printf("[GenerateNovelContent] Error saving merged state after cache load: %v", err)
+							// Не критично, возвращаем результат, но логируем ошибку сохранения
+						}
+
+						log.Printf("[GenerateNovelContent] Reused existing state for scene %d using hash %s", nextSceneIndex, expectedStateHash)
+						return response, nil
+					}
+				} else if errors.Is(err, pgx.ErrNoRows) {
+					// Состояние с таким хешом не найдено, продолжаем генерацию
+					log.Printf("[GenerateNovelContent] No compatible state found by hash %s, will generate new content", expectedStateHash)
+				} else {
+					// Другая ошибка при поиске по хешу
+					log.Printf("[GenerateNovelContent] Error searching state by hash %s: %v", expectedStateHash, err)
+					// Продолжим генерацию через ИИ
+				}
+			}
+
+			// Если не нашли существующее состояние (или была ошибка),
+			// используем обновленное состояние для дальнейшей генерации
+			*state = updatedState
+		}
+
+		// Если сцену нельзя взять из истории, формируем запрос на продолжение новеллы
+		requestJSON, err = s.prepareContinuationRequest(state, request.UserChoice)
+		if err != nil {
+			return nil, fmt.Errorf("failed to prepare continuation request: %w", err)
+		}
+		log.Printf("[GenerateNovelContent] Prepared continuation request for NovelID: %s", request.NovelID)
+	}
+
+	log.Printf("[GenerateNovelContent] Sending request to AI: %s", string(requestJSON))
+
+	// Создаем сообщения для отправки в DeepSeek
+	messages := []openai.ChatCompletionMessage{
+		{
+			Role:    openai.ChatMessageRoleUser,
+			Content: string(requestJSON),
+		},
+	}
+
+	// Устанавливаем системный промпт
+	messages = deepseek.SetSystemPrompt(messages, s.systemPrompt)
+
+	// Отправляем запрос к DeepSeek
+	response, err := s.deepseekClient.ChatCompletion(ctx, messages)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get response from DeepSeek: %w", err)
+	}
+
+	// Извлекаем JSON из ответа модели
+	jsonStr, err := extractJSONFromResponse(response)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract JSON from response: %w", err)
+	}
+	log.Printf("[GenerateNovelContent] Received JSON response from AI: %s", jsonStr)
+
+	// Обрабатываем ответ и обновляем состояние новеллы
+	novelResponse, err := s.processModelResponse(jsonStr, state)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process model response: %w", err)
+	}
+	log.Printf("[GenerateNovelContent] Processed model response. New Stage: %s, New SceneIndex: %d, Has NewContent: %t",
+		novelResponse.State.CurrentStage, novelResponse.State.CurrentSceneIndex, novelResponse.NewContent != nil)
+
+	// Вычисляем хеш для нового сгенерированного состояния
+	// Используем последний сделанный выбор (если был) или пустую строку
+	lastChoice := ""
+	if len(novelResponse.State.PreviousChoices) > 0 {
+		lastChoice = novelResponse.State.PreviousChoices[len(novelResponse.State.PreviousChoices)-1]
+	}
+	finalStateHash, err := hashStateKey(
+		lastChoice,
+		novelResponse.State.GlobalFlags,
+		novelResponse.State.Relationship,
+		novelResponse.State.StoryVariables,
+	)
+	if err != nil {
+		log.Printf("[GenerateNovelContent] Error calculating hash for final generated state: %v", err)
+		// Не можем сохранить с правильным хешом, но можем вернуть результат
+		// Можно использовать пустой хеш или возвращать ошибку?
+		// return nil, fmt.Errorf("failed to calculate final state hash: %w", err)
+		finalStateHash = "ERROR_HASHING_STATE" // Заглушка
+	}
+	novelResponse.State.StateHash = finalStateHash // Сохраняем хеш в объекте состояния
+
+	// Сериализуем финальное состояние для сохранения
+	finalStateData, err := json.Marshal(novelResponse.State)
+	if err != nil {
+		log.Printf("[GenerateNovelContent] Error marshaling final generated state: %v", err)
+		return nil, fmt.Errorf("failed to marshal final generated state: %w", err)
+	}
+
+	// Сохраняем обновленное состояние новеллы в репозиторий
+	err = s.novelRepo.SaveNovelState(ctx, request.NovelID, novelResponse.State.CurrentSceneIndex, request.UserID, finalStateHash, finalStateData)
+	if err != nil {
+		// Ошибка сохранения не критична для возврата ответа, но важна
+		log.Printf("[GenerateNovelContent] Error saving final generated state to repository: %v", err)
+		// return nil, fmt.Errorf("failed to save novel state: %w", err)
+	}
+	log.Printf("[GenerateNovelContent] Saved state to repository for NovelID: %s, SceneIndex: %d, UserID: %s, Hash: %s",
+		request.NovelID, novelResponse.State.CurrentSceneIndex, request.UserID, finalStateHash)
+
+	return novelResponse, nil
+}
+
+// getAllSceneStates получает все сохраненные состояния для заданной сцены новеллы
+func (s *NovelContentService) getAllSceneStates(ctx context.Context, novelID uuid.UUID, sceneIndex int) ([]domain.NovelState, error) {
+	log.Printf("[getAllSceneStates] Getting all states for NovelID: %s, SceneIndex: %d", novelID, sceneIndex)
+
+	// Временное решение - получаем все состояния из БД с указанным индексом сцены
+	// В будущем стоит добавить метод в репозиторий, который вернет все состояния для сцены
+	// TODO: Реализовать отдельный метод в репозитории
+
+	query := `
+		SELECT state_data 
+		FROM novel_states 
+		WHERE novel_id = $1 AND scene_index = $2
+		ORDER BY created_at DESC
+	`
+
+	rows, err := s.novelRepo.DB().Query(ctx, query, novelID, sceneIndex)
+	if err != nil {
+		log.Printf("[getAllSceneStates] Error querying states: %v", err)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var states []domain.NovelState
+	for rows.Next() {
+		var stateJSON []byte
+		if err := rows.Scan(&stateJSON); err != nil {
+			log.Printf("[getAllSceneStates] Error scanning row: %v", err)
+			continue
+		}
+
+		var state domain.NovelState
+		if err := json.Unmarshal(stateJSON, &state); err != nil {
+			log.Printf("[getAllSceneStates] Error unmarshaling state: %v", err)
+			continue
+		}
+
+		states = append(states, state)
+	}
+
+	if err := rows.Err(); err != nil {
+		log.Printf("[getAllSceneStates] Error after iteration: %v", err)
+		return states, err
+	}
+
+	return states, nil
+}
+
+// extractSceneContent извлекает содержимое сцены из состояния новеллы
+func (s *NovelContentService) extractSceneContent(state *domain.NovelState, sceneIndex int) (*domain.SceneContent, error) {
+	// Проверяем, что индекс сцены находится в допустимых пределах
+	if sceneIndex < 0 || sceneIndex >= len(state.Scenes) {
+		return nil, fmt.Errorf("scene index %d out of bounds [0, %d)", sceneIndex, len(state.Scenes))
+	}
+
+	// Получаем сцену
+	scene := state.Scenes[sceneIndex]
+
+	// Создаем объект SceneContent
+	sceneContent := &domain.SceneContent{
+		BackgroundID: scene.BackgroundID,
+		Events:       scene.Events,
+	}
+
+	// Заполняем персонажей, если они есть
+	// Это упрощенная реализация, может потребоваться дополнительная логика для полного извлечения персонажей
+
+	log.Printf("[extractSceneContent] Extracted content for scene %d", sceneIndex)
+	return sceneContent, nil
+}
+
+// prepareInitialRequest формирует JSON для первоначального запроса
+func (s *NovelContentService) prepareInitialRequest(config domain.NovelConfig) ([]byte, error) {
+	initialRequest := map[string]interface{}{
+		"franchise":          config.Franchise,
+		"genre":              config.Genre,
+		"language":           config.Language,
+		"player_name":        config.PlayerName,
+		"player_gender":      config.PlayerGender,
+		"player_description": config.PlayerPreferences.PlayerDescription,
+		"ending_preference":  config.EndingPreference,
+		"world_context":      config.WorldContext,
+		"request_summary":    config.StorySummary,
+		"player_preferences": config.PlayerPreferences,
+		"story_config":       config.StoryConfig,
+		"required_output":    config.RequiredOutput,
+	}
+
+	return json.Marshal(initialRequest)
+}
+
+// prepareContinuationRequest формирует JSON для продолжения новеллы
+func (s *NovelContentService) prepareContinuationRequest(state *domain.NovelState, userChoice *domain.UserChoice) ([]byte, error) {
+	// Если передан выбор пользователя, обновляем состояние
+	if userChoice != nil {
+		// Добавляем выбор в список предыдущих выборов
+		state.PreviousChoices = append(state.PreviousChoices, userChoice.ChoiceText)
+
+		// Если есть сцена и выбор относится к текущей сцене, обрабатываем его последствия
+		if userChoice.SceneIndex == state.CurrentSceneIndex && len(state.Scenes) > state.CurrentSceneIndex {
+			scene := state.Scenes[state.CurrentSceneIndex]
+			processUserChoice(state, scene, userChoice.ChoiceText)
+		}
+
+		// Переходим к следующей сцене, если текущая завершена выбором
+		// !!! Важно: Увеличиваем индекс *до* отправки запроса на следующую сцену !!!
+		if len(state.Scenes) > 0 && state.CurrentStage == domain.StageSceneReady {
+			// Ищем событие выбора в последней добавленной сцене
+			lastScene := state.Scenes[len(state.Scenes)-1]
+			hasChoice := false
+			for _, event := range lastScene.Events {
+				if event.EventType == "choice" {
+					hasChoice = true
+					break
+				}
+			}
+			// Увеличиваем индекс, только если был сделан выбор
+			if hasChoice || userChoice != nil { // Увеличиваем если был выбор в сцене ИЛИ пришел внешний userChoice
+				state.CurrentSceneIndex++
+			}
+		} else if state.CurrentStage == domain.StageSetup {
+			// После setup всегда переходим к индексу 0 для первой сцены
+			state.CurrentSceneIndex = 0
+		}
+	}
+
+	// --- Логика обработки состояния ПОСЛЕ setup ---
+	// Если мы получили состояние со стадией 'setup', это значит, что
+	// setup был выполнен на предыдущем шаге, и теперь нужно запросить сцену 0.
+	// Мы должны УСТАНОВИТЬ CurrentSceneIndex в 0 ПЕРЕД отправкой запроса ИИ.
+	// Важно делать это ПОСЛЕ обработки userChoice, чтобы не сбить индекс.
+	if state.CurrentStage == domain.StageSetup {
+		log.Printf("[prepareContinuationRequest] State stage is 'setup'. Setting scene index to 0 for the first scene request.")
+		state.CurrentSceneIndex = 0 // Убеждаемся, что для первого запроса сцены индекс = 0
+	}
+
+	log.Printf("[prepareContinuationRequest] Preparing JSON. Final SceneIndex to send: %d", state.CurrentSceneIndex)
+	// Формируем запрос с текущим состоянием
+	continuationRequest := map[string]interface{}{
+		"scene_count":          state.SceneCount,
+		"current_scene_index":  state.CurrentSceneIndex, // <-- Отправляем обновленный индекс
+		"world_context":        state.WorldContext,
+		"story_summary":        state.OriginalStorySummary, // <-- Используем OriginalStorySummary
+		"story_summary_so_far": state.StorySummarySoFar,
+		"future_direction":     state.FutureDirection,
+		"global_flags":         state.GlobalFlags,
+		"relationship":         state.Relationship,
+		"story_variables":      state.StoryVariables,
+		"previous_choices":     state.PreviousChoices,
+		"language":             state.Language,
+		"backgrounds":          state.Backgrounds,
+		"characters":           state.Characters,
+		"player_name":          state.PlayerName,
+		"player_gender":        state.PlayerGender,
+		"ending_preference":    state.EndingPreference,
+		// Поле "current_stage" НЕ отправляем!
+	}
+
+	return json.Marshal(continuationRequest)
+}
+
+// processUserChoice обрабатывает последствия выбора пользователя
+func processUserChoice(state *domain.NovelState, scene domain.Scene, choiceText string) {
+	log.Printf("[processUserChoice] Processing choice: %s", choiceText)
+
+	// Сначала проверяем event типа choice (в конце сцены)
+	for _, event := range scene.Events {
+		if event.EventType == "choice" && event.Choices != nil {
+			// Проверяем каждый выбор
+			for _, choice := range event.Choices {
+				if choice.Text == choiceText {
+					log.Printf("[processUserChoice] Found matching 'choice': %s", choiceText)
+					processChoiceConsequences(state, choice.Consequences)
+					return
+				}
+			}
+		}
+	}
+
+	// Если не нашли в обычных выборах, проверяем inline_choice и inline_response
+	processInlineChoice(state, scene, choiceText)
+}
+
+// processInlineChoice обрабатывает inline_choice и inline_response события
+func processInlineChoice(state *domain.NovelState, scene domain.Scene, choiceText string) {
+	var inlineChoiceId string
+
+	// Ищем событие типа inline_choice
+	for _, event := range scene.Events {
+		if event.EventType == "inline_choice" && event.Data != nil {
+			if choiceId, ok := event.Data["choice_id"].(string); ok {
+				inlineChoiceId = choiceId
+				break
+			}
+		}
+	}
+
+	// Если нашли ID выбора, ищем соответствующий inline_response
+	if inlineChoiceId != "" {
+		for _, event := range scene.Events {
+			if event.EventType == "inline_response" && event.Data != nil {
+				dataChoiceId, hasChoiceId := event.Data["choice_id"].(string)
+				responses, hasResponses := event.Data["responses"].([]interface{})
+
+				if hasChoiceId && hasResponses && dataChoiceId == inlineChoiceId {
+					// Перебираем все возможные ответы
+					for _, respItem := range responses {
+						response, ok := respItem.(map[string]interface{})
+						if !ok {
+							continue
+						}
+
+						respChoiceText, hasText := response["choice_text"].(string)
+						if !hasText || respChoiceText != choiceText {
+							continue
+						}
+
+						log.Printf("[processInlineChoice] Found matching inline choice: %s", choiceText)
+
+						// Обрабатываем последствия inline-выбора
+						// В примере inline_response не содержит consequences, но в будущем может содержать
+						if consequences, hasConsequences := response["consequences"].(map[string]interface{}); hasConsequences {
+							processChoiceConsequences(state, consequences)
+						}
+
+						return
+					}
+				}
+			}
+		}
+	}
+
+	log.Printf("[processInlineChoice] No matching inline choice found for: %s", choiceText)
+}
+
+// processChoiceConsequences обрабатывает последствия выбора
+func processChoiceConsequences(state *domain.NovelState, consequences map[string]interface{}) {
+	if consequences == nil {
+		return
+	}
+
+	// Обработка флагов
+	if flags, ok := consequences["global_flags"].([]interface{}); ok {
+		log.Printf("[processChoiceConsequences] Processing global flags")
+		for _, flag := range flags {
+			if flagStr, ok := flag.(string); ok {
+				state.GlobalFlags = append(state.GlobalFlags, flagStr)
+			}
+		}
+	}
+
+	// Обработка отношений
+	if relationships, ok := consequences["relationship"].(map[string]interface{}); ok {
+		log.Printf("[processChoiceConsequences] Processing relationships")
+		for character, value := range relationships {
+			if intValue, ok := value.(float64); ok {
+				current, exists := state.Relationship[character]
+				if exists {
+					state.Relationship[character] = current + int(intValue)
+				} else {
+					state.Relationship[character] = int(intValue)
+				}
+			}
+		}
+	}
+
+	// Обработка переменных истории
+	if variables, ok := consequences["story_variables"].(map[string]interface{}); ok {
+		log.Printf("[processChoiceConsequences] Processing story variables")
+		for key, value := range variables {
+			state.StoryVariables[key] = value
+		}
+	}
+}
+
+// processModelResponse обрабатывает JSON-ответ от модели и обновляет состояние
+func (s *NovelContentService) processModelResponse(jsonStr string, currentState *domain.NovelState) (*domain.NovelContentResponse, error) {
+	log.Printf("[processModelResponse] Processing response. CurrentState Stage: %s, SceneIndex: %d", currentState.CurrentStage, currentState.CurrentSceneIndex)
+	var data map[string]interface{}
+	err := json.Unmarshal([]byte(jsonStr), &data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal model response: %w\nResponse string: %s", err, jsonStr)
+	}
+
+	// Определяем текущий этап из ответа модели
+	currentStage := "" // Инициализируем пустой строкой
+	if stageVal, ok := data["current_stage"]; ok {
+		if stageStr, ok := stageVal.(string); ok {
+			currentStage = stageStr
+		} else {
+			return nil, fmt.Errorf("invalid type for current_stage in model response: expected string, got %T", stageVal)
+		}
+	} else {
+		// Если current_stage нет, предполагаем, что это setup или ошибка
+		// Для setup проверим наличие характерных полей setup
+		if _, hasBG := data["backgrounds"]; hasBG {
+			currentStage = domain.StageSetup
+		} else {
+			return nil, fmt.Errorf("current_stage field is missing in model response")
+		}
+	}
+
+	updatedState := *currentState // Создаем копию для обновления
+	log.Printf("[processModelResponse] State *before* update: Stage=%s, Index=%d, BGs=%d, Chars=%d",
+		updatedState.CurrentStage, updatedState.CurrentSceneIndex, len(updatedState.Backgrounds), len(updatedState.Characters))
+
+	// Обновляем этап на основе ответа ИИ
+	updatedState.CurrentStage = currentStage
+
+	// Обновляем общие поля состояния, если они есть в ответе
+	updateStateField(&updatedState.SceneCount, data["scene_count"])
+	// НЕ обновляем CurrentSceneIndex здесь - он обновляется в processSceneResponse или prepareContinuationRequest
+	// updateStateField(&updatedState.CurrentSceneIndex, data["current_scene_index"])
+	updateStateField(&updatedState.Language, data["language"])
+	updateStateField(&updatedState.PlayerName, data["player_name"])
+	updateStateField(&updatedState.PlayerGender, data["player_gender"])
+	updateStateField(&updatedState.EndingPreference, data["ending_preference"])
+	updateStateField(&updatedState.WorldContext, data["world_context"])
+	updateStateField(&updatedState.StorySummary, data["story_summary"])
+	updateStateField(&updatedState.GlobalFlags, data["global_flags"])
+	updateStateField(&updatedState.Relationship, data["relationship"])
+	updateStateField(&updatedState.StoryVariables, data["story_variables"])
+	updateStateField(&updatedState.PreviousChoices, data["previous_choices"])
+	updateStateField(&updatedState.StorySummarySoFar, data["story_summary_so_far"])
+	updateStateField(&updatedState.FutureDirection, data["future_direction"])
+
+	// Обрабатываем специфичный контент в зависимости от этапа
+	var newContent interface{}
+
+	// Используем strings.HasPrefix для обработки "scene_X_ready"
+	if currentStage == domain.StageSetup {
+		setupContent := domain.SetupContent{}
+		err = s.processSetupResponse(data, &updatedState, &setupContent)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process setup response: %w", err)
+		}
+		newContent = setupContent
+	} else if strings.HasPrefix(currentStage, "scene_") && strings.HasSuffix(currentStage, "_ready") {
+		log.Printf("[processModelResponse] Detected scene ready stage: %s", currentStage)
+		sceneContent, err := s.processSceneResponse(data, &updatedState)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process scene response: %w", err)
+		}
+		newContent = sceneContent
+	} else if currentStage == domain.StageComplete {
+		// Никакого нового контента на этапе завершения
+	} else {
+		return nil, fmt.Errorf("unknown current_stage in model response: %s", currentStage)
+	}
+
+	log.Printf("[processModelResponse] State *after* update: Stage=%s, Index=%d, BGs=%d, Chars=%d, Scenes=%d",
+		updatedState.CurrentStage, updatedState.CurrentSceneIndex, len(updatedState.Backgrounds), len(updatedState.Characters), len(updatedState.Scenes))
+
+	response := &domain.NovelContentResponse{
+		State:      updatedState,
+		NewContent: newContent,
+	}
+
+	return response, nil
+}
+
+// processSetupResponse обрабатывает ответ модели для этапа setup
+func (s *NovelContentService) processSetupResponse(data map[string]interface{}, state *domain.NovelState, setupContent *domain.SetupContent) error {
+	// Извлекаем и присваиваем поля для SetupContent
+	updateStateField(&setupContent.StorySummary, data["story_summary"])
+
+	// Обработка backgrounds
+	if bgData, ok := data["backgrounds"].([]interface{}); ok {
+		var backgrounds []domain.Background
+		for _, item := range bgData {
+			if bgMap, ok := item.(map[string]interface{}); ok {
+				bg := domain.Background{}
+				updateStateField(&bg.ID, bgMap["id"])
+				updateStateField(&bg.Name, bgMap["name"])
+				updateStateField(&bg.Description, bgMap["description"])
+				updateStateField(&bg.Prompt, bgMap["prompt"])
+				updateStateField(&bg.NegativePrompt, bgMap["negative_prompt"])
+				backgrounds = append(backgrounds, bg)
+			}
+		}
+		setupContent.Backgrounds = backgrounds
+		state.Backgrounds = backgrounds // Также сохраняем в общем состоянии для последующих запросов
+	} else {
+		// Можно добавить предупреждение или ошибку, если backgrounds ожидаются
+		// log.Println("Warning: 'backgrounds' field missing or not an array in setup response")
+	}
+
+	// Обработка characters
+	if charData, ok := data["characters"].([]interface{}); ok {
+		var characters []domain.Character
+		initialRelationship := make(map[string]int)
+		for _, item := range charData {
+			if charMap, ok := item.(map[string]interface{}); ok {
+				char := domain.Character{}
+				updateStateField(&char.Name, charMap["name"])
+				updateStateField(&char.Description, charMap["description"])
+				updateStateField(&char.VisualTags, charMap["visual_tags"])
+				updateStateField(&char.Personality, charMap["personality"])
+				updateStateField(&char.Position, charMap["position"])
+				updateStateField(&char.Expression, charMap["expression"])
+				updateStateField(&char.Prompt, charMap["prompt"])
+				updateStateField(&char.NegativePrompt, charMap["negative_prompt"])
+				characters = append(characters, char)
+				// Инициализируем отношения, если имени нет в state.Relationship
+				if _, exists := state.Relationship[char.Name]; !exists && char.Name != "" {
+					initialRelationship[char.Name] = 0
+				}
+			}
+		}
+		setupContent.Characters = characters
+		state.Characters = characters // Также сохраняем в общем состоянии
+		// Применяем начальные отношения, только если state.Relationship пуст
+		if len(state.Relationship) == 0 {
+			state.Relationship = initialRelationship
+		}
+	} else {
+		// log.Println("Warning: 'characters' field missing or not an array in setup response")
+	}
+
+	// Устанавливаем relationship в setupContent из state (они должны быть одинаковы на этом этапе)
+	setupContent.Relationship = state.Relationship
+
+	// Можно добавить обработку других полей setup, если они есть в ответе модели
+
+	return nil
+}
+
+// Вспомогательная функция для безопасного обновления полей состояния
+func updateStateField(fieldPtr interface{}, value interface{}) {
+	if value == nil {
+		return
+	}
+
+	switch v := fieldPtr.(type) {
+	case *string:
+		if strVal, ok := value.(string); ok {
+			*v = strVal
+		}
+	case *int:
+		if floatVal, ok := value.(float64); ok { // JSON числа обычно float64
+			*v = int(floatVal)
+		} else if intVal, ok := value.(int); ok { // На всякий случай
+			*v = intVal
+		}
+	case *[]string:
+		if arrVal, ok := value.([]interface{}); ok {
+			strSlice := []string{}
+			for _, item := range arrVal {
+				if strItem, ok := item.(string); ok {
+					strSlice = append(strSlice, strItem)
+				}
+			}
+			*v = strSlice
+		}
+	case *map[string]int:
+		if mapVal, ok := value.(map[string]interface{}); ok {
+			intMap := make(map[string]int)
+			for key, val := range mapVal {
+				if floatInnerVal, ok := val.(float64); ok {
+					intMap[key] = int(floatInnerVal)
+				}
+			}
+			*v = intMap
+		}
+	case *map[string]interface{}:
+		if mapVal, ok := value.(map[string]interface{}); ok {
+			*v = mapVal
+		}
+		// Добавьте другие типы по необходимости
+	}
+}
+
+// processSceneResponse обрабатывает ответ с новой сценой и возвращает SceneContent
+func (s *NovelContentService) processSceneResponse(data map[string]interface{}, state *domain.NovelState) (*domain.SceneContent, error) {
+	// Ожидаем, что данные сцены находятся внутри ключа "scene", как в примере
+	sceneData, ok := data["scene"].(map[string]interface{})
+	if !ok {
+		// Попробуем поискать ключ "new_content", если "scene" нет (на всякий случай, для гибкости)
+		sceneData, ok = data["new_content"].(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("neither 'scene' nor 'new_content' found or is not a map in scene response")
+		}
+	}
+
+	sceneContent := domain.SceneContent{}
+
+	// Обрабатываем ID фона
+	updateStateField(&sceneContent.BackgroundID, sceneData["background_id"])
+
+	// Обрабатываем персонажей в сцене
+	if charactersData, ok := sceneData["characters"].([]interface{}); ok {
+		for _, charItem := range charactersData {
+			if charMap, ok := charItem.(map[string]interface{}); ok {
+				sceneChar := domain.SceneCharacter{}
+				updateStateField(&sceneChar.Name, charMap["name"])
+				updateStateField(&sceneChar.Position, charMap["position"])
+				updateStateField(&sceneChar.Expression, charMap["expression"])
+				if sceneChar.Name != "" { // Добавляем только если есть имя
+					sceneContent.Characters = append(sceneContent.Characters, sceneChar)
+				}
+			}
+		}
+	}
+
+	// Обрабатываем события в сцене
+	if eventsData, ok := sceneData["events"].([]interface{}); ok {
+		var events []domain.Event
+		for _, evtItem := range eventsData {
+			if evtMap, ok := evtItem.(map[string]interface{}); ok {
+				event := domain.Event{
+					Data: make(map[string]interface{}),
+				}
+				updateStateField(&event.EventType, evtMap["event_type"])
+				updateStateField(&event.Speaker, evtMap["speaker"])
+				updateStateField(&event.Text, evtMap["text"])
+				updateStateField(&event.Character, evtMap["character"])
+				updateStateField(&event.From, evtMap["from"])
+				updateStateField(&event.To, evtMap["to"])
+				updateStateField(&event.Description, evtMap["description"])
+
+				// Обрабатываем варианты выбора
+				if choicesData, ok := evtMap["choices"].([]interface{}); ok && event.EventType == "choice" {
+					var choices []domain.Choice
+					for _, choiceItem := range choicesData {
+						if choiceMap, ok := choiceItem.(map[string]interface{}); ok {
+							choice := domain.Choice{
+								Consequences: make(map[string]interface{}),
+							}
+							updateStateField(&choice.Text, choiceMap["text"])
+							if consData, ok := choiceMap["consequences"].(map[string]interface{}); ok {
+								choice.Consequences = consData
+							}
+							choices = append(choices, choice)
+						}
+					}
+					event.Choices = choices
+				}
+
+				// Добавляем остальные поля в Data
+				for key, value := range evtMap {
+					if key != "event_type" && key != "speaker" && key != "text" &&
+						key != "character" && key != "from" && key != "to" &&
+						key != "choices" && key != "description" {
+						event.Data[key] = value
+					}
+				}
+				events = append(events, event)
+			}
+		}
+		sceneContent.Events = events
+	}
+
+	// Добавляем события сцены в общее состояние (для истории и processUserChoice)
+	// Используем структуру domain.Scene для хранения
+	sceneForState := domain.Scene{
+		BackgroundID: sceneContent.BackgroundID,
+		Events:       sceneContent.Events,
+	}
+	if state.CurrentSceneIndex < len(state.Scenes) {
+		state.Scenes[state.CurrentSceneIndex] = sceneForState
+	} else {
+		state.Scenes = append(state.Scenes, sceneForState)
+	}
+
+	// Обновляем CurrentSceneIndex только ПОСЛЕ успешной обработки сцены
+	log.Printf("[processSceneResponse] Processed scene for index %d. State Scene Index will be incremented.", state.CurrentSceneIndex)
+	// state.CurrentSceneIndex++ // Убираем инкремент отсюда, он теперь в конце GenerateNovelContent при сохранении
+
+	return &sceneContent, nil
+}
+
+// determineSceneCount определяет количество сцен на основе длины новеллы
+func (s *NovelContentService) determineSceneCount(length string) int {
+	switch length {
+	case "short":
+		return 3
+	case "medium":
+		return 5 // может быть от 5 до 7
+	case "long":
+		return 10
+	default:
+		return 5 // по умолчанию medium
+	}
+}
+
+// --- Утилиты для хеширования состояния ---
+
+// StateKey определяет поля состояния, влияющие на следующий шаг и используемые для хеширования
+type StateKey struct {
+	Choice         string                 `json:"choice"`
+	GlobalFlags    []string               `json:"global_flags"`
+	Relationship   map[string]int         `json:"relationship"`
+	StoryVariables map[string]interface{} `json:"story_variables"`
+}
+
+// hashStateKey вычисляет SHA-256 хеш ключа состояния.
+// Принимает последний сделанный выбор и текущее состояние мира.
+func hashStateKey(choice string, flags []string, relationship map[string]int, variables map[string]interface{}) (string, error) {
+	serializedKey, err := serializeStateKey(choice, flags, relationship, variables)
+	if err != nil {
+		return "", fmt.Errorf("failed to serialize state key: %w", err)
+	}
+
+	return hashData(serializedKey), nil
+}
+
+// serializeStateKey сериализует ключ состояния в JSON со стабильным порядком ключей/элементов.
+func serializeStateKey(choice string, flags []string, relationship map[string]int, variables map[string]interface{}) ([]byte, error) {
+	// Сортируем флаги для стабильности
+	sortedFlags := make([]string, len(flags))
+	copy(sortedFlags, flags)
+	sort.Strings(sortedFlags)
+
+	// Сортируем ключи карт для стабильности
+	sortedRelationship := make(map[string]int)
+	relKeys := make([]string, 0, len(relationship))
+	for k := range relationship {
+		relKeys = append(relKeys, k)
+	}
+	sort.Strings(relKeys)
+	for _, k := range relKeys {
+		sortedRelationship[k] = relationship[k]
+	}
+
+	sortedVariables := make(map[string]interface{})
+	varKeys := make([]string, 0, len(variables))
+	for k := range variables {
+		varKeys = append(varKeys, k)
+	}
+	sort.Strings(varKeys)
+	for _, k := range varKeys {
+		sortedVariables[k] = variables[k]
+	}
+
+	key := StateKey{
+		Choice:         choice,
+		GlobalFlags:    sortedFlags,
+		Relationship:   sortedRelationship,
+		StoryVariables: sortedVariables,
+	}
+
+	// Маршалинг в JSON (стандартный маршалер сортирует ключи карт)
+	return json.Marshal(key)
+}
+
+// hashData вычисляет SHA-256 хеш для байтового среза и возвращает его в виде hex-строки.
+func hashData(data []byte) string {
+	hasher := sha256.New()
+	hasher.Write(data) // Ошибка здесь маловероятна для sha256
+	return hex.EncodeToString(hasher.Sum(nil))
+}

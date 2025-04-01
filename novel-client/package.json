@@ -1,0 +1,13 @@
+{
+  "name": "novel-client",
+  "version": "1.0.0",
+  "description": "Node.js client for novel generation API",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.2",
+    "chalk": "^4.1.2"
+  }
+} 
