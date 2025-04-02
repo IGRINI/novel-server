@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -277,58 +278,92 @@ func (c *Client) GenerateSceneContent(ctx context.Context, novelConfig, currentS
 
 // generate is a helper function to generate content based on a prompt file and input data
 func (c *Client) generate(ctx context.Context, promptFile string, inputData interface{}) (string, error) {
-	content, err := loadPromptFromFile(promptFile)
+	// Загружаем основной промпт (инструкции для AI)
+	instructions, err := loadPromptFromFile(promptFile)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("не удалось загрузить инструкции из %s: %w", promptFile, err)
 	}
 
-	systemPrompt := fmt.Sprintf("Ты опытный писатель, который создает интерактивные новеллы. Твоя задача - генерировать содержимое сцен на основе конфигурации новеллы, текущего состояния и действий пользователя. Ответ должен быть в формате JSON, содержащий: заголовок сцены, описание, основное содержание и массив доступных вариантов выбора (каждый с текстом и ID). Конфигурация новеллы: %s", content)
+	// Сериализуем входные данные в JSON
+	inputJSONBytes, err := json.MarshalIndent(inputData, "", "  ") // Используем MarshalIndent для читаемости в логах
+	if err != nil {
+		return "", fmt.Errorf("ошибка при сериализации входных данных в JSON: %w", err)
+	}
+	inputJSONString := string(inputJSONBytes)
+
+	// Формируем системный промпт, включающий инструкции
+	// Теперь системный промпт содержит ТОЛЬКО инструкции из файла
+	systemPrompt := instructions
+
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 
 	attempts := 0
 	for attempts < c.maxRetries {
 		attempts++
+
+		log.Debug().Str("promptFile", promptFile).Int("attempt", attempts).Msg("Отправка запроса к AI")
+		// Логируем входной JSON для отладки (можно убрать или изменить уровень на Debug)
+		// log.Trace().Str("inputJson", inputJSONString).Msg("Входные данные для AI")
 
 		req := openai.ChatCompletionRequest{
 			Model: c.modelName,
 			Messages: []openai.ChatCompletionMessage{
 				{
 					Role:    openai.ChatMessageRoleSystem,
-					Content: systemPrompt,
+					Content: systemPrompt, // Передаем инструкции как системный промпт
 				},
 				{
 					Role:    openai.ChatMessageRoleUser,
-					Content: fmt.Sprintf("%+v", inputData),
+					Content: inputJSONString, // Передаем входные данные как JSON
 				},
 			},
-			Temperature: 0.7,
-			MaxTokens:   15000,
-			TopP:        0.95,
+			Temperature: 0.7,   // Можно настроить
+			MaxTokens:   15000, // Убедитесь, что лимит достаточен
+			TopP:        0.95,  // Можно настроить
+			// ResponseFormat: &openai.ChatCompletionResponseFormat{Type: openai.ChatCompletionResponseFormatJSON}, // Можно раскомментировать, если модель поддерживает JSON mode
 		}
 
 		resp, err := c.client.CreateChatCompletion(ctx, req)
 		if err != nil {
+			log.Error().Err(err).Int("attempt", attempts).Msg("Ошибка при вызове CreateChatCompletion")
 			if attempts >= c.maxRetries {
-				return "", fmt.Errorf("ошибка при генерации содержимого сцены: %w", err)
+				return "", fmt.Errorf("ошибка AI после %d попыток: %w", attempts, err)
 			}
+			time.Sleep(time.Duration(attempts) * time.Second) // Экспоненциальная задержка
 			continue
 		}
 
-		if len(resp.Choices) == 0 {
+		if len(resp.Choices) == 0 || resp.Choices[0].Message.Content == "" {
+			log.Warn().Int("attempt", attempts).Msg("Пустой ответ от AI")
 			if attempts >= c.maxRetries {
-				return "", errors.New("пустой ответ от API: не получены варианты")
+				return "", errors.New("пустой ответ от API после нескольких попыток")
 			}
+			time.Sleep(time.Duration(attempts) * time.Second)
 			continue
 		}
 
 		responseContent := resp.Choices[0].Message.Content
-		// Логируем ответ, встраивая его в сообщение
+		// Логируем ответ
 		log.Info().
 			Str("model", c.modelName).
+			Str("promptFile", promptFile).
 			Int("attempt", attempts).
-			Msg("Получен ответ от API (Creator):\n" + responseContent)
+			Msg("Получен ответ от API:\n" + responseContent)
+
+		// Проверка, является ли ответ валидным JSON (опционально, но полезно)
+		var js json.RawMessage
+		if json.Unmarshal([]byte(responseContent), &js) != nil {
+			log.Warn().Int("attempt", attempts).Msg("Ответ AI не является валидным JSON, пробуем снова...")
+			if attempts >= c.maxRetries {
+				return "", fmt.Errorf("ответ AI не является валидным JSON после %d попыток", attempts)
+			}
+			time.Sleep(time.Duration(attempts) * time.Second)
+			continue // Пробуем снова, если ответ не JSON
+		}
 
 		return responseContent, nil
 	}
 
-	return "", errors.New("не удалось получить ответ от API после нескольких попыток")
+	return "", errors.New("не удалось получить валидный ответ от API после нескольких попыток")
 }

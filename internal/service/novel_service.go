@@ -334,193 +334,102 @@ func (s *NovelService) generateContentTask(ctx context.Context, params interface
 	// Преобразуем параметры
 	req, ok := params.(model.GenerateNovelContentRequest)
 	if !ok {
-		return nil, errors.New("неверный тип параметров")
+		return nil, errors.New("неверный тип параметров для generateContentTask")
 	}
 
-	// Получаем новеллу из БД для получения config и setup, если нужно
+	// Получаем новеллу из репозитория, чтобы получить Config и Setup
 	novel, err := s.repo.GetByID(ctx, req.NovelID)
 	if err != nil {
-		return nil, fmt.Errorf("ошибка при получении новеллы: %w", err)
+		log.Error().Err(err).Str("novelID", req.NovelID.String()).Msg("Не удалось получить новеллу для генерации контента")
+		return nil, fmt.Errorf("новелла с ID %s не найдена: %w", req.NovelID.String(), err)
 	}
 
-	var response string
+	novelConfig := novel.Config
+	novelSetup := novel.Setup
 
-	// Если у нас нет состояния, значит это первая сцена
-	if req.NovelState == nil {
-		// Формируем запрос для генератора первой сцены
+	var responseJSON string
+	// Определяем, первый ли это запрос контента для этой новеллы
+	isFirstScene := req.NovelState == nil // Первая сцена, если состояние еще не существует
+
+	if isFirstScene {
+		// Если это первая сцена, вызываем соответствующий генератор
+		log.Info().Str("novelID", req.NovelID.String()).Msg("Запрос генерации первой сцены")
+
+		// Копируем конфиг, чтобы не изменять оригинальный novel.Config
+		configForAI := novelConfig
+		// Удаляем поле CoreStats из конфига перед отправкой AI
+		configForAI.CoreStats = nil
+
+		// Создаем запрос для GenerateFirstScene с обрезанным конфигом
 		firstSceneReq := model.GenerateFirstSceneRequest{
-			Config: novel.Config,
-			Setup:  novel.Setup,
+			Config: configForAI,
+			Setup:  novelSetup,
 		}
-		// Вызываем генератор первой сцены
-		response, err = s.aiClient.GenerateFirstScene(ctx, firstSceneReq)
+		// Используем существующий метод GenerateFirstScene
+		responseJSON, err = s.aiClient.GenerateFirstScene(ctx, firstSceneReq)
 		if err != nil {
 			return nil, fmt.Errorf("ошибка при генерации первой сцены: %w", err)
 		}
 	} else {
-		// Для последующих сцен передаем полный запрос
-		// Вызываем создателя новеллы (основной генератор)
-		response, err = s.aiClient.GenerateWithNovelCreator(ctx, req)
+		// Если это не первая сцена, вызываем основной генератор контента
+		// Передаем полный GenerateNovelContentRequest, так как GenerateWithNovelCreator его ожидает
+		// Добавляем Config и Setup в этот запрос перед передачей
+		contentReq := req                // Копируем запрос
+		contentReq.Config = &novelConfig // Передаем полный Config
+		contentReq.Setup = &novelSetup
+
+		// Определяем текущий этап из состояния (если оно есть)
+		currentStage := "choices_ready" // По умолчанию
+		if req.NovelState != nil {
+			// TODO: Определить, как будем хранить/определять этап 'game_over'.
+		}
+		log.Info().Str("novelID", req.NovelID.String()).Str("currentStage", currentStage).Msg("Запрос генерации следующего контента")
+		// Используем существующий метод GenerateWithNovelCreator
+		responseJSON, err = s.aiClient.GenerateWithNovelCreator(ctx, contentReq)
 		if err != nil {
 			return nil, fmt.Errorf("ошибка при генерации контента новеллы: %w", err)
 		}
 	}
 
-	// Парсим JSON-ответ в структуру сцены
-	var sceneResponse map[string]interface{}
-	if err := json.Unmarshal([]byte(response), &sceneResponse); err != nil {
-		// Попробуем очистить ответ перед парсингом, если первая попытка неудачна
-		cleanedResponse := cleanAIResponse(response)
-		log.Warn().Str("rawResponse", response).Str("cleanedResponse", cleanedResponse).Msg("Повторная попытка разбора JSON после очистки")
-		if err := json.Unmarshal([]byte(cleanedResponse), &sceneResponse); err != nil {
-			log.Error().Err(err).Str("cleanedResponse", cleanedResponse).Msg("Ошибка при разборе ответа создателя новеллы после очистки")
-			return nil, fmt.Errorf("ошибка при разборе ответа создателя новеллы: %w, response: %s", err, cleanedResponse)
+	cleanedResponse := cleanAIResponse(responseJSON)
+
+	// Парсим JSON-ответ в соответствующую структуру в зависимости от этапа
+	if isFirstScene {
+		var firstSceneResponse model.FirstSceneResponse
+		if err := json.Unmarshal([]byte(cleanedResponse), &firstSceneResponse); err != nil {
+			log.Error().Err(err).Str("rawResponse", cleanedResponse).Msg("Ошибка при разборе JSON ответа генератора первой сцены")
+			return nil, fmt.Errorf("ошибка при разборе ответа генератора первой сцены: %w", err)
 		}
-	}
+		// TODO: Нужно обновить/создать NovelState в БД с initial choices, story summary, future direction,
+		// установить начальные значения статов и т.д.
+		// ... логика создания/обновления состояния новеллы ...
 
-	// Проверяем, завершилась ли игра (только для основного генератора)
-	isGameOver := false
-	if req.NovelState != nil {
-		isGameOver, _ = sceneResponse["game_over"].(bool)
-	}
-
-	// Получаем или создаем состояние новеллы
-	var state model.NovelState
-	userID, err := uuid.Parse(req.UserID)
-	if err != nil {
-		return nil, fmt.Errorf("неверный формат ID пользователя: %w", err)
-	}
-
-	if req.NovelState != nil {
-		// Используем существующее состояние
-		state = *req.NovelState
+		// Возвращаем ответ для клиента
+		return firstSceneResponse, nil
 	} else {
-		// Создаем новое состояние для первой сцены
-		state = model.NovelState{
-			ID:        uuid.New(),
-			UserID:    userID,
-			NovelID:   req.NovelID, // Используем ID из запроса
-			Variables: make(map[string]interface{}),
-			History:   []uuid.UUID{},
+		var gameplayResponse interface{} // Используем interface{} т.к. структура ответа разная
+		if err := json.Unmarshal([]byte(cleanedResponse), &gameplayResponse); err != nil {
+			log.Error().Err(err).Str("rawResponse", cleanedResponse).Msg("Ошибка при разборе JSON ответа генератора геймплея")
+			return nil, fmt.Errorf("ошибка при разборе ответа генератора геймплея: %w", err)
 		}
-		// Устанавливаем начальные значения статов из сетапа
-		initialStats := make(map[string]interface{})
-		for statName, statDef := range novel.Setup.CoreStatsDefinition {
-			initialStats[statName] = float64(statDef.InitialValue)
-		}
-		state.Variables["stats"] = initialStats
+
+		// TODO: Обновить NovelState в БД на основе gameplayResponse.
+		// Нужно будет определить тип ответа (choices_ready, game_over, game_over_continue)
+		// и соответственно обновить State (добавить choices, изменить stage, обновить summary/direction, etc.)
+		// ... логика обновления состояния новеллы ...
+
+		// Возвращаем полный ответ AI клиенту
+		return gameplayResponse, nil
 	}
+}
 
-	// Если игра завершилась, обновляем состояние
-	if isGameOver {
-		state.Variables["game_over"] = true
-		if ending, ok := sceneResponse["ending"].(map[string]interface{}); ok {
-			state.Variables["ending"] = ending
-		}
+// safeGetString безопасно извлекает строку из map[string]interface{}
+func safeGetString(data map[string]interface{}, key string) string {
+	if val, ok := data[key].(string); ok {
+		return val
 	}
-
-	// Создаем новую сцену на основе ответа
-	newScene := model.Scene{
-		ID:      uuid.New(),
-		NovelID: state.NovelID,
-		Title:   sceneResponse["scene"].(map[string]interface{})["title"].(string),
-		Content: response, // Сохраняем весь ответ как контент сцены
-		Order:   len(state.History) + 1,
-	}
-
-	// Сохраняем сцену в БД
-	if state.NovelID != uuid.Nil {
-		_, err = s.repo.CreateScene(ctx, newScene)
-		if err != nil {
-			log.Error().Err(err).Str("novelID", state.NovelID.String()).Msg("ошибка при сохранении сцены")
-			// Продолжаем обработку
-		}
-	}
-
-	// Обновляем состояние новеллы
-	state.CurrentSceneID = &newScene.ID
-	state.History = append(state.History, newScene.ID)
-
-	// Если статы изменились, обновляем их в переменных состояния
-	if choices, ok := sceneResponse["choices"].([]interface{}); ok && len(choices) > 0 {
-		// Получаем текущие статы или инициализируем их
-		stats, ok := state.Variables["stats"].(map[string]interface{})
-		if !ok {
-			// Инициализируем статы из первой сцены
-			stats = make(map[string]interface{})
-
-			// Если у нас есть выбор пользователя, применяем изменения статов
-			if req.UserChoice != nil && len(choices) > 0 {
-				for _, choice := range choices {
-					choiceMap := choice.(map[string]interface{})
-					choiceID, ok := choiceMap["id"].(string)
-					if !ok {
-						continue
-					}
-
-					if userChoiceID := req.UserChoice.ChoiceID.String(); choiceID == userChoiceID {
-						if statChanges, ok := choiceMap["stat_changes"].(map[string]interface{}); ok {
-							for stat, change := range statChanges {
-								// Применяем изменения к статам
-								currentValue, ok := stats[stat].(float64)
-								if !ok {
-									// Если стат не существует, инициализируем его
-									if setupStats, ok := novel.Setup.CoreStatsDefinition[stat]; ok {
-										currentValue = float64(setupStats.InitialValue)
-									} else {
-										currentValue = 50 // Значение по умолчанию
-									}
-								}
-
-								// Применяем изменение
-								newValue := currentValue + change.(float64)
-
-								// Ограничиваем значение от 0 до 100
-								if newValue < 0 {
-									newValue = 0
-								} else if newValue > 100 {
-									newValue = 100
-								}
-
-								stats[stat] = newValue
-							}
-						}
-						break
-					}
-				}
-			} else {
-				// Для первой сцены начальные значения уже установлены выше
-				/*
-					if req.Setup != nil { // req.Setup больше не используется напрямую здесь
-						for statName, statDef := range req.Setup.CoreStatsDefinition {
-							stats[statName] = float64(statDef.InitialValue)
-						}
-					}
-				*/
-			}
-
-			state.Variables["stats"] = stats
-		}
-	}
-
-	// Сохраняем состояние в БД
-	if state.NovelID != uuid.Nil {
-		savedState, err := s.repo.SaveNovelState(ctx, state)
-		if err != nil {
-			log.Error().Err(err).Str("novelID", state.NovelID.String()).Str("userID", state.UserID.String()).Msg("ошибка при сохранении состояния")
-			// Используем несохраненное состояние для ответа
-		} else {
-			state = savedState
-		}
-	}
-
-	// Формируем ответ
-	result := model.GenerateResponse{
-		State:      state,
-		NewContent: sceneResponse,
-	}
-
-	return result, nil
+	log.Warn().Str("key", key).Msg("Ключ не найден или не является строкой в ответе AI")
+	return "" // Возвращаем пустую строку или другое значение по умолчанию
 }
 
 // GetTaskStatus получает статус задачи
@@ -620,6 +529,50 @@ func (s *NovelService) ModifyNovelDraftAsync(ctx context.Context, draftID, userI
 	}
 
 	return taskID, nil
+}
+
+// GetDraftsByUserID получает все черновики пользователя
+func (s *NovelService) GetDraftsByUserID(ctx context.Context, userID uuid.UUID) ([]model.NovelDraft, error) {
+	return s.repo.GetDraftsByUserID(ctx, userID)
+}
+
+// GetDraftViewByID получает детальную информацию о черновике в виде NovelDraftView
+func (s *NovelService) GetDraftViewByID(ctx context.Context, draftID, userID uuid.UUID) (model.NovelDraftView, error) {
+	// Получаем полный драфт из репозитория
+	draft, err := s.repo.GetDraftByID(ctx, draftID)
+	if err != nil {
+		log.Error().Err(err).Str("draftID", draftID.String()).Msg("Не удалось получить драфт для просмотра деталей")
+		return model.NovelDraftView{}, fmt.Errorf("черновик с ID %s не найден: %w", draftID.String(), err)
+	}
+
+	// Проверяем, что пользователь является владельцем драфта
+	if draft.UserID != userID {
+		log.Warn().Str("draftID", draftID.String()).Str("requestUserID", userID.String()).Str("ownerUserID", draft.UserID.String()).Msg("Попытка просмотра деталей чужого драфта")
+		return model.NovelDraftView{}, fmt.Errorf("доступ запрещен: вы не являетесь владельцем этого драфта")
+	}
+
+	// Конвертируем Config в NovelDraftView
+	config := draft.Config
+	draftView := model.NovelDraftView{
+		ID:                draft.ID, // Используем ID драфта
+		Title:             config.Title,
+		ShortDescription:  config.ShortDescription,
+		Franchise:         config.Franchise,
+		Genre:             config.Genre,
+		IsAdultContent:    config.IsAdultContent,
+		PlayerName:        config.PlayerName,
+		PlayerGender:      config.PlayerGender,
+		PlayerDescription: config.PlayerDescription,
+		WorldContext:      config.WorldContext,
+		CoreStats:         make(map[string]model.CoreStatView),
+		Themes:            config.PlayerPrefs.Themes,
+	}
+
+	for name, stat := range config.CoreStats {
+		draftView.CoreStats[name] = stat.ToView()
+	}
+
+	return draftView, nil
 }
 
 // modifyNovelDraftTask обрабатывает задачу модификации драфта новеллы

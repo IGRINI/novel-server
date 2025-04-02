@@ -140,11 +140,11 @@ async function login(username, password) {
   }
 }
 
-// Функция для получения списка новелл
-async function fetchNovelsList() {
-  const url = `${config.baseUrl}${config.api.novels.list}`;
+// Функция для получения списка новелл ПОЛЬЗОВАТЕЛЯ
+async function fetchUserNovelsList() {
+  const url = `${config.baseUrl}${config.api.novels.myNovels}`;
   
-  log(`Запрос списка новелл...`, 'info');
+  log(`Запрос списка МОИХ новелл...`, 'info');
   
   if (!jwtToken) {
     log('Ошибка: JWT токен отсутствует. Невозможно запросить список новелл.', 'error');
@@ -159,14 +159,14 @@ async function fetchNovelsList() {
     });
     
     if (response.data) {
-      log('Список новелл успешно получен!', 'success');
+      log('Список МОИХ новелл успешно получен!', 'success');
       return response.data;
     } else {
       log('Ошибка: Не удалось получить список новелл из ответа сервера.', 'error');
       return [];
     }
   } catch (error) {
-    log(`Ошибка при получении списка новелл: ${error.message}`, 'error');
+    log(`Ошибка при получении списка МОИХ новелл: ${error.message}`, 'error');
     if (error.response) {
       log(`Статус: ${error.response.status}`, 'error');
       log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
@@ -197,6 +197,76 @@ async function createNovel(draftData) {
     return response.data;
   } catch (error) {
     log(`Ошибка при создании новеллы: ${error.message}`, 'error');
+    if (error.response) {
+      log(`Статус: ${error.response.status}`, 'error');
+      log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
+    }
+    return null;
+  }
+}
+
+// Функция для получения черновиков пользователя
+async function fetchUserDrafts() {
+  const url = `${config.baseUrl}${config.api.novels.generate.drafts}`;
+  
+  log(`Получение списка черновиков...`, 'info');
+  
+  if (!jwtToken) {
+    log('Ошибка: JWT токен отсутствует. Невозможно получить черновики.', 'error');
+    return [];
+  }
+  
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        'Authorization': `Bearer ${jwtToken}`
+      }
+    });
+    
+    if (response.data) {
+      log(`Получено ${response.data.length} черновиков`, 'success');
+      return response.data;
+    } else {
+      log('Не удалось получить черновики из ответа сервера', 'error');
+      return [];
+    }
+  } catch (error) {
+    log(`Ошибка при получении черновиков: ${error.message}`, 'error');
+    if (error.response) {
+      log(`Статус: ${error.response.status}`, 'error');
+      log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
+    }
+    return [];
+  }
+}
+
+// Функция для получения деталей черновика
+async function fetchDraftDetails(draftId) {
+  const url = `${config.baseUrl}${config.api.novels.generate.draftDetails.replace('{id}', draftId)}`;
+  
+  log(`Получение деталей черновика ${draftId}...`, 'info');
+  
+  if (!jwtToken) {
+    log('Ошибка: JWT токен отсутствует. Невозможно получить детали черновика.', 'error');
+    return null;
+  }
+  
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        'Authorization': `Bearer ${jwtToken}`
+      }
+    });
+    
+    if (response.data) {
+      log(`Детали черновика ${draftId} успешно получены`, 'success');
+      return response.data; // Возвращаем NovelDraftView
+    } else {
+      log('Не удалось получить детали черновика из ответа сервера', 'error');
+      return null;
+    }
+  } catch (error) {
+    log(`Ошибка при получении деталей черновика: ${error.message}`, 'error');
     if (error.response) {
       log(`Статус: ${error.response.status}`, 'error');
       log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
@@ -306,8 +376,8 @@ async function modifyNovelDraft(draftId, modificationPrompt) {
   }
 }
 
-// Функция для ожидания завершения асинхронной задачи
-async function waitForTaskCompletion(taskId, maxAttempts = 30, interval = 2000) {
+// Функция для ожидания завершения задачи
+async function waitForTaskCompletion(taskId, maxAttempts = 60, interval = 2000) {
   const url = `${config.baseUrl}${config.api.tasks}/${taskId}`;
   
   log(`Ожидание завершения задачи ${taskId}...`, 'info');
@@ -555,297 +625,414 @@ async function setupNovelFromDraft(draftId, draftData) {
   }
 }
 
-// Главная функция
-async function main() {
-  try {
-    // Авторизация
-    console.log(chalk.cyan('\n===== АВТОРИЗАЦИЯ ====='));
-    let authAction = '';
-    while (authAction !== '1' && authAction !== '2') {
-      authAction = await askQuestion(chalk.yellow('Выберите действие:\n[1] Вход\n[2] Регистрация\nВыбор: '));
-      if (authAction !== '1' && authAction !== '2') {
-        console.log(chalk.red('Пожалуйста, введите 1 или 2.'));
-      }
+// Основная логика взаимодействия с пользователем
+async function startInteraction() {
+  // Авторизация или регистрация
+  console.log(chalk.cyan('\n===== АВТОРИЗАЦИЯ / РЕГИСТРАЦИЯ ====='));
+  let authAction = '';
+  while (authAction !== '1' && authAction !== '2') {
+    authAction = await askQuestion(chalk.yellow('Выберите действие:\n[1] Вход\n[2] Регистрация\nВыбор: '));
+    if (authAction !== '1' && authAction !== '2') {
+      console.log(chalk.red('Пожалуйста, введите 1 или 2.'));
     }
-    
-    let username, email, password;
-    
+  }
+  
+  let username, email, password;
+  let loggedIn = false;
+  
+  while (!loggedIn) {
     if (authAction === '1') {
       // Вход
       username = await askQuestion(chalk.yellow('Введите имя пользователя: '));
       password = await askQuestion(chalk.yellow('Введите пароль: '));
       
       jwtToken = await login(username, password);
-      if (!jwtToken) {
-        log('Не удалось войти в систему. Завершение работы.', 'error');
-        rl.close();
-        return;
+      if (jwtToken) {
+        loggedIn = true;
+        novelHistory.userId = username; // Сохраняем имя пользователя
+      } else {
+        log('Не удалось войти. Попробуйте еще раз или зарегистрируйтесь.', 'error');
+        authAction = '2'; // Предлагаем регистрацию при неудачном входе
       }
     } else {
       // Регистрация
-      username = await askQuestion(chalk.yellow('Введите имя пользователя: '));
+      username = await askQuestion(chalk.yellow('Введите имя пользователя для регистрации: '));
       email = await askQuestion(chalk.yellow('Введите email: '));
       password = await askQuestion(chalk.yellow('Введите пароль: '));
       
       const registrationResult = await register(username, email, password);
-      if (!registrationResult) {
-        log('Не удалось зарегистрироваться. Завершение работы.', 'error');
-        rl.close();
-        return;
-      }
-      
-      jwtToken = await login(username, password);
-      if (!jwtToken) {
-        log('Не удалось войти в систему после регистрации. Завершение работы.', 'error');
-        rl.close();
-        return;
-      }
-    }
-    
-    novelHistory.userId = username;
-    
-    // Главное меню
-    console.log(chalk.cyan('\n===== ГЛАВНОЕ МЕНЮ ====='));
-    console.log(chalk.cyan('[1] Начать новую новеллу'));
-    console.log(chalk.cyan('[2] Продолжить новеллу из списка'));
-    console.log(chalk.cyan('=========================\n'));
-
-    let menuChoice = '';
-    while (menuChoice !== '1' && menuChoice !== '2') {
-      menuChoice = await askQuestion(chalk.yellow('Выберите действие:\n[1] Начать новую новеллу\n[2] Продолжить новеллу из списка\nВыбор: '));
-      if (menuChoice !== '1' && menuChoice !== '2') {
-        console.log(chalk.red('Пожалуйста, введите 1 или 2.'));
-      }
-    }
-    
-    let novelId;
-    let novelContent;
-
-    if (menuChoice === '1') {
-      // Начать новую новеллу
-      log('Начинаем процесс генерации новой новеллы...', 'info');
-      
-      // Запрос промпта у пользователя
-      let userPrompt = await askQuestion(chalk.yellow('Введите промпт для новеллы (или нажмите Enter для использования стандартного): '));
-      if (!userPrompt || userPrompt.trim() === '') {
-        userPrompt = config.defaultPrompt || "Создай фэнтезийную новеллу с элементами приключений и романтики";
-        log(`Используется стандартный промпт: "${userPrompt}"`, 'info');
+      if (registrationResult) {
+        log('Регистрация успешна! Теперь попробуйте войти.', 'success');
+        authAction = '1'; // Предлагаем войти после успешной регистрации
       } else {
-        log(`Используется введенный промпт: "${userPrompt}"`, 'info');
+        log('Не удалось зарегистрироваться. Попробуйте другое имя пользователя/email.', 'error');
+        // Остаемся в цикле, предлагаем регистрацию снова
       }
-      
-      // Генерация черновика
-      const novelDraft = await generateNovelDraft(userPrompt);
-      if (!novelDraft) {
-        log('Не удалось сгенерировать черновик новеллы. Завершение работы.', 'error');
+    }
+  }
+  
+  // Если авторизация/регистрация прошли успешно, продолжаем
+  if (!jwtToken) {
+    log('Не удалось получить JWT токен. Завершение работы.', 'error');
+    rl.close();
+    return;
+  }
+  
+  // Отображаем основное меню
+  console.log(chalk.cyan('\n===== ГЛАВНОЕ МЕНЮ ====='));
+  console.log(chalk.cyan('[1] Создать новую новеллу'));
+  console.log(chalk.cyan('[2] Просмотреть мои черновики'));
+  console.log(chalk.cyan('[3] Просмотреть мои новеллы'));
+  console.log(chalk.cyan('=========================\n'));
+  
+  rl.question(chalk.yellow('Ваш выбор (1/2/3): '), async function(choice) {
+    switch(choice) {
+      case '1':
+        await createNewNovelFlow(rl);
+        break;
+      case '2':
+        await viewDraftsFlow(rl);
+        break;
+      case '3':
+        await viewNovelsFlow(rl);
+        break;
+      default:
+        log('Неверный выбор. Выход.', 'error');
         rl.close();
-        return;
-      }
-      
-      console.log(novelDraft)
+    }
+  });
+}
 
-      // Отображаем информацию о черновике
-      let currentDraft = novelDraft; // Сохраняем текущий драфт в переменную
-      let currentDraftId = currentDraft.draft_id; // Получаем ID драфта
-
-      while (true) {
-        console.log(chalk.cyan('\n===== ПРЕДПРОСМОТР НОВЕЛЛЫ ====='));
-        console.log(chalk.yellow('Название: ') + chalk.white(currentDraft.title || 'Без названия'));
-        console.log(chalk.yellow('Описание: ') + chalk.white(currentDraft.short_description || 'Нет описания'));
-        if (currentDraft.franchise) {
-          console.log(chalk.yellow('Франшиза/Сеттинг: ') + chalk.white(currentDraft.franchise));
-        }
-        console.log(chalk.yellow('Жанр: ') + chalk.white(currentDraft.genre || 'Не указан'));
-        console.log(chalk.yellow('Контент 18+: ') + chalk.white(currentDraft.is_adult_content ? 'Да' : 'Нет'));
-        
-        console.log(chalk.cyan('\n--- Персонаж ---'));
-        console.log(chalk.yellow('Имя игрока: ') + chalk.white(currentDraft.player_name || 'Игрок'));
-        console.log(chalk.yellow('Пол игрока: ') + chalk.white(currentDraft.player_gender || 'не указан'));
-        console.log(chalk.yellow('Описание игрока: ') + chalk.white(currentDraft.player_description || 'Нет описания'));
-        
-        console.log(chalk.cyan('\n--- Мир ---'));
-        console.log(chalk.yellow('Описание мира: ') + chalk.white(currentDraft.world_context || 'Нет описания'));
-        
-        if (currentDraft.themes && currentDraft.themes.length > 0) {
-            console.log(chalk.yellow('Темы: ') + chalk.white(currentDraft.themes.join(', ')));
-        }
-
-        if (currentDraft.core_stats && Object.keys(currentDraft.core_stats).length > 0) {
-            console.log(chalk.cyan('\n--- Основные параметры (статы) ---'));
-            for (const statName in currentDraft.core_stats) {
-                const stat = currentDraft.core_stats[statName];
-                console.log(chalk.yellow(`  ${statName}: `) + chalk.white(`${stat.description || ''} (Начальное: ${stat.initial_value !== undefined ? stat.initial_value : 'N/A'})`));
-            }
-        }
-        console.log(chalk.cyan('================================\n'));
-
-        // Спрашиваем, хочет ли пользователь внести изменения
-        const modifyAnswer = await askQuestion(chalk.yellow('Хотите внести изменения в этот черновик? Введите текст правки или нажмите Enter (или введите "готово"), чтобы продолжить: '));
-
-        if (!modifyAnswer || modifyAnswer.trim().toLowerCase() === 'готово' || modifyAnswer.trim() === '') {
-          log('Завершение модификации черновика.', 'info');
-          break; // Выход из цикла модификации
-        }
-
-        const modificationPrompt = modifyAnswer.trim();
-        log(`Отправка запроса на модификацию с текстом: "${modificationPrompt}"`, 'info');
-
-        // Вызываем новую функцию для модификации
-        const modifiedDraft = await modifyNovelDraft(currentDraftId, modificationPrompt);
-
-        if (!modifiedDraft) {
-          log('Не удалось модифицировать черновик. Прерывание модификации.', 'error');
-          break; // Выходим из цикла, если модификация не удалась
-        }
-
-        // Обновляем текущий черновик и его ID (хотя ID должен остаться тем же)
-        currentDraft = modifiedDraft;
-        currentDraftId = currentDraft.draft_id;
-        log('Черновик успешно обновлен.', 'success');
-        // Цикл начнется заново с отображением обновленного черновика
-      }
-
-      // Подтверждение создания новеллы (используем currentDraft, который может быть изменен)
-      const confirmation = await askQuestion(chalk.yellow('Создать новеллу на основе этого черновика? (да/нет): '));
-      if (confirmation.toLowerCase() !== 'да' && confirmation.toLowerCase() !== 'yes') {
-        log('Генерация новеллы отменена пользователем.', 'warning');
-        rl.close();
-        return;
-      }
-      
-      // Запускаем настройку новеллы из черновика
-      const setupResult = await setupNovelFromDraft(currentDraftId, currentDraft);
-      if (!setupResult || !setupResult.novel_id) {
-          log('Не удалось настроить новеллу из черновика. Завершение работы.', 'error');
+// Процесс создания новой новеллы
+async function createNewNovelFlow(rl) {
+  rl.question('Введите описание новеллы: ', async function(prompt) {
+    prompt = prompt.trim() || config.defaultPrompt;
+    
+    log(`Используем запрос: "${prompt}"`, 'info');
+    
+    // Генерируем черновик
+    const draft = await generateNovelDraft(prompt);
+    if (!draft) {
+      log('Не удалось создать черновик. Выход.', 'error');
+      rl.close();
+      return;
+    }
+    
+    // Спрашиваем, хочет ли пользователь продолжить с этим черновиком
+    rl.question('Хотите настроить новеллу из этого черновика? (да/нет): ', async function(answer) {
+      if (answer.toLowerCase() === 'да') {
+        // Запускаем настройку новеллы
+        const setupResult = await setupNovelFromDraft(draft.id, draft);
+        if (!setupResult) {
+          log('Не удалось настроить новеллу. Выход.', 'error');
           rl.close();
           return;
-      }
-
-      // Получаем ID созданной новеллы из результата сетапа
-      novelId = setupResult.novel_id; 
-      log(`Новелла успешно настроена и создана с ID: ${novelId}`, 'success');
-      
-      // Сохраняем информацию о новелле в историю (нужно бы получить полные данные, но пока так)
-      novelHistory.novel = { id: novelId, title: currentDraft.title, description: currentDraft.short_description }; // Сохраняем базовую инфу
-      saveHistory();
-      
-      // Генерация первой сцены
-      novelContent = await generateNovelContent(novelId);
-    } else { 
-      // Продолжить новеллу из списка
-      log('Загрузка списка доступных новелл...', 'info');
-      
-      const novels = await fetchNovelsList();
-      if (!novels || novels.length === 0) {
-        log('Нет доступных новелл для продолжения. Завершение работы.', 'warning');
-        rl.close();
-        return;
-      }
-
-      // Отображаем список новелл
-      console.log(chalk.cyan('\n===== ДОСТУПНЫЕ НОВЕЛЛЫ ====='));
-      novels.forEach((novel, index) => {
-        console.log(chalk.cyan(`[${index + 1}] ${novel.title || 'Без названия'} - ${novel.description || 'Нет описания'}`));
-      });
-      console.log(chalk.cyan('==============================\n'));
-
-      // Пользователь выбирает новеллу
-      let selectedIndex = -1;
-      while (selectedIndex < 0 || selectedIndex >= novels.length) {
-        const answer = await askQuestion(chalk.yellow('Введите номер новеллы для продолжения: '));
-        selectedIndex = parseInt(answer) - 1;
-        if (isNaN(selectedIndex) || selectedIndex < 0 || selectedIndex >= novels.length) {
-          console.log(chalk.red(`Пожалуйста, введите число от 1 до ${novels.length}`));
-          selectedIndex = -1;
         }
+        
+        const novelId = setupResult.novel_id;
+        log(`Новелла создана с ID: ${novelId}`, 'success');
+        
+        // Запускаем генерацию первой сцены
+        await startGameplayFlow(rl, novelId);
+      } else {
+        log('Черновик сохранен, но настройка не запущена.', 'info');
+        rl.close();
       }
+    });
+  });
+}
 
-      const selectedNovel = novels[selectedIndex];
-      novelId = selectedNovel.id;
-      log(`Выбрана новелла: ${selectedNovel.title || 'Без названия'} (ID: ${novelId})`, 'success');
-      
-      // Сохраняем информацию о новелле в историю
-      novelHistory.novel = selectedNovel;
-      saveHistory();
-      
-      // Загружаем последнее состояние новеллы
-      novelContent = await generateNovelContent(novelId);
+// Процесс просмотра черновиков
+async function viewDraftsFlow(rl) {
+  // Получаем список черновиков
+  const drafts = await fetchUserDrafts();
+
+  if (drafts.length === 0) {
+    log('У вас нет сохраненных черновиков.', 'info');
+    rl.close();
+    return;
+  }
+
+  // Отображаем стилизованный список черновиков
+  console.log(chalk.cyan('\n===== ВАШИ ЧЕРНОВИКИ ====='));
+  drafts.forEach((draft, index) => {
+    console.log(chalk.cyan(`[${index + 1}] ${chalk.white(draft.config?.title || 'Без названия')} (ID: ${draft.id})`));
+    console.log(chalk.gray(`   Создан: ${new Date(draft.created_at).toLocaleString()}`));
+    console.log(chalk.gray(`   Запрос: ${draft.user_prompt}`));
+  });
+  console.log(chalk.cyan('=========================\n'));
+
+  const choice = await askQuestion(chalk.yellow('Выберите номер черновика для просмотра деталей (или 0 для выхода): '));
+  const draftIndex = parseInt(choice) - 1;
+
+  if (isNaN(draftIndex) || draftIndex < -1 || draftIndex >= drafts.length) {
+    log('Неверный выбор. Выход.', 'error');
+    rl.close();
+    return;
+  }
+
+  if (draftIndex === -1) {
+    log('Выход.', 'info');
+    rl.close();
+    return;
+  }
+
+  const selectedDraft = drafts[draftIndex];
+  log(`Выбран черновик ID: ${selectedDraft.id}`, 'info');
+
+  // Запускаем просмотр и взаимодействие с деталями черновика
+  await viewDraftDetailsFlow(rl, selectedDraft.id);
+}
+
+// Функция для отображения деталей черновика и взаимодействия
+async function viewDraftDetailsFlow(rl, draftId) {
+  let currentDraftView = await fetchDraftDetails(draftId);
+
+  if (!currentDraftView) {
+    log('Не удалось загрузить детали черновика.', 'error');
+    rl.close();
+    return;
+  }
+
+  let exitFlow = false;
+  while (!exitFlow) {
+    // Отображаем детали черновика (NovelDraftView)
+    console.log(chalk.cyan('\n===== ДЕТАЛИ ЧЕРНОВИКА ====='));
+    console.log(chalk.white(`ID: ${currentDraftView.draft_id}`));
+    console.log(chalk.white(`Название: ${currentDraftView.title || '-'}`));
+    console.log(chalk.white(`Описание: ${currentDraftView.short_description || '-'}`));
+    console.log(chalk.white(`Франшиза: ${currentDraftView.franchise || '-'}`));
+    console.log(chalk.white(`Жанр: ${currentDraftView.genre || '-'}`));
+    console.log(chalk.white(`18+: ${currentDraftView.is_adult_content ? 'Да' : 'Нет'}`));
+    console.log(chalk.white(`Имя игрока: ${currentDraftView.player_name || '-'}`));
+    console.log(chalk.white(`Пол игрока: ${currentDraftView.player_gender || '-'}`));
+    console.log(chalk.white(`Описание игрока: ${currentDraftView.player_description || '-'}`));
+    console.log(chalk.white(`Контекст мира: ${currentDraftView.world_context || '-'}`));
+    if (currentDraftView.themes && currentDraftView.themes.length > 0) {
+      console.log(chalk.white(`Темы: ${currentDraftView.themes.join(', ')}`));
     }
-    
-    // Главный цикл игры
-    while (novelContent && !novelContent.state.game_over) {
-      // Отображаем текущую сцену
-      displayScene(novelContent);
-      
-      // Получаем выборы для текущей сцены
-      const choices = novelContent.new_content.choices;
-      
-      // Если нет выборов, значит история завершена
-      if (!choices || choices.length === 0) {
-        log('История завершена.', 'success');
-                    break;
-                }
+    if (currentDraftView.core_stats) {
+      console.log(chalk.yellow('\nОсновные статы:'));
+      for (const [name, stat] of Object.entries(currentDraftView.core_stats)) {
+        console.log(chalk.white(`  - ${name}:`));
+        console.log(chalk.gray(`    Описание: ${stat.description}`));
+        console.log(chalk.gray(`    Начальное значение: ${stat.initial_value}`));
+        console.log(chalk.gray(`    Game Over (Min): ${stat.game_over_conditions.min}`));
+        console.log(chalk.gray(`    Game Over (Max): ${stat.game_over_conditions.max}`));
+      }
+    }
+    console.log(chalk.cyan('===========================\n'));
 
-      // Отображаем выборы и получаем выбор пользователя
-      displayChoices(choices);
-      const userChoice = await makeUserChoice(choices);
-      
-      if (!userChoice) {
-        log('Не удалось сделать выбор. Завершение игры.', 'error');
-                    break;
-                }
-      
-      log(`Выбран вариант: "${userChoice.text}"`, 'success');
-      
-      // Сохраняем выбор в историю
-      novelHistory.scenes.push({
-        state: novelContent.state,
-        content: novelContent.new_content,
-        user_choice: userChoice
-      });
-      saveHistory();
-      
-      // Генерируем следующую сцену на основе выбора
-      novelContent = await generateNovelContent(novelId, userChoice);
-      
-      if (!novelContent) {
-        log('Ошибка при генерации следующей сцены. Завершение игры.', 'error');
+    // Меню действий
+    console.log(chalk.cyan('===== ДЕЙСТВИЯ С ЧЕРНОВИКОМ ====='));
+    console.log(chalk.cyan('[1] Настроить новеллу из этого черновика'));
+    console.log(chalk.cyan('[2] Изменить этот черновик'));
+    console.log(chalk.cyan('[0] Назад к списку черновиков'));
+    console.log(chalk.cyan('=================================\n'));
+
+    const actionChoice = await askQuestion(chalk.yellow('Ваш выбор (1/2/0): '));
+
+    switch (actionChoice) {
+      case '1': // Настроить новеллу
+        log('Запуск настройки новеллы...', 'info');
+        const setupResult = await setupNovelFromDraft(draftId); // Передаем только ID
+        if (!setupResult) {
+          log('Не удалось настроить новеллу. Возврат к деталям черновика.', 'error');
+        } else {
+          const novelId = setupResult.novel_id;
+          log(`Новелла создана с ID: ${novelId}`, 'success');
+          exitFlow = true; // Выходим из этого потока после успешной настройки
+          await startGameplayFlow(rl, novelId); // Запускаем игру
+        }
         break;
-      }
+      case '2': // Изменить черновик
+        const modificationPrompt = await askQuestion(chalk.yellow('Введите, что вы хотите изменить: '));
+        if (modificationPrompt.trim()) {
+          log('Запуск модификации черновика...', 'info');
+          const modifiedDraftView = await modifyNovelDraft(draftId, modificationPrompt);
+          if (modifiedDraftView) {
+            currentDraftView = modifiedDraftView; // Обновляем данные для отображения
+            log('Черновик успешно изменен.', 'success');
+          } else {
+            log('Не удалось изменить черновик.', 'error');
+          }
+        } else {
+          log('Запрос на модификацию пуст.', 'warning');
+        }
+        // Остаемся в цикле, показываем обновленные детали
+        break;
+      case '0': // Назад
+        exitFlow = true;
+        log('Возврат к списку черновиков...', 'info');
+        // Нужно перезапустить viewDraftsFlow или вернуться в главное меню
+        // Для простоты пока просто выйдем
+        rl.close();
+        break;
+      default:
+        log('Неверный выбор. Пожалуйста, выберите 1, 2 или 0.', 'error');
+        break;
     }
-    
-    // Отображаем финальную сцену, если история завершена
-    if (novelContent && novelContent.state.game_over) {
-      displayScene(novelContent);
-      
-      if (novelContent.state.ending) {
-        console.log(chalk.cyan('\n===== ЗАВЕРШЕНИЕ ИСТОРИИ ====='));
-        console.log(chalk.white(novelContent.state.ending));
-        console.log(chalk.cyan('==============================\n'));
-      }
-      
-      log('История успешно завершена!', 'success');
-      
-      // Сохраняем финальную сцену в историю
-      novelHistory.scenes.push({
-        state: novelContent.state,
-        content: novelContent.new_content
-      });
-      saveHistory();
-    }
-    
-    log('Спасибо за игру!', 'success');
-    rl.close();
-  } catch (error) {
-    log(`Произошла ошибка: ${error.message}`, 'error');
-    log(error.stack);
-    
-    // Сохраняем историю в случае ошибки
-    saveHistory();
-    
-    rl.close();
   }
 }
 
-// Запуск клиента
-main(); 
+// Процесс просмотра новелл
+async function viewNovelsFlow(rl) {
+  // Получаем список новелл пользователя
+  const novels = await fetchUserNovelsList();
+  
+  if (!novels || novels.length === 0) {
+    log('У вас нет созданных новелл.', 'info');
+    rl.close();
+    return;
+  }
+  
+  log('Ваши новеллы:', 'info');
+  novels.forEach((novel, index) => {
+    log(`${index + 1}. ${novel.title || 'Без названия'} (ID: ${novel.id})`, 'info');
+  });
+  
+  rl.question('Выберите номер новеллы для игры (или 0 для выхода): ', async function(choice) {
+    const novelIndex = parseInt(choice) - 1;
+    
+    if (isNaN(novelIndex) || novelIndex < -1 || novelIndex >= novels.length) {
+      log('Неверный выбор. Выход.', 'error');
+      rl.close();
+      return;
+    }
+    
+    if (novelIndex === -1) {
+      log('Выход.', 'info');
+      rl.close();
+      return;
+    }
+    
+    const selectedNovel = novels[novelIndex];
+    log(`Выбрана новелла: ${selectedNovel.title || 'Без названия'}`, 'info');
+    
+    // Запускаем игровой процесс
+    await startGameplayFlow(rl, selectedNovel.id);
+  });
+}
+
+// Запускаем игровой процесс для новеллы
+async function startGameplayFlow(rl, novelId) {
+  // Получаем первую сцену
+  let novelContent = await generateNovelContent(novelId);
+  if (!novelContent) {
+    log('Не удалось сгенерировать начальный контент. Выход.', 'error');
+    rl.close();
+    return;
+  }
+  
+  // Обновляем наш объект новеллы
+  let novel = {
+    id: novelId,
+    state: novelContent.state,
+    scenes: []
+  };
+  
+  // Добавляем первую сцену
+  novel.scenes.push(novelContent.new_content);
+  
+  // Процесс игры: показываем сцену и выборы
+  let continueGame = true;
+  
+  while (continueGame) {
+    // Получаем текущую сцену (последнюю в массиве)
+    const currentSceneData = novel.scenes[novel.scenes.length - 1];
+    
+    // Выводим информацию о сцене
+    const sceneTitle = currentSceneData.title || 'Без названия';
+    const sceneDescription = currentSceneData.description || 'Нет описания'; 
+    log(`\n=== ${sceneTitle} ===`, 'heading');
+    log(sceneDescription, 'text');
+    
+    // Проверяем, есть ли выборы
+    if (!currentSceneData.choices || currentSceneData.choices.length === 0) {
+      log('Нет доступных выборов. Завершение игры.', 'info');
+      continueGame = false;
+      continue;
+    }
+    
+    // Выводим доступные выборы
+    log('\nВыборы:', 'info');
+    currentSceneData.choices.forEach((choice, index) => {
+      log(`${index + 1}. ${choice.text}`, 'choice');
+    });
+    
+    // Спрашиваем пользователя о выборе
+    const answer = await new Promise(resolve => {
+      rl.question('Ваш выбор (номер): ', resolve);
+    });
+    
+    const choiceIndex = parseInt(answer) - 1;
+    if (isNaN(choiceIndex) || choiceIndex < 0 || choiceIndex >= currentSceneData.choices.length) {
+      log('Неверный выбор. Повторите.', 'error');
+      continue;
+    }
+    
+    const selectedChoice = currentSceneData.choices[choiceIndex];
+    log(`Вы выбрали: ${selectedChoice.text}`, 'info');
+    
+    // Создаем объект выбора для отправки на сервер
+    const userChoice = {
+        choice_id: selectedChoice.id,
+        text: selectedChoice.text
+    };
+    
+    // Генерируем следующую сцену на основе выбора
+    novelContent = await generateNovelContent(novelId, userChoice);
+    
+    if (!novelContent) {
+      log('Не удалось сгенерировать следующую сцену. Завершение игры.', 'error');
+      continueGame = false;
+      continue;
+    }
+    
+    // Проверяем, есть ли флаг game_over или ending_text
+    if (novelContent.new_content.game_over || novelContent.new_content.ending_text) {
+        log('\n=== ИГРА ЗАВЕРШЕНА ===', 'heading');
+        if (novelContent.new_content.ending_text) {
+            log(novelContent.new_content.ending_text, 'text');
+        } else if (novelContent.new_content.ending && novelContent.new_content.ending.title) { 
+            log(novelContent.new_content.ending.title, 'heading');
+            log(novelContent.new_content.ending.description, 'text');
+        } else {
+            log('История подошла к концу.', 'text');
+        }
+        continueGame = false;
+        // Добавляем финальное состояние/текст в сцены перед выходом
+        novel.scenes.push(novelContent.new_content); 
+        novel.state = novelContent.state;
+        continue;
+    }
+    
+    // Добавляем новую сцену
+    novel.scenes.push(novelContent.new_content);
+    novel.state = novelContent.state;
+  }
+  
+  // Сохраняем результат в файл
+  const firstSceneData = novel.scenes[0] || {};
+  const finalTitle = firstSceneData.title || 'Без названия';
+  const finalDescription = firstSceneData.description || 'Нет описания';
+
+  fs.writeFileSync(
+    config.outputFile,
+    JSON.stringify({
+      userId: novelHistory.userId,
+      novel: {
+        id: novel.id,
+        title: finalTitle,
+        description: finalDescription
+      },
+      scenes: novel.scenes
+    }, null, 2)
+  );
+  
+  log(`\nИгра завершена. Результат сохранен в ${config.outputFile}`, 'success');
+  rl.close();
+}
+
+// Запускаем интерактивный режим
+startInteraction(); 

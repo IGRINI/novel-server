@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
@@ -42,10 +43,15 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/novels/{id}/state", h.SaveNovelState).Methods("POST")
 	router.HandleFunc("/novels/{id}/state", h.DeleteNovelState).Methods("DELETE")
 
+	// Новый маршрут для получения новелл пользователя
+	router.HandleFunc("/my-novels", h.GetUserNovels).Methods("GET")
+
 	// Маршруты для генерации новелл (относительно /api)
 	router.HandleFunc("/generate/draft", h.GenerateNovelDraft).Methods("POST")
 	router.HandleFunc("/generate/setup", h.SetupNovel).Methods("POST")
 	router.HandleFunc("/generate/content", h.GenerateNovelContent).Methods("POST")
+	router.HandleFunc("/generate/drafts", h.GetUserDrafts).Methods("GET")
+	router.HandleFunc("/generate/drafts/{id}", h.GetDraftDetails).Methods("GET")
 
 	// Маршрут для проверки статуса задачи (относительно /api)
 	router.HandleFunc("/tasks/{id}", h.GetTaskStatus).Methods("GET")
@@ -520,6 +526,107 @@ func (h *Handler) ModifyNovelDraft(w http.ResponseWriter, r *http.Request) {
 		"task_id": taskID.String(),
 		"message": "модификация драфта запущена",
 	})
+}
+
+// GetUserDrafts возвращает список черновиков пользователя
+func (h *Handler) GetUserDrafts(w http.ResponseWriter, r *http.Request) {
+	// Получаем userID из контекста (установлен middleware)
+	userIDStr, ok := middleware.GetUserIDFromContext(r.Context())
+	if !ok {
+		log.Error().Msg("Не удалось извлечь userID из контекста в GetUserDrafts")
+		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: не удалось получить ID пользователя")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		log.Error().Err(err).Str("userIDStr", userIDStr).Msg("Неверный формат userID в GetUserDrafts")
+		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: неверный формат ID пользователя")
+		return
+	}
+
+	// Получаем черновики пользователя
+	drafts, err := h.novelService.GetDraftsByUserID(r.Context(), userID)
+	if err != nil {
+		log.Error().Err(err).Str("userID", userID.String()).Msg("Ошибка при получении черновиков пользователя")
+		RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("ошибка при получении черновиков: %v", err))
+		return
+	}
+
+	// Отправляем список черновиков клиенту
+	RespondWithJSON(w, http.StatusOK, drafts)
+}
+
+// GetUserNovels возвращает список новелл пользователя
+func (h *Handler) GetUserNovels(w http.ResponseWriter, r *http.Request) {
+	// Получаем userID из контекста (установлен middleware)
+	userIDStr, ok := middleware.GetUserIDFromContext(r.Context())
+	if !ok {
+		log.Error().Msg("Не удалось извлечь userID из контекста в GetUserNovels")
+		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: не удалось получить ID пользователя")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		log.Error().Err(err).Str("userIDStr", userIDStr).Msg("Неверный формат userID в GetUserNovels")
+		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: неверный формат ID пользователя")
+		return
+	}
+
+	// Получаем новеллы пользователя
+	novels, err := h.novelService.GetNovelsByAuthorID(r.Context(), userID)
+	if err != nil {
+		log.Error().Err(err).Str("userID", userID.String()).Msg("Ошибка при получении новелл пользователя")
+		RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("ошибка при получении новелл: %v", err))
+		return
+	}
+
+	// Отправляем список новелл клиенту
+	RespondWithJSON(w, http.StatusOK, novels)
+}
+
+// GetDraftDetails возвращает детальную информацию о черновике
+func (h *Handler) GetDraftDetails(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	draftID, err := uuid.Parse(vars["id"]) // Получаем ID драфта из URL
+	if err != nil {
+		RespondWithError(w, http.StatusBadRequest, "неверный формат ID драфта")
+		return
+	}
+
+	// Получаем userID из контекста (установлен middleware)
+	userIDStr, ok := middleware.GetUserIDFromContext(r.Context())
+	if !ok {
+		log.Error().Msg("Не удалось извлечь userID из контекста в GetDraftDetails")
+		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: не удалось получить ID пользователя")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		log.Error().Err(err).Str("userIDStr", userIDStr).Msg("Неверный формат userID в GetDraftDetails")
+		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: неверный формат ID пользователя")
+		return
+	}
+
+	// Получаем детали черновика из сервиса
+	draftView, err := h.novelService.GetDraftViewByID(r.Context(), draftID, userID)
+	if err != nil {
+		// Обрабатываем специфичную ошибку доступа или не найденного драфта
+		if strings.Contains(err.Error(), "доступ запрещен") {
+			RespondWithError(w, http.StatusForbidden, err.Error())
+		} else if strings.Contains(err.Error(), "не найден") {
+			RespondWithError(w, http.StatusNotFound, err.Error())
+		} else {
+			log.Error().Err(err).Str("draftID", draftID.String()).Str("userID", userID.String()).Msg("Ошибка при получении деталей черновика")
+			RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("ошибка при получении деталей черновика: %v", err))
+		}
+		return
+	}
+
+	// Отправляем детали черновика клиенту
+	RespondWithJSON(w, http.StatusOK, draftView)
 }
 
 // RespondWithError отправляет ошибку в формате JSON

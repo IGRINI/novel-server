@@ -92,8 +92,8 @@ type StoryConfig struct {
 
 // NovelSetup содержит полную настройку новеллы после обработки
 type NovelSetup struct {
-	Language            string                        `json:"language"`
-	IsAdultContent      bool                          `json:"is_adult_content"`
+	// Language            string                        `json:"language"` // Removed: Get from Config
+	// IsAdultContent      bool                          `json:"is_adult_content"` // Removed: Get from Config
 	CoreStatsDefinition map[string]CoreStatDefinition `json:"core_stats_definition"`
 	Characters          []CharacterSetup              `json:"characters"`
 }
@@ -141,14 +141,16 @@ type Choice struct {
 
 // NovelState содержит текущее состояние игры
 type NovelState struct {
-	ID             uuid.UUID              `json:"id" db:"id"`
-	UserID         uuid.UUID              `json:"user_id" db:"user_id"`
-	NovelID        uuid.UUID              `json:"novel_id" db:"novel_id"`
-	CurrentSceneID *uuid.UUID             `json:"current_scene_id,omitempty" db:"current_scene_id"`
-	Variables      map[string]interface{} `json:"variables" db:"variables"`
-	History        []uuid.UUID            `json:"history" db:"history"`
-	CreatedAt      time.Time              `json:"created_at" db:"created_at"`
-	UpdatedAt      time.Time              `json:"updated_at" db:"updated_at"`
+	ID                uuid.UUID              `json:"id" db:"id"`
+	UserID            uuid.UUID              `json:"user_id" db:"user_id"`
+	NovelID           uuid.UUID              `json:"novel_id" db:"novel_id"`
+	CurrentSceneID    *uuid.UUID             `json:"current_scene_id,omitempty" db:"current_scene_id"`
+	StorySummarySoFar string                 `json:"story_summary_so_far" db:"story_summary_so_far"`
+	FutureDirection   string                 `json:"future_direction" db:"future_direction"`
+	Variables         map[string]interface{} `json:"variables" db:"variables"`
+	History           []uuid.UUID            `json:"history" db:"history"`
+	CreatedAt         time.Time              `json:"created_at" db:"created_at"`
+	UpdatedAt         time.Time              `json:"updated_at" db:"updated_at"`
 }
 
 // NarratorPromptRequest содержит запрос к нарратору для генерации/модификации драфта
@@ -247,7 +249,35 @@ type NovelDraftView struct {
 	Themes            []string                `json:"themes"`
 }
 
-// CharacterView представляет персонажа для отображения клиенту
+// FirstSceneResponse defines the structure expected from novel_first_scene_creator.md
+type FirstSceneResponse struct {
+	StorySummarySoFar string          `json:"story_summary_so_far"`
+	FutureDirection   string          `json:"future_direction"`
+	Choices           []ChoiceDetails `json:"choices"`
+}
+
+// ChoiceDetails represents a single choice event in the response
+type ChoiceDetails struct {
+	Description string         `json:"description"`
+	Choices     []ChoiceOption `json:"choices"`
+	Shuffleable *bool          `json:"shuffleable,omitempty"` // Use pointer for optional boolean with default true
+}
+
+// ChoiceOption represents one of the two options for a choice event
+type ChoiceOption struct {
+	Text         string       `json:"text"`
+	Consequences Consequences `json:"consequences"`
+}
+
+// Consequences define the outcome of choosing an option
+type Consequences struct {
+	CoreStatsChange map[string]int         `json:"core_stats_change"`
+	GlobalFlags     []string               `json:"global_flags,omitempty"`
+	StoryVariables  map[string]interface{} `json:"story_variables,omitempty"`
+	ResponseText    string                 `json:"response_text,omitempty"`
+}
+
+// CharacterView представляет упрощенное представление персонажа для клиента
 type CharacterView struct {
 	ID          uuid.UUID `json:"id"` // ID из Character
 	Name        string    `json:"name"`

@@ -503,7 +503,50 @@ func (r *NovelRepository) GetScenesByNovelID(ctx context.Context, novelID uuid.U
 	return scenes, nil
 }
 
-// SaveNovelState сохраняет состояние новеллы для пользователя
+// GetNovelState получает состояние новеллы для конкретного пользователя и новеллы
+func (r *NovelRepository) GetNovelState(ctx context.Context, userID, novelID uuid.UUID) (model.NovelState, error) {
+	query := `
+		SELECT id, user_id, novel_id, current_scene_id, story_summary_so_far, future_direction, variables, history, created_at, updated_at
+		FROM novel_states
+		WHERE user_id = $1 AND novel_id = $2
+	`
+
+	row := r.pool.QueryRow(ctx, query, userID, novelID)
+
+	var state model.NovelState
+	var variablesJSON, historyJSON []byte
+
+	err := row.Scan(
+		&state.ID,
+		&state.UserID,
+		&state.NovelID,
+		&state.CurrentSceneID,
+		&state.StorySummarySoFar,
+		&state.FutureDirection,
+		&variablesJSON,
+		&historyJSON,
+		&state.CreatedAt,
+		&state.UpdatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return model.NovelState{}, fmt.Errorf("состояние для пользователя %s и новеллы %s не найдено", userID, novelID)
+		}
+		return model.NovelState{}, fmt.Errorf("ошибка при получении состояния новеллы: %w", err)
+	}
+
+	// Разбираем JSON
+	if err := json.Unmarshal(variablesJSON, &state.Variables); err != nil {
+		return model.NovelState{}, fmt.Errorf("ошибка разбора JSON variables: %w", err)
+	}
+	if err := json.Unmarshal(historyJSON, &state.History); err != nil {
+		return model.NovelState{}, fmt.Errorf("ошибка разбора JSON history: %w", err)
+	}
+
+	return state, nil
+}
+
+// SaveNovelState сохраняет или обновляет состояние новеллы
 func (r *NovelRepository) SaveNovelState(ctx context.Context, state model.NovelState) (model.NovelState, error) {
 	// Преобразуем поля в JSON для хранения в базе
 	variablesJSON, err := json.Marshal(state.Variables)
@@ -517,152 +560,44 @@ func (r *NovelRepository) SaveNovelState(ctx context.Context, state model.NovelS
 	}
 
 	now := time.Now()
+	state.UpdatedAt = now // Устанавливаем время обновления
 
-	// Проверяем, существует ли уже состояние для этого пользователя и новеллы
-	var existingID uuid.UUID
-	checkQuery := `
-		SELECT id FROM novel_states
-		WHERE user_id = $1 AND novel_id = $2
-	`
-	err = r.pool.QueryRow(ctx, checkQuery, state.UserID, state.NovelID).Scan(&existingID)
-
-	// Если состояние уже существует, обновляем его
-	if err == nil {
-		updateQuery := `
-			UPDATE novel_states
-			SET current_scene_id = $3, variables = $4, history = $5, updated_at = $6
-			WHERE id = $1
-			RETURNING id, user_id, novel_id, current_scene_id, variables, history, created_at, updated_at
-		`
-
-		row := r.pool.QueryRow(ctx, updateQuery,
-			existingID,
-			state.CurrentSceneID,
-			variablesJSON,
-			historyJSON,
-			now,
-		)
-
-		var updatedState model.NovelState
-		var variablesJSONStr, historyJSONStr string
-		err := row.Scan(
-			&updatedState.ID,
-			&updatedState.UserID,
-			&updatedState.NovelID,
-			&updatedState.CurrentSceneID,
-			&variablesJSONStr,
-			&historyJSONStr,
-			&updatedState.CreatedAt,
-			&updatedState.UpdatedAt,
-		)
-		if err != nil {
-			return model.NovelState{}, err
-		}
-
-		// Разбор полей из JSON
-		err = json.Unmarshal([]byte(variablesJSONStr), &updatedState.Variables)
-		if err != nil {
-			return model.NovelState{}, err
-		}
-
-		err = json.Unmarshal([]byte(historyJSONStr), &updatedState.History)
-		if err != nil {
-			return model.NovelState{}, err
-		}
-
-		return updatedState, nil
-	} else if err != pgx.ErrNoRows {
-		// Если произошла ошибка, отличная от "нет строк"
-		return model.NovelState{}, err
-	}
-
-	// Если состояние не существует, создаем новое
-	insertQuery := `
-		INSERT INTO novel_states (id, user_id, novel_id, current_scene_id, variables, history, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-		RETURNING id, user_id, novel_id, current_scene_id, variables, history, created_at, updated_at
+	// Запрос для вставки или обновления (UPSERT)
+	query := `
+		INSERT INTO novel_states (id, user_id, novel_id, current_scene_id, story_summary_so_far, future_direction, variables, history, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (user_id, novel_id) DO UPDATE SET
+			current_scene_id = EXCLUDED.current_scene_id,
+			story_summary_so_far = EXCLUDED.story_summary_so_far,
+			future_direction = EXCLUDED.future_direction,
+			variables = EXCLUDED.variables,
+			history = EXCLUDED.history,
+			updated_at = EXCLUDED.updated_at
+		RETURNING id, created_at, updated_at
 	`
 
-	// Если ID не указан, генерируем новый
+	// Если ID не установлен (новая запись), генерируем его
 	if state.ID == uuid.Nil {
 		state.ID = uuid.New()
+		state.CreatedAt = now // Устанавливаем время создания только для новых записей
 	}
 
-	row := r.pool.QueryRow(ctx, insertQuery,
+	// Выполняем запрос
+	err = r.pool.QueryRow(ctx, query,
 		state.ID,
 		state.UserID,
 		state.NovelID,
 		state.CurrentSceneID,
+		state.StorySummarySoFar,
+		state.FutureDirection,
 		variablesJSON,
 		historyJSON,
-		now,
-	)
+		state.CreatedAt,
+		state.UpdatedAt,
+	).Scan(&state.ID, &state.CreatedAt, &state.UpdatedAt)
 
-	var createdState model.NovelState
-	var variablesJSONStr, historyJSONStr string
-	err = row.Scan(
-		&createdState.ID,
-		&createdState.UserID,
-		&createdState.NovelID,
-		&createdState.CurrentSceneID,
-		&variablesJSONStr,
-		&historyJSONStr,
-		&createdState.CreatedAt,
-		&createdState.UpdatedAt,
-	)
 	if err != nil {
-		return model.NovelState{}, err
-	}
-
-	// Разбор полей из JSON
-	err = json.Unmarshal([]byte(variablesJSONStr), &createdState.Variables)
-	if err != nil {
-		return model.NovelState{}, err
-	}
-
-	err = json.Unmarshal([]byte(historyJSONStr), &createdState.History)
-	if err != nil {
-		return model.NovelState{}, err
-	}
-
-	return createdState, nil
-}
-
-// GetNovelState получает состояние новеллы для пользователя
-func (r *NovelRepository) GetNovelState(ctx context.Context, userID, novelID uuid.UUID) (model.NovelState, error) {
-	query := `
-		SELECT id, user_id, novel_id, current_scene_id, variables, history, created_at, updated_at
-		FROM novel_states
-		WHERE user_id = $1 AND novel_id = $2
-	`
-
-	row := r.pool.QueryRow(ctx, query, userID, novelID)
-
-	var state model.NovelState
-	var variablesJSONStr, historyJSONStr string
-	err := row.Scan(
-		&state.ID,
-		&state.UserID,
-		&state.NovelID,
-		&state.CurrentSceneID,
-		&variablesJSONStr,
-		&historyJSONStr,
-		&state.CreatedAt,
-		&state.UpdatedAt,
-	)
-	if err != nil {
-		return model.NovelState{}, err
-	}
-
-	// Разбор полей из JSON
-	err = json.Unmarshal([]byte(variablesJSONStr), &state.Variables)
-	if err != nil {
-		return model.NovelState{}, err
-	}
-
-	err = json.Unmarshal([]byte(historyJSONStr), &state.History)
-	if err != nil {
-		return model.NovelState{}, err
+		return model.NovelState{}, fmt.Errorf("ошибка при сохранении состояния новеллы: %w", err)
 	}
 
 	return state, nil
@@ -810,4 +745,51 @@ func (r *NovelRepository) UpdateNovelDraft(ctx context.Context, draft model.Nove
 	}
 
 	return updatedDraft, nil
+}
+
+// GetDraftsByUserID получает все черновики пользователя по его ID
+func (r *NovelRepository) GetDraftsByUserID(ctx context.Context, userID uuid.UUID) ([]model.NovelDraft, error) {
+	query := `
+		SELECT id, user_id, config, user_prompt, created_at, updated_at
+		FROM novel_drafts
+		WHERE user_id = $1
+		ORDER BY updated_at DESC
+	`
+
+	rows, err := r.pool.Query(ctx, query, userID)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка при запросе черновиков пользователя: %w", err)
+	}
+	defer rows.Close()
+
+	drafts := []model.NovelDraft{}
+	for rows.Next() {
+		var draft model.NovelDraft
+		var configJSON []byte
+
+		err := rows.Scan(
+			&draft.ID,
+			&draft.UserID,
+			&configJSON,
+			&draft.UserPrompt,
+			&draft.CreatedAt,
+			&draft.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("ошибка при сканировании строки черновика: %w", err)
+		}
+
+		// Разбираем JSON конфига
+		if err := json.Unmarshal(configJSON, &draft.Config); err != nil {
+			return nil, fmt.Errorf("ошибка разбора JSON конфига черновика: %w", err)
+		}
+
+		drafts = append(drafts, draft)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ошибка при итерации по результатам запроса: %w", err)
+	}
+
+	return drafts, nil
 }

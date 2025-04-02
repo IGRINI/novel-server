@@ -21,12 +21,15 @@ module.exports = {
     },
     novels: {
       list: '/api/novels',
+      myNovels: '/api/my-novels',
       create: '/api/novels',
       generate: {
         config: '/api/generate/draft',
         content: '/api/generate/content',
         draftModify: '/api/generate/draft/{id}/modify',
-        setup: '/api/generate/setup'
+        setup: '/api/generate/setup',
+        drafts: '/api/generate/drafts',
+        draftDetails: '/api/generate/drafts/{id}'
       }
     },
     tasks: '/api/tasks'
