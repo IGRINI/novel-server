@@ -1,83 +1,170 @@
-# Visual Novel Generation Server
+# Novel Server
 
-This Go server provides an API for generating visual novel configurations and content using the DeepSeek AI model.
+Серверное приложение для генерации и управления интерактивными новеллами с использованием нейросетей.
 
-## Features
+## Возможности
 
--   Generates initial novel configuration based on user prompts (using `promts/narrator.md`).
--   Generates novel content (scenes, characters, choices) step-by-step (using `promts/novel_creator.md`).
--   Supports state management for ongoing novel sessions using User IDs.
--   Provides API endpoints for interaction.
--   Connects to a PostgreSQL database for potential future state persistence.
+- Генерация интерактивных новелл с помощью нейросетей
+- Управление сценариями и ветвлениями сюжета
+- Сохранение состояния прогресса игрока
+- Реализация выбора персонажей и их взаимодействий
+- WebSocket для обновлений в режиме реального времени
+- REST API для интеграции с любыми клиентскими приложениями
 
-## Prerequisites
+## Технический стек
 
--   Go (version 1.21+ recommended)
--   DeepSeek API Key
--   Access to a running PostgreSQL database
+- Go 1.22+
+- PostgreSQL
+- RESTful API
+- WebSockets
+- DeepSeek API через OpenRouter
 
-## Installation
+## Установка и запуск
 
-1.  Clone the repository:
-    ```bash
-    git clone <repository_url>
-    cd novel-server
-    ```
-2.  Install dependencies:
-    ```bash
-    go mod tidy
-    ```
+### Предварительные требования
 
-## Configuration
+- Go 1.22+
+- PostgreSQL 14+
+- Аккаунт на OpenRouter для доступа к DeepSeek API
 
-Create a `config.yaml` file in the root directory (or use environment variables). See `config.example.yaml` for structure.
+### Клонирование репозитория
 
-Key configuration options:
+```bash
+git clone https://github.com/yourusername/novel-server.git
+cd novel-server
+```
 
--   `deepseek.api_key`: Your DeepSeek API key.
--   `deepseek.model_name`: The DeepSeek model to use (e.g., `deepseek-chat`).
--   `server.host`: Host for the server (default: `localhost`).
--   `server.port`: Port for the server (default: `8080`).
--   `api.base_path`: Base path for API endpoints (default: `/api`).
+### Настройка .env файла
 
-**Database Configuration (Environment Variables):**
+Скопируйте файл `.env.example` в `.env` и настройте его согласно вашим требованиям:
 
-The database connection is configured using environment variables:
+```bash
+cp .env.example .env
+# Отредактируйте переменные окружения в .env
+```
 
--   `DATABASE_HOST`: Hostname of your PostgreSQL server (default: `localhost`).
--   `DATABASE_PORT`: Port of your PostgreSQL server (default: `5432`).
--   `DATABASE_USER`: Username for the database.
--   `DATABASE_PASSWORD`: Password for the database user.
--   `DATABASE_NAME`: Name of the database to connect to.
+#### Важные настройки в .env
 
-Make sure these environment variables are set before running the server.
+```
+# Настройки API для нейросети
+AI_API_KEY=ваш-ключ-openrouter-api
+AI_MODEL=deepseek/deepseek-chat-v3-0324:free
+AI_BASE_URL=https://openrouter.ai/api/v1
+AI_TIMEOUT=60
+AI_MAX_ATTEMPTS=3
+```
 
-## Running the Server
+Для использования DeepSeek API через OpenRouter:
+1. Зарегистрируйтесь на [OpenRouter](https://openrouter.ai/)
+2. Получите API ключ
+3. Укажите его в переменной `AI_API_KEY`
 
-1.  Set the required environment variables (DeepSeek API key and Database credentials).
-2.  Run the server:
-    ```bash
-    go run cmd/server/main.go
-    ```
+### Установка зависимостей
 
-The server will start on the configured host and port (e.g., `localhost:8080`).
+```bash
+go mod download
+```
 
-## API Endpoints
+### Запуск миграций
 
--   `POST /api/generate-novel`: Generates the initial novel configuration.
-    -   Request Body: `{ "user_prompt": "Your novel idea..." }`
-    -   Response Body: `{ "config": { ...NovelConfig... } }`
--   `POST /api/generate-novel-content`: Generates novel setup or the next scene.
-    -   Request Body (Initial): `{ "user_id": "some_user", "config": { ...NovelConfig... } }`
-    -   Request Body (Continuation): `{ "user_id": "some_user", "state": { ...NovelState... }, "user_choice": { ...UserChoice... } }` (user_choice is optional)
-    -   Response Body: `{ "state": { ...NovelState... }, "new_content": { ...SetupContent or SceneContent... } }`
+```bash
+go run cmd/migrate/main.go up
+```
 
-## Client Example
+### Запуск сервера
 
-A basic Node.js client example is available in the `novel-client` directory. See `novel-client/README.md` (if it exists) or the script itself (`novel-client/index.js`) for usage instructions.
+```bash
+go run main.go
+```
 
-## TODO
+Или для запуска в режиме разработки:
 
--   Implement actual database persistence for `NovelState` using the `dbPool`.
--   Add more robust error handling.
--   Add unit and integration tests. 
+```bash
+go run cmd/server/main.go
+```
+
+## API
+
+### Авторизация
+
+- `POST /api/auth/register` - Регистрация нового пользователя
+- `POST /api/auth/login` - Вход в систему
+- `POST /api/auth/refresh` - Обновление токена
+
+### Новеллы
+
+- `GET /api/novels` - Получение списка доступных новелл
+- `POST /api/novels` - Создание новой новеллы
+- `GET /api/novels/{id}` - Получение информации о новелле
+- `PUT /api/novels/{id}` - Обновление новеллы
+- `DELETE /api/novels/{id}` - Удаление новеллы
+- `GET /api/novels/{id}/scenes` - Получение всех сцен новеллы
+
+### Генерация контента
+
+- `POST /api/generate/config` - Генерация конфигурации новеллы
+- `POST /api/generate/content` - Генерация содержимого новеллы
+- `GET /api/tasks/{id}` - Проверка статуса задачи генерации
+
+### Состояния новелл
+
+- `GET /api/novels/{novelId}/state` - Получение состояния новеллы
+- `POST /api/novels/{novelId}/state` - Сохранение состояния новеллы
+
+### WebSocket
+
+- `WebSocket /ws` - Подключение к WebSocket для получения обновлений в реальном времени
+
+## Структура проекта
+
+```
+├── cmd/                  # Исполняемые файлы приложения
+│   ├── migrate/          # Команды для миграций БД
+│   └── server/           # Основной сервер приложения
+├── internal/             # Внутренний код приложения
+│   ├── config/           # Конфигурация приложения
+│   ├── delivery/         # Слой доставки (HTTP, WebSocket)
+│   │   ├── http/         # HTTP обработчики
+│   │   └── websocket/    # WebSocket обработчики
+│   ├── middleware/       # Промежуточное ПО (аутентификация и т.д.)
+│   ├── model/            # Модели данных
+│   ├── repository/       # Репозитории для работы с базой данных
+│   └── service/          # Бизнес-логика приложения
+├── migrations/           # Файлы миграций БД
+├── pkg/                  # Общие пакеты и утилиты
+│   ├── ai/               # Клиент для работы с нейросетями
+│   ├── database/         # Утилиты для работы с БД
+│   ├── migration/        # Инструменты для миграций БД
+│   └── taskmanager/      # Менеджер асинхронных задач
+├── .env                  # Переменные окружения
+├── .env.example          # Пример файла с переменными окружения
+├── go.mod                # Go модули
+├── go.sum                # Go зависимости
+├── main.go               # Точка входа приложения
+└── README.md             # Документация по проекту
+```
+
+## Архитектурные особенности
+
+### Система управления задачами
+
+В приложении реализована система управления асинхронными задачами через пакет `pkg/taskmanager`. Она обеспечивает:
+
+- Асинхронное выполнение длительных операций (генерация контента)
+- Отслеживание статуса выполнения задач
+- Возможность отмены задач
+- Уведомления о завершении задач через WebSocket
+
+Система использует интерфейс `ITaskManager`, что упрощает тестирование и замену реализации менеджера задач.
+
+### Работа с нейронными сетями
+
+Приложение использует DeepSeek API через OpenRouter для генерации контента новелл. Это позволяет:
+
+- Генерировать более креативные и разнообразные сюжеты
+- Улучшить качество генерации диалогов персонажей
+- Создавать динамические ветвления сюжета на основе выборов игрока
+
+## Лицензия
+
+MIT 

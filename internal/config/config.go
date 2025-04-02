@@ -4,87 +4,117 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-
-	"github.com/joho/godotenv"
+	"strings"
 )
 
-// Config содержит все конфигурационные параметры приложения
+// Config содержит конфигурацию приложения
 type Config struct {
-	Server   ServerConfig
-	API      APIConfig
-	DeepSeek DeepSeekConfig
+	Environment string
+	Server      ServerConfig
+	Database    DatabaseConfig
+	AI          AIConfig
+	CORS        CORSConfig
+	JWT         JWTConfig
 }
 
-// ServerConfig содержит настройки HTTP сервера
+// ServerConfig содержит конфигурацию сервера
 type ServerConfig struct {
-	Port int
-	Host string
+	Port                int
+	BasePath            string
+	ReadTimeoutSeconds  int
+	WriteTimeoutSeconds int
+	IdleTimeoutSeconds  int
 }
 
-// APIConfig содержит общие настройки API
-type APIConfig struct {
-	BasePath string
+// DatabaseConfig содержит конфигурацию базы данных
+type DatabaseConfig struct {
+	Host               string
+	Port               int
+	User               string
+	Password           string
+	Name               string
+	SSLMode            string
+	MaxConnections     int
+	MaxConnIdleMinutes int
 }
 
-// DeepSeekConfig содержит настройки для работы с DeepSeek
-type DeepSeekConfig struct {
-	APIKey    string
-	ModelName string
+// AIConfig содержит конфигурацию для AI API
+type AIConfig struct {
+	APIKey      string
+	Model       string
+	BaseURL     string
+	Timeout     int
+	MaxAttempts int
 }
 
-// LoadConfig загружает конфигурацию из переменных окружения
-func LoadConfig() (*Config, error) {
-	// Загружаем переменные окружения из .env файла
-	err := godotenv.Load()
-	if err != nil {
-		fmt.Printf("Warning: .env file not found or could not be loaded: %v\n", err)
-		// Продолжаем работу - переменные окружения могут быть установлены другим способом
-	}
+// CORSConfig содержит конфигурацию CORS
+type CORSConfig struct {
+	AllowedOrigins []string
+}
 
-	config := &Config{
+// JWTConfig содержит конфигурацию JWT
+type JWTConfig struct {
+	Secret string
+}
+
+// Load загружает конфигурацию из переменных окружения
+func Load(env string) (Config, error) {
+	cfg := Config{
+		Environment: env,
 		Server: ServerConfig{
-			Port: getEnvAsInt("SERVER_PORT", 8080),
-			Host: getEnv("SERVER_HOST", ""),
+			Port:                getEnvInt("SERVER_PORT", 8080),
+			BasePath:            getEnvStr("SERVER_BASE_PATH", "/api"),
+			ReadTimeoutSeconds:  getEnvInt("SERVER_READ_TIMEOUT", 15),
+			WriteTimeoutSeconds: getEnvInt("SERVER_WRITE_TIMEOUT", 15),
+			IdleTimeoutSeconds:  getEnvInt("SERVER_IDLE_TIMEOUT", 60),
 		},
-		API: APIConfig{
-			BasePath: getEnv("API_BASE_PATH", "/api"),
+		Database: DatabaseConfig{
+			Host:               getEnvStr("DB_HOST", "localhost"),
+			Port:               getEnvInt("DB_PORT", 5432),
+			User:               getEnvStr("DB_USER", "postgres"),
+			Password:           getEnvStr("DB_PASSWORD", "postgres"),
+			Name:               getEnvStr("DB_NAME", "novel"),
+			SSLMode:            getEnvStr("DB_SSL_MODE", "disable"),
+			MaxConnections:     getEnvInt("DB_MAX_CONNECTIONS", 10),
+			MaxConnIdleMinutes: getEnvInt("DB_MAX_IDLE_MINUTES", 5),
 		},
-		DeepSeek: DeepSeekConfig{
-			APIKey:    getEnv("OPENROUTER_API_KEY", ""),
-			ModelName: getEnv("DEEPSEEK_MODEL", "deepseek/deepseek-chat-v3-0324:free"),
+		AI: AIConfig{
+			APIKey:      getEnvStr("AI_API_KEY", ""),
+			Model:       getEnvStr("AI_MODEL", "gpt-3.5-turbo"),
+			BaseURL:     getEnvStr("AI_BASE_URL", "https://api.openai.com/v1"),
+			Timeout:     getEnvInt("AI_TIMEOUT", 60),
+			MaxAttempts: getEnvInt("AI_MAX_ATTEMPTS", 3),
+		},
+		CORS: CORSConfig{
+			AllowedOrigins: strings.Split(getEnvStr("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080"), ","),
+		},
+		JWT: JWTConfig{
+			Secret: getEnvStr("JWT_SECRET", "your-256-bit-secret"),
 		},
 	}
 
-	// Проверка обязательных параметров
-	if config.DeepSeek.APIKey == "" {
-		return nil, fmt.Errorf("OPENROUTER_API_KEY is not set")
+	// Проверка обязательных настроек
+	if cfg.AI.APIKey == "" {
+		return cfg, fmt.Errorf("AI_API_KEY not set")
 	}
 
-	return config, nil
+	return cfg, nil
 }
 
-// getEnv возвращает значение переменной окружения или значение по умолчанию
-func getEnv(key, defaultValue string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return defaultValue
+// getEnvStr возвращает строковое значение из переменной окружения или значение по умолчанию
+func getEnvStr(key, defaultValue string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
 	}
-	return value
+	return defaultValue
 }
 
-// getEnvAsInt возвращает значение переменной окружения как int или значение по умолчанию
-func getEnvAsInt(key string, defaultValue int) int {
-	valueStr := getEnv(key, "")
-	if valueStr == "" {
-		return defaultValue
+// getEnvInt возвращает целочисленное значение из переменной окружения или значение по умолчанию
+func getEnvInt(key string, defaultValue int) int {
+	if value, exists := os.LookupEnv(key); exists {
+		if intValue, err := strconv.Atoi(value); err == nil {
+			return intValue
+		}
 	}
-
-	value, err := strconv.Atoi(valueStr)
-	if err != nil {
-		return defaultValue
-	}
-
-	return value
+	return defaultValue
 }
-
-// Здесь будет логика конфигурации

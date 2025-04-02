@@ -5,7 +5,7 @@ const chalk = require('chalk');
 const readline = require('readline');
 const config = require('./config');
 
-console.log('Скрипт запущен');
+console.log('Клиент интерактивных новелл');
 console.log('Конфигурация:', config);
 
 // Переменная для хранения JWT токена
@@ -33,60 +33,10 @@ process.on('uncaughtException', (error) => {
   process.exit(1);
 });
 
-// --- Получение UserID из аргументов командной строки или через ввод --- 
-async function getUserId() {
-    let userId = process.argv[2]; // Проверяем аргумент командной строки
-    if (userId) {
-        console.log(`Используется UserID из аргумента: ${userId}`);
-        return userId;
-    }
-
-    // Если аргумента нет, спрашиваем у пользователя
-    userId = await askQuestion(chalk.yellow('UserID не предоставлен в аргументах. Введите UserID (или нажмите Enter для генерации): '));
-
-    if (userId && userId.trim() !== '') {
-        console.log(`Используется введенный UserID: ${userId}`);
-        return userId.trim();
-    } else {
-        userId = `user_${Math.random().toString(36).substring(2, 9)}`; // Генерируем случайный ID
-        console.log(`UserID не введен. Используется сгенерированный ID: ${userId}`);
-        return userId;
-    }
-}
-// --------------------------------------------------------------------
-
-// --- Функция для получения JWT токена ---
-async function getAuthToken(userId) {
-    const url = `${config.baseUrl}/auth/token`;
-    log(`Запрос JWT токена для UserID: ${userId} по адресу ${url}...`, 'info');
-    try {
-        const response = await axios.post(url, { user_id: userId });
-        if (response.data && response.data.token) {
-            log('Токен успешно получен!', 'success');
-            return response.data.token;
-        } else {
-            log('Ошибка: Не удалось получить токен из ответа сервера.', 'error');
-            return null;
-        }
-    } catch (error) {
-        log(`Ошибка при получении токена: ${error.message || 'Неизвестная ошибка'}`, 'error');
-        if (error.response) {
-            log(`Статус: ${error.response.status}`, 'error');
-            log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
-        } else if (error.request) {
-            log('Ошибка: Запрос был сделан, но ответ не был получен.', 'error');
-        }
-        log(`Полная ошибка: ${error.stack}`, 'error');
-        return null;
-    }
-}
-// ---------------------------------------
-
 // История для сохранения всех ответов
 const novelHistory = {
-  userId: null, // Будет установлен после получения ID
-  config: null,
-  setup: null,
+  userId: null,
+  novel: null,
   scenes: []
 };
 
@@ -123,613 +73,538 @@ function saveHistory() {
   }
 }
 
-// Функция для создания черновика новеллы
-async function createNovelDraft(userPrompt) {
-  const url = `${config.baseUrl}/create-draft`;
-  if (!jwtToken) {
-    log('Ошибка: JWT токен отсутствует. Невозможно создать черновик новеллы.', 'error');
-    return null;
-  }
-
-  log(`Отправка запроса к нарратору для создания черновика новеллы...`, 'info');
-  log(`Отправка запроса на ${url} с данными:\n${JSON.stringify({ user_prompt: userPrompt }, null, 2)}`, 'info');
-
+// Функция для регистрации пользователя
+async function register(username, email, password) {
+  const url = `${config.baseUrl}${config.api.auth.register}`;
+  
+  log(`Регистрация пользователя ${username}...`, 'info');
+  
   try {
-    const response = await axios.post(url, 
-      { user_prompt: userPrompt },
-      { 
-          headers: {
-              'Authorization': `Bearer ${jwtToken}`
-          }
+    const response = await axios.post(url, {
+      username: username,
+      email: email,
+      password: password
+    }, {
+      headers: {
+        'Content-Type': 'application/json'
       }
-    );
-
-    log('Черновик новеллы успешно создан!', 'success');
+    });
     
-    // Получаем данные черновика напрямую из response.data
-    const draftData = response.data;
-    
-    if (!draftData) {
-        log('Ошибка: получен пустой ответ от нарратора', 'error');
-        throw new Error('Empty response from narrator');
+    if (response.data && response.data.success) {
+      log('Пользователь успешно зарегистрирован!', 'success');
+      return response.data;
+    } else {
+      log('Ошибка: Неверный формат ответа от сервера', 'error');
+      return null;
     }
-    
-    if (config.verbose) {
-      log(`DraftID: ${draftData.draft_id}`);
-      log(`Title: ${draftData.config.title}`);
-      log(`Franchise: ${draftData.config.franchise}`);
-      log(`Genre: ${draftData.config.genre}`);
-    }
-    
-    return draftData;
   } catch (error) {
-    log(`Ошибка при создании черновика: ${error.message || 'Неизвестная ошибка'}`, 'error');
-    if (error.response) {
-      log(`Статус: ${error.response.status}`, 'error');
-      log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
-    } else if (error.request) {
-      log('Ошибка: Запрос был сделан, но ответ не был получен (возможно, сервер недоступен).', 'error');
+    if (error.response && error.response.data && error.response.data.error) {
+      log(`Ошибка при регистрации: ${error.response.data.error}`, 'error');
+    } else {
+      log(`Ошибка при регистрации: ${error.message}`, 'error');
     }
-    log(`Полная ошибка: ${error.stack}`, 'error');
-    throw error;
+    return null;
   }
 }
 
-// Функция для уточнения черновика новеллы
-async function refineNovelDraft(draftID, additionalPrompt) {
-  const url = `${config.baseUrl}/refine-draft`;
-  if (!jwtToken) {
-    log('Ошибка: JWT токен отсутствует. Невозможно уточнить черновик новеллы.', 'error');
-    return null;
-  }
-
-  log(`Отправка запроса к нарратору для уточнения черновика новеллы...`, 'info');
-  log(`Отправка запроса на ${url} с данными:\n${JSON.stringify({ draft_id: draftID, additional_prompt: additionalPrompt }, null, 2)}`, 'info');
-
+// Функция для авторизации пользователя
+async function login(username, password) {
+  const url = `${config.baseUrl}${config.api.auth.login}`;
+  
+  log(`Вход пользователя ${username}...`, 'info');
+  
   try {
-    const response = await axios.post(url, 
-      { 
-        draft_id: draftID, 
-        additional_prompt: additionalPrompt 
-      },
-      { 
-          headers: {
-              'Authorization': `Bearer ${jwtToken}`
-          }
+    const response = await axios.post(url, {
+      username: username,
+      password: password
+    }, {
+      headers: {
+        'Content-Type': 'application/json'
       }
-    );
-
-    log('Черновик новеллы успешно уточнен!', 'success');
+    });
     
-    // Получаем обновленные данные черновика напрямую из response.data
-    const draftData = response.data;
-    
-    if (!draftData) {
-        log('Ошибка: получен пустой ответ от нарратора', 'error');
-        throw new Error('Empty response from narrator');
+    if (response.data && response.data.token) {
+      log('Авторизация успешна!', 'success');
+      return response.data.token;
+    } else {
+      log('Ошибка: Не удалось получить токен из ответа сервера', 'error');
+      return null;
     }
-    
-    if (config.verbose) {
-      log(`DraftID: ${draftData.draft_id}`);
-      log(`Updated Title: ${draftData.config.title}`);
-      log(`Updated Genre: ${draftData.config.genre}`);
-    }
-    
-    return draftData;
   } catch (error) {
-    log(`Ошибка при уточнении черновика: ${error.message || 'Неизвестная ошибка'}`, 'error');
-    if (error.response) {
-      log(`Статус: ${error.response.status}`, 'error');
-      log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
-    } else if (error.request) {
-      log('Ошибка: Запрос был сделан, но ответ не был получен (возможно, сервер недоступен).', 'error');
+    if (error.response && error.response.data && error.response.data.error) {
+      log(`Ошибка при авторизации: ${error.response.data.error}`, 'error');
+    } else {
+      log(`Ошибка при авторизации: ${error.message}`, 'error');
     }
-    log(`Полная ошибка: ${error.stack}`, 'error');
-    throw error;
+    return null;
   }
 }
 
-// Функция для подтверждения черновика новеллы
-async function confirmNovelDraft(draftID) {
-  const url = `${config.baseUrl}/confirm-draft`;
+// Функция для получения списка новелл
+async function fetchNovelsList() {
+  const url = `${config.baseUrl}${config.api.novels.list}`;
+  
+  log(`Запрос списка новелл...`, 'info');
+  
   if (!jwtToken) {
-    log('Ошибка: JWT токен отсутствует. Невозможно подтвердить черновик новеллы.', 'error');
-    return null;
+    log('Ошибка: JWT токен отсутствует. Невозможно запросить список новелл.', 'error');
+    return [];
   }
-
-  log(`Подтверждение черновика новеллы...`, 'info');
-  log(`Отправка запроса к нарратору для подтверждения черновика новеллы...`, 'info');
-  log(`Отправка запроса на ${url} с данными:\n${JSON.stringify({ draft_id: draftID }, null, 2)}`, 'info');
-
+  
   try {
-    const response = await axios.post(url, 
-      { draft_id: draftID },
-      { 
-          headers: {
-              'Authorization': `Bearer ${jwtToken}`
-          }
+    const response = await axios.get(url, {
+      headers: {
+        'Authorization': `Bearer ${jwtToken}`
       }
-    );
-
-    log('Черновик новеллы успешно подтвержден!', 'success');
+    });
     
-    // Получаем данные новеллы напрямую из response.data
-    const novelData = response.data;
-    
-    if (!novelData) {
-        log('Ошибка: получен пустой ответ от нарратора', 'error');
-        throw new Error('Empty response from narrator');
+    if (response.data) {
+      log('Список новелл успешно получен!', 'success');
+      return response.data;
+    } else {
+      log('Ошибка: Не удалось получить список новелл из ответа сервера.', 'error');
+      return [];
     }
-    
-    if (config.verbose) {
-      log(`NovelID: ${novelData.novel_id}`);
-      log(`Message: ${novelData.message}`);
-    }
-    
-    log(`Новелла успешно создана с ID: ${novelData.novel_id}`, 'success');
-    return novelData.novel_id;
   } catch (error) {
-    log(`Ошибка при подтверждении черновика: ${error.message || 'Неизвестная ошибка'}`, 'error');
+    log(`Ошибка при получении списка новелл: ${error.message}`, 'error');
     if (error.response) {
       log(`Статус: ${error.response.status}`, 'error');
       log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
-    } else if (error.request) {
-      log('Ошибка: Запрос был сделан, но ответ не был получен (возможно, сервер недоступен).', 'error');
     }
-    log(`Полная ошибка: ${error.stack}`, 'error');
-    throw error;
+    return [];
   }
 }
 
-// Обновленная функция для начала генерации новеллы с двухэтапным процессом
-async function generateNovel(userPrompt) {
-  log(`Начинаем двухэтапный процесс создания новеллы...`, 'info');
-
+// Функция для создания новой новеллы
+async function createNovel(draftData) {
+  const url = `${config.baseUrl}${config.api.novels.create}`;
+  
+  log(`Создание новой новеллы...`, 'info');
+  
+  if (!jwtToken) {
+    log('Ошибка: JWT токен отсутствует. Невозможно создать новеллу.', 'error');
+    return null;
+  }
+  
   try {
-    // Шаг 1: Создаем черновик новеллы
-    const draftData = await createNovelDraft(userPrompt);
-    if (!draftData || !draftData.draft_id) {
-      log('Ошибка: не получены данные черновика или его ID', 'error');
+    const response = await axios.post(url, draftData, {
+          headers: {
+              'Authorization': `Bearer ${jwtToken}`
+      }
+    });
+    
+    log('Новелла успешно создана!', 'success');
+    return response.data;
+  } catch (error) {
+    log(`Ошибка при создании новеллы: ${error.message}`, 'error');
+    if (error.response) {
+      log(`Статус: ${error.response.status}`, 'error');
+      log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
+    }
+    return null;
+  }
+}
+
+// Функция для генерации черновика новеллы
+async function generateNovelDraft(prompt) {
+  const url = `${config.baseUrl}${config.api.novels.generate.config}`;
+  
+  log(`Генерация черновика новеллы...`, 'info');
+  
+  if (!jwtToken) {
+    log('Ошибка: JWT токен отсутствует. Невозможно сгенерировать черновик.', 'error');
+    return null;
+  }
+  
+  try {
+    const response = await axios.post(url, {
+      user_prompt: prompt
+    }, {
+      headers: {
+        'Authorization': `Bearer ${jwtToken}`
+      }
+    });
+    
+    log('Отправлен запрос на генерацию черновика. Ожидание завершения...', 'info');
+    
+    // Получаем ID задачи
+    const taskId = response.data.task_id;
+    
+    // Ожидаем завершения задачи
+    const taskResult = await waitForTaskCompletion(taskId);
+    
+    if (!taskResult) {
+      log('Ошибка при ожидании завершения задачи генерации черновика.', 'error');
       return null;
     }
     
-    // Показываем информацию о черновике
-    console.log(chalk.cyan('\n===== ПРЕДПРОСМОТР НОВЕЛЛЫ ====='));
-    console.log(chalk.yellow(`Название: ${draftData.config.title}`));
-    console.log(chalk.yellow(`Описание: ${draftData.config.short_description}`));
-    console.log(chalk.yellow(`Жанр: ${draftData.config.genre}`));
-    console.log(chalk.yellow(`Франшиза: ${draftData.config.franchise}`));
-    console.log(chalk.yellow(`Персонаж игрока: ${draftData.config.player_name} (${draftData.config.player_gender})`));
-    if (draftData.config.player_description) {
-      console.log(chalk.yellow(`Описание персонажа: ${draftData.config.player_description}`));
-    }
-    console.log(chalk.yellow(`Краткое содержание: ${draftData.config.story_summary}`));
-    console.log(chalk.cyan('================================\n'));
-    
-    // Шаг 2: Предлагаем пользователю подтвердить или уточнить черновик
-    let draftConfirmed = false;
-    let currentDraftData = draftData;
-    
-    while (!draftConfirmed) {
-      console.log(chalk.cyan('\n===== ДЕЙСТВИЯ С ЧЕРНОВИКОМ ====='));
-      console.log(chalk.cyan('[1] Подтвердить и начать новеллу'));
-      console.log(chalk.cyan('[2] Уточнить/изменить детали'));
-      console.log(chalk.cyan('================================\n'));
-      
-      const action = await askQuestion(chalk.yellow('Выберите действие (1 или 2): '));
-      
-      if (action === '1') {
-        // Подтверждаем черновик
-        log('Подтверждение черновика новеллы...', 'info');
-        const novelID = await confirmNovelDraft(currentDraftData.draft_id);
-        if (!novelID) {
-          log('Ошибка: не получен ID новеллы после подтверждения черновика', 'error');
-          return null;
-        }
-        
-        // Создаем структуру ответа, совместимую со старой версией функции
-        novelHistory.config = {
-          novel_id: novelID,
-          config: currentDraftData.config
-        };
-        
-        draftConfirmed = true;
-        log(`Новелла успешно создана с ID: ${novelID}`, 'success');
-        return {
-          novel_id: novelID,
-          config: currentDraftData.config
-        };
-        
-      } else if (action === '2') {
-        // Запрашиваем дополнительный промпт для уточнения
-        const additionalPrompt = await askQuestion(chalk.yellow('Введите дополнительные детали или изменения: '));
-        if (!additionalPrompt || additionalPrompt.trim() === '') {
-          log('Не введены дополнительные детали. Пожалуйста, выберите действие снова.', 'warning');
-          continue;
-        }
-        
-        // Уточняем черновик
-        log('Отправка уточнений для черновика...', 'info');
-        const refinedDraftData = await refineNovelDraft(currentDraftData.draft_id, additionalPrompt);
-        if (!refinedDraftData) {
-          log('Ошибка: не получены обновленные данные черновика', 'error');
-          return null;
-        }
-        
-        // Обновляем текущий черновик
-        currentDraftData = refinedDraftData;
-        
-        // Показываем обновленную информацию
-        console.log(chalk.cyan('\n===== ОБНОВЛЕННЫЙ ПРЕДПРОСМОТР ====='));
-        console.log(chalk.yellow(`Название: ${currentDraftData.config.title}`));
-        console.log(chalk.yellow(`Описание: ${currentDraftData.config.short_description}`));
-        console.log(chalk.yellow(`Жанр: ${currentDraftData.config.genre}`));
-        console.log(chalk.yellow(`Франшиза: ${currentDraftData.config.franchise}`));
-        console.log(chalk.yellow(`Персонаж игрока: ${currentDraftData.config.player_name} (${currentDraftData.config.player_gender})`));
-        if (currentDraftData.config.player_description) {
-          console.log(chalk.yellow(`Описание персонажа: ${currentDraftData.config.player_description}`));
-        }
-        console.log(chalk.yellow(`Краткое содержание: ${currentDraftData.config.story_summary}`));
-        console.log(chalk.cyan('====================================\n'));
-        
-      } else {
-        console.log(chalk.red('Пожалуйста, введите 1 или 2.'));
-      }
-    }
-    
+    log('Черновик новеллы успешно сгенерирован!', 'success');
+    return taskResult.result;
   } catch (error) {
-    log(`Ошибка в процессе создания новеллы: ${error.message || 'Неизвестная ошибка'}`, 'error');
-    log(error.stack, 'error');
+    log(`Ошибка при генерации черновика: ${error.message}`, 'error');
+    if (error.response) {
+      log(`Статус: ${error.response.status}`, 'error');
+      log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
+    }
     return null;
   }
 }
 
-// Функция для отображения ОДНОГО события сцены
-function displaySingleEvent(event) {
-  if (!event || !event.event_type) return;
+// Функция для модификации черновика новеллы
+async function modifyNovelDraft(draftId, modificationPrompt) {
+  // Формируем URL с ID драфта
+  const url = `${config.baseUrl}${config.api.novels.generate.draftModify.replace('{id}', draftId)}`;
+  
+  log(`Модификация черновика ${draftId}...`, 'info');
+  
+  if (!jwtToken) {
+    log('Ошибка: JWT токен отсутствует. Невозможно модифицировать черновик.', 'error');
+    return null;
+  }
 
-  // Добавляем небольшую паузу перед событием для лучшего чтения
-  console.log(''); 
-
-  switch (event.event_type) {
-    case 'dialogue':
-      console.log(chalk.yellow(`${event.speaker}:`), chalk.white(event.text));
-      break;
-    case 'narration':
-      console.log(chalk.italic(chalk.gray(event.text)));
-      break;
-    case 'monologue':
-      // Отображаем монолог без явного указания спикера, если он не задан
-      const speakerText = event.speaker ? chalk.yellow(`${event.speaker}:`) : chalk.yellow('Мысли:');
-      console.log(speakerText, chalk.italic(chalk.white(event.text)));
-      break;
-    case 'description':
-      console.log(chalk.magenta(event.text));
-      break;
-    case 'system':
-      console.log(chalk.green(event.text));
-      break;
-    case 'emotion_change':
-      // Обновленный формат без 'from'
-      console.log(chalk.gray(`[emotion_change: ${event.character} → ${event.to || '??'}]`));
-      break;
-    case 'move':
-      console.log(chalk.gray(`[move: ${event.character} ${event.from || '??'} → ${event.to || '??'}]`));
-      break;
-    // inline_choice и choice обрабатываются отдельно
-    // inline_response обрабатывается после выбора inline_choice
-    case 'inline_choice': 
-    case 'inline_response':
-    case 'choice':
-      // Эти типы обрабатываются отдельно, здесь их просто пропускаем
-      break;
-    default:
-      log(`Неизвестный тип события: ${event.event_type}`, 'warning');
-      console.log(event); // Выводим само событие для отладки
+  if (!draftId) {
+      log('Ошибка: Отсутствует ID черновика. Невозможно модифицировать.', 'error');
+      return null;
+  }
+  
+  try {
+    const response = await axios.post(url, {
+      modification_prompt: modificationPrompt
+    }, {
+      headers: {
+        'Authorization': `Bearer ${jwtToken}`,
+        'Content-Type': 'application/json' // Явно указываем тип контента
+      }
+    });
+    
+    log('Отправлен запрос на модификацию черновика. Ожидание завершения...', 'info');
+    
+    // Получаем ID задачи
+    const taskId = response.data.task_id;
+    if (!taskId) {
+      log('Ошибка: Не удалось получить ID задачи из ответа сервера.', 'error');
+      return null;
+    }
+    
+    // Ожидаем завершения задачи
+    const taskResult = await waitForTaskCompletion(taskId);
+    
+    if (!taskResult) {
+      log('Ошибка при ожидании завершения задачи модификации черновика.', 'error');
+      return null;
+    }
+    
+    log('Черновик новеллы успешно модифицирован!', 'success');
+    return taskResult.result; // Возвращаем обновленный draftView
+  } catch (error) {
+    log(`Ошибка при модификации черновика: ${error.message}`, 'error');
+    if (error.response) {
+      log(`Статус: ${error.response.status}`, 'error');
+      log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
+    }
+    return null;
   }
 }
 
-// Функция для запроса генерации контента новеллы (setup или сцена)
-async function generateNovelContent(novelID, userChoice, restartFromSceneIndex) {
-    const url = `${config.baseUrl}/generate-novel-content`;
-    if (!jwtToken) {
-        log('Ошибка: JWT токен отсутствует. Невозможно выполнить запрос.', 'error');
-        return null;
-    }
-
-    // Создаем упрощенный запрос для API
-    const payload = {
-        novel_id: novelID
-    };
-    
-    // Если передан выбор пользователя, добавляем его
-    if (userChoice) {
-        payload.user_choice = {
-            scene_index: userChoice.scene_index,
-            choice_text: userChoice.choice_text
-        };
+// Функция для ожидания завершения асинхронной задачи
+async function waitForTaskCompletion(taskId, maxAttempts = 30, interval = 2000) {
+  const url = `${config.baseUrl}${config.api.tasks}/${taskId}`;
+  
+  log(`Ожидание завершения задачи ${taskId}...`, 'info');
+  
+  if (!jwtToken) {
+    log('Ошибка: JWT токен отсутствует. Невозможно проверить задачу.', 'error');
+      return null;
     }
     
-    // Если нужно перезапустить с определенной сцены
-    if (restartFromSceneIndex !== undefined && restartFromSceneIndex !== null) {
-        payload.restart_from_scene_index = restartFromSceneIndex;
-    }
-
-    let requestType = 'для новеллы';
-    if (userChoice) requestType += ' с выбором пользователя';
-    if (restartFromSceneIndex !== undefined) requestType += ` с перезапуском от сцены ${restartFromSceneIndex}`;
-
-    log(`Отправка запроса для генерации ${requestType}...`, 'info');
-    log(`Отправка запроса на ${url} с данными:\n${JSON.stringify(payload, null, 2)}`, 'info');
-
+  let attempts = 0;
+  
+  while (attempts < maxAttempts) {
     try {
-        const response = await axios.post(
-            url,
-            payload,
-            { // Добавляем заголовок Authorization
-                headers: {
-                    'Authorization': `Bearer ${jwtToken}`
-                }
-            }
-        );
-        
-        log(`Получен ответ от API со статусом: ${response.status}`, 'info');
-        
-        const responseData = response.data;
-        
-        // Проверяем, получен ли ответ на этапе setup
-        if (responseData.state && responseData.state.current_stage === 'setup') {
-            log('Получена начальная настройка новеллы (setup). Первая сцена будет загружена автоматически при следующем запросе.', 'info');
-            
-            // Сохраняем данные setup в историю
-            novelHistory.setup = {
-                backgrounds: responseData.state.backgrounds,
-                characters: responseData.state.characters
-            };
-            
-            saveHistory();
+      const response = await axios.get(url, {
+        headers: {
+          'Authorization': `Bearer ${jwtToken}`
+        }
+      });
+      
+      const taskStatus = response.data;
+      
+      if (taskStatus.status === 'completed') {
+        log(`Задача ${taskId} успешно завершена!`, 'success');
+        return taskStatus;
+      } else if (taskStatus.status === 'failed') {
+        log(`Задача ${taskId} завершилась с ошибкой: ${taskStatus.message}`, 'error');
+          return null;
         }
         
-        // Проверяем, завершена ли история
-        if (responseData.state && responseData.state.current_stage === 'complete') {
-            log('Новелла полностью завершена!', 'success');
-            if (responseData.state.story_summary) {
-                log(`Итоговое резюме: ${responseData.state.story_summary}`, 'info');
-                console.log(chalk.cyan('\n======= ИТОГ ИСТОРИИ =======\n'));
-                console.log(chalk.white(responseData.state.story_summary));
-                console.log(chalk.cyan('\n============================\n'));
-            }
-        }
-        
-        // Отображаем события сцены, если они есть
-        if (responseData.new_content && responseData.new_content.events && responseData.new_content.events.length > 0) {
-            responseData.new_content.events.forEach((event) => {
-                displaySingleEvent(event);
-            });
-        }
-        
-        // Сохраняем текущую сцену в историю, если это не setup
-        if (responseData.state && responseData.state.current_stage !== 'setup' && responseData.new_content) {
-            const sceneData = {
-                scene_index: responseData.state.current_scene_index,
-                background_id: responseData.new_content.background_id,
-                events: responseData.new_content.events || [],
-                characters: responseData.new_content.characters || []
-            };
-            
-            // Добавляем сцену в историю, если её там ещё нет
-            const existingSceneIndex = novelHistory.scenes.findIndex(
-                scene => scene.scene_index === responseData.state.current_scene_index
-            );
-            
-            if (existingSceneIndex >= 0) {
-                novelHistory.scenes[existingSceneIndex] = sceneData;
-            } else {
-                novelHistory.scenes.push(sceneData);
-            }
-            
-            saveHistory();
-        }
-        
-        return responseData;
+      // Увеличиваем счетчик попыток
+      attempts++;
+      
+      // Выводим информацию о прогрессе
+      if (taskStatus.progress) {
+        log(`Прогресс задачи ${taskId}: ${taskStatus.progress}%`, 'info');
+      }
+      
+      // Ждем перед следующей попыткой
+      await new Promise(resolve => setTimeout(resolve, interval));
     } catch (error) {
-        log(`Ошибка при генерации контента новеллы: ${error.message}`, 'error');
-        if (error.response) {
-            log(`Статус: ${error.response.status}`, 'error');
-            log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
-        } else if (error.request) {
-            log('Ошибка: Запрос был сделан, но ответ не был получен (возможно, сервер недоступен).', 'error');
-            log(`Код ошибки Axios: ${error.code || 'N/A'}`, 'error');
+      log(`Ошибка при проверке статуса задачи: ${error.message}`, 'error');
+      if (error.response) {
+        log(`Статус: ${error.response.status}`, 'error');
+        log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
+      }
+      
+      // Увеличиваем счетчик попыток
+      attempts++;
+      
+      // Ждем перед следующей попыткой
+      await new Promise(resolve => setTimeout(resolve, interval));
+    }
+  }
+  
+  log(`Превышено максимальное количество попыток (${maxAttempts}) при ожидании завершения задачи.`, 'error');
+    return null;
+}
+
+// Функция для генерации содержимого новеллы
+async function generateNovelContent(novelId, userChoice = null) {
+  const url = `${config.baseUrl}${config.api.novels.generate.content}`;
+  
+  log(`Генерация содержимого новеллы ${novelId}...`, 'info');
+  
+  if (!jwtToken) {
+    log('Ошибка: JWT токен отсутствует. Невозможно сгенерировать содержимое.', 'error');
+    return null;
+  }
+
+  const requestData = {
+    novel_id: novelId
+  };
+    
+  if (userChoice) {
+    requestData.user_choice = userChoice;
+  }
+  
+  try {
+    const response = await axios.post(url, requestData, {
+      headers: {
+        'Authorization': `Bearer ${jwtToken}`
+      }
+    });
+    
+    log('Отправлен запрос на генерацию содержимого. Ожидание завершения...', 'info');
+    
+    // Получаем ID задачи
+    const taskId = response.data.task_id;
+    
+    // Ожидаем завершения задачи
+    const taskResult = await waitForTaskCompletion(taskId);
+    
+    if (!taskResult) {
+      log('Ошибка при ожидании завершения задачи генерации содержимого.', 'error');
+      return null;
+    }
+    
+    log('Содержимое новеллы успешно сгенерировано!', 'success');
+    return taskResult.result;
+  } catch (error) {
+    log(`Ошибка при генерации содержимого: ${error.message}`, 'error');
+    if (error.response) {
+      log(`Статус: ${error.response.status}`, 'error');
+      log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
+    }
+    return null;
+  }
+}
+
+// Функция для отображения сцены
+function displayScene(scene) {
+  if (!scene || !scene.new_content) {
+    log('Ошибка: нет данных для отображения сцены.', 'error');
+    return;
+  }
+  
+  const content = scene.new_content;
+  
+  // Отображаем заголовок сцены
+  console.log(chalk.cyan('\n===== СЦЕНА =====\n'));
+  
+  // Отображаем текст сцены
+  if (content.scene && content.scene.title) {
+    console.log(chalk.yellow(`Название: ${content.scene.title}`));
+  }
+  
+  if (content.scene && content.scene.text) {
+    console.log(chalk.white(content.scene.text));
+  }
+  
+  // Отображаем диалоги
+  if (content.dialogues && content.dialogues.length > 0) {
+    console.log('');
+    content.dialogues.forEach(dialogue => {
+      if (dialogue.character) {
+        console.log(chalk.yellow(`${dialogue.character}:`), chalk.white(dialogue.text));
         } else {
-            log(`Ошибка настройки запроса Axios: ${error.message}`, 'error');
-            log(`Код ошибки Axios: ${error.code || 'N/A'}`, 'error');
-        }
-        log(`Полная ошибка: ${error.stack}`, 'error');
-        throw error;
-    }
+        console.log(chalk.italic(chalk.gray(dialogue.text)));
+      }
+    });
+  }
+  
+  console.log(chalk.cyan('\n================\n'));
 }
 
-// Функция поиска последнего события выбора в сцене
-function findLastChoiceEvent(events) {
-  if (!Array.isArray(events) || events.length === 0) {
+// Функция для отображения выборов
+function displayChoices(choices) {
+  if (!choices || choices.length === 0) {
+    log('Нет доступных выборов.', 'warning');
     return null;
   }
   
-  for (let i = events.length - 1; i >= 0; i--) {
-    // Ищем только обычные выборы, не inline_response
-    if (events[i].event_type === 'choice' && events[i].choices && events[i].choices.length > 0) {
-      return events[i];
-    }
-  }
-  return null;
-}
-
-// Функция выбора варианта пользователем
-async function makeUserChoice(choiceEvent) {
-  if (!choiceEvent || !choiceEvent.choices || choiceEvent.choices.length === 0) {
-    log('Не найдены варианты выбора!', 'error');
-    return null;
-  }
+  console.log(chalk.cyan('\n===== ВЫБЕРИТЕ ДЕЙСТВИЕ ====='));
   
-  console.log(chalk.cyan('\n===== ВЫБЕРИТЕ ВАРИАНТ ДЕЙСТВИЯ ====='));
-  
-  choiceEvent.choices.forEach((choice, index) => {
+  choices.forEach((choice, index) => {
     console.log(chalk.cyan(`[${index + 1}] ${choice.text}`));
   });
   
-  console.log(chalk.cyan('=====================================\n'));
+  console.log(chalk.cyan('============================\n'));
+  
+  return choices;
+}
+
+// Функция для выбора пользователем
+async function makeUserChoice(choices) {
+  if (!choices || choices.length === 0) {
+    log('Нет доступных выборов!', 'error');
+    return null;
+  }
   
   let selectedIndex = -1;
   
-  while (selectedIndex < 0 || selectedIndex >= choiceEvent.choices.length) {
+  while (selectedIndex < 0 || selectedIndex >= choices.length) {
     const answer = await askQuestion(chalk.yellow('Введите номер выбранного варианта: '));
     selectedIndex = parseInt(answer) - 1;
     
-    if (isNaN(selectedIndex) || selectedIndex < 0 || selectedIndex >= choiceEvent.choices.length) {
-      console.log(chalk.red(`Пожалуйста, введите число от 1 до ${choiceEvent.choices.length}`));
+    if (isNaN(selectedIndex) || selectedIndex < 0 || selectedIndex >= choices.length) {
+      console.log(chalk.red(`Пожалуйста, введите число от 1 до ${choices.length}`));
       selectedIndex = -1;
     }
   }
   
-  return choiceEvent.choices[selectedIndex];
+  return {
+    choice_id: choices[selectedIndex].id,
+    text: choices[selectedIndex].text
+  };
 }
 
-// Функция для отправки inline_response на сервер
-async function sendInlineResponse(novelID, sceneIndex, choiceID, choiceText, responseIdx) {
-    const url = `${config.baseUrl}/inline-response`;
-    if (!jwtToken) {
-        log('Ошибка: JWT токен отсутствует. Невозможно выполнить запрос.', 'error');
-        return null;
+// Функция для запуска настройки новеллы из черновика
+async function setupNovelFromDraft(draftId, draftData) {
+  const url = `${config.baseUrl}${config.api.novels.generate.setup}`; // Используем эндпоинт сетапа
+
+  log(`Запуск настройки новеллы из черновика ${draftId}...`, 'info');
+
+  if (!jwtToken) {
+    log('Ошибка: JWT токен отсутствует. Невозможно запустить настройку.', 'error');
+    return null;
+  }
+
+  if (!draftId || !draftData) {
+      log('Ошибка: Отсутствует ID черновика или данные черновика.', 'error');
+      return null;
+  }
+
+  // Формируем тело запроса для /api/generate/setup
+  const requestBody = {
+      draft_id: draftId,
+  };
+
+  try {
+    const response = await axios.post(url, requestBody, {
+      headers: {
+        'Authorization': `Bearer ${jwtToken}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    log('Отправлен запрос на настройку новеллы. Ожидание завершения...', 'info');
+
+    // Получаем ID задачи
+    const taskId = response.data.task_id;
+    if (!taskId) {
+      log('Ошибка: Не удалось получить ID задачи из ответа сервера.', 'error');
+      return null;
     }
 
-    // Создаем запрос для отправки inline_response
-    const payload = {
-        novel_id: novelID,
-        scene_index: sceneIndex,
-        choice_id: choiceID,
-        choice_text: choiceText,
-        response_idx: responseIdx
-    };
+    // Ожидаем завершения задачи
+    const taskResult = await waitForTaskCompletion(taskId);
 
-    log(`Отправка inline_response для выбора "${choiceText}" (ID: ${choiceID})...`, 'info');
-    log(`Отправка запроса на ${url} с данными:\n${JSON.stringify(payload, null, 2)}`, 'info');
-
-    try {
-        const response = await axios.post(
-            url,
-            payload,
-            {
-                headers: {
-                    'Authorization': `Bearer ${jwtToken}`
-                }
-            }
-        );
-        
-        log(`Получен ответ от API со статусом: ${response.status}`, 'info');
-        
-        const responseData = response.data;
-        
-        if (!responseData.success) {
-            log('Ошибка при обработке inline_response на сервере.', 'error');
-            return null;
-        }
-        
-        // Отображаем информацию об измененном состоянии
-        if (responseData.updated_state) {
-            const updatedState = responseData.updated_state;
-            
-            // Показываем изменения в отношениях
-            if (updatedState.relationship && Object.keys(updatedState.relationship).length > 0) {
-                console.log(chalk.cyan('\n=== ИЗМЕНЕНИЯ В ОТНОШЕНИЯХ ==='));
-                for (const [character, value] of Object.entries(updatedState.relationship)) {
-                    const color = value > 0 ? chalk.green : (value < 0 ? chalk.red : chalk.white);
-                    console.log(`${character}: ${color(value)}`);
-                }
-                console.log(chalk.cyan('=============================\n'));
-            }
-            
-            // Показываем добавленные флаги
-            if (updatedState.global_flags && updatedState.global_flags.length > 0) {
-                console.log(chalk.cyan('\n=== ДОБАВЛЕННЫЕ ФЛАГИ ==='));
-                for (const flag of updatedState.global_flags) {
-                    console.log(chalk.yellow(`• ${flag}`));
-                }
-                console.log(chalk.cyan('========================\n'));
-            }
-            
-            // Обновляем локальную историю, если нужно
-            // ...
-        }
-        
-        // Отображаем следующие события, если они есть
-        if (responseData.next_events && responseData.next_events.length > 0) {
-            responseData.next_events.forEach((event) => {
-                displaySingleEvent(event);
-            });
-        }
-        
-        return responseData;
-    } catch (error) {
-        log(`Ошибка при отправке inline_response: ${error.message}`, 'error');
-        if (error.response) {
-            log(`Статус: ${error.response.status}`, 'error');
-            log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
-        } else if (error.request) {
-            log('Ошибка: Запрос был сделан, но ответ не был получен.', 'error');
-        }
-        log(`Полная ошибка: ${error.stack}`, 'error');
-        return null;
+    if (!taskResult) {
+      log('Ошибка при ожидании завершения задачи настройки новеллы.', 'error');
+      return null;
     }
+
+    log('Новелла успешно настроена!', 'success');
+    // Результат задачи setupNovelTask содержит { novel_id: ..., setup: ... }
+    return taskResult.result;
+  } catch (error) {
+    log(`Ошибка при запуске настройки новеллы: ${error.message}`, 'error');
+    if (error.response) {
+      log(`Статус: ${error.response.status}`, 'error');
+      log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
+    }
+    return null;
+  }
 }
-
-// --- Функция для получения списка новелл ---
-async function fetchNovelsList() {
-    const url = `${config.baseUrl}/novels`;
-    log(`Запрос списка новелл с ${url}...`, 'info');
-
-    // Проверяем наличие токена
-    if (!jwtToken) {
-        log('Ошибка: JWT токен отсутствует. Невозможно запросить список новелл.', 'error');
-        return [];
-    }
-
-    try {
-        // Для GET-запроса с параметрами пагинации (если нужно)
-        const response = await axios.get(url, {
-            // params: { limit: 10 } // Пример: запросить 10 новелл
-            headers: {
-                'Authorization': `Bearer ${jwtToken}` // <-- Добавляем заголовок авторизации
-            }
-        });
-        if (response.data && response.data.novels) {
-            log('Список новелл успешно получен!', 'success');
-            return response.data.novels;
-        } else {
-            log('Ошибка: Не удалось получить список новелл из ответа сервера.', 'error');
-            return [];
-        }
-    } catch (error) {
-        log(`Ошибка при получении списка новелл: ${error.message || 'Неизвестная ошибка'}`, 'error');
-        if (error.response) {
-            log(`Статус: ${error.response.status}`, 'error');
-            log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
-        } else if (error.request) {
-            log('Ошибка: Запрос был сделан, но ответ не был получен.', 'error');
-        }
-        log(`Полная ошибка: ${error.stack}`, 'error');
-        return [];
-    }
-}
-// -----------------------------------------
 
 // Главная функция
 async function main() {
   try {
-    // Получаем UserID в начале
-    const currentUserId = await getUserId();
-    novelHistory.userId = currentUserId; // Устанавливаем UserID в историю
-
-    // --- Меню выбора --- 
+    // Авторизация
+    console.log(chalk.cyan('\n===== АВТОРИЗАЦИЯ ====='));
+    let authAction = '';
+    while (authAction !== '1' && authAction !== '2') {
+      authAction = await askQuestion(chalk.yellow('Выберите действие:\n[1] Вход\n[2] Регистрация\nВыбор: '));
+      if (authAction !== '1' && authAction !== '2') {
+        console.log(chalk.red('Пожалуйста, введите 1 или 2.'));
+      }
+    }
+    
+    let username, email, password;
+    
+    if (authAction === '1') {
+      // Вход
+      username = await askQuestion(chalk.yellow('Введите имя пользователя: '));
+      password = await askQuestion(chalk.yellow('Введите пароль: '));
+      
+      jwtToken = await login(username, password);
+      if (!jwtToken) {
+        log('Не удалось войти в систему. Завершение работы.', 'error');
+        rl.close();
+        return;
+      }
+    } else {
+      // Регистрация
+      username = await askQuestion(chalk.yellow('Введите имя пользователя: '));
+      email = await askQuestion(chalk.yellow('Введите email: '));
+      password = await askQuestion(chalk.yellow('Введите пароль: '));
+      
+      const registrationResult = await register(username, email, password);
+      if (!registrationResult) {
+        log('Не удалось зарегистрироваться. Завершение работы.', 'error');
+        rl.close();
+        return;
+      }
+      
+      jwtToken = await login(username, password);
+      if (!jwtToken) {
+        log('Не удалось войти в систему после регистрации. Завершение работы.', 'error');
+        rl.close();
+        return;
+      }
+    }
+    
+    novelHistory.userId = username;
+    
+    // Главное меню
     console.log(chalk.cyan('\n===== ГЛАВНОЕ МЕНЮ ====='));
     console.log(chalk.cyan('[1] Начать новую новеллу'));
     console.log(chalk.cyan('[2] Продолжить новеллу из списка'));
@@ -737,68 +612,144 @@ async function main() {
 
     let menuChoice = '';
     while (menuChoice !== '1' && menuChoice !== '2') {
-      menuChoice = await askQuestion(chalk.yellow('Выберите пункт меню (1 или 2): '));
+      menuChoice = await askQuestion(chalk.yellow('Выберите действие:\n[1] Начать новую новеллу\n[2] Продолжить новеллу из списка\nВыбор: '));
       if (menuChoice !== '1' && menuChoice !== '2') {
         console.log(chalk.red('Пожалуйста, введите 1 или 2.'));
       }
     }
-    // ------------------
-
-    let novelID;
-    let novelData;
-
-    // --- Получаем JWT токен (нужен для обоих вариантов, кроме /novels) ---
-    jwtToken = await getAuthToken(currentUserId);
-    if (!jwtToken) {
-        log('Не удалось получить токен аутентификации. Завершение работы.', 'error');
-        rl.close(); // Закрываем readline перед выходом
-        return;
-    }
-    // ----------------------------------------------------------------------
+    
+    let novelId;
+    let novelContent;
 
     if (menuChoice === '1') {
-      // --- Начать новую новеллу ---
-      log('Начинаю процесс генерации новой новеллы...', 'info');
+      // Начать новую новеллу
+      log('Начинаем процесс генерации новой новеллы...', 'info');
       
       // Запрос промпта у пользователя
       let userPrompt = await askQuestion(chalk.yellow('Введите промпт для новеллы (или нажмите Enter для использования стандартного): '));
       if (!userPrompt || userPrompt.trim() === '') {
-        userPrompt = config.novelPrompt;
+        userPrompt = config.defaultPrompt || "Создай фэнтезийную новеллу с элементами приключений и романтики";
         log(`Используется стандартный промпт: "${userPrompt}"`, 'info');
       } else {
         log(`Используется введенный промпт: "${userPrompt}"`, 'info');
       }
       
-      // Шаг 1: Генерация конфигурации новеллы
-      const novelConfig = await generateNovel(userPrompt); // Передаем промпт
-      if (!novelConfig || !novelConfig.novel_id) {
-          log('Ошибка: не получена конфигурация или ID новеллы', 'error');
+      // Генерация черновика
+      const novelDraft = await generateNovelDraft(userPrompt);
+      if (!novelDraft) {
+        log('Не удалось сгенерировать черновик новеллы. Завершение работы.', 'error');
+        rl.close();
+        return;
+      }
+      
+      console.log(novelDraft)
+
+      // Отображаем информацию о черновике
+      let currentDraft = novelDraft; // Сохраняем текущий драфт в переменную
+      let currentDraftId = currentDraft.draft_id; // Получаем ID драфта
+
+      while (true) {
+        console.log(chalk.cyan('\n===== ПРЕДПРОСМОТР НОВЕЛЛЫ ====='));
+        console.log(chalk.yellow('Название: ') + chalk.white(currentDraft.title || 'Без названия'));
+        console.log(chalk.yellow('Описание: ') + chalk.white(currentDraft.short_description || 'Нет описания'));
+        if (currentDraft.franchise) {
+          console.log(chalk.yellow('Франшиза/Сеттинг: ') + chalk.white(currentDraft.franchise));
+        }
+        console.log(chalk.yellow('Жанр: ') + chalk.white(currentDraft.genre || 'Не указан'));
+        console.log(chalk.yellow('Контент 18+: ') + chalk.white(currentDraft.is_adult_content ? 'Да' : 'Нет'));
+        
+        console.log(chalk.cyan('\n--- Персонаж ---'));
+        console.log(chalk.yellow('Имя игрока: ') + chalk.white(currentDraft.player_name || 'Игрок'));
+        console.log(chalk.yellow('Пол игрока: ') + chalk.white(currentDraft.player_gender || 'не указан'));
+        console.log(chalk.yellow('Описание игрока: ') + chalk.white(currentDraft.player_description || 'Нет описания'));
+        
+        console.log(chalk.cyan('\n--- Мир ---'));
+        console.log(chalk.yellow('Описание мира: ') + chalk.white(currentDraft.world_context || 'Нет описания'));
+        
+        if (currentDraft.themes && currentDraft.themes.length > 0) {
+            console.log(chalk.yellow('Темы: ') + chalk.white(currentDraft.themes.join(', ')));
+        }
+
+        if (currentDraft.core_stats && Object.keys(currentDraft.core_stats).length > 0) {
+            console.log(chalk.cyan('\n--- Основные параметры (статы) ---'));
+            for (const statName in currentDraft.core_stats) {
+                const stat = currentDraft.core_stats[statName];
+                console.log(chalk.yellow(`  ${statName}: `) + chalk.white(`${stat.description || ''} (Начальное: ${stat.initial_value !== undefined ? stat.initial_value : 'N/A'})`));
+            }
+        }
+        console.log(chalk.cyan('================================\n'));
+
+        // Спрашиваем, хочет ли пользователь внести изменения
+        const modifyAnswer = await askQuestion(chalk.yellow('Хотите внести изменения в этот черновик? Введите текст правки или нажмите Enter (или введите "готово"), чтобы продолжить: '));
+
+        if (!modifyAnswer || modifyAnswer.trim().toLowerCase() === 'готово' || modifyAnswer.trim() === '') {
+          log('Завершение модификации черновика.', 'info');
+          break; // Выход из цикла модификации
+        }
+
+        const modificationPrompt = modifyAnswer.trim();
+        log(`Отправка запроса на модификацию с текстом: "${modificationPrompt}"`, 'info');
+
+        // Вызываем новую функцию для модификации
+        const modifiedDraft = await modifyNovelDraft(currentDraftId, modificationPrompt);
+
+        if (!modifiedDraft) {
+          log('Не удалось модифицировать черновик. Прерывание модификации.', 'error');
+          break; // Выходим из цикла, если модификация не удалась
+        }
+
+        // Обновляем текущий черновик и его ID (хотя ID должен остаться тем же)
+        currentDraft = modifiedDraft;
+        currentDraftId = currentDraft.draft_id;
+        log('Черновик успешно обновлен.', 'success');
+        // Цикл начнется заново с отображением обновленного черновика
+      }
+
+      // Подтверждение создания новеллы (используем currentDraft, который может быть изменен)
+      const confirmation = await askQuestion(chalk.yellow('Создать новеллу на основе этого черновика? (да/нет): '));
+      if (confirmation.toLowerCase() !== 'да' && confirmation.toLowerCase() !== 'yes') {
+        log('Генерация новеллы отменена пользователем.', 'warning');
+        rl.close();
+        return;
+      }
+      
+      // Запускаем настройку новеллы из черновика
+      const setupResult = await setupNovelFromDraft(currentDraftId, currentDraft);
+      if (!setupResult || !setupResult.novel_id) {
+          log('Не удалось настроить новеллу из черновика. Завершение работы.', 'error');
           rl.close();
           return;
       }
-      novelID = novelConfig.novel_id;
-      
-      // Шаг 2: Генерация первой сцены (или setup)
-      novelData = await generateNovelContent(novelID);
-      
-    } else { 
-      // --- Продолжить из списка ---
-      log('Загрузка списка новелл...', 'info');
-      const novels = await fetchNovelsList();
 
+      // Получаем ID созданной новеллы из результата сетапа
+      novelId = setupResult.novel_id; 
+      log(`Новелла успешно настроена и создана с ID: ${novelId}`, 'success');
+      
+      // Сохраняем информацию о новелле в историю (нужно бы получить полные данные, но пока так)
+      novelHistory.novel = { id: novelId, title: currentDraft.title, description: currentDraft.short_description }; // Сохраняем базовую инфу
+      saveHistory();
+      
+      // Генерация первой сцены
+      novelContent = await generateNovelContent(novelId);
+    } else { 
+      // Продолжить новеллу из списка
+      log('Загрузка списка доступных новелл...', 'info');
+      
+      const novels = await fetchNovelsList();
       if (!novels || novels.length === 0) {
-        log('Не найдено доступных новелл для продолжения.', 'warning');
+        log('Нет доступных новелл для продолжения. Завершение работы.', 'warning');
         rl.close();
         return;
       }
 
+      // Отображаем список новелл
       console.log(chalk.cyan('\n===== ДОСТУПНЫЕ НОВЕЛЛЫ ====='));
       novels.forEach((novel, index) => {
-        // Используем novel.novel_id вместо novel.id
-        console.log(chalk.cyan(`[${index + 1}] ${novel.title || 'Без названия'} - ${novel.short_description || 'Нет описания'} (ID: ${novel.novel_id})`));
+        console.log(chalk.cyan(`[${index + 1}] ${novel.title || 'Без названия'} - ${novel.description || 'Нет описания'}`));
       });
-      console.log(chalk.cyan('===============================\n'));
+      console.log(chalk.cyan('==============================\n'));
 
+      // Пользователь выбирает новеллу
       let selectedIndex = -1;
       while (selectedIndex < 0 || selectedIndex >= novels.length) {
         const answer = await askQuestion(chalk.yellow('Введите номер новеллы для продолжения: '));
@@ -810,183 +761,91 @@ async function main() {
       }
 
       const selectedNovel = novels[selectedIndex];
-      novelID = selectedNovel.novel_id; // <-- Используем novel_id
-      log(`Выбрана новелла: ${selectedNovel.title || 'Без названия'} (ID: ${novelID})`, 'success');
-
-      // Загружаем последнее состояние выбранной новеллы
-      log(`Загрузка последнего состояния для новеллы ID: ${novelID}...`, 'info');
-      // Вызываем без userChoice, чтобы просто загрузить последнее состояние
-      novelData = await generateNovelContent(novelID); 
+      novelId = selectedNovel.id;
+      log(`Выбрана новелла: ${selectedNovel.title || 'Без названия'} (ID: ${novelId})`, 'success');
+      
+      // Сохраняем информацию о новелле в историю
+      novelHistory.novel = selectedNovel;
+      saveHistory();
+      
+      // Загружаем последнее состояние новеллы
+      novelContent = await generateNovelContent(novelId);
     }
-
-    // --- Общий цикл обработки сцен --- 
-    if (!novelData) {
-        log('Ошибка: не удалось получить данные новеллы для начала/продолжения.', 'error');
-        rl.close();
-        return;
-    }
-
-    let iterationsCount = 0;
     
     // Главный цикл игры
-    while (novelData && !novelData.is_complete && iterationsCount < config.maxScenes) {
-        log(`--- Начинаем сцену ${novelData.current_scene_index} ---`, 'info');
-        console.log(chalk.cyan('\n======= СЦЕНА '+ novelData.current_scene_index +' =======\n'));
-        
-        const currentEvents = novelData.events || [];
-        let finalChoiceEvent = null; // Для хранения обычного выбора в конце сцены
-
-        // Итерация по событиям текущей сцены
-        for (let i = 0; i < currentEvents.length; i++) {
-            const event = currentEvents[i];
-
-            // Отображаем событие (кроме inline_choice/response/choice)
-            displaySingleEvent(event);
-
-            // Обработка INLINE_CHOICE
-            if (event.event_type === 'inline_choice') {
-                log(`Найден inline_choice (ID: ${event.choice_id}). Ожидание выбора пользователя...`, 'info');
-                
-                // 2. Находим соответствующий inline_response (должен идти СРАЗУ после)
-                const nextEventIndex = i + 1;
-                let inlineResponseEvent = null;
-                if (nextEventIndex < currentEvents.length && 
-                    currentEvents[nextEventIndex].event_type === 'inline_response' &&
-                    currentEvents[nextEventIndex].choice_id === event.choice_id) {
-                    inlineResponseEvent = currentEvents[nextEventIndex];
-                    i = nextEventIndex; // Пропускаем inline_response в следующей итерации
-                } else {
-                    log(`Ошибка: Не найден соответствующий inline_response для choice_id ${event.choice_id}`, 'error');
-                    novelData = null; // Прерываем внешний цикл
+    while (novelContent && !novelContent.state.game_over) {
+      // Отображаем текущую сцену
+      displayScene(novelContent);
+      
+      // Получаем выборы для текущей сцены
+      const choices = novelContent.new_content.choices;
+      
+      // Если нет выборов, значит история завершена
+      if (!choices || choices.length === 0) {
+        log('История завершена.', 'success');
                     break;
                 }
 
-                // --- Создаем временный объект для makeUserChoice --- 
-                const choicesForUser = inlineResponseEvent.responses.map(response => ({ text: response.choice_text }));
-                const userChoicePromptEvent = {
-                    description: event.description, // Берем описание из inline_choice
-                    choices: choicesForUser
-                };
-                // --------------------------------------------------
-
-                // 1. Получаем выбор пользователя, используя временный объект
-                const inlineChoiceSelection = await makeUserChoice(userChoicePromptEvent); 
-                if (!inlineChoiceSelection) {
-                    log('Не удалось сделать inline выбор. Прерывание сцены.', 'warning');
-                    novelData = null; // Прерываем внешний цикл
+      // Отображаем выборы и получаем выбор пользователя
+      displayChoices(choices);
+      const userChoice = await makeUserChoice(choices);
+      
+      if (!userChoice) {
+        log('Не удалось сделать выбор. Завершение игры.', 'error');
                     break;
                 }
-                const selectedInlineChoiceText = inlineChoiceSelection.text;
-                // Находим индекс ВНУТРИ ОРИГИНАЛЬНОГО МАССИВА RESPONSES
-                const selectedInlineIndex = inlineResponseEvent.responses.findIndex(r => r.choice_text === selectedInlineChoiceText);
-                
-                if (selectedInlineIndex === -1) {
-                     log(`Ошибка: Не удалось найти индекс для выбранного текста "${selectedInlineChoiceText}"`, 'error');
-                     novelData = null;
-                     break;
-                }
-                log(`Выбран inline вариант [${selectedInlineIndex + 1}]: "${selectedInlineChoiceText}"`, 'success');
-
-                // 3. Извлекаем и отображаем response_events
-                if (inlineResponseEvent && inlineResponseEvent.responses && selectedInlineIndex < inlineResponseEvent.responses.length) {
-                    const selectedResponseData = inlineResponseEvent.responses[selectedInlineIndex];
-                    if (selectedResponseData.response_events && selectedResponseData.response_events.length > 0) {
-                        log('Отображение событий ответа...', 'info');
-                        selectedResponseData.response_events.forEach(respEvent => {
-                            displaySingleEvent(respEvent); // Отображаем каждое событие ответа
-                        });
-                    }
-                } else {
-                    log(`Предупреждение: Не найдены response_events для выбранного inline ответа (${selectedInlineIndex})`, 'warning');
-                }
-                
-                // 4. Отправляем результат выбора на сервер (для обновления состояния)
-                log(`Отправка результата inline выбора (ID: ${event.choice_id}, Выбор: ${selectedInlineChoiceText}) на сервер...`, 'info');
-                await sendInlineResponse(
-                    novelID,
-                    novelData.current_scene_index,
-                    event.choice_id, // Используем ID из оригинального inline_choice
-                    selectedInlineChoiceText,
-                    selectedInlineIndex
-                );
-
-            } else if (event.event_type === 'choice') {
-                // Нашли обычный выбор, сохраняем его и выходим из цикла событий
-                finalChoiceEvent = event;
-                log('Найден финальный выбор сцены. Завершение отображения событий.', 'info');
-                break; // Прерываем цикл for по событиям
-            }
-        } // Конец цикла for по событиям
-
-        // Если обработка сцены была прервана (например, ошибкой в inline_choice)
-        if (!novelData) break;
-
-        // --- Обработка финального выбора сцены --- 
-        if (!finalChoiceEvent) {
-            // Если нет финального выбора И история не завершена
-            if (!novelData.is_complete) {
-                log('Не найдено финальное событие выбора в сцене и история не завершена. Завершение.', 'warning');
-            }
-            // Если история завершена, просто выходим
-            break; // Выходим из основного цикла while
-        }
-
-        // Делаем финальный выбор
-        log('Ожидание финального выбора пользователя...', 'info');
-        const finalChoice = await makeUserChoice(finalChoiceEvent);
-        if (!finalChoice) {
-            log('Не удалось сделать финальный выбор. Завершение.', 'warning');
-            break;
-        }
-        log(`Выбран финальный вариант: "${finalChoice.text}"`, 'success');
-
-        // Готовим данные для запроса следующей сцены
-        const userChoicePayload = {
-            scene_index: novelData.current_scene_index,
-            choice_text: finalChoice.text
-        };
-
-        // Запрашиваем следующую сцену
-        log('Запрос следующей сцены...', 'info');
-        novelData = await generateNovelContent(novelID, userChoicePayload);
-        
-        if (!novelData) {
-            log('Получен пустой ответ при запросе следующей сцены. Завершение.', 'error');
-            break;
-        }
-
-        iterationsCount++;
-    } // Конец основного цикла while
-    
-    console.log(chalk.cyan('\n=============================\n')); // Закрываем последнюю сцену
-
-    // --- Финальное сообщение --- 
-    if (novelData && novelData.is_complete) {
-        log('Новелла завершена!', 'success');
-        if (novelData.summary) {
-            console.log(chalk.cyan('\n======= ИТОГ ИСТОРИИ =======\n'));
-            console.log(chalk.white(novelData.summary));
-            console.log(chalk.cyan('\n============================\n'));
-        }
-    } else if (iterationsCount >= config.maxScenes) {
-        log('Достигнут лимит генерации сцен.', 'warning');
-    } else {
-        log('Генерация прервана.', 'warning');
+      
+      log(`Выбран вариант: "${userChoice.text}"`, 'success');
+      
+      // Сохраняем выбор в историю
+      novelHistory.scenes.push({
+        state: novelContent.state,
+        content: novelContent.new_content,
+        user_choice: userChoice
+      });
+      saveHistory();
+      
+      // Генерируем следующую сцену на основе выбора
+      novelContent = await generateNovelContent(novelId, userChoice);
+      
+      if (!novelContent) {
+        log('Ошибка при генерации следующей сцены. Завершение игры.', 'error');
+        break;
+      }
     }
     
-    // Закрываем интерфейс чтения
+    // Отображаем финальную сцену, если история завершена
+    if (novelContent && novelContent.state.game_over) {
+      displayScene(novelContent);
+      
+      if (novelContent.state.ending) {
+        console.log(chalk.cyan('\n===== ЗАВЕРШЕНИЕ ИСТОРИИ ====='));
+        console.log(chalk.white(novelContent.state.ending));
+        console.log(chalk.cyan('==============================\n'));
+      }
+      
+      log('История успешно завершена!', 'success');
+      
+      // Сохраняем финальную сцену в историю
+      novelHistory.scenes.push({
+        state: novelContent.state,
+        content: novelContent.new_content
+      });
+      saveHistory();
+    }
+    
+    log('Спасибо за игру!', 'success');
     rl.close();
-    
-    log(`Процесс завершен. История сохранена.`, 'success');
-    
   } catch (error) {
-    // Закрываем интерфейс чтения в случае ошибки
-    rl.close();
-    log(`Произошла глобальная ошибка: ${error.message}`, 'error');
+    log(`Произошла ошибка: ${error.message}`, 'error');
     log(error.stack);
+    
+    // Сохраняем историю в случае ошибки
     saveHistory();
+    
+    rl.close();
   }
 }
 
-// Запуск скрипта
+// Запуск клиента
 main(); 
