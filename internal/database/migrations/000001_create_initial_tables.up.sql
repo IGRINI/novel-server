@@ -47,14 +47,18 @@ CREATE TABLE IF NOT EXISTS choices (
 
 -- Таблица состояний новеллы для игроков
 CREATE TABLE IF NOT EXISTS novel_states (
-    id UUID PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     novel_id UUID NOT NULL REFERENCES novels(id) ON DELETE CASCADE,
-    current_scene_id UUID REFERENCES scenes(id) ON DELETE SET NULL,
-    variables JSONB NOT NULL DEFAULT '{}'::JSONB,
-    history JSONB NOT NULL DEFAULT '[]'::JSONB,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    current_batch_number INTEGER NOT NULL DEFAULT 0, -- Номер текущего батча
+    story_summary_so_far TEXT NOT NULL DEFAULT '', -- Состояние истории для ИИ
+    future_direction TEXT NOT NULL DEFAULT '', -- Направление истории для ИИ
+    core_stats JSONB NOT NULL DEFAULT '{}'::JSONB, -- Текущие статы
+    global_flags JSONB NOT NULL DEFAULT '[]'::JSONB, -- Глобальные флаги
+    story_variables JSONB NOT NULL DEFAULT '{}'::JSONB, -- Переменные сюжета
+    history JSONB NOT NULL DEFAULT '[]'::JSONB, -- История выборов (можно уточнить структуру)
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     UNIQUE (user_id, novel_id)
 );
 

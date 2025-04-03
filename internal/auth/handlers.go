@@ -27,7 +27,8 @@ type LoginRequest struct {
 }
 
 type LoginResponse struct {
-	Token string `json:"token"`
+	Token  string `json:"token"`
+	UserID string `json:"user_id"`
 }
 
 type ErrorResponse struct {
@@ -108,7 +109,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.service.Login(r.Context(), req.Username, req.Password)
+	token, userID, err := h.service.Login(r.Context(), req.Username, req.Password)
 	if err != nil {
 		switch {
 		case err == ErrUserNotFound || err == ErrInvalidPassword:
@@ -120,5 +121,5 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, LoginResponse{Token: token})
+	respondWithJSON(w, http.StatusOK, LoginResponse{Token: token, UserID: userID})
 }

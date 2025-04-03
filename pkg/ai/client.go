@@ -215,9 +215,27 @@ func (c *Client) GenerateFirstScene(ctx context.Context, req model.GenerateFirst
 	return c.generate(ctx, firstSceneCreatorPromptFile, req)
 }
 
-// GenerateWithNovelCreator вызывает AI для генерации контента новеллы
-func (c *Client) GenerateWithNovelCreator(ctx context.Context, req model.GenerateNovelContentRequest) (string, error) {
-	return c.generate(ctx, creatorPromptFile, req)
+// GenerateWithNovelCreator вызывает LLM с промптом novel_creator.md
+// Принимает GenerateNovelContentRequestForAI для последующих запросов
+func (c *Client) GenerateWithNovelCreator(ctx context.Context, request model.GenerateNovelContentRequestForAI) (string, error) {
+	// Преобразуем запрос (который теперь содержит NovelState) в map для передачи в generate
+	// Это data, которая будет передана в шаблон внутри generate
+	data := map[string]interface{}{
+		"NovelState": request.NovelState,
+		"Config":     request.Config,
+		"Setup":      request.Setup,
+	}
+
+	// Генерируем ответ, передавая имя файла промпта и данные
+	promptFile := "promts/novel_creator.md"
+	log.Info().Str("model", c.modelName).Str("promptFile", promptFile).Msg("Отправка запроса на генерацию контента новеллы (следующий батч)")
+
+	response, err := c.generate(ctx, promptFile, data) // Передаем promptFile и data
+	if err != nil {
+		return "", err // Ошибка уже обработана в generate
+	}
+
+	return response, nil
 }
 
 // GenerateSceneContent генерирует содержимое сцены новеллы

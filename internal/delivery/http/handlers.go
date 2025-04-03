@@ -37,7 +37,7 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/novels/{id}", h.GetNovel).Methods("GET")
 	router.HandleFunc("/novels/{id}", h.UpdateNovel).Methods("PUT")
 	router.HandleFunc("/novels/{id}", h.DeleteNovel).Methods("DELETE")
-	router.HandleFunc("/novels/{id}/scenes", h.GetScenes).Methods("GET")
+	// router.HandleFunc("/novels/{id}/scenes", h.GetScenes).Methods("GET") // Удален, т.к. GetScenesByNovelID больше не используется
 	router.HandleFunc("/novels/{id}/publish", h.PublishNovel).Methods("POST")
 	router.HandleFunc("/novels/{id}/state", h.GetNovelState).Methods("GET")
 	router.HandleFunc("/novels/{id}/state", h.SaveNovelState).Methods("POST")
@@ -197,25 +197,6 @@ func (h *Handler) DeleteNovel(w http.ResponseWriter, r *http.Request) {
 	RespondWithJSON(w, http.StatusOK, map[string]string{"message": "новелла успешно удалена"})
 }
 
-// GetScenes возвращает список сцен новеллы
-func (h *Handler) GetScenes(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	id, err := uuid.Parse(vars["id"])
-	if err != nil {
-		RespondWithError(w, http.StatusBadRequest, "неверный формат ID")
-		return
-	}
-
-	// Получаем сцены новеллы
-	scenes, err := h.novelService.GetScenesByNovelID(r.Context(), id)
-	if err != nil {
-		RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("ошибка при получении сцен: %v", err))
-		return
-	}
-
-	RespondWithJSON(w, http.StatusOK, scenes)
-}
-
 // GenerateNovelDraft генерирует драфт новеллы через нарратор
 func (h *Handler) GenerateNovelDraft(w http.ResponseWriter, r *http.Request) {
 	var req model.NarratorPromptRequest
@@ -295,9 +276,10 @@ func (h *Handler) SetupNovel(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GenerateNovelContent генерирует контент новеллы через создателя
+// GenerateNovelContent генерирует следующий батч контента новеллы
 func (h *Handler) GenerateNovelContent(w http.ResponseWriter, r *http.Request) {
 	var req model.GenerateNovelContentRequest
+	// Парсим тело запроса, которое теперь содержит novel_id и client_state
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		RespondWithError(w, http.StatusBadRequest, fmt.Sprintf("неверный формат запроса: %v", err))
 		return
@@ -317,12 +299,14 @@ func (h *Handler) GenerateNovelContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Проверяем, совпадает ли userID из контекста с userID в теле запроса, если он там есть
-	// Это может быть полезно для отладки, но полагаться нужно на userID из токена
-	if req.UserID != "" && req.UserID != userIDStr {
-		log.Warn().Str("contextUserID", userIDStr).Str("bodyUserID", req.UserID).Msg("UserID в теле запроса не совпадает с userID из контекста (используем из контекста)")
-	}
-	req.UserID = userIDStr // Всегда используем userID из контекста (токена)
+	// Проверяем, что client_state получен (хотя бы пустой для первого запроса)
+	// if req.ClientState == nil { // ClientState не указатель, проверка на nil не нужна
+	// 	RespondWithError(w, http.StatusBadRequest, "неверный формат запроса: client_state обязателен")
+	// 	return
+	// }
+
+	// Устанавливаем UserID в структуру запроса из токена
+	req.UserID = userIDStr
 
 	// Запускаем асинхронную генерацию контента
 	taskID, err := h.novelService.GenerateNovelContentAsync(r.Context(), req)

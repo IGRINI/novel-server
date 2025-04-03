@@ -22,6 +22,7 @@ import (
 	"novel-server/internal/database"
 	delivery "novel-server/internal/delivery/http"
 	"novel-server/internal/delivery/http/middleware"
+	ws "novel-server/internal/delivery/websocket"
 	"novel-server/internal/repository"
 	"novel-server/internal/service"
 	"novel-server/pkg/ai"
@@ -71,14 +72,15 @@ func main() {
 	novelRepo := repository.NewNovelRepository(dbPool)
 	userRepo := auth.NewRepository(dbPool)
 
-	// Создаем простой менеджер задач
+	// Создаем менеджер задач
 	taskManager := taskmanager.NewManager()
 
-	// Создаем простой менеджер WebSocket
-	wsNotifier := &mockWebSocketManager{}
+	// Создаем реальный менеджер WebSocket
+	wsManager := ws.NewWebSocketManager()
+	wsManager.Start()
 
 	// Инициализация сервисов
-	novelService := service.NewNovelService(novelRepo, aiClient, taskManager, wsNotifier)
+	novelService := service.NewNovelService(novelRepo, aiClient, taskManager, wsManager)
 	authService := auth.NewService(userRepo, cfg.JWT.Secret)
 
 	// Инициализация HTTP обработчиков
@@ -92,6 +94,9 @@ func main() {
 	authRouter := router.PathPrefix("/auth").Subrouter()
 	authRouter.HandleFunc("/register", authHandlers.Register).Methods("POST")
 	authRouter.HandleFunc("/login", authHandlers.Login).Methods("POST")
+
+	// Маршрут для WebSocket (не требует JWT middleware)
+	router.Handle("/ws", wsManager.Handler()).Methods("GET")
 
 	// Создаем подмаршрутизатор для API, требующего аутентификации
 	apiRouter := router.PathPrefix("/api").Subrouter()
@@ -131,12 +136,6 @@ func main() {
 	// Настройка плавного завершения
 	gracefulShutdown(server, taskManager)
 }
-
-// Мок-объект для WebSocket
-type mockWebSocketManager struct{}
-
-func (m *mockWebSocketManager) SendToUser(userID, messageType, topic string, payload interface{}) {}
-func (m *mockWebSocketManager) Broadcast(messageType, topic string, payload interface{})          {}
 
 // initLogger настраивает глобальный логгер
 func initLogger() {

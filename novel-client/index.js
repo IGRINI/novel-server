@@ -3,13 +3,19 @@ const fs = require('fs');
 const path = require('path');
 const chalk = require('chalk');
 const readline = require('readline');
+const WebSocket = require('ws');
 const config = require('./config');
 
 console.log('Клиент интерактивных новелл');
 console.log('Конфигурация:', config);
 
-// Переменная для хранения JWT токена
+// Переменные для хранения JWT токена и WebSocket соединения
 let jwtToken = null;
+let ws = null;
+let userId = null; // Будем хранить ID пользователя
+
+// Хранилище для ожидающих задач
+const pendingTasks = new Map();
 
 // Создаем интерфейс для чтения ввода пользователя
 const rl = readline.createInterface({
@@ -73,6 +79,84 @@ function saveHistory() {
   }
 }
 
+// Функция для установки WebSocket соединения
+function connectWebSocket() {
+  if (ws) {
+    ws.close(); // Закрываем предыдущее соединение, если оно есть
+  }
+
+  if (!userId) {
+      log('Не удалось получить ID пользователя для WebSocket.', 'error');
+      return;
+  }
+
+  const wsUrl = `${config.wsBaseUrl}${config.api.websocket}?user_id=${userId}`; // Используем userId
+  log(`Подключение к WebSocket: ${wsUrl}`, 'info');
+
+  ws = new WebSocket(wsUrl, {
+      headers: {
+          'Authorization': `Bearer ${jwtToken}`
+      }
+  });
+
+  ws.on('open', () => {
+    log('WebSocket соединение установлено.', 'success');
+  });
+
+  ws.on('message', (data) => {
+    try {
+      const message = JSON.parse(data);
+      log(`Получено WebSocket сообщение: ${JSON.stringify(message, null, 2)}`, 'info');
+
+      // Обработка обновлений задач
+      if (message.type === 'task_update' && message.topic === 'tasks' && message.payload) {
+        const taskId = message.payload.task_id;
+        const status = message.payload.status;
+        const taskPayload = message.payload; // Переименуем для ясности
+
+        if (pendingTasks.has(taskId)) {
+          const { resolve, reject, timeoutId } = pendingTasks.get(taskId);
+          clearTimeout(timeoutId); // Отменяем таймаут
+
+          if (status === 'completed') {
+            log(`Задача ${taskId} завершена (через WebSocket).`, 'success');
+            if (taskPayload.result) { // Проверяем, что result существует
+                resolve(taskPayload.result); // <-- Резолвим ТОЛЬКО поле result
+            } else {
+                log(`Задача ${taskId} завершена, но поле result отсутствует в payload.`, 'error');
+                reject(new Error(`Задача ${taskId} завершена без результата.`));
+            }
+            pendingTasks.delete(taskId);
+          } else if (status === 'failed' || status === 'cancelled') {
+            log(`Задача ${taskId} не удалась или отменена (через WebSocket): ${taskPayload.message}`, 'error');
+            reject(new Error(taskPayload.message || `Задача ${taskId} не удалась`));
+            pendingTasks.delete(taskId);
+          } else {
+            log(`Обновлен статус задачи ${taskId}: ${status}, прогресс: ${taskPayload.progress || 0}%`, 'info');
+          }
+        } else {
+          log(`Получено обновление для задачи ${taskId}, но она не найдена в ожидающих.`, 'warning');
+        }
+      }
+        // TODO: Добавить обработку других типов сообщений, например, 'notification'
+
+    } catch (error) {
+      log(`Ошибка обработки WebSocket сообщения: ${error}`, 'error');
+    }
+  });
+
+  ws.on('close', (code, reason) => {
+    log(`WebSocket соединение закрыто. Код: ${code}, Причина: ${reason}`, 'warning');
+    ws = null;
+    // Можно добавить логику переподключения здесь
+  });
+
+  ws.on('error', (error) => {
+    log(`WebSocket ошибка: ${error.message}`, 'error');
+    ws = null;
+  });
+}
+
 // Функция для регистрации пользователя
 async function register(username, email, password) {
   const url = `${config.baseUrl}${config.api.auth.register}`;
@@ -110,25 +194,18 @@ async function register(username, email, password) {
 // Функция для авторизации пользователя
 async function login(username, password) {
   const url = `${config.baseUrl}${config.api.auth.login}`;
-  
   log(`Вход пользователя ${username}...`, 'info');
-  
   try {
-    const response = await axios.post(url, {
-      username: username,
-      password: password
-    }, {
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    });
-    
-    if (response.data && response.data.token) {
+    const response = await axios.post(url, { username: username, password: password }, { headers: { 'Content-Type': 'application/json' } });
+    if (response.data && response.data.token && response.data.user_id) { // Ожидаем user_id
       log('Авторизация успешна!', 'success');
-      return response.data.token;
+      jwtToken = response.data.token;
+      userId = response.data.user_id; // Сохраняем ID пользователя
+      connectWebSocket(); // Устанавливаем WebSocket соединение после успешного логина
+      return true; // Возвращаем true при успехе
     } else {
-      log('Ошибка: Не удалось получить токен из ответа сервера', 'error');
-      return null;
+      log('Ошибка: Не удалось получить токен или ID пользователя из ответа сервера', 'error');
+      return false;
     }
   } catch (error) {
     if (error.response && error.response.data && error.response.data.error) {
@@ -136,7 +213,7 @@ async function login(username, password) {
     } else {
       log(`Ошибка при авторизации: ${error.message}`, 'error');
     }
-    return null;
+    return false;
   }
 }
 
@@ -376,64 +453,36 @@ async function modifyNovelDraft(draftId, modificationPrompt) {
   }
 }
 
-// Функция для ожидания завершения задачи
-async function waitForTaskCompletion(taskId, maxAttempts = 60, interval = 2000) {
-  const url = `${config.baseUrl}${config.api.tasks}/${taskId}`;
-  
-  log(`Ожидание завершения задачи ${taskId}...`, 'info');
-  
-  if (!jwtToken) {
-    log('Ошибка: JWT токен отсутствует. Невозможно проверить задачу.', 'error');
-      return null;
-    }
-    
-  let attempts = 0;
-  
-  while (attempts < maxAttempts) {
-    try {
-      const response = await axios.get(url, {
-        headers: {
-          'Authorization': `Bearer ${jwtToken}`
-        }
-      });
-      
-      const taskStatus = response.data;
-      
-      if (taskStatus.status === 'completed') {
-        log(`Задача ${taskId} успешно завершена!`, 'success');
-        return taskStatus;
-      } else if (taskStatus.status === 'failed') {
-        log(`Задача ${taskId} завершилась с ошибкой: ${taskStatus.message}`, 'error');
-          return null;
-        }
-        
-      // Увеличиваем счетчик попыток
-      attempts++;
-      
-      // Выводим информацию о прогрессе
-      if (taskStatus.progress) {
-        log(`Прогресс задачи ${taskId}: ${taskStatus.progress}%`, 'info');
-      }
-      
-      // Ждем перед следующей попыткой
-      await new Promise(resolve => setTimeout(resolve, interval));
-    } catch (error) {
-      log(`Ошибка при проверке статуса задачи: ${error.message}`, 'error');
-      if (error.response) {
-        log(`Статус: ${error.response.status}`, 'error');
-        log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
-      }
-      
-      // Увеличиваем счетчик попыток
-      attempts++;
-      
-      // Ждем перед следующей попыткой
-      await new Promise(resolve => setTimeout(resolve, interval));
-    }
+// Функция для ожидания завершения задачи (переделанная под WebSocket)
+async function waitForTaskCompletion(taskId, timeout = 120000) { // Таймаут по умолчанию 2 минуты
+  log(`Ожидание завершения задачи ${taskId} (через WebSocket)...`, 'info');
+
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    log('WebSocket не подключен. Попытка проверки статуса через HTTP...', 'warning');
+    // Можно оставить старый HTTP polling как fallback, но для чистоты примера пока уберем
+    // return await pollTaskStatusFallback(taskId); // Пример функции fallback
+     return Promise.reject(new Error('WebSocket не подключен.'));
   }
-  
-  log(`Превышено максимальное количество попыток (${maxAttempts}) при ожидании завершения задачи.`, 'error');
-    return null;
+
+  return new Promise((resolve, reject) => {
+    // Устанавливаем таймаут
+    const timeoutId = setTimeout(() => {
+      if (pendingTasks.has(taskId)) {
+        log(`Таймаут ожидания (${timeout / 1000} сек) для задачи ${taskId} истек.`, 'error');
+        pendingTasks.delete(taskId);
+        reject(new Error(`Таймаут ожидания задачи ${taskId}`));
+      }
+    }, timeout);
+
+    // Сохраняем промис и ID таймаута
+    pendingTasks.set(taskId, { resolve, reject, timeoutId });
+
+    // Отправляем сообщение на сервер для подписки на обновления (опционально)
+    // Зависит от реализации сервера, нужно ли явно подписываться
+    // if (ws && ws.readyState === WebSocket.OPEN) {
+    //   ws.send(JSON.stringify({ action: 'subscribe', topic: `task:${taskId}` }));
+    // }
+  });
 }
 
 // Функция для генерации содержимого новеллы
@@ -442,24 +491,24 @@ async function generateNovelContent(novelId, userChoice = null) {
   
   log(`Генерация содержимого новеллы ${novelId}...`, 'info');
   
-  if (!jwtToken) {
+    if (!jwtToken) {
     log('Ошибка: JWT токен отсутствует. Невозможно сгенерировать содержимое.', 'error');
-    return null;
-  }
+        return null;
+    }
 
   const requestData = {
     novel_id: novelId
-  };
+    };
     
-  if (userChoice) {
+    if (userChoice) {
     requestData.user_choice = userChoice;
   }
   
   try {
     const response = await axios.post(url, requestData, {
-      headers: {
-        'Authorization': `Bearer ${jwtToken}`
-      }
+                headers: {
+                    'Authorization': `Bearer ${jwtToken}`
+                }
     });
     
     log('Отправлен запрос на генерацию содержимого. Ожидание завершения...', 'info');
@@ -468,7 +517,7 @@ async function generateNovelContent(novelId, userChoice = null) {
     const taskId = response.data.task_id;
     
     // Ожидаем завершения задачи
-    const taskResult = await waitForTaskCompletion(taskId);
+    const taskResult = await waitForTaskCompletion(taskId); // taskResult - это уже содержимое поля result из WebSocket
     
     if (!taskResult) {
       log('Ошибка при ожидании завершения задачи генерации содержимого.', 'error');
@@ -476,7 +525,8 @@ async function generateNovelContent(novelId, userChoice = null) {
     }
     
     log('Содержимое новеллы успешно сгенерировано!', 'success');
-    return taskResult.result;
+    // Возвращаем сам taskResult, так как он уже содержит нужные данные
+    return taskResult; 
   } catch (error) {
     log(`Ошибка при генерации содержимого: ${error.message}`, 'error');
     if (error.response) {
@@ -629,28 +679,25 @@ async function setupNovelFromDraft(draftId, draftData) {
 async function startInteraction() {
   // Авторизация или регистрация
   console.log(chalk.cyan('\n===== АВТОРИЗАЦИЯ / РЕГИСТРАЦИЯ ====='));
-  let authAction = '';
-  while (authAction !== '1' && authAction !== '2') {
-    authAction = await askQuestion(chalk.yellow('Выберите действие:\n[1] Вход\n[2] Регистрация\nВыбор: '));
-    if (authAction !== '1' && authAction !== '2') {
-      console.log(chalk.red('Пожалуйста, введите 1 или 2.'));
+    let authAction = '';
+    while (authAction !== '1' && authAction !== '2') {
+      authAction = await askQuestion(chalk.yellow('Выберите действие:\n[1] Вход\n[2] Регистрация\nВыбор: '));
+      if (authAction !== '1' && authAction !== '2') {
+        console.log(chalk.red('Пожалуйста, введите 1 или 2.'));
+      }
     }
-  }
-  
-  let username, email, password;
+    
+    let username, email, password;
   let loggedIn = false;
-  
+    
   while (!loggedIn) {
     if (authAction === '1') {
       // Вход
       username = await askQuestion(chalk.yellow('Введите имя пользователя: '));
       password = await askQuestion(chalk.yellow('Введите пароль: '));
       
-      jwtToken = await login(username, password);
-      if (jwtToken) {
-        loggedIn = true;
-        novelHistory.userId = username; // Сохраняем имя пользователя
-      } else {
+      loggedIn = await login(username, password);
+      if (!loggedIn) {
         log('Не удалось войти. Попробуйте еще раз или зарегистрируйтесь.', 'error');
         authAction = '2'; // Предлагаем регистрацию при неудачном входе
       }
@@ -671,20 +718,19 @@ async function startInteraction() {
     }
   }
   
-  // Если авторизация/регистрация прошли успешно, продолжаем
-  if (!jwtToken) {
-    log('Не удалось получить JWT токен. Завершение работы.', 'error');
-    rl.close();
-    return;
-  }
-  
+  if (!jwtToken || !userId) {
+    log('Не удалось авторизоваться или получить ID пользователя. Завершение работы.', 'error');
+        rl.close();
+        return;
+    }
+    
   // Отображаем основное меню
-  console.log(chalk.cyan('\n===== ГЛАВНОЕ МЕНЮ ====='));
+    console.log(chalk.cyan('\n===== ГЛАВНОЕ МЕНЮ ====='));
   console.log(chalk.cyan('[1] Создать новую новеллу'));
   console.log(chalk.cyan('[2] Просмотреть мои черновики'));
   console.log(chalk.cyan('[3] Просмотреть мои новеллы'));
-  console.log(chalk.cyan('=========================\n'));
-  
+    console.log(chalk.cyan('=========================\n'));
+
   rl.question(chalk.yellow('Ваш выбор (1/2/3): '), async function(choice) {
     switch(choice) {
       case '1':
@@ -725,10 +771,10 @@ async function createNewNovelFlow(rl) {
         const setupResult = await setupNovelFromDraft(draft.id, draft);
         if (!setupResult) {
           log('Не удалось настроить новеллу. Выход.', 'error');
-          rl.close();
-          return;
-        }
-        
+        rl.close();
+        return;
+      }
+      
         const novelId = setupResult.novel_id;
         log(`Новелла создана с ID: ${novelId}`, 'success');
         
@@ -790,10 +836,10 @@ async function viewDraftDetailsFlow(rl, draftId) {
 
   if (!currentDraftView) {
     log('Не удалось загрузить детали черновика.', 'error');
-    rl.close();
-    return;
-  }
-
+        rl.close();
+        return;
+      }
+      
   let exitFlow = false;
   while (!exitFlow) {
     // Отображаем детали черновика (NovelDraftView)
@@ -838,7 +884,7 @@ async function viewDraftDetailsFlow(rl, draftId) {
         const setupResult = await setupNovelFromDraft(draftId); // Передаем только ID
         if (!setupResult) {
           log('Не удалось настроить новеллу. Возврат к деталям черновика.', 'error');
-        } else {
+    } else { 
           const novelId = setupResult.novel_id;
           log(`Новелла создана с ID: ${novelId}`, 'success');
           exitFlow = true; // Выходим из этого потока после успешной настройки
@@ -880,14 +926,14 @@ async function viewNovelsFlow(rl) {
   // Получаем список новелл пользователя
   const novels = await fetchUserNovelsList();
   
-  if (!novels || novels.length === 0) {
+      if (!novels || novels.length === 0) {
     log('У вас нет созданных новелл.', 'info');
-    rl.close();
-    return;
-  }
-  
+        rl.close();
+        return;
+      }
+
   log('Ваши новеллы:', 'info');
-  novels.forEach((novel, index) => {
+      novels.forEach((novel, index) => {
     log(`${index + 1}. ${novel.title || 'Без названия'} (ID: ${novel.id})`, 'info');
   });
   
@@ -916,123 +962,173 @@ async function viewNovelsFlow(rl) {
 
 // Запускаем игровой процесс для новеллы
 async function startGameplayFlow(rl, novelId) {
-  // Получаем первую сцену
-  let novelContent = await generateNovelContent(novelId);
-  if (!novelContent) {
-    log('Не удалось сгенерировать начальный контент. Выход.', 'error');
+  log(`Запуск игрового процесса для новеллы: ${novelId}`, 'info');
+  
+  // --- Шаг 1: Получаем первую сцену/данные --- 
+  let currentContent = await generateNovelContent(novelId);
+  
+  if (!currentContent || !currentContent.choices || !Array.isArray(currentContent.choices)) { 
+    log('Не удалось получить или неверный формат начальных данных новеллы.', 'error');
+    log(`Полученный currentContent: ${JSON.stringify(currentContent)}`, 'error'); 
     rl.close();
     return;
   }
-  
-  // Обновляем наш объект новеллы
+
+  // --- Шаг 2: Инициализируем объект новеллы --- 
   let novel = {
     id: novelId,
-    state: novelContent.state,
-    scenes: []
+    state: {
+      core_stats: currentContent.core_stats || {}, // Начальные статы из первого ответа
+      global_flags: [], // Флаги для отслеживания состояния игры
+      story_variables: {} // Переменные для хранения данных
+    },
+    history: [], // История выборов
+    core_stats_definition: currentContent.core_stats_definition || {} // Определения статов (min/max значения)
   };
-  
-  // Добавляем первую сцену
-  novel.scenes.push(novelContent.new_content);
-  
-  // Процесс игры: показываем сцену и выборы
-  let continueGame = true;
-  
-  while (continueGame) {
-    // Получаем текущую сцену (последнюю в массиве)
-    const currentSceneData = novel.scenes[novel.scenes.length - 1];
-    
-    // Выводим информацию о сцене
-    const sceneTitle = currentSceneData.title || 'Без названия';
-    const sceneDescription = currentSceneData.description || 'Нет описания'; 
-    log(`\n=== ${sceneTitle} ===`, 'heading');
-    log(sceneDescription, 'text');
-    
-    // Проверяем, есть ли выборы
-    if (!currentSceneData.choices || currentSceneData.choices.length === 0) {
-      log('Нет доступных выборов. Завершение игры.', 'info');
-      continueGame = false;
-      continue;
-    }
-    
-    // Выводим доступные выборы
-    log('\nВыборы:', 'info');
-    currentSceneData.choices.forEach((choice, index) => {
-      log(`${index + 1}. ${choice.text}`, 'choice');
-    });
-    
-    // Спрашиваем пользователя о выборе
-    const answer = await new Promise(resolve => {
-      rl.question('Ваш выбор (номер): ', resolve);
-    });
-    
-    const choiceIndex = parseInt(answer) - 1;
-    if (isNaN(choiceIndex) || choiceIndex < 0 || choiceIndex >= currentSceneData.choices.length) {
-      log('Неверный выбор. Повторите.', 'error');
-      continue;
-    }
-    
-    const selectedChoice = currentSceneData.choices[choiceIndex];
-    log(`Вы выбрали: ${selectedChoice.text}`, 'info');
-    
-    // Создаем объект выбора для отправки на сервер
-    const userChoice = {
-        choice_id: selectedChoice.id,
-        text: selectedChoice.text
-    };
-    
-    // Генерируем следующую сцену на основе выбора
-    novelContent = await generateNovelContent(novelId, userChoice);
-    
-    if (!novelContent) {
-      log('Не удалось сгенерировать следующую сцену. Завершение игры.', 'error');
-      continueGame = false;
-      continue;
-    }
-    
-    // Проверяем, есть ли флаг game_over или ending_text
-    if (novelContent.new_content.game_over || novelContent.new_content.ending_text) {
-        log('\n=== ИГРА ЗАВЕРШЕНА ===', 'heading');
-        if (novelContent.new_content.ending_text) {
-            log(novelContent.new_content.ending_text, 'text');
-        } else if (novelContent.new_content.ending && novelContent.new_content.ending.title) { 
-            log(novelContent.new_content.ending.title, 'heading');
-            log(novelContent.new_content.ending.description, 'text');
-        } else {
-            log('История подошла к концу.', 'text');
-        }
-        continueGame = false;
-        // Добавляем финальное состояние/текст в сцены перед выходом
-        novel.scenes.push(novelContent.new_content); 
-        novel.state = novelContent.state;
-        continue;
-    }
-    
-    // Добавляем новую сцену
-    novel.scenes.push(novelContent.new_content);
-    novel.state = novelContent.state;
-  }
-  
-  // Сохраняем результат в файл
-  const firstSceneData = novel.scenes[0] || {};
-  const finalTitle = firstSceneData.title || 'Без названия';
-  const finalDescription = firstSceneData.description || 'Нет описания';
 
-  fs.writeFileSync(
-    config.outputFile,
-    JSON.stringify({
-      userId: novelHistory.userId,
-      novel: {
-        id: novel.id,
-        title: finalTitle,
-        description: finalDescription
-      },
-      scenes: novel.scenes
-    }, null, 2)
-  );
-  
-  log(`\nИгра завершена. Результат сохранен в ${config.outputFile}`, 'success');
-  rl.close();
-}
+  // --- Шаг 3: Основной цикл игры --- 
+  let continueGame = true;
+  while (continueGame) {
+    // Обрабатываем все выборы в текущем батче
+    for (const event of currentContent.choices) {
+      if (!event || !event.description || !event.options || event.options.length !== 2) {
+        log('Ошибка: Неверный формат события.', 'error');
+        continueGame = false;
+                    break;
+                }
+      
+      // Отображаем текущую ситуацию
+      log(`\n=== Ситуация ===`, 'heading');
+      log(event.description, 'text');
+
+      // Показываем текущие статы
+      log('\nТекущие характеристики:', 'info');
+      Object.entries(novel.state.core_stats).forEach(([stat, value]) => {
+        log(`${stat}: ${value}`, 'stat');
+      });
+
+      // Отображаем варианты выбора
+      log('\nВарианты:', 'info');
+      event.options.forEach((option, index) => {
+        log(`${index + 1}. ${option.text}`, 'choice');
+      });
+
+      // Получаем выбор пользователя
+      const answer = await new Promise(resolve => {
+        rl.question('Ваш выбор (1 или 2): ', resolve);
+      });
+
+      const choiceIndex = parseInt(answer) - 1;
+      if (isNaN(choiceIndex) || choiceIndex < 0 || choiceIndex >= event.options.length) {
+        log('Неверный выбор. Повторите.', 'error');
+        continue;
+      }
+
+      const selectedOption = event.options[choiceIndex];
+      log(`Вы выбрали: ${selectedOption.text}`, 'info');
+
+      // Применяем последствия выбора локально
+      if (selectedOption.consequences) {
+        // Обновляем статы
+        if (selectedOption.consequences.core_stats) {
+          Object.entries(selectedOption.consequences.core_stats).forEach(([stat, change]) => {
+            novel.state.core_stats[stat] = (novel.state.core_stats[stat] || 0) + change;
+            log(`${stat} изменился на ${change > 0 ? '+' : ''}${change}`, 'stat');
+          });
+        }
+
+        // Добавляем глобальные флаги
+        if (selectedOption.consequences.global_flags) {
+          selectedOption.consequences.global_flags.forEach(flag => {
+            if (!novel.state.global_flags.includes(flag)) {
+              novel.state.global_flags.push(flag);
+              log(`Добавлен флаг: ${flag}`, 'info');
+            }
+          });
+        }
+      }
+
+      // Проверяем условия game over после каждого выбора
+      let gameOver = false;
+      let gameOverReason = '';
+
+      Object.entries(novel.state.core_stats).forEach(([stat, value]) => {
+        const definition = novel.core_stats_definition[stat];
+        if (definition) {
+          if (value <= definition.game_over_conditions.min) {
+            gameOver = true;
+            gameOverReason = `${stat} достиг минимального значения (${value})`;
+          } else if (value >= definition.game_over_conditions.max) {
+            gameOver = true;
+            gameOverReason = `${stat} достиг максимального значения (${value})`;
+          }
+        }
+      });
+
+      if (gameOver) {
+        log('\n=== ИГРА ОКОНЧЕНА ===', 'heading');
+        log(gameOverReason, 'text');
+        continueGame = false;
+        break;
+      }
+
+      // Сохраняем выбор в историю
+      novel.history.push({
+        description: event.description,
+        choice: selectedOption.text,
+        consequences: selectedOption.consequences
+      });
+    }
+
+    // Если игра не окончена и все выборы в текущем батче обработаны,
+    // запрашиваем следующий батч
+    if (continueGame) {
+      const nextContent = await generateNovelContent(novelId, {
+        core_stats: novel.state.core_stats,
+        global_flags: novel.state.global_flags,
+        story_variables: novel.state.story_variables
+      });
+
+      if (!nextContent || !nextContent.choices || nextContent.choices.length === 0) {
+        log('Не удалось получить следующий батч событий. Завершение игры.', 'error');
+        continueGame = false;
+        continue;
+      }
+
+      currentContent = nextContent;
+    }
+  }
+
+  // --- Шаг 4: Сохраняем результат --- 
+  if (novel.history.length > 0) {
+    fs.writeFileSync(
+      config.outputFile,
+      JSON.stringify({
+        userId: userId,
+        novel: {
+          id: novel.id,
+          final_stats: novel.state.core_stats,
+          global_flags: novel.state.global_flags
+        },
+        history: novel.history
+      }, null, 2)
+    );
+    log(`\nИгра завершена. Результат сохранен в ${config.outputFile}`, 'success');
+  }
+    
+    rl.close();
+  }
+
+// Перехватываем завершение работы для закрытия WebSocket
+rl.on('close', () => {
+  log('Закрытие интерфейса командной строки...', 'info');
+  if (ws) {
+    log('Закрытие WebSocket соединения...', 'info');
+    ws.close();
+  }
+  log('Клиент завершает работу.', 'info');
+  process.exit(0);
+});
 
 // Запускаем интерактивный режим
 startInteraction(); 

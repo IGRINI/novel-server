@@ -306,207 +306,10 @@ func (r *NovelRepository) ListPublic(ctx context.Context, limit, offset int) ([]
 	return novels, nil
 }
 
-// CreateScene создает новую сцену для новеллы
-func (r *NovelRepository) CreateScene(ctx context.Context, scene model.Scene) (model.Scene, error) {
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return model.Scene{}, err
-	}
-	defer func() {
-		if err != nil {
-			tx.Rollback(ctx)
-		}
-	}()
-
-	// Сначала сохраняем сцену
-	sceneQuery := `
-		INSERT INTO scenes (id, novel_id, title, description, content, "order", created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-		RETURNING id, novel_id, title, description, content, "order", created_at, updated_at
-	`
-
-	now := time.Now()
-
-	// Если ID не указан, генерируем новый
-	if scene.ID == uuid.Nil {
-		scene.ID = uuid.New()
-	}
-
-	sceneRow := tx.QueryRow(ctx, sceneQuery,
-		scene.ID,
-		scene.NovelID,
-		scene.Title,
-		scene.Description,
-		scene.Content,
-		scene.Order,
-		now,
-	)
-
-	var createdScene model.Scene
-	err = sceneRow.Scan(
-		&createdScene.ID,
-		&createdScene.NovelID,
-		&createdScene.Title,
-		&createdScene.Description,
-		&createdScene.Content,
-		&createdScene.Order,
-		&createdScene.CreatedAt,
-		&createdScene.UpdatedAt,
-	)
-	if err != nil {
-		return model.Scene{}, err
-	}
-
-	// Затем сохраняем все выборы для этой сцены
-	createdScene.Choices = make([]model.Choice, 0, len(scene.Choices))
-	for _, choice := range scene.Choices {
-		// Если ID выбора не указан, генерируем новый
-		if choice.ID == uuid.Nil {
-			choice.ID = uuid.New()
-		}
-
-		choiceQuery := `
-			INSERT INTO choices (id, scene_id, text, next_scene_id, requirements, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $6)
-			RETURNING id, scene_id, text, next_scene_id, requirements, created_at, updated_at
-		`
-
-		choiceRow := tx.QueryRow(ctx, choiceQuery,
-			choice.ID,
-			createdScene.ID,
-			choice.Text,
-			choice.NextSceneID,
-			choice.Requirements,
-			now,
-		)
-
-		var createdChoice model.Choice
-		err = choiceRow.Scan(
-			&createdChoice.ID,
-			&createdChoice.SceneID,
-			&createdChoice.Text,
-			&createdChoice.NextSceneID,
-			&createdChoice.Requirements,
-			&createdChoice.CreatedAt,
-			&createdChoice.UpdatedAt,
-		)
-		if err != nil {
-			return model.Scene{}, err
-		}
-
-		createdScene.Choices = append(createdScene.Choices, createdChoice)
-	}
-
-	// Фиксируем транзакцию
-	err = tx.Commit(ctx)
-	if err != nil {
-		return model.Scene{}, err
-	}
-
-	return createdScene, nil
-}
-
-// GetScenesByNovelID получает все сцены для новеллы
-func (r *NovelRepository) GetScenesByNovelID(ctx context.Context, novelID uuid.UUID) ([]model.Scene, error) {
-	// Запрос для получения всех сцен для новеллы
-	scenesQuery := `
-		SELECT id, novel_id, title, description, content, "order", created_at, updated_at
-		FROM scenes
-		WHERE novel_id = $1
-		ORDER BY "order"
-	`
-
-	rows, err := r.pool.Query(ctx, scenesQuery, novelID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	scenes := []model.Scene{}
-	sceneIDs := []uuid.UUID{}
-
-	for rows.Next() {
-		var scene model.Scene
-		err := rows.Scan(
-			&scene.ID,
-			&scene.NovelID,
-			&scene.Title,
-			&scene.Description,
-			&scene.Content,
-			&scene.Order,
-			&scene.CreatedAt,
-			&scene.UpdatedAt,
-		)
-		if err != nil {
-			return nil, err
-		}
-
-		scenes = append(scenes, scene)
-		sceneIDs = append(sceneIDs, scene.ID)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	// Если есть сцены, получаем для них выборы
-	if len(scenes) > 0 {
-		// Запрос для получения всех выборов для найденных сцен
-		choicesQuery := `
-			SELECT id, scene_id, text, next_scene_id, requirements, created_at, updated_at
-			FROM choices
-			WHERE scene_id = ANY($1)
-		`
-
-		choiceRows, err := r.pool.Query(ctx, choicesQuery, sceneIDs)
-		if err != nil {
-			return nil, err
-		}
-		defer choiceRows.Close()
-
-		// Временная карта для связывания выборов со сценами
-		choicesBySceneID := make(map[uuid.UUID][]model.Choice)
-
-		for choiceRows.Next() {
-			var choice model.Choice
-			err := choiceRows.Scan(
-				&choice.ID,
-				&choice.SceneID,
-				&choice.Text,
-				&choice.NextSceneID,
-				&choice.Requirements,
-				&choice.CreatedAt,
-				&choice.UpdatedAt,
-			)
-			if err != nil {
-				return nil, err
-			}
-
-			// Добавляем выбор к соответствующей сцене
-			choicesBySceneID[choice.SceneID] = append(choicesBySceneID[choice.SceneID], choice)
-		}
-
-		if err := choiceRows.Err(); err != nil {
-			return nil, err
-		}
-
-		// Добавляем выборы к каждой сцене
-		for i := range scenes {
-			if choices, ok := choicesBySceneID[scenes[i].ID]; ok {
-				scenes[i].Choices = choices
-			} else {
-				scenes[i].Choices = []model.Choice{}
-			}
-		}
-	}
-
-	return scenes, nil
-}
-
 // GetNovelState получает состояние новеллы для конкретного пользователя и новеллы
 func (r *NovelRepository) GetNovelState(ctx context.Context, userID, novelID uuid.UUID) (model.NovelState, error) {
 	query := `
-		SELECT id, user_id, novel_id, current_scene_id, story_summary_so_far, future_direction, variables, history, created_at, updated_at
+		SELECT id, user_id, novel_id, current_batch_number, story_summary_so_far, future_direction, variables, history, created_at, updated_at
 		FROM novel_states
 		WHERE user_id = $1 AND novel_id = $2
 	`
@@ -520,7 +323,7 @@ func (r *NovelRepository) GetNovelState(ctx context.Context, userID, novelID uui
 		&state.ID,
 		&state.UserID,
 		&state.NovelID,
-		&state.CurrentSceneID,
+		&state.CurrentBatchNumber,
 		&state.StorySummarySoFar,
 		&state.FutureDirection,
 		&variablesJSON,
@@ -536,7 +339,7 @@ func (r *NovelRepository) GetNovelState(ctx context.Context, userID, novelID uui
 	}
 
 	// Разбираем JSON
-	if err := json.Unmarshal(variablesJSON, &state.Variables); err != nil {
+	if err := json.Unmarshal(variablesJSON, &state.StoryVariables); err != nil {
 		return model.NovelState{}, fmt.Errorf("ошибка разбора JSON variables: %w", err)
 	}
 	if err := json.Unmarshal(historyJSON, &state.History); err != nil {
@@ -549,7 +352,7 @@ func (r *NovelRepository) GetNovelState(ctx context.Context, userID, novelID uui
 // SaveNovelState сохраняет или обновляет состояние новеллы
 func (r *NovelRepository) SaveNovelState(ctx context.Context, state model.NovelState) (model.NovelState, error) {
 	// Преобразуем поля в JSON для хранения в базе
-	variablesJSON, err := json.Marshal(state.Variables)
+	variablesJSON, err := json.Marshal(state.StoryVariables)
 	if err != nil {
 		return model.NovelState{}, err
 	}
@@ -564,10 +367,10 @@ func (r *NovelRepository) SaveNovelState(ctx context.Context, state model.NovelS
 
 	// Запрос для вставки или обновления (UPSERT)
 	query := `
-		INSERT INTO novel_states (id, user_id, novel_id, current_scene_id, story_summary_so_far, future_direction, variables, history, created_at, updated_at)
+		INSERT INTO novel_states (id, user_id, novel_id, current_batch_number, story_summary_so_far, future_direction, variables, history, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (user_id, novel_id) DO UPDATE SET
-			current_scene_id = EXCLUDED.current_scene_id,
+			current_batch_number = EXCLUDED.current_batch_number,
 			story_summary_so_far = EXCLUDED.story_summary_so_far,
 			future_direction = EXCLUDED.future_direction,
 			variables = EXCLUDED.variables,
@@ -579,7 +382,8 @@ func (r *NovelRepository) SaveNovelState(ctx context.Context, state model.NovelS
 	// Если ID не установлен (новая запись), генерируем его
 	if state.ID == uuid.Nil {
 		state.ID = uuid.New()
-		state.CreatedAt = now // Устанавливаем время создания только для новых записей
+		state.CreatedAt = now        // Устанавливаем время создания только для новых записей
+		state.CurrentBatchNumber = 0 // Инициализируем номер батча для нового состояния
 	}
 
 	// Выполняем запрос
@@ -587,7 +391,7 @@ func (r *NovelRepository) SaveNovelState(ctx context.Context, state model.NovelS
 		state.ID,
 		state.UserID,
 		state.NovelID,
-		state.CurrentSceneID,
+		state.CurrentBatchNumber,
 		state.StorySummarySoFar,
 		state.FutureDirection,
 		variablesJSON,
@@ -616,6 +420,81 @@ func (r *NovelRepository) DeleteNovelState(ctx context.Context, userID, novelID 
 	}
 
 	return nil
+}
+
+// SaveSceneBatch сохраняет сгенерированный батч сцены в базу данных
+func (r *NovelRepository) SaveSceneBatch(ctx context.Context, batch model.SceneBatch) (model.SceneBatch, error) {
+	query := `
+		INSERT INTO scenes (id, novel_id, batch_number, story_summary_so_far, future_direction, choices, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+		ON CONFLICT (novel_id, batch_number) DO UPDATE SET
+			story_summary_so_far = EXCLUDED.story_summary_so_far,
+			future_direction = EXCLUDED.future_direction,
+			choices = EXCLUDED.choices,
+			updated_at = EXCLUDED.updated_at
+		RETURNING id, created_at, updated_at
+	`
+
+	now := time.Now()
+	batch.UpdatedAt = now
+
+	// Если ID не указан, генерируем новый
+	if batch.ID == uuid.Nil {
+		batch.ID = uuid.New()
+		batch.CreatedAt = now
+	}
+
+	// choices уже должны быть в виде JSONB в модели SceneBatch
+	err := r.pool.QueryRow(ctx, query,
+		batch.ID,
+		batch.NovelID,
+		batch.BatchNumber,
+		batch.StorySummarySoFar,
+		batch.FutureDirection,
+		batch.Choices, // Передаем JSONB напрямую
+		batch.CreatedAt,
+	).Scan(&batch.ID, &batch.CreatedAt, &batch.UpdatedAt)
+
+	if err != nil {
+		return model.SceneBatch{}, fmt.Errorf("ошибка при сохранении батча сцены: %w", err)
+	}
+
+	return batch, nil
+}
+
+// GetSceneBatchByNumber получает батч сцены по ID новеллы и номеру батча
+func (r *NovelRepository) GetSceneBatchByNumber(ctx context.Context, novelID uuid.UUID, batchNumber int) (model.SceneBatch, error) {
+	query := `
+		SELECT id, novel_id, batch_number, story_summary_so_far, future_direction, choices, created_at, updated_at
+		FROM scenes
+		WHERE novel_id = $1 AND batch_number = $2
+	`
+
+	row := r.pool.QueryRow(ctx, query, novelID, batchNumber)
+
+	var batch model.SceneBatch
+	// choices будет сканироваться напрямую в поле типа json.RawMessage или []byte
+
+	err := row.Scan(
+		&batch.ID,
+		&batch.NovelID,
+		&batch.BatchNumber,
+		&batch.StorySummarySoFar,
+		&batch.FutureDirection,
+		&batch.Choices, // Сканируем JSONB
+		&batch.CreatedAt,
+		&batch.UpdatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return model.SceneBatch{}, fmt.Errorf("батч %d для новеллы %s не найден: %w", batchNumber, novelID, model.ErrNotFound) // Исправлено: используем model.ErrNotFound
+		}
+		return model.SceneBatch{}, fmt.Errorf("ошибка при получении батча сцены: %w", err)
+	}
+
+	// Разбор JSON choices не нужен здесь, так как мы храним его как json.RawMessage или []byte в модели
+
+	return batch, nil
 }
 
 // SaveNovelDraft сохраняет черновик новеллы в базу данных

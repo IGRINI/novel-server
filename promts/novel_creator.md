@@ -122,26 +122,26 @@ Generate a single, valid JSON object conforming to one of the three structures a
 
 (Keep the existing sections on Core Stats definition, Input Format description - although it now receives NovelState, and the Hybrid Output Format definition, including Global State Block, Choice Batch/Ending Text, and `choice` Event Format definitions. Ensure the Global State Block examples reflect the `choices_ready` and `complete` stages, and the continuation scenario.)
 
-*Example Global State Block (Standard `choices_ready` output):*
-```
-current_stage: choices_ready
+        *Example Global State Block (Standard `choices_ready` output):*
+        ```
+        current_stage: choices_ready
 story_summary_so_far: Following the investigation of the strange lights, the patrol returned safely but found nothing. Advisor Zaltar continues to press the issue of the treasury.
 future_direction: Present choices related to the treasury and potentially a new minor event or character interaction.
-```
+        ```
 
-*Example Global State Block (Continuation after `game_over` output):*
-```
-current_stage: choices_ready
-story_summary_so_far: Your absolute power led to tyranny and isolation, ending your rule. Decades later, your estranged heir, Anya, has returned to the crumbling capital to try and restore order.
-future_direction: Anya must deal with rebellious factions, a depleted treasury, and the dark legacy of her predecessor.
-new_player_description: Anya, the reluctant heir, skilled in diplomacy but wary of power.
+        *Example Global State Block (Continuation after `game_over` output):*
+        ```
+        current_stage: choices_ready
+        story_summary_so_far: Your absolute power led to tyranny and isolation, ending your rule. Decades later, your estranged heir, Anya, has returned to the crumbling capital to try and restore order.
+        future_direction: Anya must deal with rebellious factions, a depleted treasury, and the dark legacy of her predecessor.
+        new_player_description: Anya, the reluctant heir, skilled in diplomacy but wary of power.
 core_stats: {"Power": 30, "People": 40, "Army": 25, "Wealth": 15} // Only include core_stats in this specific case
-```
+        ```
 
-*Example Global State Block (Standard Game Over output):*
-```
-current_stage: complete
-```
+        *Example Global State Block (Standard Game Over output):*
+        ```
+        current_stage: complete
+        ```
 
 (The `choice` Event Format description remains the same)
 

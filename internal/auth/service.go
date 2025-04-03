@@ -84,24 +84,25 @@ func (s *Service) Register(ctx context.Context, username, email, password string
 	return nil
 }
 
-func (s *Service) Login(ctx context.Context, username, password string) (string, error) {
+// Login проверяет учетные данные и возвращает JWT токен и ID пользователя
+func (s *Service) Login(ctx context.Context, username, password string) (string, string, error) {
 	// Получаем пользователя
 	user, err := s.repo.GetUserByUsername(ctx, username)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return "", ErrUserNotFound
+			return "", "", ErrUserNotFound
 		}
-		return "", fmt.Errorf("ошибка при поиске пользователя: %w", err)
+		return "", "", fmt.Errorf("ошибка при поиске пользователя: %w", err)
 	}
 
 	// Проверяем пароль
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		return "", ErrInvalidPassword
+		return "", "", ErrInvalidPassword
 	}
 
 	// Создаем JWT токен
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"user_id":  user.ID,
+		"user_id":  user.ID, // Убедитесь, что user.ID это строка (UUID)
 		"username": user.Username,
 		"email":    user.Email,
 		"exp":      time.Now().Add(24 * time.Hour).Unix(),
@@ -110,8 +111,8 @@ func (s *Service) Login(ctx context.Context, username, password string) (string,
 	// Подписываем токен
 	tokenString, err := token.SignedString(s.jwtSecret)
 	if err != nil {
-		return "", fmt.Errorf("ошибка при создании токена: %w", err)
+		return "", "", fmt.Errorf("ошибка при создании токена: %w", err)
 	}
 
-	return tokenString, nil
+	return tokenString, user.ID, nil
 }

@@ -1,6 +1,8 @@
 module.exports = {
   // Базовый URL API
   baseUrl: 'http://localhost:8080',
+  // Базовый URL для WebSocket
+  wsBaseUrl: 'ws://localhost:8080', 
   
   // Описание новеллы, которую мы хотим создать
   defaultPrompt: 'Создай визуальную новеллу о приключениях Алисы в мире, где технологии сливаются с магией',
@@ -32,6 +34,7 @@ module.exports = {
         draftDetails: '/api/generate/drafts/{id}'
       }
     },
-    tasks: '/api/tasks'
+    tasks: '/api/tasks',
+    websocket: '/ws' // Путь к WebSocket эндпоинту
   }
 }; 

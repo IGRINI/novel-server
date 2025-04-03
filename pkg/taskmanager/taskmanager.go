@@ -14,6 +14,7 @@ import (
 // ITaskManager определяет интерфейс для управления задачами
 type ITaskManager interface {
 	SubmitTask(ctx context.Context, taskFunc TaskFunc, params interface{}) (uuid.UUID, error)
+	SubmitTaskWithOwner(ctx context.Context, taskFunc TaskFunc, params interface{}, ownerID string) (uuid.UUID, error)
 	GetTask(taskID uuid.UUID) (*Task, error)
 	Close()
 	Shutdown(ctx context.Context) error
@@ -21,6 +22,13 @@ type ITaskManager interface {
 	RegisterCallback(taskID uuid.UUID, callback TaskCallback) error
 	UnregisterCallbacks(taskID uuid.UUID)
 	CleanupTasks(age time.Duration)
+	SetWebSocketNotifier(notifier WebSocketNotifier)
+}
+
+// WebSocketNotifier интерфейс для отправки уведомлений через WebSocket
+type WebSocketNotifier interface {
+	SendToUser(userID, messageType, topic string, payload interface{})
+	Broadcast(messageType, topic string, payload interface{})
 }
 
 // NewManager создает новый экземпляр TaskManager с настройками по умолчанию
@@ -58,12 +66,14 @@ type TaskFunc func(ctx context.Context, params interface{}) (interface{}, error)
 
 // TaskManager управляет асинхронными задачами
 type TaskManager struct {
-	tasks     map[uuid.UUID]*Task
-	mu        sync.RWMutex
-	maxTasks  int
-	callbacks map[uuid.UUID][]TaskCallback
-	closing   chan struct{}
-	wg        sync.WaitGroup
+	tasks      map[uuid.UUID]*Task
+	mu         sync.RWMutex
+	maxTasks   int
+	callbacks  map[uuid.UUID][]TaskCallback
+	closing    chan struct{}
+	wg         sync.WaitGroup
+	wsNotifier WebSocketNotifier
+	taskOwners map[uuid.UUID]string // Маппинг taskID -> userID
 }
 
 // TaskCallback представляет функцию обратного вызова, вызываемую при изменении статуса задачи
@@ -82,10 +92,11 @@ func New(cfg Config) (*TaskManager, error) {
 	}
 
 	return &TaskManager{
-		tasks:     make(map[uuid.UUID]*Task),
-		maxTasks:  maxTasks,
-		callbacks: make(map[uuid.UUID][]TaskCallback),
-		closing:   make(chan struct{}),
+		tasks:      make(map[uuid.UUID]*Task),
+		maxTasks:   maxTasks,
+		callbacks:  make(map[uuid.UUID][]TaskCallback),
+		closing:    make(chan struct{}),
+		taskOwners: make(map[uuid.UUID]string),
 	}, nil
 }
 
@@ -195,7 +206,7 @@ func (tm *TaskManager) runTask(ctx context.Context, task *Task, taskFunc TaskFun
 	}
 }
 
-// updateTaskStatus обновляет статус задачи и вызывает коллбэки
+// updateTaskStatus обновляет статус задачи и отправляет уведомления
 func (tm *TaskManager) updateTaskStatus(task *Task, status TaskStatus, progress int, message string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -209,6 +220,28 @@ func (tm *TaskManager) updateTaskStatus(task *Task, status TaskStatus, progress 
 	if callbacks, ok := tm.callbacks[task.ID]; ok {
 		for _, callback := range callbacks {
 			go callback(task)
+		}
+	}
+
+	// Отправляем уведомление через WebSocket, если нотификатор установлен
+	if tm.wsNotifier != nil {
+		// Создаем payload для уведомления
+		payload := map[string]interface{}{
+			"task_id":    task.ID,
+			"status":     task.Status,
+			"progress":   task.Progress,
+			"message":    task.Message,
+			"updated_at": task.UpdatedAt,
+		}
+
+		// Если есть результат и задача завершена, добавляем его
+		if task.Status == TaskStatusCompleted && task.Result != nil {
+			payload["result"] = task.Result
+		}
+
+		// Если известен владелец задачи, отправляем уведомление конкретному пользователю
+		if ownerID, ok := tm.taskOwners[task.ID]; ok {
+			tm.wsNotifier.SendToUser(ownerID, "task_update", "tasks", payload)
 		}
 	}
 
@@ -292,4 +325,23 @@ func (tm *TaskManager) CleanupTasks(age time.Duration) {
 			delete(tm.callbacks, id)
 		}
 	}
+}
+
+// SetWebSocketNotifier устанавливает WebSocket нотификатор
+func (tm *TaskManager) SetWebSocketNotifier(notifier WebSocketNotifier) {
+	tm.wsNotifier = notifier
+}
+
+// SubmitTaskWithOwner создает и запускает новую задачу с указанием владельца
+func (tm *TaskManager) SubmitTaskWithOwner(ctx context.Context, taskFunc TaskFunc, params interface{}, ownerID string) (uuid.UUID, error) {
+	taskID, err := tm.SubmitTask(ctx, taskFunc, params)
+	if err != nil {
+		return uuid.UUID{}, err
+	}
+
+	tm.mu.Lock()
+	tm.taskOwners[taskID] = ownerID
+	tm.mu.Unlock()
+
+	return taskID, nil
 }
