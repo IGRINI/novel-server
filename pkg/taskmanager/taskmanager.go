@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 )
 
 // ITaskManager определяет интерфейс для управления задачами
@@ -141,24 +141,30 @@ func (tm *TaskManager) Shutdown(ctx context.Context) error {
 
 // SubmitTask создает и запускает новую задачу
 func (tm *TaskManager) SubmitTask(ctx context.Context, taskFunc TaskFunc, params interface{}) (uuid.UUID, error) {
-	tm.mu.Lock()
-	defer tm.mu.Unlock()
+	tm.mu.Lock()         // Блокируем в начале
+	defer tm.mu.Unlock() // Гарантируем разблокировку в конце
 
-	// Проверяем количество активных задач
+	// Проверка maxTasks (под блокировкой)
 	activeTasks := 0
 	for _, task := range tm.tasks {
 		if task.Status == TaskStatusPending || task.Status == TaskStatusRunning {
 			activeTasks++
 		}
 	}
-
 	if activeTasks >= tm.maxTasks {
+		// tm.mu.Unlock() // Больше не нужно, defer сделает это
 		return uuid.UUID{}, errors.New("превышено максимальное количество активных задач")
 	}
+	// tm.mu.Unlock() // УДАЛЯЕМ преждевременную разблокировку
 
 	// Создаем новую задачу
 	taskID := uuid.New()
-	taskCtx, cancel := context.WithCancel(ctx)
+
+	// --- Создание независимого контекста с логгером ---
+	baseTaskCtx, cancel := context.WithCancel(context.Background())
+	taskLogger := log.Ctx(ctx) // Получаем логгер zerolog из ctx
+	taskCtx := taskLogger.WithContext(baseTaskCtx)
+	// ----------------------
 
 	task := &Task{
 		ID:        taskID,
@@ -166,10 +172,15 @@ func (tm *TaskManager) SubmitTask(ctx context.Context, taskFunc TaskFunc, params
 		Progress:  0,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
-		Cancel:    cancel,
+		Cancel:    cancel, // Сохраняем функцию отмены для taskCtx
 	}
 
+	// Добавляем задачу в map (под блокировкой)
+	// tm.mu.Lock() // Больше не нужно, блокировка уже есть
 	tm.tasks[taskID] = task
+	// tm.mu.Unlock() // Больше не нужно, defer сделает это
+
+	// Блокировка будет снята здесь с помощью defer
 
 	// Запускаем задачу в отдельной горутине
 	tm.wg.Add(1)
@@ -185,29 +196,33 @@ func (tm *TaskManager) SubmitTask(ctx context.Context, taskFunc TaskFunc, params
 
 // runTask выполняет задачу и обновляет ее статус
 func (tm *TaskManager) runTask(ctx context.Context, task *Task, taskFunc TaskFunc, params interface{}) {
-	// Обновляем статус задачи на "выполняется"
-	tm.updateTaskStatus(task, TaskStatusRunning, 0, "Задача запущена")
+	tm.updateTaskStatus(ctx, task, TaskStatusRunning, 0, "Задача запущена")
 
-	// Выполняем задачу
 	result, err := taskFunc(ctx, params)
 
-	// Проверяем, не был ли контекст отменен
 	if ctx.Err() != nil {
-		tm.updateTaskStatus(task, TaskStatusCancelled, 100, "Задача отменена")
+		if errors.Is(ctx.Err(), context.Canceled) {
+			log.Ctx(ctx).Info().Str("taskID", task.ID.String()).Msg("Контекст задачи был отменен")
+			tm.updateTaskStatus(ctx, task, TaskStatusCancelled, 100, "Задача отменена")
+		} else {
+			log.Ctx(ctx).Error().Err(ctx.Err()).Str("taskID", task.ID.String()).Msg("Ошибка контекста задачи")
+			tm.updateTaskStatus(ctx, task, TaskStatusFailed, 100, fmt.Sprintf("Ошибка контекста: %v", ctx.Err()))
+		}
 		return
 	}
 
-	// Обновляем статус задачи в зависимости от результата
 	if err != nil {
-		tm.updateTaskStatus(task, TaskStatusFailed, 100, fmt.Sprintf("Ошибка: %v", err))
+		log.Ctx(ctx).Error().Err(err).Str("taskID", task.ID.String()).Msg("Задача завершилась с ошибкой")
+		tm.updateTaskStatus(ctx, task, TaskStatusFailed, 100, fmt.Sprintf("Ошибка: %v", err))
 	} else {
 		task.Result = result
-		tm.updateTaskStatus(task, TaskStatusCompleted, 100, "Задача успешно выполнена")
+		log.Ctx(ctx).Info().Str("taskID", task.ID.String()).Msg("Задача успешно выполнена")
+		tm.updateTaskStatus(ctx, task, TaskStatusCompleted, 100, "Задача успешно выполнена")
 	}
 }
 
 // updateTaskStatus обновляет статус задачи и отправляет уведомления
-func (tm *TaskManager) updateTaskStatus(task *Task, status TaskStatus, progress int, message string) {
+func (tm *TaskManager) updateTaskStatus(ctx context.Context, task *Task, status TaskStatus, progress int, message string) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -216,16 +231,13 @@ func (tm *TaskManager) updateTaskStatus(task *Task, status TaskStatus, progress 
 	task.Message = message
 	task.UpdatedAt = time.Now()
 
-	// Вызываем коллбэки, если они есть
 	if callbacks, ok := tm.callbacks[task.ID]; ok {
 		for _, callback := range callbacks {
 			go callback(task)
 		}
 	}
 
-	// Отправляем уведомление через WebSocket, если нотификатор установлен
 	if tm.wsNotifier != nil {
-		// Создаем payload для уведомления
 		payload := map[string]interface{}{
 			"task_id":    task.ID,
 			"status":     task.Status,
@@ -234,19 +246,21 @@ func (tm *TaskManager) updateTaskStatus(task *Task, status TaskStatus, progress 
 			"updated_at": task.UpdatedAt,
 		}
 
-		// Если есть результат и задача завершена, добавляем его
 		if task.Status == TaskStatusCompleted && task.Result != nil {
 			payload["result"] = task.Result
 		}
 
-		// Если известен владелец задачи, отправляем уведомление конкретному пользователю
 		if ownerID, ok := tm.taskOwners[task.ID]; ok {
 			tm.wsNotifier.SendToUser(ownerID, "task_update", "tasks", payload)
 		}
 	}
 
-	log.Printf("Задача %s: статус изменен на %s, прогресс: %d%%, сообщение: %s",
-		task.ID, task.Status, task.Progress, task.Message)
+	log.Ctx(ctx).Info().
+		Str("taskID", task.ID.String()).
+		Str("newStatus", string(task.Status)).
+		Int("progress", task.Progress).
+		Str("message", task.Message).
+		Msg("Статус задачи обновлен")
 }
 
 // GetTask возвращает информацию о задаче по ID

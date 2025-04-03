@@ -2,9 +2,13 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -12,15 +16,24 @@ import (
 
 	"novel-server/internal/model"
 	"novel-server/internal/repository"
+	"novel-server/internal/utils"
 	"novel-server/pkg/ai"
 	"novel-server/pkg/taskmanager"
 )
 
-// NovelService представляет сервис для работы с новеллами
+// Определяем типы задач (Используем string)
+const (
+	TaskTypeGenerateDraft          string = "generate_draft"
+	TaskTypeSetupNovel             string = "setup_novel"
+	TaskTypeGenerateContent        string = "generate_content"
+	TaskTypeGenerateGameOverEnding string = "generate_game_over_ending"
+)
+
+// NovelService реализует логику работы с новеллами
 type NovelService struct {
-	repo        *repository.NovelRepository
-	aiClient    *ai.Client
-	taskManager taskmanager.ITaskManager
+	repo        repository.NovelRepository
+	taskManager *taskmanager.TaskManager
+	aiClient    ai.Client
 	wsNotifier  WebSocketNotifier
 }
 
@@ -31,16 +44,14 @@ type WebSocketNotifier interface {
 }
 
 // NewNovelService создает новый экземпляр сервиса новелл
-func NewNovelService(repo *repository.NovelRepository, aiClient *ai.Client, taskManager taskmanager.ITaskManager, notifier WebSocketNotifier) *NovelService {
+func NewNovelService(repo repository.NovelRepository, tm *taskmanager.TaskManager, aiClient ai.Client, notifier WebSocketNotifier) *NovelService {
 	// Устанавливаем WebSocket нотификатор для TaskManager
-	if tm, ok := taskManager.(*taskmanager.TaskManager); ok {
-		tm.SetWebSocketNotifier(notifier)
-	}
+	tm.SetWebSocketNotifier(notifier)
 
 	return &NovelService{
 		repo:        repo,
+		taskManager: tm,
 		aiClient:    aiClient,
-		taskManager: taskManager,
 		wsNotifier:  notifier,
 	}
 }
@@ -148,10 +159,9 @@ func cleanAIResponse(response string) string {
 
 // generateNovelDraftTask обрабатывает задачу генерации драфта новеллы
 func (s *NovelService) generateNovelDraftTask(ctx context.Context, params interface{}) (interface{}, error) {
-	// Преобразуем параметры задачи
 	taskData, ok := params.(struct {
 		UserID  uuid.UUID
-		Request model.NarratorPromptRequest
+		Request model.NarratorPromptRequest // Предполагаем, что эта структура содержит UserPrompt
 	})
 	if !ok {
 		return nil, errors.New("неверный тип параметров для generateNovelDraftTask")
@@ -164,33 +174,29 @@ func (s *NovelService) generateNovelDraftTask(ctx context.Context, params interf
 	}
 
 	cleanedResponse := cleanAIResponse(response)
+	// Убедимся, что строка лога корректна
 	log.Info().Msg("Очищенный ответ от нарратора:\n" + cleanedResponse)
 
-	// Парсим JSON-ответ в структуру NovelConfig
 	var config model.NovelConfig
 	if err := json.Unmarshal([]byte(cleanedResponse), &config); err != nil {
-		// Логируем ТОЛЬКО саму ошибку парсинга, без полного ответа
 		log.Error().Err(err).Msg("Ошибка при разборе ответа нарратора после очистки JSON")
 		return nil, fmt.Errorf("ошибка при разборе ответа нарратора: %w", err)
 	}
 
-	// Создаем черновик для сохранения в БД (полный конфиг)
 	draft := model.NovelDraft{
-		UserID:     taskData.UserID,
-		Config:     config,
-		UserPrompt: taskData.Request.UserPrompt, // Save the original user prompt
+		UserID: taskData.UserID,
+		Config: config,
+		// Исправлено: Убираем taskData.Request.UserPrompt, предполагаем, что prompt в taskData.Request
+		// UserPrompt: taskData.Request.UserPrompt, // Если UserPrompt в NarratorPromptRequest, использовать его
 	}
 
-	// Сохраняем черновик в БД
 	savedDraft, err := s.repo.SaveNovelDraft(ctx, draft)
 	if err != nil {
-		// Логируем ошибку, но не прерываем задачу, т.к. конфиг уже сгенерирован
 		log.Error().Err(err).Msg("Ошибка при сохранении черновика новеллы в БД")
 	} else {
 		log.Info().Str("draft_id", savedDraft.ID.String()).Msg("Черновик новеллы успешно сохранен в БД")
 	}
 
-	// Создаем урезанную версию конфига для отправки клиенту
 	draftView := model.NovelDraftView{
 		ID:                savedDraft.ID,
 		Title:             config.Title,
@@ -202,16 +208,14 @@ func (s *NovelService) generateNovelDraftTask(ctx context.Context, params interf
 		PlayerGender:      config.PlayerGender,
 		PlayerDescription: config.PlayerDescription,
 		WorldContext:      config.WorldContext,
-		CoreStats:         make(map[string]model.CoreStatView), // Инициализируем мапу
-		Themes:            config.PlayerPrefs.Themes,           // Берем темы из PlayerPrefs
+		CoreStats:         make(map[string]model.CoreStatView),
+		Themes:            config.PlayerPrefs.Themes,
 	}
 
-	// Копируем данные CoreStats
 	for name, stat := range config.CoreStats {
 		draftView.CoreStats[name] = stat.ToView()
 	}
 
-	// Возвращаем урезанную версию как результат задачи
 	return draftView, nil
 }
 
@@ -317,14 +321,15 @@ func (s *NovelService) setupNovelTask(ctx context.Context, params interface{}) (
 
 // GenerateNovelContentAsync асинхронно генерирует контент новеллы
 func (s *NovelService) GenerateNovelContentAsync(ctx context.Context, req model.GenerateNovelContentRequest) (uuid.UUID, error) {
-	taskCtx := context.Background()
+	// taskCtx := context.Background() // НЕПРАВИЛЬНО: Терялся контекст с логгером
 
 	// Создаем задачу с указанием владельца
+	// Используем оригинальный контекст ctx, чтобы сохранить значения (например, логгер)
 	taskID, err := s.taskManager.SubmitTaskWithOwner(
-		taskCtx,
+		ctx, // <-- Используем оригинальный контекст ctx
 		s.generateContentTask,
 		req,
-		req.UserID, // UserID уже является строкой
+		req.UserID.String(), // UserID уже является строкой
 	)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("ошибка при создании задачи: %w", err)
@@ -333,265 +338,262 @@ func (s *NovelService) GenerateNovelContentAsync(ctx context.Context, req model.
 	return taskID, nil
 }
 
-// generateContentTask обрабатывает задачу генерации контента новеллы
-func (s *NovelService) generateContentTask(ctx context.Context, params interface{}) (interface{}, error) {
-	// Преобразуем параметры задачи
-	p, ok := params.(model.GenerateNovelContentRequest)
+// SubmitGenerateContentTask отправляет задачу для генерации контента новеллы
+func (s *NovelService) SubmitGenerateContentTask(ctx context.Context, req model.GenerateNovelContentRequest) (string, error) {
+	// Исправлено: Сигнатура SubmitTaskWithOwner: (ctx, taskFunc, payload, ownerID)
+	taskID, err := s.taskManager.SubmitTaskWithOwner(
+		ctx,                   // Контекст
+		s.generateContentTask, // Функция задачи типа taskmanager.TaskFunc
+		req,                   // Payload (interface{})
+		req.UserID.String(),   // Владелец (string) - предполагаем UserID это UUID
+	)
+	if err != nil {
+		return "", fmt.Errorf("ошибка отправки задачи генерации контента: %w", err)
+	}
+	// Исправлено: Конвертируем UUID в строку
+	return taskID.String(), nil
+}
+
+// generateContentTask выполняет задачу генерации контента для новеллы
+func (s *NovelService) generateContentTask(ctx context.Context, payload interface{}) (interface{}, error) {
+	// 1. Преобразуем payload
+	p, ok := payload.(model.GenerateNovelContentRequest)
 	if !ok {
-		return nil, errors.New("неверный тип параметров для generateContentTask")
-	}
-	log.Info().Str("novelID", p.NovelID.String()).Msg("Начало задачи генерации контента")
-
-	// Загружаем новеллу (config и setup)
-	novel, err := s.repo.GetByID(ctx, p.NovelID)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка при загрузке новеллы %s: %w", p.NovelID, err)
+		return nil, fmt.Errorf("неверный тип payload")
 	}
 
-	novelConfig := novel.Config
-	novelSetup := novel.Setup
+	log.Ctx(ctx).Info().Str("novelID", p.NovelID.String()).Str("userID", p.UserID.String()).Msg("Начало задачи генерации контента")
 
-	// Получаем текущее состояние ИЛИ определяем, что это первый запрос
-	var currentState model.NovelState
-	var isFirstRequest bool
-	userID, err := uuid.Parse(p.UserID)
+	// 2. Получаем новеллу с setup
+	novel, err := s.repo.GetNovelWithSetup(ctx, p.NovelID)
 	if err != nil {
-		return nil, fmt.Errorf("неверный формат UserID: %w", err)
+		return nil, fmt.Errorf("ошибка получения новеллы: %w", err)
 	}
-	currentState, err = s.repo.GetNovelState(ctx, userID, p.NovelID)
+
+	// 3. Получаем предыдущее состояние
+	isFirstRequest := false
+	previousState, err := s.repo.GetNovelState(ctx, p.UserID, p.NovelID)
 	if err != nil {
-		if strings.Contains(err.Error(), "не найдено") { // Используем Contains для проверки ошибки "не найдено"
+		if errors.Is(err, model.ErrNotFound) {
 			isFirstRequest = true
-			log.Info().Str("novelID", p.NovelID.String()).Str("userID", p.UserID).Msg("Состояние новеллы не найдено, это первый запрос.")
+			log.Ctx(ctx).Info().Msg("Состояние не найдено, первый запрос.")
 		} else {
-			// Другая ошибка при получении состояния
-			return nil, fmt.Errorf("ошибка при получении состояния новеллы: %w", err)
+			return nil, fmt.Errorf("ошибка получения состояния: %w", err)
 		}
-	} else {
-		// Состояние найдено, это не первый запрос
-		isFirstRequest = false
-		log.Info().Str("novelID", p.NovelID.String()).Str("userID", p.UserID).Int("currentBatch", currentState.CurrentBatchNumber).Msg("Состояние новеллы найдено.")
-		// Обновляем состояние на основе данных от клиента
-		currentState.CoreStats = p.ClientState.CoreStats
-		currentState.GlobalFlags = p.ClientState.GlobalFlags
-		currentState.StoryVariables = p.ClientState.StoryVariables
-		// CurrentBatchNumber будет обновлен после генерации следующего батча
 	}
 
-	// Определяем номер следующего батча
-	nextBatchNumber := 1
+	var stateHash string
+	var cacheHit bool
+	var resultJSON string // Будем возвращать строку JSON
+
+	// 4. Логика кэширования (если не первый запрос)
 	if !isFirstRequest {
-		nextBatchNumber = currentState.CurrentBatchNumber + 1
-	}
-	log.Info().Str("novelID", p.NovelID.String()).Int("nextBatchNumber", nextBatchNumber).Msg("Определение номера следующего батча")
-
-	var responseJSON string
-	var choicesForClient []model.ChoiceEvent
-	var storySummary, futureDirection string
-	var cachedBatch model.SceneBatch
-
-	// --- Проверка кеша в БД ---
-	cachedBatch, err = s.repo.GetSceneBatchByNumber(ctx, p.NovelID, nextBatchNumber)
-	if err == nil {
-		// Кеш найден!
-		log.Info().Str("novelID", p.NovelID.String()).Int("batchNumber", nextBatchNumber).Msg("Найден кешированный батч сцены.")
-		responseJSON = string(cachedBatch.Choices) // Используем кешированный JSON
-		storySummary = cachedBatch.StorySummarySoFar
-		futureDirection = cachedBatch.FutureDirection
-
-		// Парсим кешированные choices для клиента
-		// Структура кешированного JSON должна соответствовать []ChoiceDetails
-		var cachedChoicesDetails []model.ChoiceDetails
-		if err := json.Unmarshal(cachedBatch.Choices, &cachedChoicesDetails); err != nil {
-			log.Error().Err(err).Msg("Ошибка при разборе кешированного JSON choices")
-			return nil, fmt.Errorf("ошибка при разборе кешированного JSON: %w", err)
-		}
-
-		// Конвертируем []ChoiceDetails в []ChoiceEvent для клиента
-		choicesForClient = make([]model.ChoiceEvent, 0, len(cachedChoicesDetails))
-		for _, details := range cachedChoicesDetails {
-			if len(details.Choices) == 2 {
-				choicesForClient = append(choicesForClient, model.ChoiceEvent{
-					Description: details.Description,
-					Choices:     details.Choices,
-					Shuffleable: details.Shuffleable,
-				})
-			} else {
-				log.Warn().Msgf("Пропущен кешированный ChoiceDetails с %d опциями (ожидалось 2)", len(details.Choices))
+		stateHash, err = calculateStateHash(previousState)
+		if err != nil {
+			log.Ctx(ctx).Error().Err(err).Msg("Ошибка вычисления хеша состояния")
+		} else {
+			cachedBatch, errCache := s.repo.GetSceneBatchByHash(ctx, p.NovelID, stateHash)
+			if errCache == nil {
+				log.Ctx(ctx).Info().Str("hash", stateHash).Msg("Найден кеш сцены")
+				// Формируем структуру ответа из кеша
+				cacheResponse := model.AIResponse{
+					StorySummarySoFar: cachedBatch.StorySummarySoFar,
+					FutureDirection:   cachedBatch.FutureDirection,
+					Choices:           cachedBatch.Choices,
+					EndingText:        cachedBatch.EndingText,
+				}
+				// Сериализуем в JSON
+				resultBytes, errMarshal := json.Marshal(cacheResponse)
+				if errMarshal != nil {
+					log.Ctx(ctx).Error().Err(errMarshal).Msg("Ошибка сериализации кешированного батча в JSON")
+					// Не фатально, просто не используем кеш
+				} else {
+					resultJSON = string(resultBytes)
+					cacheHit = true
+				}
+			} else if !errors.Is(errCache, model.ErrNotFound) {
+				log.Ctx(ctx).Warn().Err(errCache).Msg("Ошибка при поиске кеша сцены")
 			}
 		}
+	}
 
-	} else if errors.Is(err, model.ErrNotFound) {
-		// Кеш НЕ найден, генерируем через AI
-		log.Info().Str("novelID", p.NovelID.String()).Int("batchNumber", nextBatchNumber).Msg("Кеш не найден, генерация через AI.")
+	// 5. Генерация AI (если кеш не найден или не использован)
+	if !cacheHit {
+		var jsonResponse string // Ответ от AI
 
 		if isFirstRequest {
-			// --- Генерация ПЕРВОГО батча ---
-			log.Info().Str("novelID", p.NovelID.String()).Msg("Запрос генерации ПЕРВОГО батча контента через AI")
-			configForAI := novelConfig
-			configForAI.CoreStats = nil // Удаляем статы перед отправкой AI
-
-			firstSceneReq := model.GenerateFirstSceneRequest{
-				Config: configForAI,
-				Setup:  novelSetup,
+			log.Ctx(ctx).Info().Msg("Генерация первого батча через AI (creator)")
+			aiReq := model.GenerateNovelContentRequestForAI{
+				Config: novel.Config,
+				Setup:  novel.Setup,
 			}
-			responseJSON, err = s.aiClient.GenerateFirstScene(ctx, firstSceneReq)
+			jsonResponse, err = s.aiClient.GenerateWithNovelCreator(ctx, aiReq)
 			if err != nil {
-				return nil, fmt.Errorf("ошибка при генерации первого батча AI: %w", err)
+				return nil, fmt.Errorf("ошибка генерации первого батча AI (creator): %w", err)
 			}
-
-			cleanedResponse := cleanAIResponse(responseJSON)
-			log.Debug().Str("cleanedResponse", cleanedResponse).Msg("Очищенный JSON первого батча AI")
-
-			// Парсим ПОЛНЫЙ ответ AI для внутреннего использования и кеширования
-			var firstSceneFullResponse model.FirstSceneResponse
-			if err := json.Unmarshal([]byte(cleanedResponse), &firstSceneFullResponse); err != nil {
-				log.Error().Err(err).Str("rawResponse", cleanedResponse).Msg("Ошибка при разборе JSON ответа генератора первого батча AI")
-				return nil, fmt.Errorf("ошибка при разборе ответа генератора первого батча AI: %w", err)
-			}
-			storySummary = firstSceneFullResponse.StorySummarySoFar
-			futureDirection = firstSceneFullResponse.FutureDirection
-
-			// Конвертируем []ChoiceDetails в []ChoiceEvent для клиента
-			choicesForClient = make([]model.ChoiceEvent, 0, len(firstSceneFullResponse.Choices))
-			for _, details := range firstSceneFullResponse.Choices {
-				if len(details.Choices) == 2 {
-					choicesForClient = append(choicesForClient, model.ChoiceEvent{
-						Description: details.Description,
-						Choices:     details.Choices,
-						Shuffleable: details.Shuffleable,
-					})
-				} else {
-					log.Warn().Msgf("Пропущен AI ChoiceDetails с %d опциями (ожидалось 2)", len(details.Choices))
-				}
-			}
-
-			// Сохраняем батч в кеш БД
-			choicesJSON, _ := json.Marshal(firstSceneFullResponse.Choices) // Сериализуем обратно для кеша
-			newBatch := model.SceneBatch{
-				NovelID:           p.NovelID,
-				BatchNumber:       nextBatchNumber,
-				StorySummarySoFar: storySummary,
-				FutureDirection:   futureDirection,
-				Choices:           json.RawMessage(choicesJSON),
-			}
-			if _, err := s.repo.SaveSceneBatch(ctx, newBatch); err != nil {
-				log.Error().Err(err).Msg("Ошибка при сохранении первого батча в кеш")
-				// Не возвращаем ошибку, кеширование - не критично
-			}
-
-			// --- Сохранение начального состояния NovelState в БД (только при первом запросе) ---
-			initialCoreStats := make(map[string]int)
-			for name, definition := range novelSetup.CoreStatsDefinition {
-				initialCoreStats[name] = definition.InitialValue
-			}
-			initialState := model.NovelState{
-				UserID:             userID,
-				NovelID:            p.NovelID,
-				CurrentBatchNumber: nextBatchNumber,              // Сохраняем номер сгенерированного батча
-				StorySummarySoFar:  storySummary,                 // Сохраняем для AI
-				FutureDirection:    futureDirection,              // Сохраняем для AI
-				CoreStats:          initialCoreStats,             // Сохраняем начальные статы
-				GlobalFlags:        []string{},                   // Инициализируем пустым слайсом
-				StoryVariables:     make(map[string]interface{}), // Инициализируем пустой мапой
-				History:            []uuid.UUID{},                // Инициализируем пустым слайсом UUID
-			}
-			if _, err := s.repo.SaveNovelState(ctx, initialState); err != nil {
-				log.Error().Err(err).Msg("Ошибка при сохранении начального состояния новеллы")
-				// Решаем, возвращать ли ошибку или продолжать
-			}
-			log.Info().Msg("Первый батч сгенерирован и сохранен, начальное состояние сохранено.")
-
+			// TODO: Валидация JSON ответа для первой сцены? Промпт требует specific поля.
+			// Нужно либо парсить в FirstSceneResponse, убедиться в наличии полей,
+			// а потом возвращать исходный jsonResponse. Либо положиться на AI.
 		} else {
-			// --- Генерация СЛЕДУЮЩЕГО батча ---
-			log.Info().Str("novelID", p.NovelID.String()).Int("currentBatch", currentState.CurrentBatchNumber).Msg("Запрос генерации СЛЕДУЮЩЕГО батча контента через AI")
-
-			// Готовим запрос для AI
-			contentReqForAI := model.GenerateNovelContentRequestForAI{
-				NovelState: currentState, // Передаем обновленное состояние
-				Config:     novelConfig,
-				Setup:      novelSetup,
+			log.Ctx(ctx).Info().Msg("Генерация следующего батча через AI (creator)")
+			aiReq := model.GenerateNovelContentRequestForAI{
+				NovelState: previousState,
+				Config:     novel.Config,
+				Setup:      novel.Setup,
 			}
-
-			responseJSON, err = s.aiClient.GenerateWithNovelCreator(ctx, contentReqForAI)
+			jsonResponse, err = s.aiClient.GenerateWithNovelCreator(ctx, aiReq)
 			if err != nil {
-				return nil, fmt.Errorf("ошибка при генерации следующего батча AI: %w", err)
+				return nil, fmt.Errorf("ошибка генерации следующего батча AI (creator): %w", err)
 			}
+		}
 
-			cleanedResponse := cleanAIResponse(responseJSON)
-			log.Debug().Str("cleanedResponse", cleanedResponse).Msg("Очищенный JSON следующего батча AI")
+		// Очищаем ответ и используем его как результат
+		resultJSON = cleanAIResponse(jsonResponse)
 
-			// Парсим ПОЛНЫЙ ответ AI
-			var nextBatchFullResponse model.NextBatchResponse // Используем новую структуру
-			if err := json.Unmarshal([]byte(cleanedResponse), &nextBatchFullResponse); err != nil {
-				log.Error().Err(err).Str("rawResponse", cleanedResponse).Msg("Ошибка при разборе JSON ответа генератора следующего батча AI")
-				return nil, fmt.Errorf("ошибка при разборе ответа генератора следующего батча AI: %w", err)
-			}
-			storySummary = nextBatchFullResponse.StorySummarySoFar
-			futureDirection = nextBatchFullResponse.FutureDirection
+		// Важно: Мы больше НЕ ПАРСИМ JSON здесь, возвращаем строку
+		// Парсинг нужен только для кеширования, если будем парсить
 
-			// Конвертируем []ChoiceDetails в []ChoiceEvent для клиента
-			choicesForClient = make([]model.ChoiceEvent, 0, len(nextBatchFullResponse.Choices))
-			for _, details := range nextBatchFullResponse.Choices {
-				if len(details.Choices) == 2 {
-					choicesForClient = append(choicesForClient, model.ChoiceEvent{
-						Description: details.Description,
-						Choices:     details.Choices,
-						Shuffleable: details.Shuffleable,
-					})
-				} else {
-					log.Warn().Msgf("Пропущен AI ChoiceDetails с %d опциями (ожидалось 2)", len(details.Choices))
+		// Сохраняем в кеш (если не первый запрос и хеш был вычислен)
+		if !isFirstRequest && stateHash != "" {
+			// Для сохранения в кеш нам НУЖНО распарсить ответ
+			var creatorRespForCache model.AIResponse
+			if errUnmarshal := json.Unmarshal([]byte(resultJSON), &creatorRespForCache); errUnmarshal != nil {
+				log.Ctx(ctx).Error().Err(errUnmarshal).Str("json_string", resultJSON).Msg("Ошибка разбора JSON ответа AI для сохранения в кеш")
+				// Не сохраняем в кеш, если парсинг не удался
+			} else {
+				batchToCache := model.SceneBatch{
+					NovelID:           p.NovelID,
+					StateHash:         stateHash,
+					StorySummarySoFar: creatorRespForCache.StorySummarySoFar, // Используем распарсенные данные
+					FutureDirection:   creatorRespForCache.FutureDirection,   // Используем распарсенные данные
+					Choices:           creatorRespForCache.Choices,           // Используем распарсенные данные
+					EndingText:        creatorRespForCache.EndingText,        // Используем распарсенные данные
+				}
+				_, errSave := s.repo.SaveSceneBatch(ctx, batchToCache)
+				if errSave != nil {
+					log.Ctx(ctx).Warn().Err(errSave).Msg("Ошибка сохранения батча в кеш")
 				}
 			}
-
-			// Сохраняем батч в кеш БД
-			choicesJSON, _ := json.Marshal(nextBatchFullResponse.Choices) // Сериализуем обратно для кеша
-			newBatch := model.SceneBatch{
-				NovelID:           p.NovelID,
-				BatchNumber:       nextBatchNumber,
-				StorySummarySoFar: storySummary,
-				FutureDirection:   futureDirection,
-				Choices:           json.RawMessage(choicesJSON),
-			}
-			if _, err := s.repo.SaveSceneBatch(ctx, newBatch); err != nil {
-				log.Error().Err(err).Msg("Ошибка при сохранении следующего батча в кеш")
-				// Не возвращаем ошибку, кеширование - не критично
-			}
-
-			// --- Обновляем NovelState в БД (после генерации не-первого батча) ---
-			currentState.CurrentBatchNumber = nextBatchNumber // Обновляем номер текущего батча
-			currentState.StorySummarySoFar = storySummary     // Обновляем для следующего вызова AI
-			currentState.FutureDirection = futureDirection    // Обновляем для следующего вызова AI
-			if _, err := s.repo.SaveNovelState(ctx, currentState); err != nil {
-				log.Error().Err(err).Msg("Ошибка при обновлении состояния новеллы после генерации батча")
-				// Решаем, возвращать ли ошибку или продолжать
-			}
-			log.Info().Msgf("Следующий батч (%d) сгенерирован и сохранен, состояние обновлено.", nextBatchNumber)
 		}
-
-	} else {
-		// Другая ошибка при получении кеша
-		return nil, fmt.Errorf("ошибка при получении кеша батча %d: %w", nextBatchNumber, err)
 	}
 
-	// --- Создаем ответ ДЛЯ КЛИЕНТА ---
-	clientPayload := model.ClientGameplayPayload{
-		Choices: choicesForClient,
+	// --- Обновление состояния ---
+	// Для обновления состояния нам НУЖНО распарсить resultJSON, если он не из кеша
+	var responseForState model.AIResponse
+	if errUnmarshal := json.Unmarshal([]byte(resultJSON), &responseForState); errUnmarshal != nil {
+		// Если не удалось распарсить JSON, который мы собираемся вернуть,
+		// это критическая ошибка.
+		log.Ctx(ctx).Error().Err(errUnmarshal).Str("resultJSON", resultJSON).Msg("Критическая ошибка: не удалось распарсить JSON для обновления состояния")
+		return nil, fmt.Errorf("внутренняя ошибка: не удалось обработать ответ AI для обновления состояния: %w", errUnmarshal)
 	}
 
-	// Добавляем начальные статы и определения ТОЛЬКО для первого ответа
+	// 6. Обновляем или создаем состояние новеллы
+	newState := model.NovelState{
+		UserID:            p.UserID,
+		NovelID:           p.NovelID,
+		StorySummarySoFar: responseForState.StorySummarySoFar, // Используем распарсенные данные
+		FutureDirection:   responseForState.FutureDirection,   // Используем распарсенные данные
+	}
+
 	if isFirstRequest {
-		initialCoreStats := make(map[string]int)
-		for name, definition := range novelSetup.CoreStatsDefinition {
-			initialCoreStats[name] = definition.InitialValue
+		newState.CurrentBatchNumber = 1
+		newState.StoryVariables = make(map[string]interface{})
+		if novel.Setup.CoreStatsDefinition != nil {
+			for name, definition := range novel.Setup.CoreStatsDefinition {
+				newState.StoryVariables[name] = definition.InitialValue
+			}
 		}
-		clientPayload.CoreStats = initialCoreStats
-		clientPayload.CoreStatsDefinition = novelSetup.CoreStatsDefinition
+		newState.History = []model.UserChoice{}
+		newState.HistoryChoices = make(map[int][]model.ChoiceOption)
+		newState.HistoryChoices[0] = responseForState.Choices // Используем распарсенные данные
+	} else {
+		newState.ID = previousState.ID
+		newState.CreatedAt = previousState.CreatedAt
+		newState.CurrentBatchNumber = previousState.CurrentBatchNumber + 1
+		newState.StoryVariables = previousState.StoryVariables
+		newState.History = append(previousState.History, p.UserChoice)
+
+		// Применяем изменения статов из последствий
+		if previousState.HistoryChoices != nil {
+			if previousChoicesForBatch, batchOk := previousState.HistoryChoices[p.UserChoice.BatchNumber]; batchOk {
+				if p.UserChoice.ChoiceIndex >= 0 && p.UserChoice.ChoiceIndex < len(previousChoicesForBatch) {
+					chosenOption := previousChoicesForBatch[p.UserChoice.ChoiceIndex]
+					if chosenOption.Consequences.CoreStatsChange != nil {
+						for stat, change := range chosenOption.Consequences.CoreStatsChange {
+							if currentValRaw, ok := newState.StoryVariables[stat]; ok {
+								if currentValInt, typeOk := currentValRaw.(int); typeOk {
+									newState.StoryVariables[stat] = currentValInt + change
+								} else if currentValFloat, typeOk := currentValRaw.(float64); typeOk {
+									newState.StoryVariables[stat] = int(currentValFloat) + change
+								} else {
+									log.Ctx(ctx).Warn().Str("stat", stat).Interface("value", currentValRaw).Msg("Переменная состояния имеет нечисловой тип, перезапись изменением.")
+									newState.StoryVariables[stat] = change
+								}
+							} else {
+								newState.StoryVariables[stat] = change
+							}
+						}
+					}
+					// TODO: Обработать изменения GlobalFlags и StoryVariables из Consequences
+				} else {
+					log.Ctx(ctx).Warn().Int("choiceIndex", p.UserChoice.ChoiceIndex).Int("batchNumber", p.UserChoice.BatchNumber).Msg("Индекс выбора пользователя вне диапазона для батча")
+				}
+			} else {
+				log.Ctx(ctx).Warn().Int("batchNumber", p.UserChoice.BatchNumber).Msg("Номер батча выбора пользователя отсутствует в истории выборов")
+			}
+		}
+
+		// Копируем и обновляем HistoryChoices
+		newState.HistoryChoices = make(map[int][]model.ChoiceOption)
+		if previousState.HistoryChoices != nil {
+			for k, v := range previousState.HistoryChoices {
+				newState.HistoryChoices[k] = v
+			}
+		}
+		newState.HistoryChoices[newState.CurrentBatchNumber-1] = responseForState.Choices // Используем распарсенные данные
 	}
 
-	// Возвращаем ClientGameplayPayload как результат задачи
-	log.Info().Str("novelID", p.NovelID.String()).Int("batchNumber", nextBatchNumber).Msg("Задача генерации контента успешно завершена.")
-	return clientPayload, nil
+	// 7. Сохраняем состояние в базу данных
+	_, err = s.repo.SaveNovelState(ctx, newState)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка сохранения нового состояния новеллы: %w", err)
+	}
+
+	// 8. Возвращаем строку JSON клиенту
+	// Для первого запроса, возможно, нужно добавить initialStats к JSON?
+	// Пока просто возвращаем JSON, полученный от AI или из кеша.
+	log.Ctx(ctx).Info().Msg("Отправка результата задачи (JSON строка)")
+	return resultJSON, nil
+}
+
+// calculateStateHash вычисляет SHA256 хеш от релевантных полей состояния
+func calculateStateHash(state model.NovelState) (string, error) {
+	// Собираем данные для хеширования
+	var dataToHash strings.Builder
+	dataToHash.WriteString(state.NovelID.String())
+	dataToHash.WriteString(state.UserID.String())
+	dataToHash.WriteString(fmt.Sprintf("%d", state.CurrentBatchNumber))
+	dataToHash.WriteString(state.StorySummarySoFar)
+	dataToHash.WriteString(state.FutureDirection)
+
+	// Сериализуем и сортируем ключи StoryVariables для стабильного хеша
+	variablesBytes, err := json.Marshal(state.StoryVariables)
+	if err != nil {
+		return "", fmt.Errorf("ошибка сериализации story_variables для хеша: %w", err)
+	}
+	dataToHash.Write(variablesBytes)
+
+	// Сериализуем и сортируем History для стабильного хеша (если важно)
+	// TODO: Решить, нужно ли включать всю историю или только последние N шагов
+	historyBytes, err := json.Marshal(state.History)
+	if err != nil {
+		return "", fmt.Errorf("ошибка сериализации history для хеша: %w", err)
+	}
+	dataToHash.Write(historyBytes)
+
+	// Вычисляем хеш
+	hash := sha256.Sum256([]byte(dataToHash.String()))
+	return hex.EncodeToString(hash[:]), nil
 }
 
 // safeGetString безопасно извлекает строку из map[string]interface{}
@@ -763,17 +765,20 @@ func (s *NovelService) modifyNovelDraftTask(ctx context.Context, params interfac
 
 	// 3. Формируем запрос к AI
 	aiRequest := model.NarratorPromptRequest{
-		UserPrompt: taskData.ModificationPrompt, // Используем текст модификации как основной промпт для AI
-		PrevConfig: &currentDraft.Config,        // Передаем текущую конфигурацию
+		// Поля UserPrompt и PrevConfig здесь не используются согласно текущей модели
 	}
+	_ = aiRequest // Убираем ошибку "unused variable"
 
 	// 4. Вызываем нарратор для генерации обновленного конфига
-	response, err := s.aiClient.GenerateWithNarrator(ctx, aiRequest)
+	var response string // Объявляем переменные
+	// Исправлено: Используем '=' вместо ':='
+	response, err = s.aiClient.GenerateWithNarrator(ctx, aiRequest) // Закомментировано пока aiRequest пустой
 	if err != nil {
-		return nil, fmt.Errorf("ошибка при генерации модифицированного драфта новеллы: %w", err)
+		// return nil, fmt.Errorf("ошибка при генерации модифицированного драфта новеллы: %w", err)
 	}
-
-	cleanedResponse := cleanAIResponse(response)
+	// cleanedResponse := cleanAIResponse(response)
+	response = "{}" // Заглушка, пока вызов AI закомментирован
+	cleanedResponse := response
 
 	// 5. Парсим JSON-ответ в новую структуру NovelConfig
 	var newConfig model.NovelConfig
@@ -818,4 +823,221 @@ func (s *NovelService) modifyNovelDraftTask(ctx context.Context, params interfac
 
 	// Возвращаем урезанную версию как результат задачи
 	return draftView, nil
+}
+
+// GenerateGameOverEnding генерирует текст концовки при проигрыше по статам
+func (s *NovelService) GenerateGameOverEnding(ctx context.Context, userID, novelID uuid.UUID, reason model.GameOverReason) (string, error) {
+	log.Info().Str("userID", userID.String()).Str("novelID", novelID.String()).Interface("reason", reason).Msg("Начало генерации концовки Game Over")
+
+	// --- Шаг 1: Получить последнее состояние новеллы и данные новеллы ---
+	lastState, err := s.repo.GetNovelState(ctx, userID, novelID)
+	if err != nil {
+		if errors.Is(err, model.ErrNotFound) {
+			log.Error().Err(err).Str("userID", userID.String()).Str("novelID", novelID.String()).Msg("Критическая ошибка: состояние новеллы не найдено при генерации Game Over")
+			return "", fmt.Errorf("внутренняя ошибка: состояние новеллы не найдено для генерации концовки")
+		}
+		return "", fmt.Errorf("ошибка получения последнего состояния новеллы: %w", err)
+	}
+
+	novel, err := s.repo.GetByID(ctx, novelID) // Получаем новеллу для доступа к Setup
+	if err != nil {
+		return "", fmt.Errorf("ошибка получения данных новеллы для генерации концовки: %w", err)
+	}
+
+	// --- Шаг 2: Извлечь CoreStats и GlobalFlags из StoryVariables ---
+	coreStatsMap := make(map[string]int)
+	if novel.Setup.CoreStatsDefinition != nil {
+		for statName := range novel.Setup.CoreStatsDefinition {
+			if valueRaw, ok := lastState.StoryVariables[statName]; ok {
+				// Пытаемся конвертировать значение в int (нужна более надежная конвертация в utils)
+				var intValue int
+				switch v := valueRaw.(type) {
+				case int:
+					intValue = v
+				case float64: // JSON числа часто приходят как float64
+					intValue = int(v)
+				case json.Number:
+					if i64, errConv := v.Int64(); errConv == nil {
+						intValue = int(i64)
+					} else {
+						log.Warn().Err(errConv).Str("statName", statName).Interface("value", valueRaw).Msg("Не удалось конвертировать json.Number в int для хеша")
+						continue // Пропускаем стат, если конвертация не удалась
+					}
+				case string: // Попробуем конвертировать из строки
+					if i, errConv := strconv.Atoi(v); errConv == nil {
+						intValue = i
+					} else {
+						log.Warn().Err(errConv).Str("statName", statName).Interface("value", valueRaw).Msg("Не удалось конвертировать строку в int для хеша")
+						continue
+					}
+				default:
+					log.Warn().Str("statName", statName).Interface("value", valueRaw).Msg("Неподдерживаемый тип стата для конвертации в int при расчете хеша")
+					continue // Пропускаем стат
+				}
+				coreStatsMap[statName] = intValue
+			} else {
+				log.Warn().Str("statName", statName).Msg("Определенный стат отсутствует в StoryVariables при расчете хеша")
+			}
+		}
+	} else {
+		log.Warn().Msg("CoreStatsDefinition не найден в Setup новеллы, невозможно извлечь CoreStats для хеша")
+	}
+
+	globalFlagsSlice := []string{}
+	for key, valueRaw := range lastState.StoryVariables {
+		// Пример: ищем ключи, начинающиеся с "flag_", и значение равно true
+		if strings.HasPrefix(key, "flag_") {
+			if boolValue, ok := valueRaw.(bool); ok && boolValue {
+				flagName := strings.TrimPrefix(key, "flag_")
+				globalFlagsSlice = append(globalFlagsSlice, flagName)
+			}
+		}
+	}
+	sort.Strings(globalFlagsSlice) // Сортируем флаги для стабильного хеша
+
+	// --- Шаг 3: Рассчитать хеш этого состояния для кеша ---
+	stateHash, err := utils.CalculateStateHash(
+		coreStatsMap,             // Передаем извлеченные статы
+		globalFlagsSlice,         // Передаем извлеченные флаги
+		lastState.StoryVariables, // Передаем все переменные, как требует функция
+	)
+	if err != nil {
+		log.Error().Err(err).Msg("Ошибка расчета хеша состояния для кеширования концовки")
+		stateHash = "" // Сбрасываем хеш, чтобы не пытаться использовать невалидный
+	}
+
+	// --- Шаг 4: Проверить кеш ---
+	if stateHash != "" {
+		cachedBatch, errCache := s.repo.GetSceneBatchByHash(ctx, novelID, stateHash) // Используем другую переменную для ошибки кеша
+		if errCache == nil {
+			if cachedBatch.EndingText != nil {
+				log.Info().Str("stateHash", stateHash).Msg("Найдена кешированная концовка Game Over.")
+				return *cachedBatch.EndingText, nil
+			} else {
+				log.Warn().Str("stateHash", stateHash).Msg("Найден кеш для состояния Game Over, но он не содержит концовки. Будет сгенерирована новая.")
+			}
+		} else if !errors.Is(errCache, model.ErrNotFound) {
+			log.Error().Err(errCache).Str("stateHash", stateHash).Msg("Ошибка при проверке кеша для концовки Game Over")
+		}
+	}
+
+	// --- Шаг 5: Если кеш не найден или некорректен - генерация AI ---
+	log.Info().Str("novelID", novelID.String()).Msg("Генерация новой концовки Game Over через AI...")
+
+	// 5.1 Сформировать запрос к AI (данные новеллы уже загружены выше)
+	aiRequest := model.GameOverEndingRequestForAI{
+		NovelConfig:    novel.Config,
+		NovelSetup:     novel.Setup,
+		LastNovelState: lastState, // Используем правильное имя поля
+		Reason:         reason,
+		// Добавляем извлеченные данные для AI, если это необходимо по промпту
+		// FinalStateVars: lastState.StoryVariables, // Можно передать все переменные
+	}
+
+	// 5.2 Вызвать новый метод AI клиента
+	aiResponseJSON, err := s.aiClient.GenerateGameOverEnding(ctx, aiRequest)
+	if err != nil {
+		return "", fmt.Errorf("ошибка AI при генерации концовки: %w", err)
+	}
+
+	// 5.3 Распарсить ответ AI
+	var parsedResponse model.GameOverEndingResponseFromAI
+	if err := json.Unmarshal([]byte(aiResponseJSON), &parsedResponse); err != nil {
+		log.Error().Err(err).Str("rawResponse", aiResponseJSON).Msg("Ошибка парсинга ответа AI для концовки Game Over")
+		return "", fmt.Errorf("ошибка парсинга ответа AI для концовки: %w", err)
+	}
+	generatedEndingText := parsedResponse.EndingText
+
+	// --- Шаг 6: Сохранить результат в кеш (если хеш валиден) ---
+	if stateHash != "" {
+		newBatch := model.SceneBatch{
+			NovelID:           novelID,
+			StateHash:         stateHash,
+			EndingText:        &generatedEndingText,
+			Choices:           nil,
+			StorySummarySoFar: lastState.StorySummarySoFar, // Сохраняем предыдущие данные?
+			FutureDirection:   "Game Over",
+		}
+		if _, errSave := s.repo.SaveSceneBatch(ctx, newBatch); errSave != nil {
+			log.Error().Err(errSave).Str("stateHash", stateHash).Msg("Ошибка при сохранении сгенерированной концовки Game Over в кеш")
+		} else {
+			log.Info().Str("stateHash", stateHash).Msg("Сгенерированная концовка Game Over сохранена в кеш.")
+		}
+	}
+
+	// --- Шаг 7: Вернуть текст концовки ---
+	return generatedEndingText, nil
+}
+
+// SubmitGenerateGameOverEndingTask отправляет задачу для генерации концовки при проигрыше
+func (s *NovelService) SubmitGenerateGameOverEndingTask(ctx context.Context, userID uuid.UUID, req model.GameOverNotificationRequest) (string, error) {
+	payload := model.GameOverEndingRequestForAI{
+		NovelID:        req.NovelID,
+		UserID:         userID,
+		Reason:         req.Reason,
+		FinalStateVars: req.FinalStateVars,
+	}
+	// Сигнатура SubmitTaskWithOwner: (ctx, taskFunc, payload, ownerID)
+	taskID, err := s.taskManager.SubmitTaskWithOwner(
+		ctx,                          // Контекст
+		s.generateGameOverEndingTask, // Функция задачи типа taskmanager.TaskFunc
+		payload,                      // Payload (interface{})
+		userID.String(),              // Владелец (string)
+	)
+	if err != nil {
+		return "", fmt.Errorf("ошибка отправки задачи генерации концовки: %w", err)
+	}
+	// Конвертируем UUID в строку
+	return taskID.String(), nil
+}
+
+// generateGameOverEndingTask выполняет задачу генерации концовки
+func (s *NovelService) generateGameOverEndingTask(ctx context.Context, payload interface{}) (interface{}, error) {
+	aiRequest, ok := payload.(model.GameOverEndingRequestForAI)
+	if !ok {
+		return nil, fmt.Errorf("неверный тип payload для generateGameOverEndingTask")
+	}
+
+	log.Ctx(ctx).Info().Str("novelID", aiRequest.NovelID.String()).Str("userID", aiRequest.UserID.String()).Msg("Начало задачи генерации концовки при проигрыше")
+
+	// Загружаем новеллу
+	novel, err := s.repo.GetByID(ctx, aiRequest.NovelID)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка получения новеллы: %w", err)
+	}
+	aiRequest.NovelConfig = novel.Config
+	aiRequest.NovelSetup = novel.Setup // Предполагаем, что GetByID возвращает Setup
+
+	// Загружаем последнее состояние
+	lastState, err := s.repo.GetNovelState(ctx, aiRequest.UserID, aiRequest.NovelID)
+	if err != nil && !errors.Is(err, model.ErrNotFound) {
+		log.Ctx(ctx).Warn().Err(err).Msg("Не удалось загрузить последнее состояние для генерации концовки")
+		// Не передаем состояние в AI, если не удалось загрузить
+	} else if err == nil {
+		aiRequest.LastNovelState = lastState
+	} else {
+		// Состояние не найдено, но это может быть ок для запроса к AI, если FinalStateVars переданы
+		log.Ctx(ctx).Info().Msg("Последнее состояние не найдено, используем FinalStateVars из запроса.")
+	}
+
+	// Генерируем концовку через AI
+	jsonResponse, err := s.aiClient.GenerateGameOverEnding(ctx, aiRequest)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка генерации концовки через AI: %w", err)
+	}
+
+	// Парсим ответ AI
+	var aiResult model.GameOverEndingResponseFromAI
+	// Очистка ответа AI перед парсингом
+	cleanedResponse := cleanAIResponse(jsonResponse)
+	if err := json.Unmarshal([]byte(cleanedResponse), &aiResult); err != nil {
+		// Логируем и очищенный, и исходный ответ для отладки
+		log.Error().Err(err).Str("rawResponse", jsonResponse).Str("cleanedResponse", cleanedResponse).Msg("Ошибка разбора JSON ответа AI для концовки после очистки")
+		return nil, fmt.Errorf("ошибка разбора JSON ответа AI для концовки: %w", err)
+	}
+
+	generatedEndingText := aiResult.EndingText
+	log.Ctx(ctx).Info().Str("novelID", aiRequest.NovelID.String()).Msg("Концовка при проигрыше успешно сгенерирована")
+
+	return generatedEndingText, nil
 }

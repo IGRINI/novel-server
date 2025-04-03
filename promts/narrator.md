@@ -41,17 +41,25 @@ This game session operates on four core variables that determine the balance and
 
 The narrator (this prompt) is responsible for generating these four core variables. You will define them in the JSON output as part of the "core_stats" field, which will then be sent to the setup component and the creator component, ensuring consistency throughout the game.
 
-For each core stat, you must specify not only its name, description, and initial value, but also the game-over conditions - whether the game should end when this stat reaches minimum (0), maximum (100), both extremes, or neither. This allows for creating more nuanced gameplay scenarios where, for example, a "Hunger" stat might end the game when it reaches 0 (starvation) but not when it reaches 100 (well-fed).
+For each core stat, you must specify:
+- Its unique `name` (string).
+- Its `description` (string).
+- Its `initial_value` (integer, typically around 50).
+- The `game_over_conditions` (object):
+    - `min`: (boolean) Whether the game ends if this stat reaches **0 or below**.
+    - `max`: (boolean) Whether the game ends if this stat reaches **100 or above**.
+
+This allows for creating different game over triggers based on fixed 0 and 100 thresholds.
 
 For example, a medieval fantasy might use variables like "Power", "People", "Army", and "Wealth", while a cyberpunk corporate setting should generate completely different variables such as "Digital Influence", "Public Opinion", "Security Forces", and "Corporate Assets". The names and interpretations of these variables must be 100% unique to each game request.
 
 Examples of variables in traditional settings (but you should create your own unique ones):
-- Power: Represents the influence and decision-making authority of the player within the kingdom. Game ends if it reaches 0 (overthrown) or 100 (absolute tyrant).
-- People: Reflects the loyalty and support of the kingdom's population. Game ends if it reaches 0 (rebellion) but not at 100 (complete adoration).
-- Army: Indicates the strength and readiness of the military force at the player's disposal. Game ends if it reaches 0 (defenseless) but not at 100 (military dominance).
-- Wealth: Represents the economic resources and financial stability of the kingdom. Game ends if it reaches 0 (bankruptcy) but not at 100 (prosperous).
+- Power: Represents influence. Might have `min: true` (game over at <= 0), `max: true` (game over at >= 100).
+- People: Reflects loyalty. Might have `min: true` (game over at <= 0), `max: false`.
+- Army: Indicates military strength. Might have `min: true` (game over at <= 0), `max: false`.
+- Wealth: Represents economic resources. Might have `min: true` (game over at <= 0), `max: false`.
 
-Remember, these examples are provided only for illustration. You must generate four completely new variables with appropriate names, descriptions, initial values, and game-over conditions for each game setup. There are no fixed variable names - all variable names should be freshly generated for each unique game context.
+Remember, these examples are provided only for illustration. You must generate four completely new variables with appropriate names, descriptions, initial values, and the boolean `min`/`max` game-over conditions for each game setup. There are no fixed variable names - all variable names should be freshly generated for each unique game context.
 
 ## 📝 Target JSON Structure
 
@@ -78,8 +86,8 @@ The JSON you generate must adhere to the following structure:
       "description": "Description of what this stat represents", 
       "initial_value": 50,
       "game_over_conditions": {
-        "min": true, // (Required) Whether the game ends if this stat reaches 0
-        "max": true  // (Required) Whether the game ends if this stat reaches 100
+        "min": true, // Game ends if <= 0
+        "max": true  // Game ends if >= 100
       }
     },
     "stat2_name": {
@@ -94,8 +102,8 @@ The JSON you generate must adhere to the following structure:
       "description": "Description of what this stat represents", 
       "initial_value": 50,
       "game_over_conditions": {
-        "min": true,
-        "max": false
+        "min": false,
+        "max": true
       }
     },
     "stat4_name": {
@@ -175,36 +183,36 @@ The JSON you generate must adhere to the following structure:
   "story_summary_so_far": "The story starts with Jax waking up in a dimly lit alley, suffering from amnesia.",
   "future_direction": "The first scene will involve Jax being found by a grizzled detective partner, leading to a choice about investigating the Neon Alley Market or trying to access fragmented memories.",
   "core_stats": {
-    "stat1_name": {
-      "description": "Power",
-      "initial_value": 50,
+    "Network Access": {
+      "description": "Your ability to infiltrate and control corporate networks.",
+      "initial_value": 60,
       "game_over_conditions": {
-        "min": true,
-        "max": true
-      }
-    },
-    "stat2_name": {
-      "description": "People",
-      "initial_value": 50,
-      "game_over_conditions": {
-        "min": true,
+        "min": true, // Game over if <= 0
         "max": false
       }
     },
-    "stat3_name": {
-      "description": "Army",
-      "initial_value": 50,
+    "Street Cred": {
+      "description": "Your reputation and influence among the city's underground elements.",
+      "initial_value": 40,
       "game_over_conditions": {
-        "min": true,
+        "min": true, // Game over if <= 0
         "max": false
       }
     },
-    "stat4_name": {
-      "description": "Wealth",
+    "Heat Level": {
+      "description": "The amount of attention you've attracted from MegaCorp security and law enforcement.",
+      "initial_value": 20,
+      "game_over_conditions": {
+        "min": false,
+        "max": true // Game over if >= 100
+      }
+    },
+    "Financial Resources": {
+      "description": "Your available funds for bribes, equipment, and operations.",
       "initial_value": 50,
       "game_over_conditions": {
-        "min": true,
-        "max": true
+        "min": true, // Game over if <= 0
+        "max": false
       }
     }
   },

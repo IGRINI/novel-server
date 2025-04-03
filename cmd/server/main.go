@@ -12,7 +12,9 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jmoiron/sqlx"
 	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 	"github.com/rs/cors"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -58,6 +60,15 @@ func main() {
 	defer dbPool.Close()
 	log.Info().Msg("database connection established")
 
+	// Инициализация sqlx.DB
+	log.Info().Msg("initializing sqlx database connection...")
+	sqlxDB, err := initSqlxDatabase(cfg.Database)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to initialize sqlx database")
+	}
+	defer sqlxDB.Close()
+	log.Info().Msg("sqlx database connection established")
+
 	// Применяем миграции
 	log.Info().Msg("applying database migrations...")
 	if err := database.ApplyMigrations(dbPool, "internal/database/migrations"); err != nil {
@@ -69,7 +80,7 @@ func main() {
 	aiClient := initAIClient(cfg.AI)
 
 	// Инициализация репозиториев
-	novelRepo := repository.NewNovelRepository(dbPool)
+	novelRepo := repository.NewNovelRepository(dbPool, sqlxDB)
 	userRepo := auth.NewRepository(dbPool)
 
 	// Создаем менеджер задач
@@ -80,7 +91,7 @@ func main() {
 	wsManager.Start()
 
 	// Инициализация сервисов
-	novelService := service.NewNovelService(novelRepo, aiClient, taskManager, wsManager)
+	novelService := service.NewNovelService(*novelRepo, taskManager, *aiClient, wsManager)
 	authService := auth.NewService(userRepo, cfg.JWT.Secret)
 
 	// Инициализация HTTP обработчиков
@@ -101,7 +112,9 @@ func main() {
 	// Создаем подмаршрутизатор для API, требующего аутентификации
 	apiRouter := router.PathPrefix("/api").Subrouter()
 
-	// Применяем JWT Middleware к этому подмаршрутизатору
+	// Применяем Middleware: сначала логгирование, потом JWT
+	// (Порядок важен: JWT может использовать логгер, если он уже есть в контексте)
+	apiRouter.Use(LoggingMiddleware)
 	jwtMiddleware := middleware.JWTMiddleware([]byte(cfg.JWT.Secret))
 	apiRouter.Use(jwtMiddleware)
 
@@ -183,6 +196,29 @@ func initDatabase(cfg config.DatabaseConfig) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
+// initSqlxDatabase инициализирует соединение с базой данных с использованием sqlx
+func initSqlxDatabase(cfg config.DatabaseConfig) (*sqlx.DB, error) {
+	connString := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
+		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Name, cfg.SSLMode)
+
+	db, err := sqlx.Connect("postgres", connString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to database using sqlx: %w", err)
+	}
+
+	db.SetMaxOpenConns(cfg.MaxConnections)
+	db.SetMaxIdleConns(cfg.MaxConnections / 2) // Пример: половина от максимального
+	db.SetConnMaxIdleTime(time.Duration(cfg.MaxConnIdleMinutes) * time.Minute)
+
+	// Проверка соединения
+	if err := db.Ping(); err != nil {
+		db.Close() // Закрываем соединение, если пинг не удался
+		return nil, fmt.Errorf("failed to ping database using sqlx: %w", err)
+	}
+
+	return db, nil
+}
+
 // initAIClient инициализирует клиент для работы с ИИ-сервисами
 func initAIClient(cfg config.AIConfig) *ai.Client {
 	aiCfg := ai.Config{
@@ -196,6 +232,18 @@ func initAIClient(cfg config.AIConfig) *ai.Client {
 		log.Fatal().Err(err).Msg("failed to initialize AI client")
 	}
 	return client
+}
+
+// LoggingMiddleware внедряет настроенный логгер в контекст запроса
+func LoggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Внедряем глобальный логгер в контекст запроса
+		ctxWithLogger := log.Logger.WithContext(r.Context())
+		// Создаем новый запрос с обновленным контекстом
+		r = r.WithContext(ctxWithLogger)
+		// Передаем запрос дальше
+		next.ServeHTTP(w, r)
+	})
 }
 
 // gracefulShutdown обеспечивает плавное завершение работы сервера

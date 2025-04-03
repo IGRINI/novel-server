@@ -2,26 +2,33 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jmoiron/sqlx"
+	_ "github.com/lib/pq" // Импортируем драйвер PostgreSQL для sqlx
+	"github.com/rs/zerolog/log"
 
 	"novel-server/internal/model"
 )
 
-// NovelRepository представляет репозиторий для работы с новеллами
+// NovelRepository предоставляет доступ к данным новелл
 type NovelRepository struct {
 	pool *pgxpool.Pool
+	db   *sqlx.DB
 }
 
 // NewNovelRepository создает новый экземпляр репозитория для работы с новеллами
-func NewNovelRepository(pool *pgxpool.Pool) *NovelRepository {
+func NewNovelRepository(pool *pgxpool.Pool, db *sqlx.DB) *NovelRepository {
 	return &NovelRepository{
 		pool: pool,
+		db:   db,
 	}
 }
 
@@ -103,7 +110,7 @@ func (r *NovelRepository) Create(ctx context.Context, novel model.Novel) (model.
 	return createdNovel, nil
 }
 
-// GetByID получает новеллу по ID
+// GetByID получает новеллу по ID (без config и setup)
 func (r *NovelRepository) GetByID(ctx context.Context, id uuid.UUID) (model.Novel, error) {
 	query := `
 		SELECT id, title, description, author_id, is_public, cover_image, tags, created_at, updated_at, published_at
@@ -114,7 +121,9 @@ func (r *NovelRepository) GetByID(ctx context.Context, id uuid.UUID) (model.Nove
 	row := r.pool.QueryRow(ctx, query, id)
 
 	var novel model.Novel
-	var tagsJSONStr string
+	var tagsJSONStr sql.NullString // Используем sql.NullString для tags
+	var publishedAt sql.NullTime   // Используем sql.NullTime для published_at
+
 	err := row.Scan(
 		&novel.ID,
 		&novel.Title,
@@ -125,16 +134,25 @@ func (r *NovelRepository) GetByID(ctx context.Context, id uuid.UUID) (model.Nove
 		&tagsJSONStr,
 		&novel.CreatedAt,
 		&novel.UpdatedAt,
-		&novel.PublishedAt,
+		&publishedAt,
 	)
 	if err != nil {
-		return model.Novel{}, err
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.Novel{}, model.ErrNotFound
+		}
+		return model.Novel{}, fmt.Errorf("ошибка сканирования новеллы по ID: %w", err)
 	}
 
-	// Разбор тегов из JSON
-	err = json.Unmarshal([]byte(tagsJSONStr), &novel.Tags)
-	if err != nil {
-		return model.Novel{}, err
+	// Разбор тегов из JSON, если они есть
+	if tagsJSONStr.Valid {
+		err = json.Unmarshal([]byte(tagsJSONStr.String), &novel.Tags)
+		if err != nil {
+			return model.Novel{}, fmt.Errorf("ошибка разбора tags JSON: %w", err)
+		}
+	}
+	// Присваиваем published_at, если оно есть
+	if publishedAt.Valid {
+		novel.PublishedAt = &publishedAt.Time
 	}
 
 	return novel, nil
@@ -309,7 +327,7 @@ func (r *NovelRepository) ListPublic(ctx context.Context, limit, offset int) ([]
 // GetNovelState получает состояние новеллы для конкретного пользователя и новеллы
 func (r *NovelRepository) GetNovelState(ctx context.Context, userID, novelID uuid.UUID) (model.NovelState, error) {
 	query := `
-		SELECT id, user_id, novel_id, current_batch_number, story_summary_so_far, future_direction, variables, history, created_at, updated_at
+		SELECT id, user_id, novel_id, current_batch_number, story_summary_so_far, future_direction, story_variables, history, created_at, updated_at
 		FROM novel_states
 		WHERE user_id = $1 AND novel_id = $2
 	`
@@ -332,15 +350,15 @@ func (r *NovelRepository) GetNovelState(ctx context.Context, userID, novelID uui
 		&state.UpdatedAt,
 	)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return model.NovelState{}, fmt.Errorf("состояние для пользователя %s и новеллы %s не найдено", userID, novelID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.NovelState{}, model.ErrNotFound
 		}
 		return model.NovelState{}, fmt.Errorf("ошибка при получении состояния новеллы: %w", err)
 	}
 
 	// Разбираем JSON
 	if err := json.Unmarshal(variablesJSON, &state.StoryVariables); err != nil {
-		return model.NovelState{}, fmt.Errorf("ошибка разбора JSON variables: %w", err)
+		return model.NovelState{}, fmt.Errorf("ошибка разбора JSON story_variables: %w", err)
 	}
 	if err := json.Unmarshal(historyJSON, &state.History); err != nil {
 		return model.NovelState{}, fmt.Errorf("ошибка разбора JSON history: %w", err)
@@ -367,13 +385,13 @@ func (r *NovelRepository) SaveNovelState(ctx context.Context, state model.NovelS
 
 	// Запрос для вставки или обновления (UPSERT)
 	query := `
-		INSERT INTO novel_states (id, user_id, novel_id, current_batch_number, story_summary_so_far, future_direction, variables, history, created_at, updated_at)
+		INSERT INTO novel_states (id, user_id, novel_id, current_batch_number, story_summary_so_far, future_direction, story_variables, history, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (user_id, novel_id) DO UPDATE SET
 			current_batch_number = EXCLUDED.current_batch_number,
 			story_summary_so_far = EXCLUDED.story_summary_so_far,
 			future_direction = EXCLUDED.future_direction,
-			variables = EXCLUDED.variables,
+			story_variables = EXCLUDED.story_variables,
 			history = EXCLUDED.history,
 			updated_at = EXCLUDED.updated_at
 		RETURNING id, created_at, updated_at
@@ -382,8 +400,7 @@ func (r *NovelRepository) SaveNovelState(ctx context.Context, state model.NovelS
 	// Если ID не установлен (новая запись), генерируем его
 	if state.ID == uuid.Nil {
 		state.ID = uuid.New()
-		state.CreatedAt = now        // Устанавливаем время создания только для новых записей
-		state.CurrentBatchNumber = 0 // Инициализируем номер батча для нового состояния
+		state.CreatedAt = now // Устанавливаем время создания только для новых записей
 	}
 
 	// Выполняем запрос
@@ -422,77 +439,72 @@ func (r *NovelRepository) DeleteNovelState(ctx context.Context, userID, novelID 
 	return nil
 }
 
-// SaveSceneBatch сохраняет сгенерированный батч сцены в базу данных
+// SaveSceneBatch сохраняет или обновляет кешированный батч сцены
+// Использует sqlx для удобства работы со структурами и UPSERT.
 func (r *NovelRepository) SaveSceneBatch(ctx context.Context, batch model.SceneBatch) (model.SceneBatch, error) {
-	query := `
-		INSERT INTO scenes (id, novel_id, batch_number, story_summary_so_far, future_direction, choices, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-		ON CONFLICT (novel_id, batch_number) DO UPDATE SET
-			story_summary_so_far = EXCLUDED.story_summary_so_far,
-			future_direction = EXCLUDED.future_direction,
-			choices = EXCLUDED.choices,
-			updated_at = EXCLUDED.updated_at
-		RETURNING id, created_at, updated_at
-	`
-
-	now := time.Now()
-	batch.UpdatedAt = now
-
-	// Если ID не указан, генерируем новый
+	// Гарантируем, что ID установлен
 	if batch.ID == uuid.Nil {
 		batch.ID = uuid.New()
-		batch.CreatedAt = now
 	}
+	batch.CreatedAt = time.Now().UTC() // Используем UTC для консистентности
 
-	// choices уже должны быть в виде JSONB в модели SceneBatch
-	err := r.pool.QueryRow(ctx, query,
-		batch.ID,
-		batch.NovelID,
-		batch.BatchNumber,
-		batch.StorySummarySoFar,
-		batch.FutureDirection,
-		batch.Choices, // Передаем JSONB напрямую
-		batch.CreatedAt,
-	).Scan(&batch.ID, &batch.CreatedAt, &batch.UpdatedAt)
-
-	if err != nil {
-		return model.SceneBatch{}, fmt.Errorf("ошибка при сохранении батча сцены: %w", err)
-	}
-
-	return batch, nil
-}
-
-// GetSceneBatchByNumber получает батч сцены по ID новеллы и номеру батча
-func (r *NovelRepository) GetSceneBatchByNumber(ctx context.Context, novelID uuid.UUID, batchNumber int) (model.SceneBatch, error) {
 	query := `
-		SELECT id, novel_id, batch_number, story_summary_so_far, future_direction, choices, created_at, updated_at
-		FROM scenes
-		WHERE novel_id = $1 AND batch_number = $2
+	INSERT INTO scene_batches (id, novel_id, state_hash, story_summary_so_far, future_direction, choices, ending_text, created_at)
+	VALUES (:id, :novel_id, :state_hash, :story_summary_so_far, :future_direction, :choices, :ending_text, :created_at)
+	ON CONFLICT (novel_id, state_hash)
+	DO UPDATE SET
+		story_summary_so_far = EXCLUDED.story_summary_so_far,
+		future_direction = EXCLUDED.future_direction,
+		choices = EXCLUDED.choices,
+		ending_text = EXCLUDED.ending_text
+	RETURNING id, novel_id, state_hash, story_summary_so_far, future_direction, choices, ending_text, created_at
 	`
 
-	row := r.pool.QueryRow(ctx, query, novelID, batchNumber)
-
-	var batch model.SceneBatch
-	// choices будет сканироваться напрямую в поле типа json.RawMessage или []byte
-
-	err := row.Scan(
-		&batch.ID,
-		&batch.NovelID,
-		&batch.BatchNumber,
-		&batch.StorySummarySoFar,
-		&batch.FutureDirection,
-		&batch.Choices, // Сканируем JSONB
-		&batch.CreatedAt,
-		&batch.UpdatedAt,
-	)
+	// Используем NamedExecContext для удобства передачи структуры
+	rows, err := r.db.NamedQueryContext(ctx, query, batch)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			return model.SceneBatch{}, fmt.Errorf("батч %d для новеллы %s не найден: %w", batchNumber, novelID, model.ErrNotFound) // Исправлено: используем model.ErrNotFound
+		return model.SceneBatch{}, fmt.Errorf("ошибка сохранения scene batch: %w", err)
+	}
+	defer rows.Close()
+
+	// Сканируем возвращенную строку обратно в структуру
+	var savedBatch model.SceneBatch
+	if rows.Next() {
+		err = rows.StructScan(&savedBatch)
+		if err != nil {
+			return model.SceneBatch{}, fmt.Errorf("ошибка сканирования сохраненного scene batch: %w", err)
 		}
-		return model.SceneBatch{}, fmt.Errorf("ошибка при получении батча сцены: %w", err)
+	} else {
+		// Если RETURNING ничего не вернул (что странно для UPSERT), возвращаем исходный батч
+		// Или можно вернуть ошибку, если это считается невозможным состоянием
+		log.Warn().Msg("UPSERT для scene_batches не вернул строку")
+		return batch, nil // Возвращаем исходный батч с присвоенным ID и CreatedAt
 	}
 
-	// Разбор JSON choices не нужен здесь, так как мы храним его как json.RawMessage или []byte в модели
+	if err := rows.Err(); err != nil { // Проверяем ошибки после итерации
+		return model.SceneBatch{}, fmt.Errorf("ошибка итерации после сохранения scene batch: %w", err)
+	}
+
+	return savedBatch, nil
+}
+
+// GetSceneBatchByHash ищет кешированный батч сцены по хешу состояния
+func (r *NovelRepository) GetSceneBatchByHash(ctx context.Context, novelID uuid.UUID, stateHash string) (model.SceneBatch, error) {
+	query := `
+	SELECT id, novel_id, state_hash, story_summary_so_far, future_direction, choices, ending_text, created_at
+	FROM scene_batches
+	WHERE novel_id = $1 AND state_hash = $2
+	`
+
+	var batch model.SceneBatch
+	err := r.db.GetContext(ctx, &batch, query, novelID, stateHash)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Используем стандартную ошибку "не найдено"
+			return model.SceneBatch{}, model.ErrNotFound
+		}
+		return model.SceneBatch{}, fmt.Errorf("ошибка получения scene batch по хешу: %w", err)
+	}
 
 	return batch, nil
 }
@@ -671,4 +683,60 @@ func (r *NovelRepository) GetDraftsByUserID(ctx context.Context, userID uuid.UUI
 	}
 
 	return drafts, nil
+}
+
+// GetNovelWithSetup получает новеллу по ID вместе с её setup
+func (r *NovelRepository) GetNovelWithSetup(ctx context.Context, id uuid.UUID) (model.Novel, error) {
+	query := `
+		SELECT id, title, description, author_id, is_public, cover_image, tags, setup, created_at, updated_at, published_at
+		FROM novels
+		WHERE id = $1
+	`
+
+	row := r.pool.QueryRow(ctx, query, id)
+
+	var novel model.Novel
+	var tagsJSONStr, setupJSONStr sql.NullString // Используем sql.NullString
+	var publishedAt sql.NullTime
+
+	err := row.Scan(
+		&novel.ID,
+		&novel.Title,
+		&novel.Description,
+		&novel.AuthorID,
+		&novel.IsPublic,
+		&novel.CoverImage,
+		&tagsJSONStr,
+		&setupJSONStr, // Сканируем setup
+		&novel.CreatedAt,
+		&novel.UpdatedAt,
+		&publishedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return model.Novel{}, model.ErrNotFound
+		}
+		return model.Novel{}, fmt.Errorf("ошибка сканирования новеллы с setup по ID: %w", err)
+	}
+
+	// Разбор JSON полей, если они не NULL
+	if tagsJSONStr.Valid {
+		if err := json.Unmarshal([]byte(tagsJSONStr.String), &novel.Tags); err != nil {
+			return model.Novel{}, fmt.Errorf("ошибка разбора tags JSON: %w", err)
+		}
+	}
+	if setupJSONStr.Valid {
+		if err := json.Unmarshal([]byte(setupJSONStr.String), &novel.Setup); err != nil {
+			return model.Novel{}, fmt.Errorf("ошибка разбора setup JSON: %w", err)
+		}
+	} else {
+		// Если setup NULL в базе, инициализируем пустым значением
+		novel.Setup = model.NovelSetup{}
+	}
+
+	if publishedAt.Valid {
+		novel.PublishedAt = &publishedAt.Time
+	}
+
+	return novel, nil
 }

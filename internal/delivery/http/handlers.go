@@ -42,6 +42,7 @@ func (h *Handler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/novels/{id}/state", h.GetNovelState).Methods("GET")
 	router.HandleFunc("/novels/{id}/state", h.SaveNovelState).Methods("POST")
 	router.HandleFunc("/novels/{id}/state", h.DeleteNovelState).Methods("DELETE")
+	router.HandleFunc("/novels/{id}/gameover", h.HandleGameOverNotification).Methods("POST")
 
 	// Новый маршрут для получения новелл пользователя
 	router.HandleFunc("/my-novels", h.GetUserNovels).Methods("GET")
@@ -293,6 +294,14 @@ func (h *Handler) GenerateNovelContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		log.Error().Err(err).Str("userIDStr", userIDStr).Msg("Не удалось преобразовать userID из строки в UUID в GenerateNovelContent")
+		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: неверный формат ID пользователя")
+		return
+	}
+	req.UserID = userID // Присваиваем преобразованный UUID
+
 	// Проверяем, что novel_id указан
 	if req.NovelID == uuid.Nil {
 		RespondWithError(w, http.StatusBadRequest, "неверный формат запроса: novel_id обязателен")
@@ -304,9 +313,6 @@ func (h *Handler) GenerateNovelContent(w http.ResponseWriter, r *http.Request) {
 	// 	RespondWithError(w, http.StatusBadRequest, "неверный формат запроса: client_state обязателен")
 	// 	return
 	// }
-
-	// Устанавливаем UserID в структуру запроса из токена
-	req.UserID = userIDStr
 
 	// Запускаем асинхронную генерацию контента
 	taskID, err := h.novelService.GenerateNovelContentAsync(r.Context(), req)
@@ -611,6 +617,63 @@ func (h *Handler) GetDraftDetails(w http.ResponseWriter, r *http.Request) {
 
 	// Отправляем детали черновика клиенту
 	RespondWithJSON(w, http.StatusOK, draftView)
+}
+
+// HandleGameOverNotification обрабатывает уведомление от клиента о Game Over по статам
+func (h *Handler) HandleGameOverNotification(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	novelID, err := uuid.Parse(vars["id"])
+	if err != nil {
+		RespondWithError(w, http.StatusBadRequest, "неверный формат ID новеллы")
+		return
+	}
+
+	// Получаем userID из контекста
+	userIDStr, ok := middleware.GetUserIDFromContext(r.Context())
+	if !ok {
+		log.Error().Msg("Не удалось извлечь userID из контекста в HandleGameOverNotification")
+		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: не удалось получить ID пользователя")
+		return
+	}
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		log.Error().Err(err).Str("userIDStr", userIDStr).Msg("Не удалось преобразовать userID из строки в UUID в HandleGameOverNotification")
+		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: неверный формат ID пользователя")
+		return
+	}
+
+	// Парсим тело запроса
+	var req model.GameOverNotificationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		RespondWithError(w, http.StatusBadRequest, fmt.Sprintf("неверный формат запроса: %v", err))
+		return
+	}
+
+	// Валидация причины (базовая)
+	if req.Reason.StatName == "" || req.Reason.Condition == "" {
+		RespondWithError(w, http.StatusBadRequest, "неверный формат запроса: не указана причина game over (stat_name, condition)")
+		return
+	}
+
+	log.Info().Str("novelID", novelID.String()).Str("userID", userID.String()).Interface("reason", req.Reason).Msg("Получено уведомление о Game Over")
+
+	// Вызываем сервис для генерации концовки
+	// Предполагаем, что сервис вернет только текст концовки
+	endingText, err := h.novelService.GenerateGameOverEnding(r.Context(), userID, novelID, req.Reason)
+	if err != nil {
+		// Обрабатываем специфичные ошибки, если сервис их возвращает (например, новелла не найдена)
+		log.Error().Err(err).Str("novelID", novelID.String()).Str("userID", userID.String()).Msg("Ошибка при генерации концовки Game Over")
+		RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("ошибка при генерации концовки: %v", err))
+		return
+	}
+
+	// Формируем ответ клиенту
+	responsePayload := model.ClientGameplayPayload{
+		EndingText: endingText,
+		IsGameOver: true,
+	}
+
+	RespondWithJSON(w, http.StatusOK, responsePayload)
 }
 
 // RespondWithError отправляет ошибку в формате JSON

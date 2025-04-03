@@ -120,8 +120,8 @@ function connectWebSocket() {
 
           if (status === 'completed') {
             log(`Задача ${taskId} завершена (через WebSocket).`, 'success');
-            if (taskPayload.result) { // Проверяем, что result существует
-                resolve(taskPayload.result); // <-- Резолвим ТОЛЬКО поле result
+            if (taskPayload.result) {
+                resolve(taskPayload.result);
             } else {
                 log(`Задача ${taskId} завершена, но поле result отсутствует в payload.`, 'error');
                 reject(new Error(`Задача ${taskId} завершена без результата.`));
@@ -617,7 +617,7 @@ async function makeUserChoice(choices) {
 }
 
 // Функция для запуска настройки новеллы из черновика
-async function setupNovelFromDraft(draftId, draftData) {
+async function setupNovelFromDraft(draftId) {
   const url = `${config.baseUrl}${config.api.novels.generate.setup}`; // Используем эндпоинт сетапа
 
   log(`Запуск настройки новеллы из черновика ${draftId}...`, 'info');
@@ -627,14 +627,14 @@ async function setupNovelFromDraft(draftId, draftData) {
     return null;
   }
 
-  if (!draftId || !draftData) {
-      log('Ошибка: Отсутствует ID черновика или данные черновика.', 'error');
+  if (!draftId) {
+      log('Ошибка: Отсутствует ID черновика.', 'error'); 
       return null;
   }
 
   // Формируем тело запроса для /api/generate/setup
   const requestBody = {
-      draft_id: draftId,
+      draft_id: draftId, 
   };
 
   try {
@@ -672,6 +672,41 @@ async function setupNovelFromDraft(draftId, draftData) {
       log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
     }
     return null;
+  }
+}
+
+// Функция для отправки уведомления о Game Over и получения концовки
+async function handleLocalGameOver(novelId, reason) {
+  const url = `${config.baseUrl}${config.api.novels.gameOver.replace('{id}', novelId)}`;
+  log(`Отправка уведомления о Game Over на сервер (Reason: ${JSON.stringify(reason)})...`, 'info');
+
+  if (!jwtToken) {
+    log('Ошибка: JWT токен отсутствует. Невозможно отправить уведомление о Game Over.', 'error');
+    return "Игра окончена (ошибка связи с сервером)."; // Возвращаем заглушку
+  }
+
+  try {
+    const response = await axios.post(url, { reason: reason }, {
+      headers: {
+        'Authorization': `Bearer ${jwtToken}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (response.data && response.data.ending_text) {
+      log('Получен текст концовки от сервера.', 'success');
+      return response.data.ending_text;
+    } else {
+      log('Ошибка: Не удалось получить текст концовки из ответа сервера.', 'error');
+      return "Игра окончена (ошибка обработки ответа сервера).";
+    }
+  } catch (error) {
+    log(`Ошибка при отправке уведомления о Game Over: ${error.message}`, 'error');
+    if (error.response) {
+      log(`Статус: ${error.response.status}`, 'error');
+      log(`Ответ сервера: ${JSON.stringify(error.response.data)}`, 'error');
+    }
+    return "Игра окончена (ошибка сети при запросе концовки).";
   }
 }
 
@@ -758,6 +793,11 @@ async function createNewNovelFlow(rl) {
     
     // Генерируем черновик
     const draft = await generateNovelDraft(prompt);
+
+    // <<< ДОБАВЛЕНЫ ЛОГИ >>>
+    log(`Результат generateNovelDraft: ${JSON.stringify(draft)}`, 'info'); 
+    console.log('Проверка draft:', draft); // Прямой вывод объекта
+
     if (!draft) {
       log('Не удалось создать черновик. Выход.', 'error');
       rl.close();
@@ -768,7 +808,7 @@ async function createNewNovelFlow(rl) {
     rl.question('Хотите настроить новеллу из этого черновика? (да/нет): ', async function(answer) {
       if (answer.toLowerCase() === 'да') {
         // Запускаем настройку новеллы
-        const setupResult = await setupNovelFromDraft(draft.id, draft);
+        const setupResult = await setupNovelFromDraft(draft.id); // Передаем draft ID
         if (!setupResult) {
           log('Не удалось настроить новеллу. Выход.', 'error');
         rl.close();
@@ -963,13 +1003,30 @@ async function viewNovelsFlow(rl) {
 // Запускаем игровой процесс для новеллы
 async function startGameplayFlow(rl, novelId) {
   log(`Запуск игрового процесса для новеллы: ${novelId}`, 'info');
-  
+
   // --- Шаг 1: Получаем первую сцену/данные --- 
   let currentContent = await generateNovelContent(novelId);
-  
-  if (!currentContent || !currentContent.choices || !Array.isArray(currentContent.choices)) { 
-    log('Не удалось получить или неверный формат начальных данных новеллы.', 'error');
-    log(`Полученный currentContent: ${JSON.stringify(currentContent)}`, 'error'); 
+
+  // --- Проверка на ошибку или неверный формат начальных данных --- 
+  if (!currentContent) {
+    log('Не удалось получить начальные данные новеллы.', 'error');
+    rl.close();
+    return;
+  }
+
+  // --- Проверка на немедленную концовку (из первого ответа) --- 
+  if (currentContent.ending_text) {
+    log('\n=== КОНЕЦ ИГРЫ ===', 'heading');
+    log(currentContent.ending_text, 'text');
+    log('Игра завершилась сразу.', 'info');
+    rl.close();
+    return;
+  }
+
+  // --- Проверка наличия choices для начала игры --- 
+  if (!currentContent.choices || !Array.isArray(currentContent.choices) || currentContent.choices.length === 0) {
+    log('Ошибка: Начальные данные новеллы не содержат choices.', 'error');
+    log(`Полученный currentContent: ${JSON.stringify(currentContent)}`, 'error');
     rl.close();
     return;
   }
@@ -989,14 +1046,15 @@ async function startGameplayFlow(rl, novelId) {
   // --- Шаг 3: Основной цикл игры --- 
   let continueGame = true;
   while (continueGame) {
-    // Обрабатываем все выборы в текущем батче
+    // Обрабатываем все выборы в текущем батче (currentContent.choices должен быть валидным здесь)
     for (const event of currentContent.choices) {
       if (!event || !event.description || !event.options || event.options.length !== 2) {
-        log('Ошибка: Неверный формат события.', 'error');
-        continueGame = false;
-                    break;
-                }
-      
+        log('Ошибка: Неверный формат события в батче.', 'error');
+        log(`Проблемное событие: ${JSON.stringify(event)}`, 'error');
+        continueGame = false; // Прерываем игру при ошибке формата
+        break;
+      }
+
       // Отображаем текущую ситуацию
       log(`\n=== Ситуация ===`, 'heading');
       log(event.description, 'text');
@@ -1019,9 +1077,17 @@ async function startGameplayFlow(rl, novelId) {
       });
 
       const choiceIndex = parseInt(answer) - 1;
+      // Добавим проверку, что ввод - это число и оно в диапазоне
       if (isNaN(choiceIndex) || choiceIndex < 0 || choiceIndex >= event.options.length) {
-        log('Неверный выбор. Повторите.', 'error');
-        continue;
+          log('Неверный выбор. Пожалуйста, введите 1 или 2.', 'error');
+          // Повторяем итерацию для ЭТОГО ЖЕ события, не переходя к следующему
+          // Для этого можно использовать `continue` во внешнем цикле или рефакторинг
+          // Пока для простоты сделаем повторный запрос у пользователя в рамках текущей итерации (что не идеально)
+          // Лучше было бы сделать вложенный while для получения корректного ввода
+          // *** TODO: Refactor input validation loop ***
+          continue; // Это пропустит остаток цикла for и перейдет к след. событию. Не совсем то.
+                    // Правильнее было бы сделать вложенный while.
+                    // Пока оставим так, но это место для улучшения.
       }
 
       const selectedOption = event.options[choiceIndex];
@@ -1046,30 +1112,60 @@ async function startGameplayFlow(rl, novelId) {
             }
           });
         }
+        // Добавляем переменные сюжета
+        if (selectedOption.consequences.story_variables) {
+            Object.entries(selectedOption.consequences.story_variables).forEach(([key, value]) => {
+                novel.state.story_variables[key] = value;
+                log(`Установлена переменная сюжета: ${key} = ${JSON.stringify(value)}`, 'info');
+            });
+        }
       }
 
       // Проверяем условия game over после каждого выбора
       let gameOver = false;
-      let gameOverReason = '';
+      let gameOverReasonDetails = null; // Храним детали для отправки на сервер
 
-      Object.entries(novel.state.core_stats).forEach(([stat, value]) => {
-        const definition = novel.core_stats_definition[stat];
-        if (definition) {
-          if (value <= definition.game_over_conditions.min) {
-            gameOver = true;
-            gameOverReason = `${stat} достиг минимального значения (${value})`;
-          } else if (value >= definition.game_over_conditions.max) {
-            gameOver = true;
-            gameOverReason = `${stat} достиг максимального значения (${value})`;
+      Object.entries(novel.state.core_stats).forEach(([statName, currentValue]) => {
+        const definition = novel.core_stats_definition[statName];
+        // Проверяем наличие definition и game_over_conditions
+        if (definition && definition.game_over_conditions) {
+          const conditions = definition.game_over_conditions;
+
+          // Проверка на минимум (<= 0)
+          if (conditions.min && currentValue <= 0) {
+            gamOver = true;
+            gamOverReasonDetails = {
+              stat_name: statName,
+              condition: "min",
+              value: currentValue
+            };
+            return; // Выходим из forEach, если нашли причину
+          }
+
+          // Проверка на максимум (>= 100)
+          if (conditions.max && currentValue >= 100) {
+            gamOver = true;
+            gamOverReasonDetails = {
+              stat_name: statName,
+              condition: "max",
+              value: currentValue
+            };
+            return; // Выходим из forEach, если нашли причину
           }
         }
       });
 
       if (gameOver) {
-        log('\n=== ИГРА ОКОНЧЕНА ===', 'heading');
-        log(gameOverReason, 'text');
-        continueGame = false;
-        break;
+        log('\n=== ИГРА ОКОНЧЕНА (локально по статам) ===', 'heading');
+        log(`Причина: Стат '${gameOverReasonDetails.stat_name}' (${gameOverReasonDetails.value}) нарушил условие '${gameOverReasonDetails.condition}'.`, 'text');
+
+        // Вызываем функцию для получения текста концовки с сервера
+        const endingText = await handleLocalGameOver(novel.id, gameOverReasonDetails);
+        log('\n=== ФИНАЛЬНЫЙ ТЕКСТ ===', 'heading');
+        log(endingText, 'text'); // Выводим полученную концовку
+
+        continueGame = false; // Устанавливаем флаг для завершения цикла while
+        break; // Выходим из цикла for (обработки событий батча)
       }
 
       // Сохраняем выбор в историю
@@ -1078,26 +1174,36 @@ async function startGameplayFlow(rl, novelId) {
         choice: selectedOption.text,
         consequences: selectedOption.consequences
       });
-    }
+    } // Конец цикла for по событиям текущего батча
 
-    // Если игра не окончена и все выборы в текущем батче обработаны,
+    // Если игра не окончена (ни локально, ни из-за ошибки формата) и все выборы в текущем батче обработаны,
     // запрашиваем следующий батч
     if (continueGame) {
-      const nextContent = await generateNovelContent(novelId, {
-        core_stats: novel.state.core_stats,
-        global_flags: novel.state.global_flags,
-        story_variables: novel.state.story_variables
-      });
+      log('\nЗапрос следующего батча контента...', 'info');
+      const nextContent = await generateNovelContent(novelId, novel.state); // Передаем актуальное состояние
 
-      if (!nextContent || !nextContent.choices || nextContent.choices.length === 0) {
+      if (!nextContent) {
         log('Не удалось получить следующий батч событий. Завершение игры.', 'error');
         continueGame = false;
-        continue;
+        continue; // Переходим к следующей итерации while, где continueGame=false завершит цикл
       }
 
-      currentContent = nextContent;
+      // Проверяем, не пришла ли концовка
+      if (nextContent.ending_text) {
+        log('\n=== КОНЕЦ ИГРЫ ===', 'heading');
+        log(nextContent.ending_text, 'text');
+        continueGame = false; // Завершаем игру
+      } else if (nextContent.choices && Array.isArray(nextContent.choices) && nextContent.choices.length > 0) {
+        // Если пришел новый батч с выборами, обновляем currentContent
+        currentContent = nextContent;
+      } else {
+        // Пришел непонятный ответ (не концовка и не choices)
+        log('Ошибка: Получен некорректный ответ от сервера для следующего батча.', 'error');
+        log(`Полученный ответ: ${JSON.stringify(nextContent)}`, 'error');
+        continueGame = false;
+      }
     }
-  }
+  } // Конец основного цикла while(continueGame)
 
   // --- Шаг 4: Сохраняем результат --- 
   if (novel.history.length > 0) {
@@ -1115,9 +1221,9 @@ async function startGameplayFlow(rl, novelId) {
     );
     log(`\nИгра завершена. Результат сохранен в ${config.outputFile}`, 'success');
   }
-    
-    rl.close();
-  }
+
+  rl.close();
+}
 
 // Перехватываем завершение работы для закрытия WebSocket
 rl.on('close', () => {

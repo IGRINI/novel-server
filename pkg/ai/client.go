@@ -23,6 +23,7 @@ const (
 	setupPromptFile             = "novel_setup.md"
 	firstSceneCreatorPromptFile = "novel_first_scene_creator.md"
 	creatorPromptFile           = "novel_creator.md"
+	gameOverCreatorPromptFile   = "novel_gameover_creator.md"
 )
 
 // Client предоставляет интерфейс для работы с API нейросети
@@ -156,11 +157,19 @@ func (c *Client) GenerateWithNarrator(ctx context.Context, request model.Narrato
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	userPrompt := request.UserPrompt
+	userContent := ""
+	if request.UserPrompt == "" {
+		return "", errors.New("UserPrompt is required for Narrator") // Промпт обязателен
+	}
 
 	if request.PrevConfig != nil {
-		configAsContext := fmt.Sprintf("Предыдущая конфигурация: %+v\n\nПользователь хочет внести изменения: %s", *request.PrevConfig, userPrompt)
-		userPrompt = configAsContext
+		// Формируем контент для запроса на МОДИФИКАЦИЮ
+		configBytes, _ := json.MarshalIndent(request.PrevConfig, "", "  ") // Сериализуем для удобства чтения AI
+		configAsContext := fmt.Sprintf("Предыдущая конфигурация:\n```json\n%s\n```\n\nПользователь хочет внести изменения:\n%s", string(configBytes), request.UserPrompt)
+		userContent = configAsContext
+	} else {
+		// Используем чистый UserPrompt для СОЗДАНИЯ драфта
+		userContent = request.UserPrompt
 	}
 
 	attempts := 0
@@ -172,15 +181,15 @@ func (c *Client) GenerateWithNarrator(ctx context.Context, request model.Narrato
 			Messages: []openai.ChatCompletionMessage{
 				{
 					Role:    openai.ChatMessageRoleSystem,
-					Content: c.narratorSystemPrompt,
+					Content: c.narratorSystemPrompt, // Системный промпт нарратора
 				},
 				{
 					Role:    openai.ChatMessageRoleUser,
-					Content: userPrompt,
+					Content: userContent, // Передаем UserPrompt или данные для модификации
 				},
 			},
 			Temperature: 0.7,
-			MaxTokens:   15000,
+			MaxTokens:   15000, // Возможно, для конфига хватит меньше?
 			TopP:        0.95,
 		}
 
@@ -226,11 +235,9 @@ func (c *Client) GenerateWithNovelCreator(ctx context.Context, request model.Gen
 		"Setup":      request.Setup,
 	}
 
-	// Генерируем ответ, передавая имя файла промпта и данные
-	promptFile := "promts/novel_creator.md"
-	log.Info().Str("model", c.modelName).Str("promptFile", promptFile).Msg("Отправка запроса на генерацию контента новеллы (следующий батч)")
+	log.Info().Str("model", c.modelName).Str("promptFile", creatorPromptFile).Msg("Отправка запроса на генерацию контента новеллы (следующий батч)")
 
-	response, err := c.generate(ctx, promptFile, data) // Передаем promptFile и data
+	response, err := c.generate(ctx, creatorPromptFile, data) // Используем константу
 	if err != nil {
 		return "", err // Ошибка уже обработана в generate
 	}
@@ -292,6 +299,12 @@ func (c *Client) GenerateSceneContent(ctx context.Context, novelConfig, currentS
 	}
 
 	return "", errors.New("не удалось получить ответ от API после нескольких попыток")
+}
+
+// GenerateGameOverEnding вызывает AI для генерации концовки игры
+func (c *Client) GenerateGameOverEnding(ctx context.Context, request model.GameOverEndingRequestForAI) (string, error) {
+	log.Info().Str("model", c.modelName).Str("promptFile", gameOverCreatorPromptFile).Msg("Отправка запроса на генерацию концовки Game Over")
+	return c.generate(ctx, gameOverCreatorPromptFile, request)
 }
 
 // generate is a helper function to generate content based on a prompt file and input data
