@@ -1,0 +1,97 @@
+version: '3.8'
+
+# Define the environment variables mapping with the anchor
+x-environment-defaults: &env-vars
+  ENV: ${ENV:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-debug}
+  DB_HOST: ${DB_HOST:-localhost}
+  DB_PORT: ${DB_PORT:-5432}
+  DB_USER: ${DB_USER:-postgres}
+  DB_PASSWORD: ${DB_PASSWORD}
+  DB_NAME: ${DB_NAME:-novel_db}
+  DB_SSL_MODE: ${DB_SSL_MODE:-disable}
+  REDIS_ADDR: ${REDIS_ADDR:-localhost:6379}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+  REDIS_DB: ${REDIS_DB:-0}
+  JWT_SECRET: ${JWT_SECRET}
+  PASSWORD_SALT: ${PASSWORD_SALT}
+  JWT_ACCESS_TOKEN_TTL: ${JWT_ACCESS_TOKEN_TTL:-15m}
+  JWT_REFRESH_TOKEN_TTL: ${JWT_REFRESH_TOKEN_TTL:-168h}
+  SERVICE_ID: ${SERVICE_ID:-auth-service}
+  INTER_SERVICE_SECRET: ${INTER_SERVICE_SECRET}
+  INTER_SERVICE_TTL: ${INTER_SERVICE_TTL:-5m}
+  # Добавь сюда другие переменные из .env, если они нужны сервису auth
+
+services:
+  # База данных PostgreSQL
+  postgres:
+    image: postgres:15-alpine
+    container_name: novel_postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME:-novel_db}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-novel_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Кэш Redis
+  redis:
+    image: redis:7-alpine
+    container_name: novel_redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Сервис миграций (запускается перед auth)
+  migrate:
+    build:
+      context: .
+      dockerfile: deploy/docker/migrate/Dockerfile
+    container_name: novel_migrate
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: [
+      "-path", "/migrations",
+      "-database", "postgres://${DB_USER:-postgres}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-novel_db}?sslmode=${DB_SSL_MODE:-disable}",
+      "up"
+    ]
+
+  # Сервис авторизации
+  auth:
+    build:
+      context: .
+      dockerfile: auth/Dockerfile
+    container_name: novel_auth
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+         condition: service_completed_successfully
+    environment:
+      <<: *env-vars
+      DB_HOST: postgres
+      REDIS_ADDR: redis:6379
+      SERVER_PORT: ${SERVER_PORT:-8081}
+    ports:
+      - "${SERVER_PORT:-8081}:${SERVER_PORT:-8081}"
+
+volumes:
+  postgres_data:
+  redis_data:

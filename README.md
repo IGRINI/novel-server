@@ -1,83 +1,50 @@
-# Visual Novel Generation Server
+# Novel Server
 
-This Go server provides an API for generating visual novel configurations and content using the DeepSeek AI model.
+Микросервисная архитектура для сервера новеллы с использованием Golang.
 
-## Features
+## Структура проекта
 
--   Generates initial novel configuration based on user prompts (using `promts/narrator.md`).
--   Generates novel content (scenes, characters, choices) step-by-step (using `promts/novel_creator.md`).
--   Supports state management for ongoing novel sessions using User IDs.
--   Provides API endpoints for interaction.
--   Connects to a PostgreSQL database for potential future state persistence.
+- **api-gateway** - API Gateway для маршрутизации запросов к микросервисам
+- **auth** - Сервис аутентификации и авторизации
+- **game-service** - Сервис игровой логики и прогресса игрока
+- **story-generator** - Сервис генерации истории с использованием GPT
+- **websocket-service** - Сервис для WebSocket коммуникаций
+- **shared** - Общий код, используемый между микросервисами
+- **deploy** - Конфигурации для развертывания (Docker, Kubernetes)
 
-## Prerequisites
+## Микросервисы
 
--   Go (version 1.21+ recommended)
--   DeepSeek API Key
--   Access to a running PostgreSQL database
+### Auth Service
+Отвечает за аутентификацию пользователей, регистрацию, JWT токены и управление сессиями.
 
-## Installation
+### Game Service
+Объединяет игровую логику и прогресс игрока для синхронизированного управления данными.
 
-1.  Clone the repository:
-    ```bash
-    git clone <repository_url>
-    cd novel-server
-    ```
-2.  Install dependencies:
-    ```bash
-    go mod tidy
-    ```
+### Story Generator Service
+Высоконагруженный сервис для генерации текстового контента с использованием GPT.
 
-## Configuration
+### WebSocket Service
+Обеспечивает реал-тайм коммуникацию между клиентом и сервером.
 
-Create a `config.yaml` file in the root directory (or use environment variables). See `config.example.yaml` for structure.
+## Запуск проекта
 
-Key configuration options:
+```bash
+# Запуск с использованием Docker Compose
+docker-compose up -d
 
--   `deepseek.api_key`: Your DeepSeek API key.
--   `deepseek.model_name`: The DeepSeek model to use (e.g., `deepseek-chat`).
--   `server.host`: Host for the server (default: `localhost`).
--   `server.port`: Port for the server (default: `8080`).
--   `api.base_path`: Base path for API endpoints (default: `/api`).
+# Запуск отдельного сервиса
+cd auth
+go run cmd/main.go
+```
 
-**Database Configuration (Environment Variables):**
+## Разработка
 
-The database connection is configured using environment variables:
-
--   `DATABASE_HOST`: Hostname of your PostgreSQL server (default: `localhost`).
--   `DATABASE_PORT`: Port of your PostgreSQL server (default: `5432`).
--   `DATABASE_USER`: Username for the database.
--   `DATABASE_PASSWORD`: Password for the database user.
--   `DATABASE_NAME`: Name of the database to connect to.
-
-Make sure these environment variables are set before running the server.
-
-## Running the Server
-
-1.  Set the required environment variables (DeepSeek API key and Database credentials).
-2.  Run the server:
-    ```bash
-    go run cmd/server/main.go
-    ```
-
-The server will start on the configured host and port (e.g., `localhost:8080`).
-
-## API Endpoints
-
--   `POST /api/generate-novel`: Generates the initial novel configuration.
-    -   Request Body: `{ "user_prompt": "Your novel idea..." }`
-    -   Response Body: `{ "config": { ...NovelConfig... } }`
--   `POST /api/generate-novel-content`: Generates novel setup or the next scene.
-    -   Request Body (Initial): `{ "user_id": "some_user", "config": { ...NovelConfig... } }`
-    -   Request Body (Continuation): `{ "user_id": "some_user", "state": { ...NovelState... }, "user_choice": { ...UserChoice... } }` (user_choice is optional)
-    -   Response Body: `{ "state": { ...NovelState... }, "new_content": { ...SetupContent or SceneContent... } }`
-
-## Client Example
-
-A basic Node.js client example is available in the `novel-client` directory. See `novel-client/README.md` (if it exists) or the script itself (`novel-client/index.js`) for usage instructions.
-
-## TODO
-
--   Implement actual database persistence for `NovelState` using the `dbPool`.
--   Add more robust error handling.
--   Add unit and integration tests. 
+Каждый микросервис следует чистой архитектуре:
+- **api** - API интерфейсы (gRPC, REST)
+- **cmd** - Точки входа для запуска сервиса
+- **internal** - Внутренняя логика сервиса
+  - **config** - Конфигурация
+  - **domain** - Доменные модели
+  - **handler** - Обработчики запросов
+  - **repository** - Доступ к данным
+  - **service** - Бизнес-логика 

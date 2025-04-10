@@ -1,0 +1,102 @@
+version: '3.8'
+
+services:
+  api-gateway:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.base
+      args:
+        SERVICE_NAME: api-gateway
+        SERVICE_PATH: api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - AUTH_SERVICE_URL=auth:9000
+      - GAME_SERVICE_URL=game-service:9001
+      - STORY_GENERATOR_URL=story-generator:9002
+      - WEBSOCKET_SERVICE_URL=websocket-service:9003
+    depends_on:
+      - auth
+      - game-service
+      - story-generator
+      - websocket-service
+
+  auth:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.base
+      args:
+        SERVICE_NAME: auth
+        SERVICE_PATH: auth
+    ports:
+      - "9000:9000"
+    environment:
+      - PORT=9000
+      - MONGO_URI=mongodb://mongo:27017
+      - DB_NAME=auth_service
+      - JWT_SECRET=${JWT_SECRET}
+    depends_on:
+      - mongo
+
+  game-service:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.base
+      args:
+        SERVICE_NAME: game-service
+        SERVICE_PATH: game-service
+    ports:
+      - "9001:9001"
+    environment:
+      - PORT=9001
+      - MONGO_URI=mongodb://mongo:27017
+      - DB_NAME=game_service
+    depends_on:
+      - mongo
+
+  story-generator:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.base
+      args:
+        SERVICE_NAME: story-generator
+        SERVICE_PATH: story-generator
+    ports:
+      - "9002:9002"
+    environment:
+      - PORT=9002
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - REDIS_URI=redis://redis:6379
+
+  websocket-service:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.base
+      args:
+        SERVICE_NAME: websocket-service
+        SERVICE_PATH: websocket-service
+    ports:
+      - "9003:9003"
+    environment:
+      - PORT=9003
+      - REDIS_URI=redis://redis:6379
+    depends_on:
+      - redis
+
+  mongo:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  mongo_data:
+  redis_data: 
