@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+
+	"novel-server/internal/model"
 )
 
 // normalizeValue рекурсивно нормализует значения для стабильного хеширования.
@@ -127,6 +129,57 @@ func CalculateStateHash(coreStats map[string]int, globalFlags []string, storyVar
 	}
 
 	// 4. Вычисляем SHA256 хеш
+	hashBytes := sha256.Sum256(jsonData)
+	hashString := hex.EncodeToString(hashBytes[:])
+
+	return hashString, nil
+}
+
+// CalculateFirstSceneHash создает стабильный SHA256 хеш для первого батча сцены
+// на основе релевантных и стабильных полей из NovelConfig и NovelSetup.
+func CalculateFirstSceneHash(config model.NovelConfig, setup model.NovelSetup) (string, error) {
+	// 1. Выбираем релевантные поля для хеширования
+	data := struct {
+		// Из Config
+		Title             string `json:"title"`
+		ShortDescription  string `json:"short_description"`
+		Language          string `json:"language"`
+		IsAdultContent    bool   `json:"is_adult_content"`
+		PlayerName        string `json:"player_name"`
+		PlayerGender      string `json:"player_gender"`
+		PlayerDescription string `json:"player_description"`
+		WorldContext      string `json:"world_context"`
+		// CoreStats из config.CoreStats может дублировать setup.CoreStatsDefinition, берем из setup
+		Themes []string `json:"themes"`
+		// Из Setup (используем актуальные поля)
+		CoreStatsDefinition map[string]model.CoreStat `json:"core_stats_definition"`
+		Characters          []model.CharacterSetup    `json:"characters"`
+	}{
+		// Заполняем из Config
+		Title:             config.Title,
+		ShortDescription:  config.ShortDescription,
+		Language:          config.Language,
+		IsAdultContent:    config.IsAdultContent,
+		PlayerName:        config.PlayerName,
+		PlayerGender:      config.PlayerGender,
+		PlayerDescription: config.PlayerDescription,
+		WorldContext:      config.WorldContext,
+		Themes:            config.PlayerPrefs.Themes,
+		// Заполняем из Setup
+		CoreStatsDefinition: setup.CoreStatsDefinition,
+		Characters:          setup.Characters,
+	}
+
+	// Используем нормализацию для стабильности срезов и карт
+	normalizedData := normalizeValue(data)
+
+	// 2. Сериализуем нормализованные данные в JSON
+	jsonData, err := json.Marshal(normalizedData)
+	if err != nil {
+		return "", fmt.Errorf("ошибка сериализации config/setup для хеширования первой сцены: %w", err)
+	}
+
+	// 3. Вычисляем SHA256 хеш
 	hashBytes := sha256.Sum256(jsonData)
 	hashString := hex.EncodeToString(hashBytes[:])
 

@@ -1,0 +1,140 @@
+{
+  "author_id": "db533f07-7586-4b1f-b022-ece10705eb17",
+  "config": {
+    "franchise": "Оригинальное фэнтези",
+    "genre": "Фэнтези",
+    "is_adult_content": false,
+    "language": "Russian",
+    "player_description": "Молодой наследник древнего рода, обладающий редким даром теневой магии.",
+    "player_gender": "male",
+    "player_name": "Эльрик",
+    "short_description": "Волшебное королевство, где магия и интриги переплетаются, а ваши решения определяют судьбу трона.",
+    "story_config": {
+      "character_count": 5,
+      "length": "",
+      "scene_event_target": 0
+    },
+    "title": "Королевство Теней",
+    "world_context": "Королевство Аэриндия переживает смутные времена после смерти короля. Магические гильдии борются за влияние, а древние тени пробуждаются в забытых уголках мира."
+  },
+  "cover_image": null,
+  "created_at": "2025-04-03T12:53:51.206293Z",
+  "description": "Волшебное королевство, где магия и интриги переплетаются, а ваши решения определяют судьбу трона.",
+  "id": "a0099fc8-3c55-4565-bad8-c04dba76b930",
+  "is_public": false,
+  "setup": {
+    "characters": [
+      {
+        "name": "Мастер Вейланд",
+        "description": "Старый наставник Эльрика, мудрый маг теневых искусств с глубокими морщинами и проницательным взглядом.",
+        "visual_tags": [
+          "old man",
+          "long grey beard",
+          "deep-set eyes",
+          "shadowy robes",
+          "wise expression"
+        ],
+        "personality": "Сдержанный и проницательный",
+        "prompt": "Elderly male mage, long grey beard, deep-set piercing eyes, wearing intricate shadow-themed robes, holding an ancient tome, dark fantasy art style, mystical lighting",
+        "negative_prompt": "young, smiling, bright colors, modern clothing"
+      },
+      {
+        "name": "Леди Серафина",
+        "description": "Загадочная незнакомка с серебристыми волосами и холодным взглядом, одетая в полупрозрачные одеяния, сотканные из теней.",
+        "visual_tags": [
+          "mysterious woman",
+          "silver hair",
+          "pale skin",
+          "translucent shadow dress",
+          "cold beauty"
+        ],
+        "personality": "Загадочная и расчетливая",
+        "prompt": "Mysterious silver-haired woman, pale flawless skin, wearing flowing translucent shadow dress, glowing faintly with magical energy, dark fantasy aesthetic, intricate details",
+        "negative_prompt": "cheerful, colorful, modern, deformed"
+      },
+      {
+        "name": "Лорд Малрик",
+        "description": "Соперник из гильдии огня, высокомерный маг с рыжими волосами и вызывающей улыбкой, облаченный в красные магические доспехи.",
+        "visual_tags": [
+          "arrogant mage",
+          "red hair",
+          "fiery eyes",
+          "magical armor",
+          "confident stance"
+        ],
+        "personality": "Высокомерный и амбициозный",
+        "prompt": "Proud fire mage, red flowing hair, intense fiery eyes, wearing ornate red magical armor, standing confidently with magical flames, fantasy art style",
+        "negative_prompt": "humble, shadowy, dark colors, weak posture"
+      },
+      {
+        "name": "Капитан стражей Даррен",
+        "description": "Верный капитан городской стражи с суровым лицом и множеством шрамов, облаченный в тяжелые доспехи.",
+        "visual_tags": [
+          "gruff guard",
+          "short brown hair",
+          "scarred face",
+          "heavy armor",
+          "stern expression"
+        ],
+        "personality": "Преданный и прямолинейный",
+        "prompt": "Grizzled guard captain, short practical haircut, numerous battle scars, wearing heavy steel armor with royal insignia, standing at attention, realistic fantasy style",
+        "negative_prompt": "young, clean-shaven, light armor, smiling"
+      },
+      {
+        "name": "Архивариус Теодор",
+        "description": "Древний хранитель забытой библиотеки, почти слившийся с тенями, с бледной кожей и безжизненными глазами.",
+        "visual_tags": [
+          "ancient librarian",
+          "pale skin",
+          "hollow eyes",
+          "tattered robes",
+          "shadowy aura"
+        ],
+        "personality": "Безэмоциональный и всезнающий",
+        "prompt": "Ancient librarian figure, extremely pale almost translucent skin, hollow glowing eyes, wearing tattered scholar robes, surrounded by floating books and shadows, dark gothic fantasy style",
+        "negative_prompt": "healthy, colorful, modern, happy"
+      }
+    ],
+    "core_stats_definition": {
+      "Влияние": {
+        "description": "Ваша политическая власть и авторитет среди знати.",
+        "initial_value": 50,
+        "game_over_conditions": {
+          "min": true,
+          "max": false
+        }
+      },
+      "Казна": {
+        "description": "Финансовые ресурсы вашего дома.",
+        "initial_value": 50,
+        "game_over_conditions": {
+          "min": true,
+          "max": false
+        }
+      },
+      "Магия": {
+        "description": "Сила и контроль над вашими магическими способностями.",
+        "initial_value": 60,
+        "game_over_conditions": {
+          "min": true,
+          "max": true
+        }
+      },
+      "Народная любовь": {
+        "description": "Поддержка простого народа и низших сословий.",
+        "initial_value": 40,
+        "game_over_conditions": {
+          "min": true,
+          "max": false
+        }
+      }
+    }
+  },
+  "tags": [
+    "политические интриги",
+    "магические тайны",
+    "нравственный выбор"
+  ],
+  "title": "Королевство Теней",
+  "updated_at": "2025-04-03T12:53:51.206293Z"
+}

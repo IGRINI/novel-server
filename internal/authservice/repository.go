@@ -1,4 +1,4 @@
-package auth
+package authservice
 
 import (
 	"context"
@@ -9,6 +9,17 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// User представляет пользователя в системе
+type User struct {
+	ID           string    `json:"id"`
+	Username     string    `json:"username"`
+	DisplayName  string    `json:"display_name"`
+	Email        string    `json:"email"`
+	PasswordHash string    `json:"-"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
 
 // RefreshToken представляет токен обновления в системе
 type RefreshToken struct {
@@ -22,14 +33,17 @@ type RefreshToken struct {
 	DeviceInfo string    `json:"device_info,omitempty"`
 }
 
+// Repository предоставляет доступ к данным пользователей и токенов
 type Repository struct {
 	db *pgxpool.Pool
 }
 
+// NewRepository создает новый экземпляр репозитория
 func NewRepository(db *pgxpool.Pool) *Repository {
 	return &Repository{db: db}
 }
 
+// CreateUser создает нового пользователя
 func (r *Repository) CreateUser(ctx context.Context, user *User) error {
 	if user.ID == "" {
 		user.ID = uuid.New().String()
@@ -61,6 +75,7 @@ func (r *Repository) CreateUser(ctx context.Context, user *User) error {
 	return nil
 }
 
+// GetUserByUsername находит пользователя по имени пользователя
 func (r *Repository) GetUserByUsername(ctx context.Context, username string) (*User, error) {
 	query := `
 		SELECT id, username, display_name, email, password_hash, created_at, updated_at
@@ -89,6 +104,7 @@ func (r *Repository) GetUserByUsername(ctx context.Context, username string) (*U
 	return user, nil
 }
 
+// GetUserByEmail находит пользователя по email
 func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*User, error) {
 	query := `
 		SELECT id, username, display_name, email, password_hash, created_at, updated_at
@@ -117,6 +133,7 @@ func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*User, e
 	return user, nil
 }
 
+// GetUserByID находит пользователя по ID
 func (r *Repository) GetUserByID(ctx context.Context, userID string) (*User, error) {
 	query := `
 		SELECT id, username, display_name, email, password_hash, created_at, updated_at
@@ -145,6 +162,7 @@ func (r *Repository) GetUserByID(ctx context.Context, userID string) (*User, err
 	return user, nil
 }
 
+// CreateRefreshToken создает новый токен обновления
 func (r *Repository) CreateRefreshToken(ctx context.Context, token *RefreshToken) error {
 	query := `
 		INSERT INTO refresh_tokens (id, user_id, token, expires_at, created_at, updated_at, revoked, device_info)
@@ -173,6 +191,7 @@ func (r *Repository) CreateRefreshToken(ctx context.Context, token *RefreshToken
 	return nil
 }
 
+// GetRefreshTokenByToken находит токен обновления по строке токена
 func (r *Repository) GetRefreshTokenByToken(ctx context.Context, tokenStr string) (*RefreshToken, error) {
 	query := `
 		SELECT id, user_id, token, expires_at, created_at, updated_at, revoked, device_info
@@ -202,6 +221,7 @@ func (r *Repository) GetRefreshTokenByToken(ctx context.Context, tokenStr string
 	return token, nil
 }
 
+// RevokeAllUserTokens отзывает все токены пользователя
 func (r *Repository) RevokeAllUserTokens(ctx context.Context, userID string) error {
 	query := `
 		UPDATE refresh_tokens
@@ -217,6 +237,7 @@ func (r *Repository) RevokeAllUserTokens(ctx context.Context, userID string) err
 	return nil
 }
 
+// RevokeRefreshToken отзывает конкретный токен обновления
 func (r *Repository) RevokeRefreshToken(ctx context.Context, tokenStr string) error {
 	query := `
 		UPDATE refresh_tokens
@@ -232,6 +253,7 @@ func (r *Repository) RevokeRefreshToken(ctx context.Context, tokenStr string) er
 	return nil
 }
 
+// DeleteExpiredTokens удаляет просроченные токены
 func (r *Repository) DeleteExpiredTokens(ctx context.Context) error {
 	query := `
 		DELETE FROM refresh_tokens
@@ -246,6 +268,7 @@ func (r *Repository) DeleteExpiredTokens(ctx context.Context) error {
 	return nil
 }
 
+// UpdateDisplayName обновляет отображаемое имя пользователя
 func (r *Repository) UpdateDisplayName(ctx context.Context, userID string, displayName string) error {
 	query := `
 		UPDATE users

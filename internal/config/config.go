@@ -54,7 +54,10 @@ type CORSConfig struct {
 
 // JWTConfig содержит конфигурацию JWT
 type JWTConfig struct {
-	Secret string
+	Secret          string
+	PasswordSalt    string
+	AccessTokenTTL  int // Время жизни access токена в минутах
+	RefreshTokenTTL int // Время жизни refresh токена в часах
 }
 
 // Load загружает конфигурацию из переменных окружения
@@ -89,7 +92,10 @@ func Load(env string) (Config, error) {
 			AllowedOrigins: strings.Split(getEnvStr("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080"), ","),
 		},
 		JWT: JWTConfig{
-			Secret: getEnvStr("JWT_SECRET", "your-256-bit-secret"),
+			Secret:          getEnvStr("JWT_SECRET", "your-256-bit-secret"),
+			PasswordSalt:    getEnvStr("PASSWORD_SALT", "default-password-salt"),
+			AccessTokenTTL:  getEnvInt("JWT_ACCESS_TOKEN_TTL", 60),
+			RefreshTokenTTL: getEnvInt("JWT_REFRESH_TOKEN_TTL", 168), // 7 дней
 		},
 	}
 

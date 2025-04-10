@@ -32,17 +32,16 @@ func New(novelService *service.NovelService) *Handler {
 // RegisterRoutes регистрирует маршруты API
 func (h *Handler) RegisterRoutes(router *mux.Router) {
 	// Маршруты для работы с новеллами (относительно /api)
-	router.HandleFunc("/novels", h.ListPublicNovels).Methods("GET") // Публичный?
-	router.HandleFunc("/novels", h.CreateNovel).Methods("POST")
+	router.HandleFunc("/novels", h.ListPublicNovels).Methods("GET")
 	router.HandleFunc("/novels/{id}", h.GetNovel).Methods("GET")
-	router.HandleFunc("/novels/{id}", h.UpdateNovel).Methods("PUT")
-	router.HandleFunc("/novels/{id}", h.DeleteNovel).Methods("DELETE")
-	// router.HandleFunc("/novels/{id}/scenes", h.GetScenes).Methods("GET") // Удален, т.к. GetScenesByNovelID больше не используется
+
 	router.HandleFunc("/novels/{id}/publish", h.PublishNovel).Methods("POST")
-	router.HandleFunc("/novels/{id}/state", h.GetNovelState).Methods("GET")
-	router.HandleFunc("/novels/{id}/state", h.SaveNovelState).Methods("POST")
-	router.HandleFunc("/novels/{id}/state", h.DeleteNovelState).Methods("DELETE")
 	router.HandleFunc("/novels/{id}/gameover", h.HandleGameOverNotification).Methods("POST")
+
+	// Маршруты для лайков
+	router.HandleFunc("/novels/{id}/like", h.LikeNovel).Methods("POST")
+	router.HandleFunc("/novels/{id}/unlike", h.UnlikeNovel).Methods("POST")
+	router.HandleFunc("/novels/liked", h.GetLikedNovels).Methods("GET")
 
 	// Новый маршрут для получения новелл пользователя
 	router.HandleFunc("/my-novels", h.GetUserNovels).Methods("GET")
@@ -85,40 +84,6 @@ func (h *Handler) ListPublicNovels(w http.ResponseWriter, r *http.Request) {
 	RespondWithJSON(w, http.StatusOK, novels)
 }
 
-// CreateNovel создает новую новеллу
-func (h *Handler) CreateNovel(w http.ResponseWriter, r *http.Request) {
-	var novel model.Novel
-	if err := json.NewDecoder(r.Body).Decode(&novel); err != nil {
-		RespondWithError(w, http.StatusBadRequest, fmt.Sprintf("неверный формат запроса: %v", err))
-		return
-	}
-
-	// Получаем userID из контекста с помощью middleware
-	userIDStr, ok := middleware.GetUserIDFromContext(r.Context())
-	if !ok {
-		log.Error().Msg("Не удалось извлечь userID из контекста в CreateNovel")
-		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: не удалось получить ID пользователя")
-		return
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		log.Error().Err(err).Str("userIDStr", userIDStr).Msg("Не удалось преобразовать userID из строки в UUID в CreateNovel")
-		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: неверный формат ID пользователя")
-		return
-	}
-
-	novel.AuthorID = userID // Устанавливаем автора
-
-	// Создаем новеллу
-	createdNovel, err := h.novelService.CreateNovel(r.Context(), novel)
-	if err != nil {
-		RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("ошибка при создании новеллы: %v", err))
-		return
-	}
-
-	RespondWithJSON(w, http.StatusCreated, createdNovel)
-}
-
 // GetNovel возвращает новеллу по ID
 func (h *Handler) GetNovel(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
@@ -128,56 +93,40 @@ func (h *Handler) GetNovel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Получаем новеллу
-	novel, err := h.novelService.GetNovelByID(r.Context(), id)
+	// Получаем ID текущего пользователя, если он аутентифицирован
+	var currentUserID *uuid.UUID
+	userIDStr, ok := middleware.GetUserIDFromContext(r.Context())
+	if ok {
+		userID, err := uuid.Parse(userIDStr)
+		if err == nil {
+			currentUserID = &userID
+		}
+	}
+
+	// Получаем новеллу с информацией о лайках
+	novel, err := h.novelService.GetNovelByIDWithLikes(r.Context(), id, currentUserID)
 	if err != nil {
 		RespondWithError(w, http.StatusNotFound, fmt.Sprintf("новелла не найдена: %v", err))
 		return
 	}
 
+	// Проверяем доступ: если новелла не публичная, то её может просматривать только автор
+	if !novel.IsPublic {
+		// Проверяем авторизован ли пользователь
+		if currentUserID == nil {
+			RespondWithError(w, http.StatusForbidden, "доступ запрещен: новелла не является публичной")
+			return
+		}
+
+		// Проверяем, является ли пользователь автором
+		if novel.AuthorID != *currentUserID {
+			RespondWithError(w, http.StatusForbidden, "доступ запрещен: вы не являетесь автором этой новеллы")
+			return
+		}
+	}
+
+	// Возвращаем новеллу
 	RespondWithJSON(w, http.StatusOK, novel)
-}
-
-// UpdateNovel обновляет новеллу
-func (h *Handler) UpdateNovel(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	id, err := uuid.Parse(vars["id"])
-	if err != nil {
-		RespondWithError(w, http.StatusBadRequest, "неверный формат ID")
-		return
-	}
-
-	// Получаем userID из контекста
-	userIDStr, ok := middleware.GetUserIDFromContext(r.Context())
-	if !ok {
-		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: не удалось получить ID пользователя")
-		return
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: неверный формат ID пользователя")
-		return
-	}
-
-	// Разбираем тело запроса
-	var novel model.Novel
-	if err := json.NewDecoder(r.Body).Decode(&novel); err != nil {
-		RespondWithError(w, http.StatusBadRequest, fmt.Sprintf("неверный формат запроса: %v", err))
-		return
-	}
-
-	// Устанавливаем ID и AuthorID (для проверки в сервисе)
-	novel.ID = id
-	novel.AuthorID = userID
-
-	// Обновляем новеллу
-	updatedNovel, err := h.novelService.UpdateNovel(r.Context(), novel)
-	if err != nil {
-		RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("ошибка при обновлении новеллы: %v", err))
-		return
-	}
-
-	RespondWithJSON(w, http.StatusOK, updatedNovel)
 }
 
 // DeleteNovel удаляет новеллу
@@ -344,6 +293,40 @@ func (h *Handler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Проверяем, если задача завершена и имеет результат
+	if status.Status == "completed" && status.Result != nil {
+		// Если это результат setupNovelTask, обрабатываем его
+		// Проверяем, что результат имеет поля NovelID и Setup, характерные для setupNovelTask
+		if result, ok := status.Result.(map[string]interface{}); ok {
+			if _, hasNovelID := result["novel_id"]; hasNovelID {
+				if config, hasConfig := result["config"]; hasConfig {
+					// Это результат setupNovelTask, нужно фильтровать поля
+					configMap, ok := config.(map[string]interface{})
+					if ok {
+						// Удаляем конфиденциальные поля
+						delete(configMap, "ending_preference")
+						delete(configMap, "player_preferences")
+						delete(configMap, "story_summary")
+
+						// Если есть initial_state, удаляем его конфиденциальные поля
+						if initialState, hasInitialState := configMap["initial_state"]; hasInitialState {
+							if initialStateMap, ok := initialState.(map[string]interface{}); ok {
+								delete(initialStateMap, "future_direction")
+								delete(initialStateMap, "story_summary_so_far")
+							}
+						}
+
+						// Обновляем поле config в результате
+						result["config"] = configMap
+					}
+				}
+
+				// Обновляем результат в статусе
+				status.Result = result
+			}
+		}
+	}
+
 	RespondWithJSON(w, http.StatusOK, status)
 }
 
@@ -363,115 +346,6 @@ func (h *Handler) PublishNovel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	RespondWithJSON(w, http.StatusOK, map[string]string{"message": "новелла успешно опубликована"})
-}
-
-// GetNovelState возвращает состояние новеллы для пользователя
-func (h *Handler) GetNovelState(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	novelID, err := uuid.Parse(vars["id"])
-	if err != nil {
-		RespondWithError(w, http.StatusBadRequest, "неверный формат ID новеллы")
-		return
-	}
-
-	// Используем middleware для получения userID
-	userIDStr, ok := middleware.GetUserIDFromContext(r.Context())
-	if !ok {
-		log.Error().Msg("Не удалось извлечь userID из контекста в GetNovelState")
-		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: не удалось получить ID пользователя")
-		return
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		log.Error().Err(err).Str("userIDStr", userIDStr).Msg("Не удалось преобразовать userID из строки в UUID в GetNovelState")
-		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: неверный формат ID пользователя")
-		return
-	}
-
-	// Получаем состояние новеллы
-	state, err := h.novelService.GetNovelState(r.Context(), userID, novelID)
-	if err != nil {
-		RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("ошибка при получении состояния новеллы: %v", err))
-		return
-	}
-
-	RespondWithJSON(w, http.StatusOK, state)
-}
-
-// SaveNovelState сохраняет состояние новеллы для пользователя
-func (h *Handler) SaveNovelState(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	novelID, err := uuid.Parse(vars["id"])
-	if err != nil {
-		RespondWithError(w, http.StatusBadRequest, "неверный формат ID новеллы")
-		return
-	}
-
-	// Используем middleware для получения userID
-	userIDStr, ok := middleware.GetUserIDFromContext(r.Context())
-	if !ok {
-		log.Error().Msg("Не удалось извлечь userID из контекста в SaveNovelState")
-		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: не удалось получить ID пользователя")
-		return
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		log.Error().Err(err).Str("userIDStr", userIDStr).Msg("Не удалось преобразовать userID из строки в UUID в SaveNovelState")
-		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: неверный формат ID пользователя")
-		return
-	}
-
-	// Разбираем тело запроса
-	var state model.NovelState
-	if err := json.NewDecoder(r.Body).Decode(&state); err != nil {
-		RespondWithError(w, http.StatusBadRequest, fmt.Sprintf("неверный формат запроса: %v", err))
-		return
-	}
-
-	// Устанавливаем ID новеллы и пользователя (из контекста!)
-	state.NovelID = novelID
-	state.UserID = userID // Используем userID из контекста
-
-	// Сохраняем состояние новеллы
-	savedState, err := h.novelService.SaveNovelState(r.Context(), state)
-	if err != nil {
-		RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("ошибка при сохранении состояния новеллы: %v", err))
-		return
-	}
-
-	RespondWithJSON(w, http.StatusOK, savedState)
-}
-
-// DeleteNovelState удаляет состояние новеллы (сохранение) для пользователя
-func (h *Handler) DeleteNovelState(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	novelID, err := uuid.Parse(vars["id"])
-	if err != nil {
-		RespondWithError(w, http.StatusBadRequest, "неверный формат ID новеллы")
-		return
-	}
-
-	// Используем middleware для получения userID
-	userIDStr, ok := middleware.GetUserIDFromContext(r.Context())
-	if !ok {
-		log.Error().Msg("Не удалось извлечь userID из контекста в DeleteNovelState")
-		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: не удалось получить ID пользователя")
-		return
-	}
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		log.Error().Err(err).Str("userIDStr", userIDStr).Msg("Не удалось преобразовать userID из строки в UUID в DeleteNovelState")
-		RespondWithError(w, http.StatusUnauthorized, "ошибка аутентификации: неверный формат ID пользователя")
-		return
-	}
-
-	// Удаляем состояние новеллы
-	if err := h.novelService.DeleteNovelState(r.Context(), userID, novelID); err != nil {
-		RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("ошибка при удалении состояния новеллы: %v", err))
-		return
-	}
-
-	RespondWithJSON(w, http.StatusOK, map[string]string{"message": "состояние новеллы успешно удалено"})
 }
 
 // ModifyNovelDraft запускает асинхронную модификацию существующего драфта новеллы
@@ -657,23 +531,127 @@ func (h *Handler) HandleGameOverNotification(w http.ResponseWriter, r *http.Requ
 
 	log.Info().Str("novelID", novelID.String()).Str("userID", userID.String()).Interface("reason", req.Reason).Msg("Получено уведомление о Game Over")
 
-	// Вызываем сервис для генерации концовки
-	// Предполагаем, что сервис вернет только текст концовки
-	endingText, err := h.novelService.GenerateGameOverEnding(r.Context(), userID, novelID, req.Reason)
+	// Вызываем сервис для генерации концовки и возможного продолжения
+	gameOverResult, err := h.novelService.HandleGameOver(r.Context(), userID, novelID, req.Reason, req.UserChoices)
 	if err != nil {
-		// Обрабатываем специфичные ошибки, если сервис их возвращает (например, новелла не найдена)
-		log.Error().Err(err).Str("novelID", novelID.String()).Str("userID", userID.String()).Msg("Ошибка при генерации концовки Game Over")
-		RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("ошибка при генерации концовки: %v", err))
+		// Обрабатываем специфичные ошибки
+		log.Error().Err(err).Str("novelID", novelID.String()).Str("userID", userID.String()).Msg("Ошибка при обработке Game Over")
+		RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("ошибка при обработке Game Over: %v", err))
 		return
 	}
 
-	// Формируем ответ клиенту
+	// Формируем ответ клиенту на основе полного результата
 	responsePayload := model.ClientGameplayPayload{
-		EndingText: endingText,
-		IsGameOver: true,
+		EndingText:     &gameOverResult.EndingText,
+		IsGameOver:     true,
+		CanContinue:    gameOverResult.CanContinue,
+		NewCharacter:   gameOverResult.NewCharacter,
+		NewCoreStats:   gameOverResult.NewCoreStats,
+		InitialChoices: gameOverResult.InitialChoices,
 	}
 
 	RespondWithJSON(w, http.StatusOK, responsePayload)
+}
+
+// LikeNovel добавляет лайк к новелле
+func (h *Handler) LikeNovel(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	novelID, err := uuid.Parse(vars["id"])
+	if err != nil {
+		RespondWithError(w, http.StatusBadRequest, "неверный формат ID новеллы")
+		return
+	}
+
+	// Получаем ID пользователя из контекста
+	userIDStr, ok := middleware.GetUserIDFromContext(r.Context())
+	if !ok {
+		RespondWithError(w, http.StatusUnauthorized, "требуется авторизация")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		RespondWithError(w, http.StatusUnauthorized, "неверный формат ID пользователя")
+		return
+	}
+
+	// Добавляем лайк
+	err = h.novelService.LikeNovel(r.Context(), userID, novelID)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("ошибка при добавлении лайка: %v", err))
+		return
+	}
+
+	RespondWithJSON(w, http.StatusOK, map[string]string{"message": "лайк успешно добавлен"})
+}
+
+// UnlikeNovel удаляет лайк с новеллы
+func (h *Handler) UnlikeNovel(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	novelID, err := uuid.Parse(vars["id"])
+	if err != nil {
+		RespondWithError(w, http.StatusBadRequest, "неверный формат ID новеллы")
+		return
+	}
+
+	// Получаем ID пользователя из контекста
+	userIDStr, ok := middleware.GetUserIDFromContext(r.Context())
+	if !ok {
+		RespondWithError(w, http.StatusUnauthorized, "требуется авторизация")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		RespondWithError(w, http.StatusUnauthorized, "неверный формат ID пользователя")
+		return
+	}
+
+	// Удаляем лайк
+	err = h.novelService.UnlikeNovel(r.Context(), userID, novelID)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("ошибка при удалении лайка: %v", err))
+		return
+	}
+
+	RespondWithJSON(w, http.StatusOK, map[string]string{"message": "лайк успешно удален"})
+}
+
+// GetLikedNovels возвращает список новелл, лайкнутых пользователем
+func (h *Handler) GetLikedNovels(w http.ResponseWriter, r *http.Request) {
+	// Получаем ID пользователя из контекста
+	userIDStr, ok := middleware.GetUserIDFromContext(r.Context())
+	if !ok {
+		RespondWithError(w, http.StatusUnauthorized, "требуется авторизация")
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		RespondWithError(w, http.StatusUnauthorized, "неверный формат ID пользователя")
+		return
+	}
+
+	// Получаем параметры пагинации из запроса
+	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+	if err != nil || limit <= 0 {
+		limit = 10 // Значение по умолчанию
+	}
+
+	offset, err := strconv.Atoi(r.URL.Query().Get("offset"))
+	if err != nil || offset < 0 {
+		offset = 0 // Значение по умолчанию
+	}
+
+	// Получаем список лайкнутых новелл
+	novels, err := h.novelService.GetLikedNovelsByUser(r.Context(), userID, limit, offset)
+	if err != nil {
+		RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("ошибка при получении списка лайкнутых новелл: %v", err))
+		return
+	}
+
+	// Возвращаем список новелл
+	RespondWithJSON(w, http.StatusOK, novels)
 }
 
 // RespondWithError отправляет ошибку в формате JSON

@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: novel-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-novel_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - novel-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: auth-service
+    container_name: novel-auth-service
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_NAME: ${DB_NAME:-novel_db}
+      JWT_SECRET: ${JWT_SECRET:-your-secret-key-change-in-production}
+      PASSWORD_SALT: ${PASSWORD_SALT:-strong-random-salt-for-password-hashing-a1b2c3d4e5f6g7h8}
+      JWT_ACCESS_TOKEN_TTL: ${JWT_ACCESS_TOKEN_TTL:-15}
+      JWT_REFRESH_TOKEN_TTL: ${JWT_REFRESH_TOKEN_TTL:-168}
+      SERVER_PORT: 8081
+      ENV: ${ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+    ports:
+      - "8081:8081"
+    networks:
+      - novel-network
+
+  api-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: server
+    container_name: novel-api-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_NAME: ${DB_NAME:-novel_db}
+      SERVER_PORT: 8080
+      ENV: ${ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      AUTH_SERVICE_URL: http://auth-service:8081
+      SERVICE_ID: novel-service
+      AUTH_SERVICE_API_KEY: ${AUTH_SERVICE_API_KEY:-your-service-api-key-change-in-production}
+      AUTH_SERVICE_TIMEOUT: ${AUTH_SERVICE_TIMEOUT:-5s}
+      AI_API_KEY: ${AI_API_KEY}
+      AI_MODEL: ${AI_MODEL:-deepseek/deepseek-chat-v3-0324:free}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
+    ports:
+      - "8080:8080"
+    networks:
+      - novel-network
+
+networks:
+  novel-network:
+    driver: bridge
+
+volumes:
+  postgres_data: 

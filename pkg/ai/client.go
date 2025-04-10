@@ -12,7 +12,7 @@ import (
 	"novel-server/internal/model"
 
 	"github.com/rs/zerolog"
-	"github.com/sashabaranov/go-openai"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 var log = zerolog.New(zerolog.NewConsoleWriter()).With().Timestamp().Logger()
@@ -24,6 +24,9 @@ const (
 	firstSceneCreatorPromptFile = "novel_first_scene_creator.md"
 	creatorPromptFile           = "novel_creator.md"
 	gameOverCreatorPromptFile   = "novel_gameover_creator.md"
+	storyVarDefinitionsMarker   = "Story Variable Definitions:"
+	choiceMarker                = "Choice:"
+	coreStatsResetMarker        = "Core Stats Reset:"
 )
 
 // Client предоставляет интерфейс для работы с API нейросети
@@ -103,56 +106,7 @@ func New(cfg Config) (*Client, error) {
 	}, nil
 }
 
-// GenerateNovelConfig генерирует конфигурацию новеллы на основе промпта пользователя
-func (c *Client) GenerateNovelConfig(ctx context.Context, prompt string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-
-	systemPromptForConfig := "Ты опытный писатель, который создает интерактивные новеллы. Ты создаешь конфигурацию для новой интерактивной новеллы на основе запроса пользователя. Ответ должен быть в формате JSON, содержащий заголовок, описание, сеттинг, жанр, темы и основных персонажей."
-
-	attempts := 0
-	for attempts < c.maxRetries {
-		attempts++
-
-		req := openai.ChatCompletionRequest{
-			Model: c.modelName,
-			Messages: []openai.ChatCompletionMessage{
-				{
-					Role:    openai.ChatMessageRoleSystem,
-					Content: systemPromptForConfig,
-				},
-				{
-					Role:    openai.ChatMessageRoleUser,
-					Content: prompt,
-				},
-			},
-			Temperature: 0.7,
-			MaxTokens:   1500,
-			TopP:        0.95,
-		}
-
-		resp, err := c.client.CreateChatCompletion(ctx, req)
-		if err != nil {
-			if attempts >= c.maxRetries {
-				return "", fmt.Errorf("ошибка при генерации конфигурации новеллы: %w", err)
-			}
-			continue
-		}
-
-		if len(resp.Choices) == 0 {
-			if attempts >= c.maxRetries {
-				return "", errors.New("пустой ответ от API: не получены варианты")
-			}
-			continue
-		}
-
-		return resp.Choices[0].Message.Content, nil
-	}
-
-	return "", errors.New("не удалось получить ответ от API после нескольких попыток")
-}
-
-// GenerateWithNarrator генерирует драфт новеллы через нарратор
+// GenerateWithNarrator генерирует конфигурацию новеллы через нарратор
 func (c *Client) GenerateWithNarrator(ctx context.Context, request model.NarratorPromptRequest) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
@@ -172,56 +126,60 @@ func (c *Client) GenerateWithNarrator(ctx context.Context, request model.Narrato
 		userContent = request.UserPrompt
 	}
 
-	attempts := 0
-	for attempts < c.maxRetries {
-		attempts++
-
-		req := openai.ChatCompletionRequest{
-			Model: c.modelName,
-			Messages: []openai.ChatCompletionMessage{
-				{
-					Role:    openai.ChatMessageRoleSystem,
-					Content: c.narratorSystemPrompt, // Системный промпт нарратора
-				},
-				{
-					Role:    openai.ChatMessageRoleUser,
-					Content: userContent, // Передаем UserPrompt или данные для модификации
-				},
+	req := openai.ChatCompletionRequest{
+		Model: c.modelName,
+		Messages: []openai.ChatCompletionMessage{
+			{
+				Role:    openai.ChatMessageRoleSystem,
+				Content: c.narratorSystemPrompt, // Системный промпт нарратора
 			},
-			Temperature: 0.7,
-			MaxTokens:   15000, // Возможно, для конфига хватит меньше?
-			TopP:        0.95,
-		}
-
-		resp, err := c.client.CreateChatCompletion(ctx, req)
-		if err != nil {
-			if attempts >= c.maxRetries {
-				return "", fmt.Errorf("ошибка при генерации драфта новеллы: %w", err)
-			}
-			continue
-		}
-
-		if len(resp.Choices) == 0 {
-			if attempts >= c.maxRetries {
-				return "", errors.New("пустой ответ от API: не получены варианты")
-			}
-			continue
-		}
-
-		return resp.Choices[0].Message.Content, nil
+			{
+				Role:    openai.ChatMessageRoleUser,
+				Content: userContent, // Передаем UserPrompt или данные для модификации
+			},
+		},
+		Temperature: 0.7,
+		MaxTokens:   15000,
+		TopP:        0.95,
 	}
 
-	return "", errors.New("не удалось получить ответ от API после нескольких попыток")
+	resp, err := c.client.CreateChatCompletion(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("ошибка при вызове CreateChatCompletion: %w", err)
+	}
+
+	response := resp.Choices[0].Message.Content
+	// Парсим ответ для проверки и установки InitialState
+	// Используем функцию из parser.go
+	var configForInitialState model.NovelConfig // Промежуточная переменная для парсинга всего конфига
+	if err := json.Unmarshal([]byte(response), &configForInitialState); err != nil {
+		// Попытаться распарсить только начальные поля, если полный парсинг не удался?
+		// Пока что возвращаем ошибку, если весь конфиг не парсится.
+		log.Error().Err(err).Str("response", response).Msg("Ошибка парсинга JSON ответа нарратора для извлечения InitialState")
+		return "", fmt.Errorf("ошибка парсинга JSON ответа нарратора: %w", err)
+	}
+
+	// Создаем структуру NovelConfig (хотя она уже есть в configForInitialState)
+	var config model.NovelConfig
+	if err := json.Unmarshal([]byte(response), &config); err != nil {
+		return "", fmt.Errorf("ошибка парсинга конфига: %w", err)
+	}
+
+	// Устанавливаем InitialState из распарсенного конфига
+	config.InitialState = configForInitialState.InitialState
+
+	// Сериализуем обновленный конфиг обратно в JSON
+	updatedResponse, err := json.Marshal(config)
+	if err != nil {
+		return "", fmt.Errorf("ошибка сериализации обновленного конфига: %w", err)
+	}
+
+	return string(updatedResponse), nil
 }
 
 // GenerateWithNovelSetup вызывает AI для генерации конфигурации новеллы на основе драфта
 func (c *Client) GenerateWithNovelSetup(ctx context.Context, config model.NovelConfig) (string, error) {
 	return c.generate(ctx, setupPromptFile, config)
-}
-
-// GenerateFirstScene вызывает AI для генерации первой сцены новеллы
-func (c *Client) GenerateFirstScene(ctx context.Context, req model.GenerateFirstSceneRequest) (string, error) {
-	return c.generate(ctx, firstSceneCreatorPromptFile, req)
 }
 
 // GenerateWithNovelCreator вызывает LLM с промптом novel_creator.md
@@ -235,70 +193,27 @@ func (c *Client) GenerateWithNovelCreator(ctx context.Context, request model.Gen
 		"Setup":      request.Setup,
 	}
 
-	log.Info().Str("model", c.modelName).Str("promptFile", creatorPromptFile).Msg("Отправка запроса на генерацию контента новеллы (следующий батч)")
+	log.Info().
+		Str("model", c.modelName).
+		Str("promptFile", creatorPromptFile).
+		Msg("Отправка запроса на генерацию контента новеллы (следующий батч)")
 
-	response, err := c.generate(ctx, creatorPromptFile, data) // Используем константу
-	if err != nil {
-		return "", err // Ошибка уже обработана в generate
-	}
-
-	return response, nil
+	return c.generate(ctx, creatorPromptFile, data)
 }
 
-// GenerateSceneContent генерирует содержимое сцены новеллы
-func (c *Client) GenerateSceneContent(ctx context.Context, novelConfig, currentState, userAction string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-
-	systemPromptForScene := "Ты опытный писатель, который создает интерактивные новеллы. Твоя задача - генерировать содержимое сцен на основе конфигурации новеллы, текущего состояния и действий пользователя. Ответ должен быть в формате JSON, содержащий: заголовок сцены, описание, основное содержание и массив доступных вариантов выбора (каждый с текстом и ID)."
-
-	attempts := 0
-	for attempts < c.maxRetries {
-		attempts++
-
-		req := openai.ChatCompletionRequest{
-			Model: c.modelName,
-			Messages: []openai.ChatCompletionMessage{
-				{
-					Role:    openai.ChatMessageRoleSystem,
-					Content: systemPromptForScene,
-				},
-				{
-					Role:    openai.ChatMessageRoleUser,
-					Content: fmt.Sprintf("Конфигурация новеллы: %s\nТекущее состояние: %s\nДействие пользователя: %s", novelConfig, currentState, userAction),
-				},
-			},
-			Temperature: 0.8,
-			MaxTokens:   15000,
-			TopP:        0.95,
-		}
-
-		resp, err := c.client.CreateChatCompletion(ctx, req)
-		if err != nil {
-			if attempts >= c.maxRetries {
-				return "", fmt.Errorf("ошибка при генерации содержимого сцены: %w", err)
-			}
-			continue
-		}
-
-		if len(resp.Choices) == 0 {
-			if attempts >= c.maxRetries {
-				return "", errors.New("пустой ответ от API: не получены варианты")
-			}
-			continue
-		}
-
-		responseContent := resp.Choices[0].Message.Content
-		// Логируем ответ, встраивая его в сообщение
-		log.Info().
-			Str("model", c.modelName).
-			Int("attempt", attempts).
-			Msg("Получен ответ от API (Creator):\n" + responseContent)
-
-		return responseContent, nil
+// GenerateWithFirstSceneCreator вызывает LLM с промптом novel_first_scene_creator.md
+// Принимает GenerateNovelContentRequestForAI (хотя NovelState будет nil/пустым)
+func (c *Client) GenerateWithFirstSceneCreator(ctx context.Context, request model.GenerateNovelContentRequestForAI) (string, error) {
+	// Преобразуем запрос в map для передачи в generate
+	// NovelState должен быть пустым или отсутствовать для первого запроса
+	data := map[string]interface{}{
+		"Config": request.Config,
+		"Setup":  request.Setup,
 	}
 
-	return "", errors.New("не удалось получить ответ от API после нескольких попыток")
+	log.Info().Str("model", c.modelName).Str("promptFile", firstSceneCreatorPromptFile).Msg("Отправка запроса на генерацию контента новеллы (первый батч)")
+
+	return c.generate(ctx, firstSceneCreatorPromptFile, data)
 }
 
 // GenerateGameOverEnding вызывает AI для генерации концовки игры
@@ -336,7 +251,7 @@ func (c *Client) generate(ctx context.Context, promptFile string, inputData inte
 		log.Debug().Str("promptFile", promptFile).Int("attempt", attempts).Msg("Отправка запроса к AI")
 		// Логируем входной JSON для отладки (можно убрать или изменить уровень на Debug)
 		// log.Trace().Str("inputJson", inputJSONString).Msg("Входные данные для AI")
-
+		log.Info().Msgf("inputJSONString: %v", inputJSONString)
 		req := openai.ChatCompletionRequest{
 			Model: c.modelName,
 			Messages: []openai.ChatCompletionMessage{
@@ -352,7 +267,7 @@ func (c *Client) generate(ctx context.Context, promptFile string, inputData inte
 			Temperature: 0.7,   // Можно настроить
 			MaxTokens:   15000, // Убедитесь, что лимит достаточен
 			TopP:        0.95,  // Можно настроить
-			// ResponseFormat: &openai.ChatCompletionResponseFormat{Type: openai.ChatCompletionResponseFormatJSON}, // Можно раскомментировать, если модель поддерживает JSON mode
+			// ResponseFormat: &openai.ChatCompletionResponseFormat{Type: openai.ChatCompletionResponseFormatJSON}, // Оставляем закомментированным
 		}
 
 		resp, err := c.client.CreateChatCompletion(ctx, req)
@@ -380,20 +295,9 @@ func (c *Client) generate(ctx context.Context, promptFile string, inputData inte
 			Str("model", c.modelName).
 			Str("promptFile", promptFile).
 			Int("attempt", attempts).
-			Msg("Получен ответ от API:\n" + responseContent)
+			Msg("Получен ответ от API (текстовый формат): " + responseContent)
 
-		// Проверка, является ли ответ валидным JSON (опционально, но полезно)
-		var js json.RawMessage
-		if json.Unmarshal([]byte(responseContent), &js) != nil {
-			log.Warn().Int("attempt", attempts).Msg("Ответ AI не является валидным JSON, пробуем снова...")
-			if attempts >= c.maxRetries {
-				return "", fmt.Errorf("ответ AI не является валидным JSON после %d попыток", attempts)
-			}
-			time.Sleep(time.Duration(attempts) * time.Second)
-			continue // Пробуем снова, если ответ не JSON
-		}
-
-		return responseContent, nil
+		return responseContent, nil // Возвращаем сырой текстовый ответ
 	}
 
 	return "", errors.New("не удалось получить валидный ответ от API после нескольких попыток")

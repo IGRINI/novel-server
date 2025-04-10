@@ -1,9 +1,62 @@
 {
-  "userId": "I_GRIN_I",
+  "userId": "db533f07-7586-4b1f-b022-ece10705eb17",
   "novel": {
-    "id": "4bb17d56-a61e-4d4a-b747-1c63adc1ca82",
-    "title": "Тайны Забытого Королевства",
-    "description": "Волшебное королевство на грани катастрофы, и только вы можете восстановить баланс между магией и природой."
+    "id": "a0099fc8-3c55-4565-bad8-c04dba76b930",
+    "final_stats": {
+      "Влияние": 45,
+      "Казна": 50,
+      "Магия": 80,
+      "Народная любовь": 0
+    },
+    "global_flags": [
+      "bloody_suppression",
+      "seraphina_betrayed"
+    ],
+    "story_variables": {
+      "shadow_incursion": true
+    }
   },
-  "scenes": []
+  "history": [
+    {
+      "description": "Капитан Даррен врывается в зал: \"*Ваше Величество*, толпа у ворот! Они требуют хлеба и *казни* гильдии теней. Мои люди едва сдерживают их.\"",
+      "choice": "Применить силу.",
+      "consequences": {
+        "core_stats_change": {
+          "Влияние": 5,
+          "Народная любовь": -20
+        },
+        "global_flags": [
+          "bloody_suppression"
+        ],
+        "response_text": "Крики *затихают* под щитами стражников... но ненадолго."
+      }
+    },
+    {
+      "description": "Леди Серафина появляется из *вихря теней*. \"Мой *дорогой* союзник... пришло время *платить* по счетам. Мне нужен доступ к *Черному Хранилищу*.\"",
+      "choice": "Отказать.",
+      "consequences": {
+        "core_stats_change": {
+          "Влияние": -10,
+          "Магия": -30
+        },
+        "global_flags": [
+          "seraphina_betrayed"
+        ]
+      }
+    }
+  ],
+  "userChoices": [
+    {
+      "event_index": 0,
+      "choice_index": 0
+    },
+    {
+      "event_index": 1,
+      "choice_index": 0
+    },
+    {
+      "event_index": 2,
+      "choice_index": 0
+    }
+  ]
 }

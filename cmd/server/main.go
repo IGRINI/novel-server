@@ -19,7 +19,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"novel-server/internal/auth"
+	"novel-server/internal/authservice"
 	"novel-server/internal/config"
 	"novel-server/internal/database"
 	delivery "novel-server/internal/delivery/http"
@@ -81,7 +81,6 @@ func main() {
 
 	// Инициализация репозиториев
 	novelRepo := repository.NewNovelRepository(dbPool, sqlxDB)
-	userRepo := auth.NewRepository(dbPool)
 
 	// Создаем менеджер задач
 	taskManager := taskmanager.NewManager()
@@ -90,35 +89,30 @@ func main() {
 	wsManager := ws.NewWebSocketManager()
 	wsManager.Start()
 
+	// Инициализация клиента Auth Service
+	authClient := initAuthClient()
+
 	// Инициализация сервисов
 	novelService := service.NewNovelService(*novelRepo, taskManager, *aiClient, wsManager)
-	authService := auth.NewService(userRepo, cfg.JWT.Secret)
 
 	// Инициализация HTTP обработчиков
 	novelHandlers := delivery.New(novelService)
-	authHandlers := auth.NewHandler(authService)
 
 	// Настройка маршрутов
 	router := mux.NewRouter()
 
-	// Маршруты аутентификации (не требуют middleware)
-	authRouter := router.PathPrefix("/auth").Subrouter()
-	authRouter.HandleFunc("/register", authHandlers.Register).Methods("POST")
-	authRouter.HandleFunc("/login", authHandlers.Login).Methods("POST")
-
-	// Маршрут для WebSocket (не требует JWT middleware)
+	// Маршрут для WebSocket (не требует проверки JWT)
 	router.Handle("/ws", wsManager.Handler()).Methods("GET")
 
 	// Создаем подмаршрутизатор для API, требующего аутентификации
 	apiRouter := router.PathPrefix("/api").Subrouter()
 
-	// Применяем Middleware: сначала логгирование, потом JWT
-	// (Порядок важен: JWT может использовать логгер, если он уже есть в контексте)
+	// Применяем Middleware: сначала логгирование, потом JWT с использованием Auth Service
 	apiRouter.Use(LoggingMiddleware)
-	jwtMiddleware := middleware.JWTMiddleware([]byte(cfg.JWT.Secret))
+	jwtMiddleware := middleware.NewAuthServiceMiddleware(authClient)
 	apiRouter.Use(jwtMiddleware)
 
-	// Регистрация остальных маршрутов на apiRouter
+	// Регистрация API маршрутов
 	novelHandlers.RegisterRoutes(apiRouter)
 
 	// Настройка CORS
@@ -232,6 +226,34 @@ func initAIClient(cfg config.AIConfig) *ai.Client {
 		log.Fatal().Err(err).Msg("failed to initialize AI client")
 	}
 	return client
+}
+
+// initAuthClient инициализирует клиент для Auth Service
+func initAuthClient() *authservice.Client {
+	baseURL := os.Getenv("AUTH_SERVICE_URL")
+	if baseURL == "" {
+		baseURL = "http://localhost:8081" // URL Auth Service по умолчанию
+	}
+
+	serviceID := os.Getenv("SERVICE_ID")
+	if serviceID == "" {
+		serviceID = "novel-service" // ID сервиса по умолчанию
+	}
+
+	apiKey := os.Getenv("AUTH_SERVICE_API_KEY")
+	timeout, _ := time.ParseDuration(os.Getenv("AUTH_SERVICE_TIMEOUT"))
+	if timeout == 0 {
+		timeout = 5 * time.Second // Таймаут по умолчанию
+	}
+
+	cfg := authservice.ClientConfig{
+		BaseURL:   baseURL,
+		ServiceID: serviceID,
+		APIKey:    apiKey,
+		Timeout:   timeout,
+	}
+
+	return authservice.NewClient(cfg)
 }
 
 // LoggingMiddleware внедряет настроенный логгер в контекст запроса

@@ -1,4 +1,4 @@
-package auth
+package authservice
 
 import (
 	"context"
@@ -21,6 +21,7 @@ const (
 	MinPasswordLength    = 6
 	MaxPasswordLength    = 100
 	MaxDisplayNameLength = 100
+	ServiceTokenTTL      = 1 * time.Hour // Срок действия служебного токена
 )
 
 var (
@@ -34,6 +35,7 @@ var (
 	ErrInvalidUsernameLength = errors.New("длина имени пользователя должна быть от 4 до 32 символов")
 	ErrInvalidPasswordLength = errors.New("длина пароля должна быть от 6 до 100 символов")
 	ErrInvalidDisplayName    = errors.New("некорректное отображаемое имя")
+	ErrServiceNotAuthorized  = errors.New("сервис не авторизован")
 )
 
 // CustomClaims определяет структуру для наших JWT claims
@@ -44,14 +46,11 @@ type CustomClaims struct {
 	jwt.RegisteredClaims
 }
 
-type User struct {
-	ID           string    `json:"id"`
-	Username     string    `json:"username"`
-	DisplayName  string    `json:"display_name"`
-	Email        string    `json:"email"`
-	PasswordHash string    `json:"-"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+// ServiceClaims определяет структуру для межсервисных JWT claims
+type ServiceClaims struct {
+	ServiceID   string `json:"service_id"`
+	ServiceName string `json:"service_name"`
+	jwt.RegisteredClaims
 }
 
 // TokenDetails содержит информацию о сгенерированных токенах
@@ -63,6 +62,7 @@ type TokenDetails struct {
 	ExpiresAt    time.Time `json:"expires_at"`
 }
 
+// UserRepository интерфейс для доступа к данным пользователей
 type UserRepository interface {
 	CreateUser(ctx context.Context, user *User) error
 	GetUserByUsername(ctx context.Context, username string) (*User, error)
@@ -78,21 +78,32 @@ type UserRepository interface {
 	DeleteExpiredTokens(ctx context.Context) error
 }
 
+// Service предоставляет методы для работы с аутентификацией
 type Service struct {
 	repo            UserRepository
 	jwtSecret       []byte
 	passwordSalt    string
-	accessTokenTTL  time.Duration // Время жизни access token (короткое)
-	refreshTokenTTL time.Duration // Время жизни refresh token (длинное)
+	accessTokenTTL  time.Duration     // Время жизни access token (короткое)
+	refreshTokenTTL time.Duration     // Время жизни refresh token (длинное)
+	trustedServices map[string]string // Мапа доверенных сервисов: serviceID -> serviceName
 }
 
+// NewService создает новый экземпляр сервиса аутентификации
 func NewService(repo UserRepository, jwtSecret string, passwordSalt string) *Service {
+	// Инициализируем сервис с доверенными микросервисами
+	trustedServices := map[string]string{
+		"novel-service":  "Novel Service",
+		"story-service":  "Story Generator Service",
+		"engine-service": "Game Engine Service",
+	}
+
 	return &Service{
 		repo:            repo,
 		jwtSecret:       []byte(jwtSecret),
 		passwordSalt:    passwordSalt,
 		accessTokenTTL:  1 * time.Hour,      // По умолчанию 1 час для Access Token
 		refreshTokenTTL: 7 * 24 * time.Hour, // По умолчанию 7 дней для Refresh Token
+		trustedServices: trustedServices,
 	}
 }
 
@@ -112,6 +123,7 @@ func generateRefreshToken() (string, error) {
 	return base64.URLEncoding.EncodeToString(b), nil
 }
 
+// Register регистрирует нового пользователя
 func (s *Service) Register(ctx context.Context, username, email, password string) error {
 	// Проверяем длину username
 	if len(username) < MinUsernameLength || len(username) > MaxUsernameLength {
@@ -255,7 +267,7 @@ func (s *Service) CreateTokens(ctx context.Context, user *User) (*TokenDetails, 
 // ValidateAccessToken проверяет действительность токена доступа
 func (s *Service) ValidateAccessToken(tokenString string) (bool, *CustomClaims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-		// Проверяем метод подписи
+		// Проверяем, что алгоритм подписи соответствует ожидаемому
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("неожиданный метод подписи: %v", token.Header["alg"])
 		}
@@ -263,28 +275,29 @@ func (s *Service) ValidateAccessToken(tokenString string) (bool, *CustomClaims, 
 	})
 
 	if err != nil {
-		// Проверяем тип ошибки (например, истекший токен)
+		// Проверяем, связана ли ошибка с истекшим токеном
 		if errors.Is(err, jwt.ErrTokenExpired) {
-			return false, nil, nil // Токен истек, но это не ошибка парсинга
+			return false, nil, ErrExpiredToken
 		}
-		return false, nil, fmt.Errorf("ошибка при разборе токена: %w", err)
+		return false, nil, ErrInvalidToken
 	}
 
-	if claims, ok := token.Claims.(*CustomClaims); ok && token.Valid {
-		// Проверяем, не истек ли токен (дополнительная проверка, хотя ParseWithClaims уже это делает)
-		if time.Unix(claims.ExpiresAt.Unix(), 0).Before(time.Now()) {
-			return false, nil, nil // Токен истек
-		}
-		return true, claims, nil
+	if !token.Valid {
+		return false, nil, ErrInvalidToken
 	}
 
-	return false, nil, nil // Токен недействителен по другим причинам
+	claims, ok := token.Claims.(*CustomClaims)
+	if !ok {
+		return false, nil, ErrInvalidToken
+	}
+
+	return true, claims, nil
 }
 
-// RefreshTokens обновляет токены по refresh token
+// RefreshTokens обновляет токены с использованием refresh token
 func (s *Service) RefreshTokens(ctx context.Context, refreshToken string) (*TokenDetails, error) {
-	// Проверяем refresh token в базе данных
-	storedToken, err := s.repo.GetRefreshTokenByToken(ctx, refreshToken)
+	// Получаем refresh token из базы данных
+	tokenObj, err := s.repo.GetRefreshTokenByToken(ctx, refreshToken)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrInvalidToken
@@ -293,36 +306,36 @@ func (s *Service) RefreshTokens(ctx context.Context, refreshToken string) (*Toke
 	}
 
 	// Проверяем, не отозван ли токен
-	if storedToken.Revoked {
+	if tokenObj.Revoked {
 		return nil, ErrRevokedToken
 	}
 
-	// Проверяем срок действия
-	if time.Now().After(storedToken.ExpiresAt) {
+	// Проверяем срок действия токена
+	if tokenObj.ExpiresAt.Before(time.Now()) {
 		return nil, ErrExpiredToken
 	}
 
 	// Получаем пользователя
-	user, err := s.repo.GetUserByID(ctx, storedToken.UserID)
+	user, err := s.repo.GetUserByID(ctx, tokenObj.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка при поиске пользователя: %w", err)
 	}
 
-	// Отзываем текущий refresh token (одноразовое использование)
+	// Отзываем текущий refresh token
 	if err := s.repo.RevokeRefreshToken(ctx, refreshToken); err != nil {
 		return nil, fmt.Errorf("ошибка при отзыве токена обновления: %w", err)
 	}
 
-	// Создаем новые токены
+	// Создаем новую пару токенов
 	return s.CreateTokens(ctx, user)
 }
 
-// RevokeAllUserTokens отзывает все токены пользователя (выход со всех устройств)
+// RevokeAllUserTokens отзывает все токены пользователя
 func (s *Service) RevokeAllUserTokens(ctx context.Context, userID string) error {
 	return s.repo.RevokeAllUserTokens(ctx, userID)
 }
 
-// RevokeToken отзывает конкретный токен (выход с одного устройства)
+// RevokeToken отзывает конкретный токен обновления
 func (s *Service) RevokeToken(ctx context.Context, refreshToken string) error {
 	return s.repo.RevokeRefreshToken(ctx, refreshToken)
 }
@@ -334,24 +347,73 @@ func (s *Service) CleanupExpiredTokens(ctx context.Context) error {
 
 // UpdateDisplayName обновляет отображаемое имя пользователя
 func (s *Service) UpdateDisplayName(ctx context.Context, userID, displayName string) error {
-	// Проверяем, что displayName не пустой и не слишком длинный
 	if displayName == "" || len(displayName) > MaxDisplayNameLength {
 		return ErrInvalidDisplayName
 	}
 
-	// Получаем пользователя для проверки его существования
-	_, err := s.repo.GetUserByID(ctx, userID)
+	return s.repo.UpdateDisplayName(ctx, userID, displayName)
+}
+
+// CreateServiceToken создает токен для межсервисной аутентификации
+func (s *Service) CreateServiceToken(serviceID string) (string, error) {
+	// Проверяем, является ли сервис доверенным
+	serviceName, ok := s.trustedServices[serviceID]
+	if !ok {
+		return "", ErrServiceNotAuthorized
+	}
+
+	// Создаем JWT токен для межсервисной аутентификации
+	claims := ServiceClaims{
+		ServiceID:   serviceID,
+		ServiceName: serviceName,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ServiceTokenTTL)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			Subject:   serviceID,
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	// Подписываем токен
+	signedToken, err := token.SignedString(s.jwtSecret)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrUserNotFound
+		return "", fmt.Errorf("ошибка при создании межсервисного токена: %w", err)
+	}
+
+	return signedToken, nil
+}
+
+// ValidateServiceToken проверяет токен межсервисной аутентификации
+func (s *Service) ValidateServiceToken(tokenString string) (bool, *ServiceClaims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &ServiceClaims{}, func(token *jwt.Token) (interface{}, error) {
+		// Проверяем, что алгоритм подписи соответствует ожидаемому
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("неожиданный метод подписи: %v", token.Header["alg"])
 		}
-		return fmt.Errorf("ошибка при проверке пользователя: %w", err)
+		return s.jwtSecret, nil
+	})
+
+	if err != nil {
+		// Проверяем, связана ли ошибка с истекшим токеном
+		if errors.Is(err, jwt.ErrTokenExpired) {
+			return false, nil, ErrExpiredToken
+		}
+		return false, nil, ErrInvalidToken
 	}
 
-	// Обновляем отображаемое имя пользователя
-	if err := s.repo.UpdateDisplayName(ctx, userID, displayName); err != nil {
-		return fmt.Errorf("ошибка при обновлении отображаемого имени: %w", err)
+	if !token.Valid {
+		return false, nil, ErrInvalidToken
 	}
 
-	return nil
+	claims, ok := token.Claims.(*ServiceClaims)
+	if !ok {
+		return false, nil, ErrInvalidToken
+	}
+
+	// Проверяем, является ли сервис доверенным
+	if _, ok := s.trustedServices[claims.ServiceID]; !ok {
+		return false, nil, ErrServiceNotAuthorized
+	}
+
+	return true, claims, nil
 }

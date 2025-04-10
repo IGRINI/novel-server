@@ -1,4 +1,4 @@
-package auth
+package authservice
 
 import (
 	"encoding/json"
@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type Handler struct {
@@ -42,6 +43,29 @@ type UpdateDisplayNameRequest struct {
 
 type RefreshTokenRequest struct {
 	RefreshToken string `json:"refresh_token"`
+}
+
+type ValidateTokenRequest struct {
+	Token string `json:"token"`
+}
+
+type ValidateTokenResponse struct {
+	Valid     bool   `json:"valid"`
+	UserID    string `json:"user_id,omitempty"`
+	Username  string `json:"username,omitempty"`
+	Email     string `json:"email,omitempty"`
+	ExpiresAt int64  `json:"expires_at,omitempty"`
+}
+
+type ServiceTokenRequest struct {
+	ServiceID   string `json:"service_id"`
+	ServiceName string `json:"service_name"`
+	APIKey      string `json:"api_key"` // Дополнительный уровень безопасности
+}
+
+type ServiceTokenResponse struct {
+	Token     string `json:"token"`
+	ExpiresAt int64  `json:"expires_at"`
 }
 
 type ErrorResponse struct {
@@ -233,7 +257,7 @@ func (h *Handler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, response)
 }
 
-// ValidateToken проверяет действительность токена доступа, переданного в заголовке Authorization
+// ValidateToken проверяет действительность токена доступа
 func (h *Handler) ValidateToken(w http.ResponseWriter, r *http.Request) {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
@@ -252,76 +276,62 @@ func (h *Handler) ValidateToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !valid {
-		respondWithError(w, http.StatusUnauthorized, "недействительный или истекший токен")
+		respondWithError(w, http.StatusUnauthorized, "недействительный токен доступа")
 		return
 	}
 
-	// Возвращаем информацию о пользователе из токена
+	// Получаем пользователя для проверки существования
+	_, err = h.service.repo.GetUserByID(r.Context(), claims.UserID)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "пользователь не найден")
+		return
+	}
+
+	// Возвращаем успешный результат
 	respondWithJSON(w, http.StatusOK, map[string]interface{}{
-		"user_id":    claims.UserID,
-		"username":   claims.Username,
-		"email":      claims.Email,
-		"expires_at": claims.ExpiresAt.Unix(),
+		"valid":   true,
+		"user_id": claims.UserID,
 	})
 }
 
 // UpdateDisplayName обновляет отображаемое имя пользователя
 func (h *Handler) UpdateDisplayName(w http.ResponseWriter, r *http.Request) {
-	// Получаем ID пользователя из контекста (установлен middleware)
-	userID, ok := r.Context().Value("user_id").(string)
-	if !ok {
-		respondWithError(w, http.StatusUnauthorized, "ошибка аутентификации")
-		return
-	}
-
 	var req UpdateDisplayNameRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondWithError(w, http.StatusBadRequest, "неверный формат запроса")
 		return
 	}
 
-	if req.DisplayName == "" {
-		respondWithError(w, http.StatusBadRequest, "отображаемое имя не может быть пустым")
+	// Получаем ID пользователя из контекста
+	userID, ok := GetUserIDFromContext(r.Context())
+	if !ok {
+		respondWithError(w, http.StatusUnauthorized, "пользователь не авторизован")
 		return
 	}
 
-	if len(req.DisplayName) > MaxDisplayNameLength {
-		respondWithError(w, http.StatusBadRequest, fmt.Sprintf("длина отображаемого имени не должна превышать %d символов", MaxDisplayNameLength))
-		return
-	}
-
+	// Обновляем displayName
 	if err := h.service.UpdateDisplayName(r.Context(), userID, req.DisplayName); err != nil {
-		switch err {
-		case ErrUserNotFound:
-			respondWithError(w, http.StatusNotFound, "пользователь не найден")
-		case ErrInvalidDisplayName:
-			respondWithError(w, http.StatusBadRequest, "некорректное отображаемое имя")
-		default:
-			fmt.Printf("Ошибка при обновлении отображаемого имени: %v\n", err)
+		if err == ErrInvalidDisplayName {
+			respondWithError(w, http.StatusBadRequest, err.Error())
+		} else {
+			fmt.Printf("Ошибка при обновлении display_name: %v\n", err)
 			respondWithError(w, http.StatusInternalServerError, "внутренняя ошибка сервера")
 		}
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, map[string]string{
-		"message": "отображаемое имя успешно обновлено",
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{
+		"success":      true,
+		"display_name": req.DisplayName,
 	})
 }
 
-// Logout отзывает refresh token пользователя
+// Logout отзывает текущий токен обновления
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	var req RefreshTokenRequest
-
-	// Пытаемся получить refresh token из запроса
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// Если не получается получить из тела, пробуем из заголовка
-		authHeader := r.Header.Get("Authorization")
-		if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
-			req.RefreshToken = strings.TrimPrefix(authHeader, "Bearer ")
-		} else {
-			respondWithError(w, http.StatusBadRequest, "неверный формат запроса: отсутствует refresh_token")
-			return
-		}
+		respondWithError(w, http.StatusBadRequest, "неверный формат запроса")
+		return
 	}
 
 	if req.RefreshToken == "" {
@@ -331,33 +341,115 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 
 	// Отзываем токен
 	if err := h.service.RevokeToken(r.Context(), req.RefreshToken); err != nil {
-		fmt.Printf("Ошибка при выходе: %v\n", err)
+		fmt.Printf("Ошибка при отзыве токена: %v\n", err)
 		respondWithError(w, http.StatusInternalServerError, "внутренняя ошибка сервера")
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, map[string]string{
-		"message": "выход выполнен успешно",
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": "токен успешно отозван",
 	})
 }
 
-// LogoutAll отзывает все refresh токены пользователя
+// LogoutAll отзывает все токены пользователя
 func (h *Handler) LogoutAll(w http.ResponseWriter, r *http.Request) {
-	// Получаем ID пользователя из контекста (установлен middleware)
-	userID, ok := r.Context().Value("user_id").(string)
+	// Получаем ID пользователя из контекста
+	userID, ok := GetUserIDFromContext(r.Context())
 	if !ok {
-		respondWithError(w, http.StatusUnauthorized, "ошибка аутентификации")
+		respondWithError(w, http.StatusUnauthorized, "пользователь не авторизован")
 		return
 	}
 
 	// Отзываем все токены пользователя
 	if err := h.service.RevokeAllUserTokens(r.Context(), userID); err != nil {
-		fmt.Printf("Ошибка при выходе со всех устройств: %v\n", err)
+		fmt.Printf("Ошибка при отзыве всех токенов: %v\n", err)
 		respondWithError(w, http.StatusInternalServerError, "внутренняя ошибка сервера")
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, map[string]string{
-		"message": "выход со всех устройств выполнен успешно",
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": "все токены успешно отозваны",
 	})
+}
+
+// InternalValidateToken проверяет действительность токена доступа для межсервисного взаимодействия
+func (h *Handler) InternalValidateToken(w http.ResponseWriter, r *http.Request) {
+	var req ValidateTokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondWithError(w, http.StatusBadRequest, "неверный формат запроса")
+		return
+	}
+
+	if req.Token == "" {
+		respondWithError(w, http.StatusBadRequest, "токен не может быть пустым")
+		return
+	}
+
+	// Проверяем авторизацию сервиса
+	serviceAuthHeader := r.Header.Get("Service-Authorization")
+	if serviceAuthHeader == "" || !strings.HasPrefix(serviceAuthHeader, "Bearer ") {
+		respondWithError(w, http.StatusUnauthorized, "отсутствует или неверный формат токена сервиса")
+		return
+	}
+
+	serviceToken := strings.TrimPrefix(serviceAuthHeader, "Bearer ")
+	valid, _, err := h.service.ValidateServiceToken(serviceToken)
+	if err != nil || !valid {
+		respondWithError(w, http.StatusUnauthorized, "недействительный токен сервиса")
+		return
+	}
+
+	// Теперь валидируем пользовательский токен
+	valid, claims, err := h.service.ValidateAccessToken(req.Token)
+
+	response := ValidateTokenResponse{
+		Valid: valid,
+	}
+
+	if valid && err == nil {
+		response.UserID = claims.UserID
+		response.Username = claims.Username
+		response.Email = claims.Email
+		response.ExpiresAt = claims.ExpiresAt.Time.Unix()
+	}
+
+	respondWithJSON(w, http.StatusOK, response)
+}
+
+// CreateServiceToken создает токен для межсервисной авторизации
+func (h *Handler) CreateServiceToken(w http.ResponseWriter, r *http.Request) {
+	var req ServiceTokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondWithError(w, http.StatusBadRequest, "неверный формат запроса")
+		return
+	}
+
+	if req.ServiceID == "" {
+		respondWithError(w, http.StatusBadRequest, "service_id не может быть пустым")
+		return
+	}
+
+	// Здесь можно добавить проверку API ключа, если это необходимо
+
+	// Создаем токен для сервиса
+	token, err := h.service.CreateServiceToken(req.ServiceID)
+	if err != nil {
+		if err == ErrServiceNotAuthorized {
+			respondWithError(w, http.StatusUnauthorized, "сервис не авторизован")
+		} else {
+			fmt.Printf("Ошибка при создании токена сервиса: %v\n", err)
+			respondWithError(w, http.StatusInternalServerError, "внутренняя ошибка сервера")
+		}
+		return
+	}
+
+	// Формируем ответ
+	response := ServiceTokenResponse{
+		Token:     token,
+		ExpiresAt: time.Now().Add(ServiceTokenTTL).Unix(),
+	}
+
+	respondWithJSON(w, http.StatusOK, response)
 }

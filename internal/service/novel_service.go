@@ -2,8 +2,6 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -94,8 +92,40 @@ func (s *NovelService) DeleteNovel(ctx context.Context, id uuid.UUID) error {
 }
 
 // ListPublicNovels получает список публичных новелл
-func (s *NovelService) ListPublicNovels(ctx context.Context, limit, offset int) ([]model.Novel, error) {
+func (s *NovelService) ListPublicNovels(ctx context.Context, limit, offset int) ([]model.NovelWithAuthor, error) {
 	return s.repo.ListPublic(ctx, limit, offset)
+}
+
+// LikeNovel добавляет лайк к новелле от пользователя
+func (s *NovelService) LikeNovel(ctx context.Context, userID, novelID uuid.UUID) error {
+	// Проверяем, существует ли новелла
+	_, err := s.repo.GetByID(ctx, novelID)
+	if err != nil {
+		return fmt.Errorf("новелла не найдена: %w", err)
+	}
+
+	return s.repo.LikeNovel(ctx, userID, novelID)
+}
+
+// UnlikeNovel удаляет лайк пользователя с новеллы
+func (s *NovelService) UnlikeNovel(ctx context.Context, userID, novelID uuid.UUID) error {
+	// Проверяем, существует ли новелла
+	_, err := s.repo.GetByID(ctx, novelID)
+	if err != nil {
+		return fmt.Errorf("новелла не найдена: %w", err)
+	}
+
+	return s.repo.UnlikeNovel(ctx, userID, novelID)
+}
+
+// GetNovelByIDWithLikes получает новеллу по ID с информацией о лайках
+func (s *NovelService) GetNovelByIDWithLikes(ctx context.Context, id uuid.UUID, currentUserID *uuid.UUID) (model.NovelWithAuthor, error) {
+	return s.repo.GetNovelByIDWithLikes(ctx, id, currentUserID)
+}
+
+// GetLikedNovelsByUser получает список новелл, лайкнутых пользователем
+func (s *NovelService) GetLikedNovelsByUser(ctx context.Context, userID uuid.UUID, limit, offset int) ([]model.NovelWithAuthor, error) {
+	return s.repo.GetLikedNovelsByUser(ctx, userID, limit, offset)
 }
 
 // GenerateNovelDraftAsync асинхронно генерирует драфт новеллы через нарратор
@@ -208,12 +238,8 @@ func (s *NovelService) generateNovelDraftTask(ctx context.Context, params interf
 		PlayerGender:      config.PlayerGender,
 		PlayerDescription: config.PlayerDescription,
 		WorldContext:      config.WorldContext,
-		CoreStats:         make(map[string]model.CoreStatView),
+		CoreStats:         config.CoreStats,
 		Themes:            config.PlayerPrefs.Themes,
-	}
-
-	for name, stat := range config.CoreStats {
-		draftView.CoreStats[name] = stat.ToView()
 	}
 
 	return draftView, nil
@@ -307,15 +333,18 @@ func (s *NovelService) setupNovelTask(ctx context.Context, params interface{}) (
 		// Не возвращаем ошибку, т.к. новелла уже создана, но логируем проблему
 	}
 
-	// Результат содержит ID новеллы и настройку
+	// 6. Возвращаем результат, включающий ID, Config и Setup
 	result := struct {
-		NovelID uuid.UUID        `json:"novel_id"`
-		Setup   model.NovelSetup `json:"setup"`
+		NovelID uuid.UUID         `json:"novel_id"`
+		Config  model.NovelConfig `json:"config"`
+		Setup   model.NovelSetup  `json:"setup"`
 	}{
 		NovelID: createdNovel.ID,
-		Setup:   setup,
+		Config:  createdNovel.Config,
+		Setup:   createdNovel.Setup,
 	}
 
+	log.Info().Str("novelID", createdNovel.ID.String()).Msg("Новелла успешно создана из драфта")
 	return result, nil
 }
 
@@ -338,22 +367,6 @@ func (s *NovelService) GenerateNovelContentAsync(ctx context.Context, req model.
 	return taskID, nil
 }
 
-// SubmitGenerateContentTask отправляет задачу для генерации контента новеллы
-func (s *NovelService) SubmitGenerateContentTask(ctx context.Context, req model.GenerateNovelContentRequest) (string, error) {
-	// Исправлено: Сигнатура SubmitTaskWithOwner: (ctx, taskFunc, payload, ownerID)
-	taskID, err := s.taskManager.SubmitTaskWithOwner(
-		ctx,                   // Контекст
-		s.generateContentTask, // Функция задачи типа taskmanager.TaskFunc
-		req,                   // Payload (interface{})
-		req.UserID.String(),   // Владелец (string) - предполагаем UserID это UUID
-	)
-	if err != nil {
-		return "", fmt.Errorf("ошибка отправки задачи генерации контента: %w", err)
-	}
-	// Исправлено: Конвертируем UUID в строку
-	return taskID.String(), nil
-}
-
 // generateContentTask выполняет задачу генерации контента для новеллы
 func (s *NovelService) generateContentTask(ctx context.Context, payload interface{}) (interface{}, error) {
 	// 1. Преобразуем payload
@@ -362,141 +375,329 @@ func (s *NovelService) generateContentTask(ctx context.Context, payload interfac
 		return nil, fmt.Errorf("неверный тип payload")
 	}
 
-	log.Ctx(ctx).Info().Str("novelID", p.NovelID.String()).Str("userID", p.UserID.String()).Msg("Начало задачи генерации контента")
-
 	// 2. Получаем новеллу с setup
 	novel, err := s.repo.GetNovelWithSetup(ctx, p.NovelID)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка получения новеллы: %w", err)
 	}
 
-	// 3. Получаем предыдущее состояние
+	// 3. Получаем предыдущее состояние (если есть)
 	isFirstRequest := false
-	previousState, err := s.repo.GetNovelState(ctx, p.UserID, p.NovelID)
-	if err != nil {
-		if errors.Is(err, model.ErrNotFound) {
+	previousState, errState := s.repo.GetNovelState(ctx, p.UserID, p.NovelID)
+	if errState != nil {
+		if errors.Is(errState, model.ErrNotFound) {
 			isFirstRequest = true
 			log.Ctx(ctx).Info().Msg("Состояние не найдено, первый запрос.")
 		} else {
-			return nil, fmt.Errorf("ошибка получения состояния: %w", err)
+			// Логируем ошибку, но можем попытаться продолжить, если кеш сработает
+			log.Ctx(ctx).Error().Err(errState).Msg("Ошибка получения состояния, но продолжаем для проверки кеша")
 		}
+	} else if previousState.CurrentBatchNumber == 0 {
+		isFirstRequest = true
+		log.Ctx(ctx).Info().Msg("Номер батча 0, считаем первым запросом.")
 	}
 
-	var stateHash string
-	var cacheHit bool
-	var resultJSON string // Будем возвращать строку JSON
+	// Проверяем, есть ли история пользовательских выборов
+	if p.UserChoices != nil && len(p.UserChoices) > 0 {
+		// Для отладки логируем количество выборов
+		log.Ctx(ctx).Info().Int("choices_count", len(p.UserChoices)).Msg("Получена история выборов пользователя")
 
-	// 4. Логика кэширования (если не первый запрос)
-	if !isFirstRequest {
-		stateHash, err = calculateStateHash(previousState)
-		if err != nil {
-			log.Ctx(ctx).Error().Err(err).Msg("Ошибка вычисления хеша состояния")
+		// Если есть выборы, то это точно не первый запрос
+		if isFirstRequest {
+			log.Ctx(ctx).Warn().Msg("Получены выборы для первого запроса - это необычно, но продолжаем...")
+			isFirstRequest = false
+		}
+	} else if p.UserChoice.ChoiceNumber > 0 || (p.UserChoice.ChoiceIndex >= 0 && p.UserChoice.ChoiceNumber >= 0) {
+		// Для обратной совместимости проверяем старое поле UserChoice
+		// Проверяем, что оба значения не отрицательные, чтобы игнорировать значения -1,-1 (явное отсутствие выбора)
+		log.Ctx(ctx).Info().Int("batch", p.UserChoice.ChoiceNumber).Int("choice", p.UserChoice.ChoiceIndex).Msg("Используем старое поле UserChoice")
+		isFirstRequest = false
+	}
+
+	log.Ctx(ctx).Info().Interface("previousState", previousState).Msg("Предыдущее состояние")
+	log.Ctx(ctx).Info().Interface("Payload", p).Msg("Payload")
+
+	// 4. Вычисляем хеш и проверяем кеш (ВСЕГДА)
+	var stateOrSceneHash string
+	var errHash error
+
+	if isFirstRequest {
+		stateOrSceneHash, errHash = utils.CalculateFirstSceneHash(novel.Config, novel.Setup)
+		if errHash != nil {
+			log.Ctx(ctx).Error().Err(errHash).Msg("Ошибка вычисления хеша первой сцены")
+			// Не фатально, просто не сможем использовать кеш
 		} else {
-			cachedBatch, errCache := s.repo.GetSceneBatchByHash(ctx, p.NovelID, stateHash)
-			if errCache == nil {
-				log.Ctx(ctx).Info().Str("hash", stateHash).Msg("Найден кеш сцены")
-				// Формируем структуру ответа из кеша
-				cacheResponse := model.AIResponse{
-					StorySummarySoFar: cachedBatch.StorySummarySoFar,
-					FutureDirection:   cachedBatch.FutureDirection,
-					Choices:           cachedBatch.Choices,
-					EndingText:        cachedBatch.EndingText,
-				}
-				// Сериализуем в JSON
-				resultBytes, errMarshal := json.Marshal(cacheResponse)
-				if errMarshal != nil {
-					log.Ctx(ctx).Error().Err(errMarshal).Msg("Ошибка сериализации кешированного батча в JSON")
-					// Не фатально, просто не используем кеш
+			log.Ctx(ctx).Debug().Str("hash", stateOrSceneHash).Msg("Вычислен хеш первой сцены")
+		}
+	} else {
+		// Извлекаем нужные данные из previousState для CalculateStateHash
+		coreStatsMap := make(map[string]int)
+		globalFlagsSlice := []string{}
+
+		// Извлекаем CoreStats
+		if novel.Setup.CoreStatsDefinition != nil {
+			for statName := range novel.Setup.CoreStatsDefinition {
+				if valueRaw, ok := previousState.StoryVariables[statName]; ok {
+					var intValue int
+					success := false
+					switch v := valueRaw.(type) {
+					case int:
+						intValue = v
+						success = true
+					case float64:
+						intValue = int(v)
+						success = true
+					case json.Number:
+						if i64, errConv := v.Int64(); errConv == nil {
+							intValue = int(i64)
+							success = true
+						} else {
+							log.Ctx(ctx).Warn().Err(errConv).Str("statName", statName).Interface("value", valueRaw).Msg("Не удалось конвертировать json.Number стата в int для хеша")
+						}
+					case string:
+						if i, errConv := strconv.Atoi(v); errConv == nil {
+							intValue = i
+							success = true
+						} else {
+							log.Ctx(ctx).Warn().Err(errConv).Str("statName", statName).Interface("value", valueRaw).Msg("Не удалось конвертировать строку стата в int для хеша")
+						}
+					default:
+						log.Ctx(ctx).Warn().Str("statName", statName).Interface("value", valueRaw).Msg("Неподдерживаемый тип стата для конвертации в int при расчете хеша")
+					}
+					if success {
+						coreStatsMap[statName] = intValue
+					}
 				} else {
-					resultJSON = string(resultBytes)
-					cacheHit = true
+					log.Ctx(ctx).Warn().Str("statName", statName).Msg("Определенный стат отсутствует в StoryVariables при расчете хеша")
+					// Можно установить значение по умолчанию (например, 0), если это необходимо для консистентности хеша
+					// coreStatsMap[statName] = 0
 				}
-			} else if !errors.Is(errCache, model.ErrNotFound) {
-				log.Ctx(ctx).Warn().Err(errCache).Msg("Ошибка при поиске кеша сцены")
+			}
+		} else {
+			log.Ctx(ctx).Warn().Msg("CoreStatsDefinition не найден в Setup новеллы, невозможно извлечь CoreStats для хеша")
+		}
+
+		// Извлекаем GlobalFlags (предполагаем префикс "flag_")
+		const flagPrefix = "flag_"
+		for key, valueRaw := range previousState.StoryVariables {
+			if strings.HasPrefix(key, flagPrefix) {
+				if boolValue, ok := valueRaw.(bool); ok && boolValue {
+					flagName := strings.TrimPrefix(key, flagPrefix)
+					globalFlagsSlice = append(globalFlagsSlice, flagName)
+				}
 			}
 		}
+
+		// Теперь вызываем хеширование с извлеченными данными
+		stateOrSceneHash, errHash = utils.CalculateStateHash(coreStatsMap, globalFlagsSlice, previousState.StoryVariables)
+		if errHash != nil {
+			log.Ctx(ctx).Error().Err(errHash).Msg("Ошибка вычисления хеша состояния")
+		} else {
+			log.Ctx(ctx).Debug().Str("hash", stateOrSceneHash).Msg("Вычислен хеш состояния")
+		}
 	}
 
-	// 5. Генерация AI (если кеш не найден или не использован)
+	var cacheHit bool
+	var parsedContent *model.ParsedNovelContent
+
+	if errHash == nil && stateOrSceneHash != "" { // Проверяем кеш, только если хеш вычислен
+		cachedBatch, errCache := s.repo.GetSceneBatchByStateHash(ctx, stateOrSceneHash)
+		if errCache == nil {
+			log.Ctx(ctx).Info().Str("hash", stateOrSceneHash).Msg("Найден кеш сцены")
+
+			parsedContent = &model.ParsedNovelContent{}
+			if cachedBatch.EndingText != nil {
+				parsedContent.EndingText = *cachedBatch.EndingText
+			}
+			parsedContent.Choices = cachedBatch.Batch
+
+			cacheHit = true
+			err = nil // Ошибки парсинга больше нет
+		} else if !errors.Is(errCache, model.ErrNotFound) {
+			log.Ctx(ctx).Warn().Err(errCache).Msg("Ошибка при поиске кеша сцены")
+		}
+	}
+
+	// Если кеш не найден или не удалось его использовать, генерируем новый контент
 	if !cacheHit {
-		var jsonResponse string // Ответ от AI
+		var aiResponseText string
+		var errAI error
+
+		// --- Обновление состояния новеллы для запроса к AI ---
+		// Создаем временное состояние для запроса к AI с историей выборов
+		aiRequestState := model.NovelState{}
 
 		if isFirstRequest {
-			log.Ctx(ctx).Info().Msg("Генерация первого батча через AI (creator)")
+			log.Ctx(ctx).Info().Msg("Генерация первого батча через AI (first scene creator)")
+
+			// Добавляем детальное логирование полей новеллы
+			configJSON, _ := json.MarshalIndent(novel.Config, "", "  ")
+			setupJSON, _ := json.MarshalIndent(novel.Setup, "", "  ")
+			log.Ctx(ctx).Debug().RawJSON("novel.Config", configJSON).Msg("Конфигурация новеллы перед отправкой")
+			log.Ctx(ctx).Debug().RawJSON("novel.Setup", setupJSON).Msg("Setup новеллы перед отправкой")
+
 			aiReq := model.GenerateNovelContentRequestForAI{
 				Config: novel.Config,
 				Setup:  novel.Setup,
 			}
-			jsonResponse, err = s.aiClient.GenerateWithNovelCreator(ctx, aiReq)
-			if err != nil {
-				return nil, fmt.Errorf("ошибка генерации первого батча AI (creator): %w", err)
-			}
-			// TODO: Валидация JSON ответа для первой сцены? Промпт требует specific поля.
-			// Нужно либо парсить в FirstSceneResponse, убедиться в наличии полей,
-			// а потом возвращать исходный jsonResponse. Либо положиться на AI.
+			aiResponseText, errAI = s.aiClient.GenerateWithFirstSceneCreator(ctx, aiReq)
 		} else {
-			log.Ctx(ctx).Info().Msg("Генерация следующего батча через AI (creator)")
+			// Проверяем, что previousState действительно загружено
+			if errState != nil {
+				log.Ctx(ctx).Error().Err(errState).Msg("Критическая ошибка: невозможно сгенерировать следующий батч без предыдущего состояния.")
+				return nil, fmt.Errorf("ошибка получения предыдущего состояния для генерации: %w", errState)
+			}
+
+			// Копируем предыдущее состояние для запроса к AI
+			aiRequestState = previousState
+
+			// Обрабатываем выборы пользователя и добавляем их в историю для AI
+			if len(p.UserChoices) > 0 {
+				// Создаем копию истории
+				aiRequestState.History = make([]model.UserChoice, len(previousState.History))
+				copy(aiRequestState.History, previousState.History)
+
+				// Обрабатываем каждый выбор последовательно
+				for _, choice := range p.UserChoices {
+					// Получаем кэшированный батч для применения последствий
+					cachedBatch, err := s.repo.GetSceneBatchByStateHash(ctx, stateOrSceneHash)
+					if err != nil {
+						log.Ctx(ctx).Warn().Err(err).Msg("Не удалось получить кэшированный батч для обработки выбора")
+						continue
+					}
+
+					// Проверяем корректность индексов
+					if choice.EventIndex < 0 || choice.EventIndex >= len(cachedBatch.Batch) {
+						log.Ctx(ctx).Warn().Int("eventIndex", choice.EventIndex).Msg("Некорректный индекс события")
+						continue
+					}
+
+					event := cachedBatch.Batch[choice.EventIndex]
+					if choice.ChoiceIndex < 0 || choice.ChoiceIndex >= len(event.Choices) {
+						log.Ctx(ctx).Warn().Int("choiceIndex", choice.ChoiceIndex).Msg("Некорректный индекс выбора")
+						continue
+					}
+
+					// Добавляем выбор в историю с полным контекстом
+					userChoice := model.UserChoice{
+						ChoiceNumber:     aiRequestState.CurrentBatchNumber,
+						ChoiceIndex:      choice.ChoiceIndex,
+						EventDescription: event.Description,
+						ChoiceText:       event.Choices[choice.ChoiceIndex].Text,
+					}
+					aiRequestState.History = append(aiRequestState.History, userChoice)
+				}
+			} else if p.UserChoice.ChoiceNumber > 0 || (p.UserChoice.ChoiceIndex >= 0 && p.UserChoice.ChoiceNumber >= 0) {
+				// Обратная совместимость с полем UserChoice
+
+				// Создаем копию истории
+				aiRequestState.History = make([]model.UserChoice, len(previousState.History))
+				copy(aiRequestState.History, previousState.History)
+
+				// Получаем кэшированный батч для применения последствий
+				cachedBatch, err := s.repo.GetSceneBatchByStateHash(ctx, stateOrSceneHash)
+				if err != nil {
+					return nil, fmt.Errorf("ошибка получения кэшированного батча: %w", err)
+				}
+
+				// Проверяем индекс выбора
+				if p.UserChoice.ChoiceIndex < 0 || p.UserChoice.ChoiceIndex >= len(cachedBatch.Batch) {
+					return nil, fmt.Errorf("некорректный индекс выбора: %d (доступно вариантов: %d)",
+						p.UserChoice.ChoiceIndex, len(cachedBatch.Batch))
+				}
+
+				// Получаем информацию о выбранном событии
+				chosenEvent := cachedBatch.Batch[p.UserChoice.ChoiceIndex]
+				if p.UserChoice.ChoiceIndex < 0 || p.UserChoice.ChoiceIndex >= len(chosenEvent.Choices) {
+					return nil, fmt.Errorf("некорректный индекс выбора для события: %d", p.UserChoice.ChoiceIndex)
+				}
+
+				// Обновляем поле UserChoice в запросе с данными о событии и выбранном варианте
+				p.UserChoice.EventDescription = chosenEvent.Description
+				p.UserChoice.ChoiceText = chosenEvent.Choices[p.UserChoice.ChoiceIndex].Text
+
+				// Создаем копию для добавления в историю
+				userChoiceWithContext := model.UserChoice{
+					ChoiceNumber:     p.UserChoice.ChoiceNumber,
+					ChoiceIndex:      p.UserChoice.ChoiceIndex,
+					EventDescription: chosenEvent.Description,
+					ChoiceText:       chosenEvent.Choices[p.UserChoice.ChoiceIndex].Text,
+				}
+
+				// Добавляем выбор в историю для AI
+				aiRequestState.History = append(aiRequestState.History, userChoiceWithContext)
+			}
+
+			// Теперь у нас есть обновленное состояние с историей выборов
+			log.Ctx(ctx).Info().Msg("Генерация следующего батча через AI (creator) с обновленной историей выборов")
+			log.Ctx(ctx).Debug().Int("historyCount", len(aiRequestState.History)).Msg("Количество записей в истории выборов")
+
 			aiReq := model.GenerateNovelContentRequestForAI{
-				NovelState: previousState,
+				NovelState: aiRequestState,
 				Config:     novel.Config,
 				Setup:      novel.Setup,
 			}
-			jsonResponse, err = s.aiClient.GenerateWithNovelCreator(ctx, aiReq)
-			if err != nil {
-				return nil, fmt.Errorf("ошибка генерации следующего батча AI (creator): %w", err)
-			}
+			aiResponseText, errAI = s.aiClient.GenerateWithNovelCreator(ctx, aiReq)
 		}
 
-		// Очищаем ответ и используем его как результат
-		resultJSON = cleanAIResponse(jsonResponse)
+		if errAI != nil {
+			return nil, fmt.Errorf("ошибка генерации контента через AI: %w", errAI)
+		}
 
-		// Важно: Мы больше НЕ ПАРСИМ JSON здесь, возвращаем строку
-		// Парсинг нужен только для кеширования, если будем парсить
+		// Очищаем ответ и парсим через наш парсер
+		cleanedResponse := strings.TrimSpace(aiResponseText) // Используем strings.TrimSpace
+		parsedContent, err = ai.ParseNovelContentResponse(cleanedResponse)
+		if err != nil {
+			log.Ctx(ctx).Error().Err(err).Str("rawResponse", aiResponseText).Str("cleanedResponse", cleanedResponse).Msg("Ошибка парсинга ответа AI")
+			return nil, fmt.Errorf("ошибка парсинга ответа AI: %w", err)
+		}
 
-		// Сохраняем в кеш (если не первый запрос и хеш был вычислен)
-		if !isFirstRequest && stateHash != "" {
-			// Для сохранения в кеш нам НУЖНО распарсить ответ
-			var creatorRespForCache model.AIResponse
-			if errUnmarshal := json.Unmarshal([]byte(resultJSON), &creatorRespForCache); errUnmarshal != nil {
-				log.Ctx(ctx).Error().Err(errUnmarshal).Str("json_string", resultJSON).Msg("Ошибка разбора JSON ответа AI для сохранения в кеш")
-				// Не сохраняем в кеш, если парсинг не удался
+		// Сохраняем в кеш (если хеш был вычислен)
+		if errHash == nil && stateOrSceneHash != "" {
+			batch := model.SceneBatch{
+				ID:                uuid.New(),
+				NovelID:           p.NovelID,
+				StateHash:         stateOrSceneHash,
+				StorySummarySoFar: parsedContent.StorySummarySoFar,
+				FutureDirection:   parsedContent.FutureDirection,
+				// EndingText будет установлен ниже, если choices пуст
+			}
+
+			// Преобразуем []ChoiceEvent в []ChoiceOption для кеша
+			if len(parsedContent.Choices) > 0 {
+				batch.Batch = parsedContent.Choices
+				batch.EndingText = nil // Если есть choices, ending text должен быть nil
+			} else if parsedContent.EndingText != "" {
+				// Если choices нет, но есть ending text
+				batch.Batch = nil
+				batch.EndingText = &parsedContent.EndingText
 			} else {
-				batchToCache := model.SceneBatch{
-					NovelID:           p.NovelID,
-					StateHash:         stateHash,
-					StorySummarySoFar: creatorRespForCache.StorySummarySoFar, // Используем распарсенные данные
-					FutureDirection:   creatorRespForCache.FutureDirection,   // Используем распарсенные данные
-					Choices:           creatorRespForCache.Choices,           // Используем распарсенные данные
-					EndingText:        creatorRespForCache.EndingText,        // Используем распарсенные данные
-				}
-				_, errSave := s.repo.SaveSceneBatch(ctx, batchToCache)
-				if errSave != nil {
-					log.Ctx(ctx).Warn().Err(errSave).Msg("Ошибка сохранения батча в кеш")
-				}
+				// Странный случай: нет ни choices, ни ending text. Не сохраняем в кеш.
+				log.Ctx(ctx).Warn().Str("hash", stateOrSceneHash).Msg("Попытка сохранить в кеш пустой результат (нет ни choices, ни ending text). Кеширование пропущено.")
+				// Пропускаем сохранение в кеш, но продолжаем выполнение функции
+				goto SkipCacheSave // Используем goto для перехода к концу блока сохранения
 			}
+
+			// Сохраняем в кеш
+			_, err = s.repo.SaveSceneBatch(ctx, batch)
+			if err != nil {
+				log.Ctx(ctx).Error().Err(err).Msg("Ошибка сохранения сцены в кеш")
+			}
+		SkipCacheSave: // Метка для goto
 		}
 	}
 
-	// --- Обновление состояния ---
-	// Для обновления состояния нам НУЖНО распарсить resultJSON, если он не из кеша
-	var responseForState model.AIResponse
-	if errUnmarshal := json.Unmarshal([]byte(resultJSON), &responseForState); errUnmarshal != nil {
-		// Если не удалось распарсить JSON, который мы собираемся вернуть,
-		// это критическая ошибка.
-		log.Ctx(ctx).Error().Err(errUnmarshal).Str("resultJSON", resultJSON).Msg("Критическая ошибка: не удалось распарсить JSON для обновления состояния")
-		return nil, fmt.Errorf("внутренняя ошибка: не удалось обработать ответ AI для обновления состояния: %w", errUnmarshal)
-	}
-
-	// 6. Обновляем или создаем состояние новеллы
+	// --- Обновление состояния новеллы ---
 	newState := model.NovelState{
-		UserID:            p.UserID,
-		NovelID:           p.NovelID,
-		StorySummarySoFar: responseForState.StorySummarySoFar, // Используем распарсенные данные
-		FutureDirection:   responseForState.FutureDirection,   // Используем распарсенные данные
+		UserID:  p.UserID,
+		NovelID: p.NovelID,
 	}
-
 	if isFirstRequest {
-		newState.CurrentBatchNumber = 1
+		// Используем StorySummarySoFar и FutureDirection из *ответа AI* (parsedContent),
+		// а не из начального конфига, т.к. это GM notes для СЛЕДУЮЩЕГО шага.
+		newState.StorySummarySoFar = parsedContent.StorySummarySoFar
+		newState.FutureDirection = parsedContent.FutureDirection
+		newState.CurrentBatchNumber = 0
 		newState.StoryVariables = make(map[string]interface{})
 		if novel.Setup.CoreStatsDefinition != nil {
 			for name, definition := range novel.Setup.CoreStatsDefinition {
@@ -504,106 +705,337 @@ func (s *NovelService) generateContentTask(ctx context.Context, payload interfac
 			}
 		}
 		newState.History = []model.UserChoice{}
-		newState.HistoryChoices = make(map[int][]model.ChoiceOption)
-		newState.HistoryChoices[0] = responseForState.Choices // Используем распарсенные данные
 	} else {
-		newState.ID = previousState.ID
-		newState.CreatedAt = previousState.CreatedAt
-		newState.CurrentBatchNumber = previousState.CurrentBatchNumber + 1
-		newState.StoryVariables = previousState.StoryVariables
-		newState.History = append(previousState.History, p.UserChoice)
+		// Проверяем, что предыдущее состояние существует
+		if previousState.ID == uuid.Nil {
+			return nil, fmt.Errorf("не найдено предыдущее состояние для последующего запроса")
+		}
 
-		// Применяем изменения статов из последствий
-		if previousState.HistoryChoices != nil {
-			if previousChoicesForBatch, batchOk := previousState.HistoryChoices[p.UserChoice.BatchNumber]; batchOk {
-				if p.UserChoice.ChoiceIndex >= 0 && p.UserChoice.ChoiceIndex < len(previousChoicesForBatch) {
-					chosenOption := previousChoicesForBatch[p.UserChoice.ChoiceIndex]
-					if chosenOption.Consequences.CoreStatsChange != nil {
-						for stat, change := range chosenOption.Consequences.CoreStatsChange {
-							if currentValRaw, ok := newState.StoryVariables[stat]; ok {
-								if currentValInt, typeOk := currentValRaw.(int); typeOk {
-									newState.StoryVariables[stat] = currentValInt + change
-								} else if currentValFloat, typeOk := currentValRaw.(float64); typeOk {
-									newState.StoryVariables[stat] = int(currentValFloat) + change
-								} else {
-									log.Ctx(ctx).Warn().Str("stat", stat).Interface("value", currentValRaw).Msg("Переменная состояния имеет нечисловой тип, перезапись изменением.")
-									newState.StoryVariables[stat] = change
-								}
-							} else {
-								newState.StoryVariables[stat] = change
+		// Инициализируем новое состояние на основе предыдущего
+		newState.StorySummarySoFar = parsedContent.StorySummarySoFar
+		newState.FutureDirection = parsedContent.FutureDirection
+
+		// По умолчанию сохраняем тот же batch number (для случая загрузки игры)
+		newState.CurrentBatchNumber = previousState.CurrentBatchNumber
+
+		// Копируем переменные из предыдущего состояния
+		newState.StoryVariables = make(map[string]interface{})
+		for k, v := range previousState.StoryVariables {
+			newState.StoryVariables[k] = v
+		}
+
+		// Применяем выборы пользователя (из поля UserChoices или из UserChoice для обратной совместимости)
+		if len(p.UserChoices) > 0 {
+			// Поскольку есть новые выборы, увеличиваем CurrentBatchNumber
+			newState.CurrentBatchNumber = previousState.CurrentBatchNumber + 1
+
+			// Преобразуем p.UserChoices в UserChoice для истории
+			choices := make([]model.UserChoice, 0, len(p.UserChoices))
+
+			// Копируем предыдущее состояние
+			copyState := model.NovelState{
+				CurrentBatchNumber: previousState.CurrentBatchNumber,
+				StoryVariables:     make(map[string]interface{}),
+				History:            make([]model.UserChoice, len(previousState.History)),
+			}
+
+			// Копируем story variables
+			for k, v := range previousState.StoryVariables {
+				copyState.StoryVariables[k] = v
+			}
+
+			// Копируем историю
+			copy(copyState.History, previousState.History)
+
+			currentState := &copyState
+
+			// Обрабатываем каждый выбор последовательно, обновляя состояние
+			for i, choice := range p.UserChoices {
+				// Получаем соответствующий batch из кэша для текущего состояния
+				currentStateHash := stateOrSceneHash
+				if i > 0 {
+					// Для последующих выборов нам нужно вычислить новый хеш состояния
+					// Но в данной реализации у нас есть только хеш исходного состояния,
+					// поэтому мы используем его для всех выборов
+					log.Ctx(ctx).Warn().
+						Int("choiceNumber", i).
+						Msg("Используем исходный хеш состояния для последующего выбора. В полной реализации здесь должен быть хеш промежуточного состояния.")
+				}
+
+				cachedBatch, err := s.repo.GetSceneBatchByStateHash(ctx, currentStateHash)
+
+				if err != nil {
+					log.Ctx(ctx).Warn().
+						Err(err).
+						Str("stateHash", currentStateHash).
+						Int("choiceNumber", i).
+						Msg("Не удалось получить кэшированный батч для обработки выбора. Пропускаем.")
+					continue
+				}
+
+				// Проверяем корректность индексов
+				if choice.EventIndex < 0 || choice.EventIndex >= len(cachedBatch.Batch) {
+					log.Ctx(ctx).Warn().
+						Int("eventIndex", choice.EventIndex).
+						Int("maxEvents", len(cachedBatch.Batch)).
+						Msg("Некорректный индекс события в UserChoices")
+					continue
+				}
+
+				event := cachedBatch.Batch[choice.EventIndex]
+				if choice.ChoiceIndex < 0 || choice.ChoiceIndex >= len(event.Choices) {
+					log.Ctx(ctx).Warn().
+						Int("eventIndex", choice.EventIndex).
+						Int("choiceIndex", choice.ChoiceIndex).
+						Int("maxChoices", len(event.Choices)).
+						Msg("Некорректный индекс выбора в UserChoices")
+					continue
+				}
+
+				// Добавляем выбор в историю
+				userChoice := model.UserChoice{
+					ChoiceNumber:     currentState.CurrentBatchNumber,
+					ChoiceIndex:      choice.ChoiceIndex,
+					EventDescription: event.Description,
+					ChoiceText:       event.Choices[choice.ChoiceIndex].Text,
+				}
+				choices = append(choices, userChoice)
+
+				// Получаем последствия и применяем к состоянию
+				consequences := event.Choices[choice.ChoiceIndex].Consequences
+
+				// Применяем изменения core_stats
+				if consequences.CoreStatsChange != nil {
+					for statName, change := range consequences.CoreStatsChange {
+						// Если переменной еще нет, инициализируем её
+						currentValue, ok := currentState.StoryVariables[statName].(float64)
+						if !ok {
+							currentValue = 0
+						}
+
+						// Обновляем значение
+						newValue := currentValue + float64(change)
+						currentState.StoryVariables[statName] = newValue
+
+						log.Ctx(ctx).Debug().
+							Str("statName", statName).
+							Float64("oldValue", currentValue).
+							Float64("newValue", newValue).
+							Int("change", change).
+							Int("choiceNumber", i).
+							Msg("Обновлен core_stat из UserChoices")
+					}
+				}
+
+				// Обновляем global_flags
+				if consequences.GlobalFlags != nil && len(consequences.GlobalFlags) > 0 {
+					// Получаем текущие флаги
+					var currentFlags []interface{}
+					if flagsRaw, exists := currentState.StoryVariables["global_flags"]; exists {
+						if flagsArray, ok := flagsRaw.([]interface{}); ok {
+							currentFlags = flagsArray
+						} else {
+							log.Ctx(ctx).Warn().
+								Interface("foundValue", flagsRaw).
+								Msg("global_flags существует, но не является массивом. Создаем новый массив.")
+							currentFlags = make([]interface{}, 0)
+						}
+					} else {
+						currentFlags = make([]interface{}, 0)
+					}
+
+					// Добавляем новые флаги
+					for _, flag := range consequences.GlobalFlags {
+						// Проверяем, что флага еще нет
+						flagExists := false
+						for _, existingFlag := range currentFlags {
+							if existingFlagStr, ok := existingFlag.(string); ok && existingFlagStr == flag {
+								flagExists = true
+								break
 							}
 						}
+
+						// Добавляем флаг если его нет
+						if !flagExists {
+							currentFlags = append(currentFlags, flag)
+							log.Ctx(ctx).Debug().
+								Str("flag", flag).
+								Int("choiceNumber", i).
+								Msg("Добавлен global_flag из UserChoices")
+						}
 					}
-					// TODO: Обработать изменения GlobalFlags и StoryVariables из Consequences
-				} else {
-					log.Ctx(ctx).Warn().Int("choiceIndex", p.UserChoice.ChoiceIndex).Int("batchNumber", p.UserChoice.BatchNumber).Msg("Индекс выбора пользователя вне диапазона для батча")
+
+					// Сохраняем обновленные флаги
+					currentState.StoryVariables["global_flags"] = currentFlags
 				}
-			} else {
-				log.Ctx(ctx).Warn().Int("batchNumber", p.UserChoice.BatchNumber).Msg("Номер батча выбора пользователя отсутствует в истории выборов")
+
+				// Обновляем story_variables
+				if consequences.StoryVariables != nil {
+					for varName, value := range consequences.StoryVariables {
+						currentState.StoryVariables[varName] = value
+						log.Ctx(ctx).Debug().
+							Str("varName", varName).
+							Interface("value", value).
+							Int("choiceNumber", i).
+							Msg("Обновлена story_variable из UserChoices")
+					}
+				}
 			}
-		}
 
-		// Копируем и обновляем HistoryChoices
-		newState.HistoryChoices = make(map[int][]model.ChoiceOption)
-		if previousState.HistoryChoices != nil {
-			for k, v := range previousState.HistoryChoices {
-				newState.HistoryChoices[k] = v
+			// Увеличиваем BatchNumber один раз после обработки всех выборов
+			// вместо увеличения после каждого выбора
+			currentState.CurrentBatchNumber++
+
+			// Копируем обработанное состояние в новое состояние
+			newState.StoryVariables = currentState.StoryVariables
+			// Примечание: CurrentBatchNumber уже увеличен в начале этого блока,
+			// не устанавливаем его здесь снова, чтобы избежать двойного увеличения
+			// newState.CurrentBatchNumber = currentState.CurrentBatchNumber
+
+			// Копируем историю из предыдущего состояния и добавляем новые выборы
+			newState.History = make([]model.UserChoice, len(previousState.History))
+			copy(newState.History, previousState.History)
+			newState.History = append(newState.History, choices...)
+		} else if p.UserChoice.ChoiceNumber > 0 || (p.UserChoice.ChoiceIndex >= 0 && p.UserChoice.ChoiceNumber >= 0) {
+			// Обратная совместимость с полем UserChoice
+			// Увеличиваем CurrentBatchNumber, так как обрабатываем выбор пользователя
+			newState.CurrentBatchNumber = previousState.CurrentBatchNumber + 1
+
+			// Проверяем, что выбор пользователя соответствует предыдущему батчу
+			if p.UserChoice.ChoiceNumber != 0 && p.UserChoice.ChoiceNumber != previousState.CurrentBatchNumber {
+				return nil, fmt.Errorf("некорректный номер батча в выборе пользователя: ожидался %d, получен %d",
+					previousState.CurrentBatchNumber, p.UserChoice.ChoiceNumber)
 			}
+
+			// Получаем кэшированный батч для применения последствий
+			cachedBatch, err := s.repo.GetSceneBatchByStateHash(ctx, stateOrSceneHash)
+			if err != nil {
+				return nil, fmt.Errorf("ошибка получения кэшированного батча: %w", err)
+			}
+
+			// Проверяем индекс выбора
+			if p.UserChoice.ChoiceIndex < 0 || p.UserChoice.ChoiceIndex >= len(cachedBatch.Batch) {
+				return nil, fmt.Errorf("некорректный индекс выбора: %d (доступно вариантов: %d)",
+					p.UserChoice.ChoiceIndex, len(cachedBatch.Batch))
+			}
+
+			// Применяем последствия выбранного варианта
+			chosenEvent := cachedBatch.Batch[p.UserChoice.ChoiceIndex]
+			if p.UserChoice.ChoiceIndex < 0 || p.UserChoice.ChoiceIndex >= len(chosenEvent.Choices) {
+				return nil, fmt.Errorf("некорректный индекс выбора для события: %d", p.UserChoice.ChoiceIndex)
+			}
+
+			// Важно: Поля EventDescription и ChoiceText должны быть уже заполнены выше в коде для запроса к AI
+			// Проверим, что они заполнены, иначе заполним их снова
+			if p.UserChoice.EventDescription == "" || p.UserChoice.ChoiceText == "" {
+				p.UserChoice.EventDescription = chosenEvent.Description
+				p.UserChoice.ChoiceText = chosenEvent.Choices[p.UserChoice.ChoiceIndex].Text
+				log.Ctx(ctx).Debug().Msg("Заполнены поля EventDescription и ChoiceText для истории выборов")
+			}
+
+			consequences := chosenEvent.Choices[p.UserChoice.ChoiceIndex].Consequences
+
+			// Обновляем core_stats
+			if consequences.CoreStatsChange != nil {
+				for statName, change := range consequences.CoreStatsChange {
+					currentValue, ok := newState.StoryVariables[statName].(float64)
+					if !ok {
+						// Если значение не найдено или не типа float64, используем 0
+						currentValue = 0
+					}
+					newState.StoryVariables[statName] = currentValue + float64(change)
+					log.Ctx(ctx).Debug().Str("statName", statName).Float64("oldValue", currentValue).Float64("newValue", currentValue+float64(change)).Int("change", change).Msg("Обновлен core_stat")
+				}
+			}
+
+			// Добавляем новые global_flags
+			if consequences.GlobalFlags != nil && len(consequences.GlobalFlags) > 0 {
+				// Получаем текущие флаги из переменных состояния
+				var currentFlags []interface{}
+
+				// Проверяем, существует ли ключ global_flags и является ли он массивом
+				if flagsRaw, exists := newState.StoryVariables["global_flags"]; exists {
+					if flagsArray, ok := flagsRaw.([]interface{}); ok {
+						currentFlags = flagsArray
+					} else {
+						// Если значение есть, но не массив - логируем ошибку и создаем новый массив
+						log.Ctx(ctx).Warn().Interface("foundValue", flagsRaw).Msg("global_flags существует, но не является массивом. Создаем новый массив.")
+						currentFlags = make([]interface{}, 0)
+					}
+				} else {
+					// Если ключа нет - создаем новый массив
+					currentFlags = make([]interface{}, 0)
+				}
+
+				// Добавляем новые флаги
+				for _, flag := range consequences.GlobalFlags {
+					// Проверяем, есть ли уже такой флаг
+					flagExists := false
+					for _, existingFlag := range currentFlags {
+						if existingFlagStr, ok := existingFlag.(string); ok && existingFlagStr == flag {
+							flagExists = true
+							break
+						}
+					}
+
+					// Добавляем только если флага еще нет
+					if !flagExists {
+						currentFlags = append(currentFlags, flag)
+						log.Ctx(ctx).Debug().Str("flag", flag).Msg("Добавлен новый global_flag")
+					}
+				}
+
+				// Сохраняем обновленный массив флагов
+				newState.StoryVariables["global_flags"] = currentFlags
+			}
+
+			// Обновляем story_variables
+			if consequences.StoryVariables != nil {
+				for varName, value := range consequences.StoryVariables {
+					newState.StoryVariables[varName] = value
+					log.Ctx(ctx).Debug().Str("varName", varName).Interface("value", value).Msg("Установлена story_variable")
+				}
+			}
+
+			// Копируем и обновляем историю выборов
+			newState.History = make([]model.UserChoice, len(previousState.History))
+			copy(newState.History, previousState.History)
+
+			// Добавляем обогащенный информацией выбор пользователя в историю
+			newState.History = append(newState.History, p.UserChoice)
+		} else {
+			// Если пользователь не сделал выбора (необычная ситуация), просто копируем историю
+			newState.History = make([]model.UserChoice, len(previousState.History))
+			copy(newState.History, previousState.History)
 		}
-		newState.HistoryChoices[newState.CurrentBatchNumber-1] = responseForState.Choices // Используем распарсенные данные
 	}
 
-	// 7. Сохраняем состояние в базу данных
-	_, err = s.repo.SaveNovelState(ctx, newState)
+	// Сохраняем новое или обновленное состояние
+	savedState, err := s.repo.SaveNovelState(ctx, newState)
 	if err != nil {
-		return nil, fmt.Errorf("ошибка сохранения нового состояния новеллы: %w", err)
+		return nil, fmt.Errorf("ошибка сохранения состояния новеллы: %w", err)
+	}
+	log.Ctx(ctx).Info().Str("state_id", savedState.ID.String()).Int("batch", savedState.CurrentBatchNumber).Msg("Состояние новеллы успешно сохранено перед возвратом результата")
+
+	// --- Формирование ответа для клиента ---
+	// Создаем указатель на EndingText, если он не пустой
+	var endingText *string
+	if parsedContent.EndingText != "" {
+		endingText = &parsedContent.EndingText
 	}
 
-	// 8. Возвращаем строку JSON клиенту
-	// Для первого запроса, возможно, нужно добавить initialStats к JSON?
-	// Пока просто возвращаем JSON, полученный от AI или из кеша.
-	log.Ctx(ctx).Info().Msg("Отправка результата задачи (JSON строка)")
-	return resultJSON, nil
-}
-
-// calculateStateHash вычисляет SHA256 хеш от релевантных полей состояния
-func calculateStateHash(state model.NovelState) (string, error) {
-	// Собираем данные для хеширования
-	var dataToHash strings.Builder
-	dataToHash.WriteString(state.NovelID.String())
-	dataToHash.WriteString(state.UserID.String())
-	dataToHash.WriteString(fmt.Sprintf("%d", state.CurrentBatchNumber))
-	dataToHash.WriteString(state.StorySummarySoFar)
-	dataToHash.WriteString(state.FutureDirection)
-
-	// Сериализуем и сортируем ключи StoryVariables для стабильного хеша
-	variablesBytes, err := json.Marshal(state.StoryVariables)
-	if err != nil {
-		return "", fmt.Errorf("ошибка сериализации story_variables для хеша: %w", err)
+	clientResponse := model.ClientGameplayPayload{
+		Choices:    parsedContent.Choices, // Передаем []ChoiceEvent напрямую
+		EndingText: endingText,
+		IsGameOver: parsedContent.EndingText != "",
 	}
-	dataToHash.Write(variablesBytes)
 
-	// Сериализуем и сортируем History для стабильного хеша (если важно)
-	// TODO: Решить, нужно ли включать всю историю или только последние N шагов
-	historyBytes, err := json.Marshal(state.History)
-	if err != nil {
-		return "", fmt.Errorf("ошибка сериализации history для хеша: %w", err)
-	}
-	dataToHash.Write(historyBytes)
+	// Логируем финальный ответ перед возвратом
+	clientResponseJSON, _ := json.MarshalIndent(clientResponse, "", "  ")
+	log.Ctx(ctx).Debug().RawJSON("clientResponse", clientResponseJSON).Msg("Финальный clientResponse перед возвратом из generateContentTask")
 
-	// Вычисляем хеш
-	hash := sha256.Sum256([]byte(dataToHash.String()))
-	return hex.EncodeToString(hash[:]), nil
-}
-
-// safeGetString безопасно извлекает строку из map[string]interface{}
-func safeGetString(data map[string]interface{}, key string) string {
-	if val, ok := data[key]; ok {
-		if strVal, ok := val.(string); ok {
-			return strVal
-		}
-	}
-	return ""
+	log.Ctx(ctx).Info().Msg("generateContentTask успешно завершен, возвращаем результат типа ClientGameplayPayload.")
+	return clientResponse, nil
 }
 
 // GetTaskStatus получает статус задачи
@@ -717,7 +1149,7 @@ func (s *NovelService) GetDraftViewByID(ctx context.Context, draftID, userID uui
 	// Конвертируем Config в NovelDraftView
 	config := draft.Config
 	draftView := model.NovelDraftView{
-		ID:                draft.ID, // Используем ID драфта
+		ID:                draft.ID,
 		Title:             config.Title,
 		ShortDescription:  config.ShortDescription,
 		Franchise:         config.Franchise,
@@ -727,12 +1159,8 @@ func (s *NovelService) GetDraftViewByID(ctx context.Context, draftID, userID uui
 		PlayerGender:      config.PlayerGender,
 		PlayerDescription: config.PlayerDescription,
 		WorldContext:      config.WorldContext,
-		CoreStats:         make(map[string]model.CoreStatView),
+		CoreStats:         config.CoreStats,
 		Themes:            config.PlayerPrefs.Themes,
-	}
-
-	for name, stat := range config.CoreStats {
-		draftView.CoreStats[name] = stat.ToView()
 	}
 
 	return draftView, nil
@@ -803,7 +1231,7 @@ func (s *NovelService) modifyNovelDraftTask(ctx context.Context, params interfac
 
 	// 7. Создаем урезанную версию для ответа клиенту
 	draftView := model.NovelDraftView{
-		ID:                savedDraft.ID, // ID остается тем же!
+		ID:                savedDraft.ID,
 		Title:             newConfig.Title,
 		ShortDescription:  newConfig.ShortDescription,
 		Franchise:         newConfig.Franchise,
@@ -813,15 +1241,10 @@ func (s *NovelService) modifyNovelDraftTask(ctx context.Context, params interfac
 		PlayerGender:      newConfig.PlayerGender,
 		PlayerDescription: newConfig.PlayerDescription,
 		WorldContext:      newConfig.WorldContext,
-		CoreStats:         make(map[string]model.CoreStatView),
+		CoreStats:         newConfig.CoreStats,
 		Themes:            newConfig.PlayerPrefs.Themes,
 	}
 
-	for name, stat := range newConfig.CoreStats {
-		draftView.CoreStats[name] = stat.ToView()
-	}
-
-	// Возвращаем урезанную версию как результат задачи
 	return draftView, nil
 }
 
@@ -908,16 +1331,15 @@ func (s *NovelService) GenerateGameOverEnding(ctx context.Context, userID, novel
 
 	// --- Шаг 4: Проверить кеш ---
 	if stateHash != "" {
-		cachedBatch, errCache := s.repo.GetSceneBatchByHash(ctx, novelID, stateHash) // Используем другую переменную для ошибки кеша
+		cachedBatch, errCache := s.repo.GetSceneBatchByStateHash(ctx, stateHash) // Используем другую переменную для ошибки кеша
 		if errCache == nil {
 			if cachedBatch.EndingText != nil {
-				log.Info().Str("stateHash", stateHash).Msg("Найдена кешированная концовка Game Over.")
 				return *cachedBatch.EndingText, nil
-			} else {
-				log.Warn().Str("stateHash", stateHash).Msg("Найден кеш для состояния Game Over, но он не содержит концовки. Будет сгенерирована новая.")
 			}
-		} else if !errors.Is(errCache, model.ErrNotFound) {
-			log.Error().Err(errCache).Str("stateHash", stateHash).Msg("Ошибка при проверке кеша для концовки Game Over")
+			return "", model.ErrNotFound
+		}
+		if !errors.Is(errCache, model.ErrNotFound) {
+			log.Ctx(ctx).Warn().Err(errCache).Msg("Ошибка при поиске кеша сцены")
 		}
 	}
 
@@ -954,8 +1376,8 @@ func (s *NovelService) GenerateGameOverEnding(ctx context.Context, userID, novel
 			NovelID:           novelID,
 			StateHash:         stateHash,
 			EndingText:        &generatedEndingText,
-			Choices:           nil,
-			StorySummarySoFar: lastState.StorySummarySoFar, // Сохраняем предыдущие данные?
+			Batch:             nil,
+			StorySummarySoFar: lastState.StorySummarySoFar,
 			FutureDirection:   "Game Over",
 		}
 		if _, errSave := s.repo.SaveSceneBatch(ctx, newBatch); errSave != nil {
@@ -989,6 +1411,98 @@ func (s *NovelService) SubmitGenerateGameOverEndingTask(ctx context.Context, use
 	}
 	// Конвертируем UUID в строку
 	return taskID.String(), nil
+}
+
+// HandleGameOver обрабатывает уведомление о Game Over и возвращает результат с возможностью продолжения
+// Этот метод:
+// 1. Генерирует текст концовки через GenerateGameOverEnding
+// 2. Определяет, возможно ли продолжение игры
+// 3. Если продолжение возможно, подготавливает данные для нового персонажа и начальные выборы
+// 4. Возвращает структуру GameOverResult с информацией для клиента
+func (s *NovelService) HandleGameOver(ctx context.Context, userID, novelID uuid.UUID, reason model.GameOverReason, userChoices []model.UserChoice) (model.GameOverResult, error) {
+	log.Info().Str("userID", userID.String()).Str("novelID", novelID.String()).Interface("reason", reason).Msg("Обработка Game Over с возможностью продолжения")
+
+	result := model.GameOverResult{
+		CanContinue: false, // По умолчанию продолжение недоступно
+	}
+
+	// Шаг 1: Генерируем текст концовки
+	endingText, err := s.GenerateGameOverEnding(ctx, userID, novelID, reason)
+	if err != nil {
+		return result, fmt.Errorf("ошибка при генерации текста концовки: %w", err)
+	}
+	result.EndingText = endingText
+
+	// Шаг 2: Получаем данные новеллы
+	novel, err := s.repo.GetByID(ctx, novelID)
+	if err != nil {
+		return result, fmt.Errorf("ошибка получения данных новеллы: %w", err)
+	}
+
+	// Шаг 3: Проверяем, поддерживает ли новелла продолжение (через настройки или другие критерии)
+	// В будущем здесь может быть более сложная логика определения возможности продолжения
+	canContinue := true // Временно всегда разрешаем продолжение для демонстрации
+
+	if !canContinue {
+		return result, nil // Возвращаем только концовку без продолжения
+	}
+
+	// Шаг 4: Генерируем данные нового персонажа и начальной сцены
+	// Используем AI для генерации нового персонажа
+	// В будущей имплементации здесь может быть создан запрос к AI:
+	// newCharacterRequest := model.GameOverEndingRequestForAI{
+	//	NovelID:     novelID,
+	//	UserID:      userID,
+	//	Reason:      reason,
+	//	NovelConfig: novel.Config,
+	//	NovelSetup:  novel.Setup,
+	// }
+
+	newCharacterDescription := "Новый искатель приключений, готовый бросить вызов судьбе после неудачи предыдущего героя."
+
+	// Создаем базовые статы для нового персонажа
+	newCoreStats := make(map[string]int)
+	for statName, statInfo := range novel.Config.CoreStats {
+		newCoreStats[statName] = statInfo.InitialValue
+	}
+
+	// Устанавливаем флаг продолжения и данные нового персонажа
+	result.CanContinue = true
+	result.NewCharacter = newCharacterDescription
+	result.NewCoreStats = newCoreStats
+
+	// Шаг 5: Генерируем начальные выборы для нового персонажа
+	// В реальной имплементации здесь должен быть вызов AI для генерации начальных выборов
+	// Сейчас создаем базовые выборы для демонстрации
+	initialChoices := []model.ChoiceEvent{
+		{
+			Description: "С чего начать ваше новое приключение?",
+			Choices: []model.ChoiceOption{
+				{
+					Text: "Начать с изучения окрестностей",
+					Consequences: model.Consequences{
+						CoreStatsChange: map[string]int{
+							"influence": 5,
+						},
+						ResponseText: "Вы решаете тщательно изучить окрестности, чтобы избежать ошибок вашего предшественника.",
+					},
+				},
+				{
+					Text: "Сразу отправиться к центру опасности",
+					Consequences: model.Consequences{
+						CoreStatsChange: map[string]int{
+							"magic": 5,
+						},
+						ResponseText: "Вы решаете смело идти туда, где ваш предшественник потерпел неудачу.",
+					},
+				},
+			},
+			Shuffleable: true,
+		},
+	}
+	result.InitialChoices = initialChoices
+
+	return result, nil
 }
 
 // generateGameOverEndingTask выполняет задачу генерации концовки

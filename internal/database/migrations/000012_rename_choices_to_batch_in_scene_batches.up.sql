@@ -1,0 +1,1 @@
+ALTER TABLE public.scene_batches RENAME COLUMN choices TO batch; 
