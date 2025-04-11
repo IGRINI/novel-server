@@ -7,13 +7,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"novel-server/shared/database"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
-
-	"shared/database"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"

@@ -5,8 +5,8 @@ import (
 	// "auth/internal/repository" - No longer needed directly
 	"context"
 	"fmt"
-	"shared/interfaces" // Import shared interfaces
-	"shared/models"
+	"novel-server/shared/interfaces"
+	"novel-server/shared/models"
 	"strconv"
 	"time"
 

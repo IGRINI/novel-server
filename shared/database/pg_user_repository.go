@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"shared/interfaces"
-	"shared/models"
+	"novel-server/shared/interfaces"
+	"novel-server/shared/models"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"

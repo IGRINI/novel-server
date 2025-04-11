@@ -2,7 +2,7 @@ package interfaces
 
 import (
 	"context"
-	"shared/models"
+	"novel-server/shared/models"
 )
 
 // UserRepository defines the interface for user data persistence (e.g., PostgreSQL).

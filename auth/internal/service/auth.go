@@ -3,7 +3,7 @@ package service
 import (
 	"auth/internal/domain"
 	"context"
-	"shared/models"
+	"novel-server/shared/models"
 )
 
 // AuthService defines the interface for authentication and authorization logic.

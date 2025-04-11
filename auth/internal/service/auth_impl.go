@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/mail"
-	"shared/interfaces"
-	"shared/models"
+	"novel-server/shared/interfaces"
+	"novel-server/shared/models"
 	"strings"
 	"time"
 

@@ -5,7 +5,7 @@ import (
 	"auth/internal/service"
 	"errors"
 	"net/http"
-	"shared/models"
+	"novel-server/shared/models"
 	"strings"
 
 	"github.com/gin-gonic/gin"

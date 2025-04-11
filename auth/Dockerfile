@@ -1,32 +1,30 @@
 # Этап 1: Сборка приложения
 FROM golang:1.24-alpine AS builder
 
+# Игнорируем go.work внутри сборки
+ENV GOWORK=off
+
 WORKDIR /app
 
-# Копируем go.mod и go.sum для кэширования зависимостей
-# Копируем корневой go.work, чтобы workspace работал
-COPY go.work go.work
-COPY auth/go.mod auth/go.mod
-COPY auth/go.sum auth/go.sum
-COPY shared/go.mod shared/go.mod
-COPY shared/go.sum shared/go.sum
+# Копируем go.mod и go.sum для auth и shared
+# COPY go.work go.work # go.work не нужен при GOWORK=off
+COPY auth/go.mod auth/go.sum ./auth/
+COPY shared/go.mod shared/go.sum ./shared/
 
-# Загружаем зависимости заранее (используя workspace)
-# Сначала auth
-WORKDIR /app/auth
-RUN go mod download
-# Затем shared
-WORKDIR /app/shared
-RUN go mod download
-
-# Возвращаемся в корень и копируем исходный код
-WORKDIR /app
+# Копируем ВЕСЬ исходный код auth и shared
 COPY auth/ ./auth/
 COPY shared/ ./shared/
 
-# Собираем приложение auth
+# Переходим в директорию auth
 WORKDIR /app/auth
-RUN CGO_ENABLED=0 GOOS=linux go build -o /auth-service ./cmd/auth/main.go
+
+# Загружаем зависимости (go.mod должен содержать replace ../shared)
+# Эта команда может быть опциональной, но оставим для кэширования слоев
+RUN go mod download
+
+# Собираем приложение auth
+# Используем -ldflags="-s -w" для уменьшения размера
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /auth-service ./cmd/auth/main.go
 
 
 # Этап 2: Создание минимального образа
@@ -50,5 +48,4 @@ EXPOSE 8081
 # Используем порт по умолчанию из config.go, если не переопределен в .env
 
 # Команда для запуска сервиса
-# Запускаем бинарник напрямую
 ENTRYPOINT ["/app/auth-service"] 

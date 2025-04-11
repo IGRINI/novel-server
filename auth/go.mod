@@ -19,6 +19,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/redis v0.36.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/crypto v0.37.0
+	novel-server/shared v0.0.0-00010101000000-000000000000
 )
 
 require (
@@ -104,3 +105,5 @@ require (
 	google.golang.org/protobuf v1.36.6 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace novel-server/shared => ../shared

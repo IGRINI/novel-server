@@ -2,7 +2,7 @@ package interfaces
 
 import (
 	"context"
-	"shared/models"
+	"novel-server/shared/models"
 )
 
 // TokenRepository defines the interface for token persistence (e.g., Redis).
