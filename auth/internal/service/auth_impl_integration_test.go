@@ -1,30 +1,28 @@
 package service_test // Используем _test пакет для изоляции
 
 import (
-	"auth/internal/config"
-	"auth/internal/service"
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
 
-	"shared/database"
-	"shared/interfaces"
-	"shared/models"
+	"novel-server/auth/internal/config"
+	"novel-server/auth/internal/service"
+	database "novel-server/shared/database"
+	interfaces "novel-server/shared/interfaces"
+	"novel-server/shared/models"
+	sharedModels "novel-server/shared/models"
 
-	"os"
-
-	"github.com/docker/docker/client"
-	"github.com/go-redis/redis/v8"
 	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/postgres"
-	_ "github.com/golang-migrate/migrate/v4/source/file"
-	iofs "github.com/golang-migrate/migrate/v4/source/iofs"
+	_ "github.com/golang-migrate/migrate/v4/database/postgres" // Драйвер для PostgreSQL
+	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"github.com/testcontainers/testcontainers-go"
@@ -32,6 +30,9 @@ import (
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 	"github.com/testcontainers/testcontainers-go/wait"
 	"go.uber.org/zap"
+
+	// Докер клиент для проверки доступности
+	"github.com/docker/docker/client"
 )
 
 // IntegrationTestSuite содержит состояние для наших интеграционных тестов
@@ -272,12 +273,12 @@ func (s *IntegrationTestSuite) TestRegisterAndLogin_Success() {
 	// Попытка повторной регистрации с тем же username - должна быть ошибка
 	_, err = s.authService.Register(ctx, username, "another@example.com", "anotherpassword")
 	require.Error(t, err, "Registering existing user should fail")
-	require.True(t, errors.Is(err, models.ErrUserAlreadyExists), "Error should be ErrUserAlreadyExists")
+	require.True(t, errors.Is(err, sharedModels.ErrUserAlreadyExists), "Error should be ErrUserAlreadyExists")
 
 	// Попытка повторной регистрации с тем же email - должна быть ошибка
 	_, err = s.authService.Register(ctx, "anotheruser", email, "anotherpassword")
 	require.Error(t, err, "Registering with existing email should fail")
-	require.True(t, errors.Is(err, models.ErrEmailAlreadyExists), "Error should be ErrEmailAlreadyExists")
+	require.True(t, errors.Is(err, sharedModels.ErrEmailAlreadyExists), "Error should be ErrEmailAlreadyExists")
 
 	// 2. Логин (остается без изменений, т.к. логин по username)
 	tokens, err := s.authService.Login(ctx, username, password)
@@ -302,12 +303,12 @@ func (s *IntegrationTestSuite) TestRegisterAndLogin_Success() {
 	// 3. Логин с неверным паролем
 	_, err = s.authService.Login(ctx, username, "wrongpassword")
 	require.Error(t, err, "Login with wrong password should fail")
-	require.True(t, errors.Is(err, models.ErrInvalidCredentials), "Error should be ErrInvalidCredentials")
+	require.True(t, errors.Is(err, sharedModels.ErrInvalidCredentials), "Error should be ErrInvalidCredentials")
 
 	// 4. Логин несуществующего пользователя
 	_, err = s.authService.Login(ctx, "nonexistentuser", "password")
 	require.Error(t, err, "Login with non-existent user should fail")
-	require.True(t, errors.Is(err, models.ErrInvalidCredentials), "Error should be ErrInvalidCredentials")
+	require.True(t, errors.Is(err, sharedModels.ErrInvalidCredentials), "Error should be ErrInvalidCredentials")
 }
 
 // Новый тест: Регистрация с невалидным форматом Email
@@ -321,7 +322,7 @@ func (s *IntegrationTestSuite) TestRegister_InvalidEmailFormat() {
 	_, err := s.authService.Register(ctx, username, invalidEmail, password)
 	require.Error(t, err, "Register with invalid email format should fail")
 	// Ожидаем ошибку валидации входных данных
-	require.True(t, errors.Is(err, models.ErrInvalidCredentials), "Error should indicate invalid input format (currently ErrInvalidCredentials)")
+	require.True(t, errors.Is(err, sharedModels.ErrInvalidCredentials), "Error should indicate invalid input format (currently ErrInvalidCredentials)")
 }
 
 // Обновленный тест для Refresh с учетом изменений в Register
@@ -364,12 +365,12 @@ func (s *IntegrationTestSuite) TestRefresh_Success() {
 	// Старый Access UUID должен быть удален
 	//_, err = s.tokenRepo.GetUserIDByAccessUUID(ctx, oldAccessUUID) <-- Убираем эту проверку
 	//require.Error(t, err, "Old access token UUID should be deleted from Redis") <-- Убираем эту проверку
-	//require.True(t, errors.Is(err, models.ErrTokenNotFound) || errors.Is(err, redis.Nil), "Error should be ErrTokenNotFound or redis.Nil") <-- Убираем эту проверку
+	//require.True(t, errors.Is(err, sharedModels.ErrTokenNotFound) || errors.Is(err, redis.Nil), "Error should be ErrTokenNotFound or redis.Nil") <-- Убираем эту проверку
 
 	// Старый Refresh UUID должен быть удален
 	_, err = s.tokenRepo.GetUserIDByRefreshUUID(ctx, oldRefreshUUID)
 	require.Error(t, err, "Old refresh token UUID should be deleted from Redis")
-	require.True(t, errors.Is(err, models.ErrTokenNotFound) || errors.Is(err, redis.Nil), "Error should be ErrTokenNotFound or redis.Nil")
+	require.True(t, errors.Is(err, sharedModels.ErrTokenNotFound) || errors.Is(err, redis.Nil), "Error should be ErrTokenNotFound or redis.Nil")
 
 	// Новый Access UUID должен существовать
 	accessUserID, err := s.tokenRepo.GetUserIDByAccessUUID(ctx, newTokens.AccessUUID)
@@ -390,7 +391,7 @@ func (s *IntegrationTestSuite) TestRefresh_InvalidToken() {
 	require.Error(t, err, "Refresh with invalid token string should fail")
 	// Ожидаем ошибку парсинга или валидации JWT
 	// Точный тип ошибки зависит от реализации JWT парсера, но это не ErrTokenNotFound
-	require.False(t, errors.Is(err, models.ErrTokenNotFound), "Error should not be ErrTokenNotFound")
+	require.False(t, errors.Is(err, sharedModels.ErrTokenNotFound), "Error should not be ErrTokenNotFound")
 	// Используем ErrTokenMalformed, так как именно его возвращает парсер для невалидной строки
 	require.True(t, errors.Is(err, models.ErrTokenMalformed), "Error should be ErrTokenMalformed")
 

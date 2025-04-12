@@ -1,3 +1,4 @@
+-- +migrate Up
 -- Up Migration: Create generation_results table
 
 CREATE TABLE IF NOT EXISTS generation_results (

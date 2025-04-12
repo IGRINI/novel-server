@@ -1,8 +1,8 @@
 package service
 
 import (
-	"auth/internal/domain"
 	"context"
+	"novel-server/auth/internal/domain"
 	"novel-server/shared/models"
 )
 

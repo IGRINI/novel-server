@@ -1,11 +1,13 @@
 package handler
 
 import (
-	"auth/internal/domain" // Нужен для Claims при парсинге
-	"auth/internal/service"
 	"errors"
 	"net/http"
+	"novel-server/auth/internal/domain" // Нужен для Claims при парсинге
+	"novel-server/auth/internal/service"
+	"novel-server/shared/interfaces" // Импортируем интерфейс репозитория
 	"novel-server/shared/models"
+	"strconv" // Добавляем для парсинга ID
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -33,11 +35,15 @@ const (
 // AuthHandler handles HTTP requests related to authentication.
 type AuthHandler struct {
 	authService service.AuthService
+	userRepo    interfaces.UserRepository // Добавляем репозиторий
 }
 
 // NewAuthHandler creates a new AuthHandler.
-func NewAuthHandler(authService service.AuthService) *AuthHandler {
-	return &AuthHandler{authService: authService}
+func NewAuthHandler(authService service.AuthService, userRepo interfaces.UserRepository) *AuthHandler { // Добавляем userRepo
+	return &AuthHandler{
+		authService: authService,
+		userRepo:    userRepo, // Инициализируем поле
+	}
 }
 
 // RegisterRoutes registers the authentication routes.
@@ -46,24 +52,26 @@ func (h *AuthHandler) RegisterRoutes(router *gin.Engine) {
 	{
 		authGroup.POST("/register", h.register)
 		authGroup.POST("/login", h.login)
-		authGroup.POST("/logout", h.logout) // Requires auth middleware
+		authGroup.POST("/logout", h.logout) // Requires auth middleware via /api group
 		authGroup.POST("/refresh", h.refresh)
 		authGroup.POST("/token/verify", h.verify) // Endpoint for other services to verify token
 	}
 
-	// Example of a protected route group
+	// Защищенная группа /api
 	protected := router.Group("/api")
-	protected.Use(h.AuthMiddleware()) // Apply auth middleware
+	protected.Use(h.AuthMiddleware()) // Применяем middleware аутентификации
 	{
-		// Add protected routes here
-		protected.GET("/me", h.getMe)
+		protected.GET("/me", h.getMe) // Эндпоинт для получения данных текущего пользователя
+		// Сюда можно добавить другие защищенные маршруты
 	}
 
-	// Inter-service endpoints (can be protected differently if needed)
+	// Группа для межсервисного взаимодействия
 	interServiceGroup := router.Group("/internal/auth")
 	{
-		interServiceGroup.POST("/token/generate", h.generateInterServiceToken) // Potentially restricted access
-		interServiceGroup.POST("/token/verify", h.verifyInterServiceToken)     // Open for internal services
+		// Потенциально нужна своя защита для генерации
+		interServiceGroup.POST("/token/generate", h.generateInterServiceToken)
+		// Верификация должна быть доступна для внутренних сервисов
+		interServiceGroup.POST("/token/verify", h.verifyInterServiceToken)
 	}
 }
 
@@ -95,6 +103,13 @@ type tokenVerifyRequest struct {
 
 type generateInterServiceTokenRequest struct {
 	ServiceName string `json:"service_name" binding:"required"`
+}
+
+// DTO для ответа /api/me
+type meResponse struct {
+	ID       uint64 `json:"id"`
+	Username string `json:"username"`
+	Email    string `json:"email"`
 }
 
 // --- Error Handling Helper ---
@@ -310,72 +325,101 @@ func (h *AuthHandler) verifyInterServiceToken(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"service_name": serviceName, "valid": true})
 }
 
-// --- Middleware ---
-
-// AuthMiddleware verifies the access token.
-func (h *AuthHandler) AuthMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		const BearerSchema = "Bearer "
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			handleServiceError(c, models.ErrInvalidToken)
-			return
-		}
-
-		tokenString := ""
-		if len(authHeader) > len(BearerSchema) && strings.HasPrefix(authHeader, BearerSchema) {
-			tokenString = authHeader[len(BearerSchema):]
-		}
-
-		if tokenString == "" {
-			handleServiceError(c, models.ErrInvalidToken)
-			return
-		}
-
-		claims, err := h.authService.VerifyAccessToken(c.Request.Context(), tokenString)
-		if err != nil {
-			handleServiceError(c, err)
-			return
-		}
-
-		// Добавляем ID пользователя и Access UUID в контекст
-		c.Set("user_id", claims.UserID)
-		if accessUUID := claims.ID; accessUUID != "" { // claims.ID соответствует 'jti'
-			c.Set("access_uuid", accessUUID)
-		} else {
-			// UUID обязателен для корректной работы, особенно logout
-			zap.L().Error("Access UUID ('jti' claim) missing in token", zap.Uint64("userID", claims.UserID))
-			// Это внутренняя ошибка конфигурации токена/сервиса
-			handleServiceError(c, errors.New("internal server error: invalid token claims configuration"))
-			return // Прерываем выполнение
-		}
-
-		c.Next()
+// getMe обрабатывает запрос GET /api/me
+func (h *AuthHandler) getMe(c *gin.Context) {
+	userIDStr := c.GetString("user_id") // Middleware должен установить это
+	if userIDStr == "" {
+		zap.L().Error("User ID missing in context for /me endpoint")
+		// Используем код внутренней ошибки
+		c.AbortWithStatusJSON(http.StatusInternalServerError, ErrorResponse{
+			Code:    ErrCodeInternalError,
+			Message: "Internal server error: User context missing",
+		})
+		return
 	}
+
+	// Конвертируем ID в uint64
+	userID, err := strconv.ParseUint(userIDStr, 10, 64)
+	if err != nil {
+		zap.L().Error("Invalid User ID format in context for /me endpoint", zap.String("userIDStr", userIDStr), zap.Error(err))
+		// Используем код внутренней ошибки
+		c.AbortWithStatusJSON(http.StatusInternalServerError, ErrorResponse{
+			Code:    ErrCodeInternalError,
+			Message: "Internal server error: Invalid user ID format",
+		})
+		return
+	}
+
+	zap.L().Debug("Handling /me request", zap.Uint64("userID", userID))
+
+	// Получаем пользователя из репозитория
+	user, err := h.userRepo.GetUserByID(c.Request.Context(), userID) // Используем инжектированный репозиторий
+	if err != nil {
+		if errors.Is(err, models.ErrUserNotFound) {
+			zap.L().Warn("User not found for ID from token during /me request", zap.Uint64("userID", userID))
+			// Возвращаем 404, т.к. пользователь, на которого ссылается токен, не найден в БД
+			c.AbortWithStatusJSON(http.StatusNotFound, ErrorResponse{
+				Code:    ErrCodeUserNotFound,
+				Message: "User associated with token not found",
+			})
+			return
+		}
+		// Другая ошибка репозитория (уже залогирована репо?)
+		zap.L().Error("Error fetching user details for /me from repository", zap.Uint64("userID", userID), zap.Error(err))
+		// Передаем оригинальную ошибку в обработчик
+		handleServiceError(c, err) // handleServiceError по умолчанию вернет 500
+		return
+	}
+
+	zap.L().Info("User details retrieved successfully for /me", zap.Uint64("userID", user.ID), zap.String("username", user.Username))
+
+	// Формируем ответ DTO
+	resp := meResponse{
+		ID:       user.ID,
+		Username: user.Username,
+		Email:    user.Email,
+	}
+
+	// Отправляем успешный ответ
+	c.JSON(http.StatusOK, resp)
 }
 
-// getMe is an example protected endpoint.
-func (h *AuthHandler) getMe(c *gin.Context) {
-	userIDAny, exists := c.Get("user_id")
-	if !exists {
-		zap.L().Error("UserID not found in context after AuthMiddleware")
-		handleServiceError(c, errors.New("internal server error: user context missing"))
-		return
+// AuthMiddleware - middleware для проверки JWT access токена
+func (h *AuthHandler) AuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			zap.L().Warn("Authorization header missing")
+			// Используем ошибку невалидного токена
+			handleServiceError(c, models.ErrInvalidToken)
+			return
+		}
+
+		parts := strings.Split(authHeader, " ")
+		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+			zap.L().Warn("Invalid Authorization header format", zap.String("header", authHeader))
+			handleServiceError(c, models.ErrInvalidToken)
+			return
+		}
+
+		tokenString := parts[1]
+		claims, err := h.authService.VerifyAccessToken(c.Request.Context(), tokenString)
+		if err != nil {
+			zap.L().Warn("Access token verification failed", zap.Error(err))
+			handleServiceError(c, err) // Передаем ошибку из VerifyAccessToken (может быть ErrTokenExpired, ErrInvalidToken, ErrTokenNotFound)
+			return
+		}
+
+		// Проверка, что токен не отозван (не в Redis)
+		// authService.VerifyAccessToken уже должен это делать внутри себя, проверяя access_uuid в Redis
+
+		// Сохраняем ID пользователя и UUID токена в контексте для дальнейшего использования
+		c.Set("user_id", strconv.FormatUint(claims.UserID, 10))
+		c.Set("access_uuid", claims.ID) // 'jti' claim
+		// c.Set("token_type", "access") // Можно добавить тип токена
+
+		zap.L().Debug("Access token verified successfully", zap.Uint64("userID", claims.UserID), zap.String("accessUUID", claims.ID))
+
+		c.Next() // Передаем управление следующему обработчику
 	}
-
-	userID, ok := userIDAny.(uint64)
-	if !ok {
-		zap.L().Error("UserID in context is not uint64", zap.Any("value", userIDAny))
-		handleServiceError(c, errors.New("internal server error: user context invalid type"))
-		return
-	}
-
-	// TODO: Получить полную информацию о пользователе из UserRepository
-	// user, err := h.userRepo.GetUserByID(c.Request.Context(), userID) // Нужен userRepo в хендлере!
-	// if err != nil {
-	//     handleServiceError(c, err) // Обработает UserNotFound и другие ошибки БД
-	//     return
-	// }
-
-	c.JSON(http.StatusOK, gin.H{"user_id": userID})
 }

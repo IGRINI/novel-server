@@ -22,8 +22,12 @@ RUN go mod download
 WORKDIR /src
 COPY story-generator/ ./story-generator/
 
-# Собираем приложение
+# Переходим в директорию модуля ПЕРЕД tidy
 WORKDIR /src/story-generator
+# Синхронизируем зависимости перед сборкой, отключая workspace mode
+RUN GOWORK=off go mod tidy
+
+# Собираем приложение (уже находимся в /src/story-generator)
 # CGO_ENABLED=0 для статичной сборки без C зависимостей
 # -ldflags="-s -w" для уменьшения размера бинарника
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/worker ./cmd/worker/main.go

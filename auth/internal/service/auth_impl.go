@@ -1,14 +1,14 @@
 package service
 
 import (
-	"auth/internal/config"
-	"auth/internal/domain"
 	"context"
 	"errors"
 	"fmt"
 	"net/mail"
-	"novel-server/shared/interfaces"
+	"novel-server/auth/internal/config"
+	"novel-server/auth/internal/domain"
 	"novel-server/shared/models"
+	"shared/interfaces"
 	"strings"
 	"time"
 

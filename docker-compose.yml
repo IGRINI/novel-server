@@ -1,6 +1,3 @@
-version: '3.8'
-
-# Define the environment variables mapping with the anchor
 x-environment-defaults: &env-vars
   ENV: ${ENV:-development}
   LOG_LEVEL: ${LOG_LEVEL:-debug}
@@ -24,6 +21,37 @@ x-environment-defaults: &env-vars
   RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
 
 services:
+  # API Gateway (Traefik)
+  api-gateway:
+    image: traefik:v2.11 # Используем стабильную версию Traefik
+    container_name: novel_api_gateway
+    command:
+      # Включаем Docker провайдер
+      - "--providers.docker=true"
+      # Не разрешаем Traefik обнаруживать контейнеры без явной метки traefik.enable=true
+      - "--providers.docker.exposedbydefault=false"
+      # Определяем точку входа 'web' на порту 8080 (для пользовательского трафика)
+      - "--entrypoints.web.address=:8080"
+      # Определяем точку входа 'traefik' (для API/Dashboard) на порту 8081
+      - "--entrypoints.traefik.address=:8081"
+      # Включаем API Traefik и Dashboard, указывая, что они должны использовать точку входа 'traefik'
+      - "--api=true"
+      - "--api.dashboard=true"
+      - "--api.insecure=true" # В продакшене защитить!
+      # Включаем логирование доступа
+      - "--accesslog=true"
+      # Указываем уровень логов Traefik
+      - "--log.level=INFO" # Или DEBUG для отладки
+    ports:
+      # Публикуем порт 8080 (хост) -> 8080 (контейнер, entrypoint 'web')
+      - "8080:8080"
+      # Публикуем порт 8888 (хост) -> 8081 (контейнер, entrypoint 'traefik' для API/Dashboard)
+      - "8888:8081"
+    volumes:
+      # Монтируем Docker сокет, чтобы Traefik мог слушать события Docker
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    # Можно добавить depends_on, если нужно дождаться старта других сервисов, но обычно Traefik сам справляется
+
   # База данных PostgreSQL
   postgres:
     image: postgres:15-alpine
@@ -33,6 +61,7 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME:-novel_db}
     ports:
+      # Порт публикуется только для локального доступа к БД, если нужно
       - "${DB_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -47,6 +76,7 @@ services:
     image: redis:7-alpine
     container_name: novel_redis
     ports:
+      # Порт публикуется только для локального доступа к Redis, если нужно
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
@@ -87,18 +117,31 @@ services:
          condition: service_completed_successfully
     environment:
       <<: *env-vars
-      DB_HOST: postgres
-      REDIS_ADDR: redis:6379
-      SERVER_PORT: ${AUTH_SERVER_PORT:-8081}
+      DB_HOST: postgres # Внутреннее имя хоста БД
+      REDIS_ADDR: redis:6379 # Внутренний адрес Redis
+      SERVER_PORT: ${AUTH_SERVER_PORT:-8081} # Внутренний порт сервиса
       SERVICE_ID: auth-service
-    ports:
-      - "${AUTH_SERVER_PORT:-8081}:${AUTH_SERVER_PORT:-8081}"
+    # ports: # Убираем публикацию порта наружу
+    #   - "${AUTH_SERVER_PORT:-8081}:${AUTH_SERVER_PORT:-8081}"
+    labels:
+      # Включаем Traefik для этого сервиса
+      - "traefik.enable=true"
+      # Определяем роутер для HTTP запросов к auth
+      - "traefik.http.routers.auth-http.rule=PathPrefix(`/api/auth`)" # Все пути, начинающиеся с /api/auth
+      - "traefik.http.routers.auth-http.entrypoints=web" # Используем точку входа 'web' (порт 8080)
+      # Указываем, на какой внутренний порт Traefik должен перенаправлять трафик
+      - "traefik.http.services.auth-service.loadbalancer.server.port=${AUTH_SERVER_PORT:-8081}"
+      # Middleware для удаления префикса /api/auth перед отправкой запроса в сервис auth
+      # Сервис auth ожидает запросы на /register, /login и т.д., а не /api/auth/register
+      - "traefik.http.routers.auth-http.middlewares=auth-stripprefix"
+      - "traefik.http.middlewares.auth-stripprefix.stripprefix.prefixes=/api/auth"
 
   # Сервис RabbitMQ
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     container_name: novel_rabbitmq
     ports:
+      # Порты для доступа извне (если нужно) и для Management UI
       - "${RABBITMQ_PORT:-5672}:5672"
       - "${RABBITMQ_MANAGE_PORT:-15672}:15672"
     volumes:
@@ -133,8 +176,47 @@ services:
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
       PROMPTS_DIR: /app/promts
       SERVICE_ID: story-generator-service
+    # Этот сервис не обрабатывает внешние HTTP запросы, поэтому не нуждается в метках Traefik
+
+  # Сервис WebSocket уведомлений
+  websocket-service:
+    build:
+      context: .
+      dockerfile: websocket-service/Dockerfile
+    container_name: novel_websocket_service
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      # auth сервис не обязателен для *запуска* websocket-service,
+      # но нужен для валидации токенов при установке соединения.
+      # depends_on auth не требуется, если auth стартует быстро.
+    environment:
+      <<: *env-vars # Наследуем общие переменные
+      PORT: ${WEBSOCKET_SERVER_PORT:-8083} # Внутренний порт сервиса
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/ # URL для Docker
+      SERVICE_ID: websocket-service
+      # JWT_SECRET уже включен через *env-vars
+    # ports: # Убираем публикацию порта наружу
+    #   - "${WEBSOCKET_SERVER_PORT:-8083}:${WEBSOCKET_SERVER_PORT:-8083}"
+    labels:
+      # Включаем Traefik для этого сервиса
+      - "traefik.enable=true"
+      # Определяем роутер для WebSocket запросов
+      # Используем Path(`/ws`) для точного совпадения пути
+      - "traefik.http.routers.websocket-ws.rule=Path(`/ws`)"
+      - "traefik.http.routers.websocket-ws.entrypoints=web" # Используем точку входа 'web' (порт 8080)
+      # Указываем внутренний порт сервиса
+      - "traefik.http.services.websocket-service.loadbalancer.server.port=${WEBSOCKET_SERVER_PORT:-8083}"
+      # Для WebSocket не нужен stripprefix, т.к. сервис ожидает запрос на /ws
 
 volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
+  # Добавляем том для данных Traefik (если нужно хранить SSL сертификаты и т.д.)
+  # traefik_data:
+
+# Можно определить внешние сети, если необходимо
+# networks:
+#   default:
+#     driver: bridge

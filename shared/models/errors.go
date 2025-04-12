@@ -4,6 +4,7 @@ import "errors"
 
 // Custom domain errors related to models or common operations
 var (
+	ErrNotFound           = errors.New("resource not found") // Generic not found
 	ErrUserNotFound       = errors.New("user not found")
 	ErrUserAlreadyExists  = errors.New("user already exists")
 	ErrEmailAlreadyExists = errors.New("email already exists")

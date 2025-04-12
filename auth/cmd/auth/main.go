@@ -1,12 +1,12 @@
 package main
 
 import (
-	"auth/internal/config"
-	"auth/internal/handler"
-	"auth/internal/service"
 	"context"
 	"fmt"
 	"net/http"
+	"novel-server/auth/internal/config"
+	"novel-server/auth/internal/handler"
+	"novel-server/auth/internal/service"
 	"novel-server/shared/database"
 	"os"
 	"os/signal"
@@ -16,8 +16,8 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/go-redis/redis/v8"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -68,7 +68,7 @@ func main() {
 	userRepo := database.NewPgUserRepository(pgPool, userRepoLogger)
 	tokenRepo := database.NewRedisTokenRepository(redisClient, tokenRepoLogger)
 	authService := service.NewAuthService(userRepo, tokenRepo, cfg, authServiceLogger)
-	authHandler := handler.NewAuthHandler(authService)
+	authHandler := handler.NewAuthHandler(authService, userRepo)
 
 	// --- HTTP Server Setup (Gin) ---
 	gin.SetMode(gin.ReleaseMode)
