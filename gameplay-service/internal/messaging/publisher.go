@@ -63,7 +63,11 @@ func NewRabbitMQTaskPublisher(conn *amqp.Connection, queueName string) (TaskPubl
 		return nil, fmt.Errorf("task publisher: не удалось открыть канал: %w", err)
 	}
 	// Объявляем очередь здесь для TaskPublisher, т.к. он может быть первым
-	_, err = ch.QueueDeclare(queueName, true, false, false, false, nil)
+	args := amqp.Table{
+		"x-dead-letter-exchange":    "tasks_dlx", // Указываем DLX
+		"x-dead-letter-routing-key": queueName,   // Указываем routing key для DLX (обычно имя исходной очереди)
+	}
+	_, err = ch.QueueDeclare(queueName, true, false, false, false, args)
 	if err != nil {
 		ch.Close() // Закрываем канал при ошибке
 		return nil, fmt.Errorf("task publisher: не удалось объявить очередь '%s': %w", queueName, err)

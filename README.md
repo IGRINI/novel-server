@@ -28,7 +28,7 @@
     *   Флаг `-d` запускает контейнеры в фоновом режиме.
 
 4.  **Остановка сервисов:**
-    ```bash
+```bash
     docker-compose down
     ```
 
@@ -187,12 +187,12 @@
     *   Тело запроса (JSON):
         ```json
         {
-          "selected_option_indices": [0] // Массив индексов выбранных опций (0 или 1 для каждого выбора в сцене)
+          "selected_option_index": 0 // Индекс выбранной опции (0 или 1)
         }
         ```
-    *   Ответ при успехе (`200 OK`):
-        *   Тело ответа: **Пока не определено.** Возвращает пустой ответ или статус OK. В будущем может возвращать следующую сцену или обновленное состояние.
-    *   Ответ при ошибке (`400 Bad Request` - невалидное тело запроса, `401 Unauthorized`, `404 Not Found` - история не найдена, `409 Conflict` - история не в статусе 'ready', `500 Internal Server Error`).
+    *   Ответ при успехе (`204 No Content`):
+        *   Тело ответа: **Нет.** Результат (готовность новой сцены или завершение) будет отправлен по WebSocket.
+    *   Ответ при ошибке (`400 Bad Request` - невалидное тело/индекс, `401 Unauthorized`, `404 Not Found` - история/прогресс/сцена не найдены, `409 Conflict` - история не в статусе 'ready', `500 Internal Server Error`).
 
 *   **`DELETE /api/published-stories/:id/progress`**
     *   Удаляет прогресс текущего пользователя для указанной опубликованной истории, позволяя начать ее заново.
@@ -269,21 +269,23 @@
     *   Начальной генерации (`prompt_type: narrator`)
     *   Ревизии (`prompt_type: narrator` с `input_data.current_config`)
     *   Генерации начального состояния игры (`prompt_type: novel_setup`)
+    *   Генерации следующей сцены (`prompt_type: novel_creator`)
+    *   Генерации концовки (`prompt_type: novel_game_over_creator`)
 *   `story-generator` получает задачи, выполняет их и отправляет **полные** уведомления (`shared/messaging.NotificationPayload`) в очередь `internal_updates`.
+*   **Формат `InputData` для `novel_creator`:** Использует сжатые ключи (`cfg`, `stp`, `cs`, `uc`, `pss`, `pfd`, `pvis`, `sv`, `gf`), где `sv` и `gf` содержат данные только последнего выбора. См. `promts/novel_creator.md`.
 
 ## Поток Уведомлений
 
-1.  `story-generator` -> `internal_updates` (полное `NotificationPayload` с результатом генерации `narrator`)
+1.  `story-generator` -> `internal_updates` (полное `NotificationPayload` с результатом генерации: `narrator`, `novel_setup`, `novel_creator`, `novel_game_over_creator`)
 2.  `gameplay-service` слушает `internal_updates`:
-    *   Получает результат генерации `narrator`.
-    *   Обновляет `StoryConfig` в БД (статус `draft`, поля `Config`, `Title`, `Description`).
-    *   Формирует **отфильтрованное** сообщение `ClientStoryUpdate` (выбирая нужные поля из `Config`).
-    *   Отправляет `ClientStoryUpdate` в очередь `client_updates`.
+    *   **Для `narrator`:** Обновляет `StoryConfig` (статус `draft`, `Config`, `Title`, `Description`). Формирует `ClientStoryUpdate`. Отправляет в `client_updates`.
+    *   **Для `novel_setup`:** Обновляет `PublishedStory` (статус `first_scene_pending`, поле `Setup`). Запускает задачу генерации первой сцены (`novel_first_scene_creator`).
+    *   **Для `novel_first_scene_creator` и `novel_creator`:** Создает `StoryScene`. Обновляет статус `PublishedStory` на `ready`. Формирует `ClientStoryUpdate` (только ID, UserID, Status='ready'). Отправляет в `client_updates`.
+    *   **Для `novel_game_over_creator`:** Создает `StoryScene` (с текстом концовки). Обновляет статус `PublishedStory` на `completed`. Формирует `ClientStoryUpdate` (ID, UserID, Status='completed', IsCompleted=true, EndingText=...). Отправляет в `client_updates`.
 3.  `websocket-service` слушает `client_updates`:
     *   Получает `ClientStoryUpdate`.
     *   Находит WebSocket соединение для нужного `UserID`.
     *   Пересылает `ClientStoryUpdate` клиенту по WebSocket.
-*   **Примечание:** Обработка уведомлений от генерации `novel_setup` (после публикации) в `gameplay-service` **пока не реализована**. `gameplay-service` на данный момент обрабатывает только уведомления, связанные с `StoryConfig`.
 
 ## Текущая реализованная логика
 
@@ -291,17 +293,22 @@
 
 *   **Аутентификация пользователей:** Регистрация, вход, выход, обновление токенов (`auth-service`).
 *   **Управление черновиками историй (`gameplay-service`):**
-    *   **Начальная генерация:** Пользователь отправляет промпт (`/generate`), создается `StoryConfig`, отправляется задача `narrator` в `story-generator`.
-    *   **Ревизия:** Пользователь отправляет правку к существующему черновику (`/revise`), `StoryConfig` обновляется, отправляется задача `narrator` (с текущим конфигом) в `story-generator`.
-
-### List Public Stories
-
-*   **`GET /api/published-stories/public`**
-    *   Получение списка **публичных** опубликованных историй (`PublishedStory`) с offset/limit пагинацией.
-    *   **Требует заголовок `Authorization`.** (Примечание: возможно, стоит сделать этот эндпоинт публичным, убрав middleware)
-    *   Query параметры:
-        *   `limit` (int, опционально, default=20, max=100): Количество.
-        *   `offset` (int, опционально, default=0): Смещение.
-    *   Ответ при успехе (`200 OK`):
-        *   Тело ответа (JSON): `{"data": [PublishedStory, ...]}`
-    *   Ответ при ошибке (`401 Unauthorized`).
+    *   Начальная генерация и ревизия (`narrator`).
+    *   Получение списка и деталей черновиков.
+    *   Публикация черновика (удаляет черновик, создает `PublishedStory`, запускает генерацию `novel_setup`).
+*   **Игровой процесс (`gameplay-service`):**
+    *   Получение текущей сцены (`GET .../scene`). Учитывает статус истории и наличие сцены. Создает начальный прогресс игрока, если его нет.
+    *   Обработка выбора игрока (`POST .../choice`):
+        *   Принимает индекс одного выбора (`selected_option_index`).
+        *   Применяет последствия выбора к `CoreStats`, `StoryVariables`, `GlobalFlags`.
+        *   Рассчитывает новый хэш состояния по принципу "блокчейна": `hash(previousHash + cs + last_sv + last_gf)`.
+        *   Проверяет наличие следующей сцены по новому хэшу.
+        *   Если сцена не найдена: запускает задачу генерации `novel_creator`, передавая сводки (`pss`, `pfd`, `pvis`), статы (`cs`), выбор (`uc`) и `sv`/`gf` последнего шага.
+        *   Если сцена найдена: извлекает из нее сводки (`sssf`, `fd`, `vis`) для обновления прогресса.
+        *   **Очищает `StoryVariables` и `GlobalFlags`** в `PlayerProgress` перед сохранением.
+        *   Сохраняет `PlayerProgress` с новым хэшем, обновленными статами, очищенными `sv`/`gf` и (если сцена найдена) новыми сводками.
+        *   **Очищает `StoryVariables` и `GlobalFlags`** в `PlayerProgress` перед сохранением.
+        *   Сохраняет `PlayerProgress` с новым хэшем, обновленными статами, очищенными `sv`/`gf` и (если сцена найдена) новыми сводками.
+    *   Удаление прогресса игрока (`DELETE .../progress`).
+*   **Генерация контента (`story-generator`):** Обрабатывает задачи `narrator`, `novel_setup`, `novel_creator`, `novel_game_over_creator`. Генерирует JSON в сжатом формате с использованием сводок (`vis`).
+*   **Уведомления (`websocket-service`):** Доставляет `ClientStoryUpdate` об изменениях статуса `StoryConfig` и `PublishedStory`.

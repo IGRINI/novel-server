@@ -712,7 +712,9 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	}
 
 	// 9. Расчет нового хеша состояния (если не Game Over)
-	newStateHash, err := calculateStateHash(progress.CoreStats, progress.StoryVariables, progress.GlobalFlags)
+	// <<< Сохраняем текущий хэш как предыдущий >>>
+	previousHash := progress.CurrentStateHash
+	newStateHash, err := calculateStateHash(previousHash, progress.CoreStats, progress.StoryVariables, progress.GlobalFlags) // <<< Добавлен previousHash
 	if err != nil {
 		s.logger.Error("Failed to calculate new state hash", append(logFields, zap.Error(err))...)
 		return ErrInternal
@@ -729,7 +731,8 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	}
 
 	// 11. Ищем следующую сцену по новому хешу
-	_, err = s.sceneRepo.FindByStoryAndHash(ctx, publishedStoryID, newStateHash)
+	var nextScene *sharedModels.StoryScene // <<< Сохраним найденную сцену
+	nextScene, err = s.sceneRepo.FindByStoryAndHash(ctx, publishedStoryID, newStateHash)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Сцена не найдена - запускаем генерацию
@@ -738,17 +741,16 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 			// Меняем статус PublishedStory на GeneratingScene
 			if errStatus := s.publishedRepo.UpdateStatusDetails(ctx, publishedStoryID, sharedModels.StatusGeneratingScene, nil, nil, nil); errStatus != nil {
 				s.logger.Error("Failed to update published story status to GeneratingScene", append(logFields, zap.Error(errStatus))...)
-				// TODO: Что делать, если статус не обновился?
 			}
 
-			// <<< Используем новую функцию createGenerationPayload >>>
-			// Передаем тексты для user_choice
+			// <<< Используем новую функцию createGenerationPayload, передаем progress и previousHash >>>
 			generationPayload, errGenPayload := createGenerationPayload(
 				publishedStory,
-				progress,
+				progress,     // Передаем весь прогресс для извлечения сводок
+				previousHash, // <<< Добавлен previousHash
 				newStateHash,
-				choiceBlock.Description, // Текст ситуации
-				selectedOption.Text,     // Текст выбранной опции
+				choiceBlock.Description,
+				selectedOption.Text,
 			)
 			if errGenPayload != nil {
 				s.logger.Error("Failed to create generation payload", append(logFields, zap.Error(errGenPayload))...)
@@ -757,9 +759,24 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 
 			if errPub := s.publisher.PublishGenerationTask(ctx, generationPayload); errPub != nil {
 				s.logger.Error("Failed to publish next scene generation task", append(logFields, zap.Error(errPub))...)
-				return ErrInternal // Возвращаем ошибку, если не удалось отправить задачу
+				return ErrInternal
 			}
 			s.logger.Info("Next scene generation task published", append(logFields, zap.String("taskID", generationPayload.TaskID))...)
+
+			// <<< Очистка sv и gf >>>
+			s.logger.Debug("Clearing StoryVariables and GlobalFlags before saving progress", logFields...)
+			progress.StoryVariables = make(map[string]interface{}) // Очищаем!
+			progress.GlobalFlags = []string{}                      // Очищаем!
+
+			// <<< Обновляем прогресс с новым хешем и очищенными sv/gf >>>
+			progress.CurrentStateHash = newStateHash // Обновляем хэш
+			progress.UpdatedAt = time.Now().UTC()
+			if err := s.playerProgressRepo.CreateOrUpdate(ctx, progress); err != nil {
+				s.logger.Error("Ошибка сохранения обновленного PlayerProgress после запуска генерации", append(logFields, zap.Error(err))...)
+				return ErrInternal
+			}
+			s.logger.Info("PlayerProgress (с очищенными sv/gf) успешно обновлен после запуска генерации", logFields...)
+
 			return nil // Сцена генерируется
 		} else {
 			// Другая ошибка при поиске сцены
@@ -768,15 +785,52 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		}
 	}
 
-	// 12. Следующая сцена найдена (err == nil)
-	s.logger.Info("Next scene found in DB, returning success", logFields...)
+	// 12. Следующая сцена найдена (err == nil, nextScene != nil)
+	s.logger.Info("Next scene found in DB", logFields...)
+
+	// <<< Парсим найденную сцену, чтобы извлечь sssf, fd, vis >>>
+	type SceneOutputFormat struct {
+		Sssf string `json:"sssf"`
+		Fd   string `json:"fd"`
+		Vis  string `json:"vis"`
+		// Остальные поля (ch, svd) нам здесь не нужны
+	}
+	var sceneOutput SceneOutputFormat
+	if errUnmarshal := json.Unmarshal(nextScene.Content, &sceneOutput); errUnmarshal != nil {
+		s.logger.Error("Failed to unmarshal next scene content to get summaries",
+			append(logFields, zap.String("nextSceneID", nextScene.ID.String()), zap.Error(errUnmarshal))...)
+		// Не критично для MakeChoice, но нужно залогировать. Не обновляем сводки.
+	} else {
+		// <<< Обновляем поля сводок в прогрессе перед очисткой sv/gf >>>
+		progress.LastStorySummary = sceneOutput.Sssf
+		progress.LastFutureDirection = sceneOutput.Fd
+		progress.LastVarImpactSummary = sceneOutput.Vis
+	}
+
+	// <<< Очистка sv и gf >>>
+	s.logger.Debug("Clearing StoryVariables and GlobalFlags before saving progress", logFields...)
+	progress.StoryVariables = make(map[string]interface{}) // Очищаем!
+	progress.GlobalFlags = []string{}                      // Очищаем!
+
+	// <<< Обновляем прогресс с новым хешем, очищенными sv/gf и НОВЫМИ сводками >>>
+	progress.CurrentStateHash = newStateHash // Обновляем хэш
+	progress.UpdatedAt = time.Now().UTC()
+	if err := s.playerProgressRepo.CreateOrUpdate(ctx, progress); err != nil {
+		s.logger.Error("Ошибка сохранения обновленного PlayerProgress после нахождения след. сцены", append(logFields, zap.Error(err))...)
+		return ErrInternal
+	}
+	s.logger.Info("PlayerProgress (с очищенными sv/gf и новыми сводками) успешно обновлен после нахождения след. сцены", logFields...)
+
 	return nil
 }
 
-// calculateStateHash вычисляет детерминированный хеш состояния.
-func calculateStateHash(coreStats map[string]int, storyVars map[string]interface{}, globalFlags []string) (string, error) {
+// calculateStateHash вычисляет детерминированный хеш состояния, включая хэш предыдущего состояния.
+func calculateStateHash(previousHash string, coreStats map[string]int, storyVars map[string]interface{}, globalFlags []string) (string, error) {
 	// 1. Подготовка данных
 	stateMap := make(map[string]interface{}) // Используем interface{} для универсальности
+
+	// Добавляем хэш предыдущего состояния
+	stateMap["_ph"] = previousHash // Используем префикс для избежания коллизий
 
 	// Добавляем coreStats
 	for k, v := range coreStats {
@@ -941,12 +995,12 @@ func (s *gameplayServiceImpl) DeletePlayerProgress(ctx context.Context, userID, 
 	return nil
 }
 
-// <<< Добавляем функцию createGenerationPayload >>>
 // createGenerationPayload создает payload для задачи генерации следующей сцены,
-// используя сжатые ключи для InputData для экономии токенов.
+// используя сжатые ключи и сводки из предыдущего шага.
 func createGenerationPayload(
 	story *sharedModels.PublishedStory,
 	progress *sharedModels.PlayerProgress,
+	previousHash string,
 	nextStateHash string,
 	userChoiceDescription string,
 	userChoiceText string,
@@ -978,22 +1032,29 @@ func createGenerationPayload(
 	compressedInputData["cfg"] = configMap // Config
 	compressedInputData["stp"] = setupMap  // Setup
 
-	// Добавляем текущее состояние из прогресса с сжатыми ключами
+	// Добавляем текущие Core Stats
 	if progress.CoreStats != nil {
-		compressedInputData["cs"] = progress.CoreStats // Core Stats
+		compressedInputData["cs"] = progress.CoreStats
 	}
+
+	// <<< Добавляем СВОДКИ из предыдущего шага >>>
+	compressedInputData["pss"] = progress.LastStorySummary
+	compressedInputData["pfd"] = progress.LastFutureDirection
+	compressedInputData["pvis"] = progress.LastVarImpactSummary
+
+	// <<< ДОБАВЛЯЕМ StoryVariables и GlobalFlags ПОСЛЕДНЕГО ШАГА (для генерации vis) >>>
 	if progress.StoryVariables != nil {
-		compressedInputData["sv"] = progress.StoryVariables // Story Variables
+		compressedInputData["sv"] = progress.StoryVariables // Передаем текущие (last) sv
 	}
-	// Global Flags: передаем отсортированный срез строк
 	if progress.GlobalFlags != nil {
-		// Копируем срез, чтобы сортировка не изменила исходный
+		// Передаем текущие (last) gf как есть (уже []string)
+		// Сортировка не обязательна для передачи AI, но не помешает для консистентности
 		sortedFlags := make([]string, len(progress.GlobalFlags))
 		copy(sortedFlags, progress.GlobalFlags)
-		sort.Strings(sortedFlags)               // Сортируем копию
-		compressedInputData["gf"] = sortedFlags // Присваиваем отсортированную копию
+		sort.Strings(sortedFlags)
+		compressedInputData["gf"] = sortedFlags // Передаем текущие (last) gf
 	} else {
-		compressedInputData["gf"] = []string{} // Пустой срез, если исходный nil
+		compressedInputData["gf"] = []string{}
 	}
 
 	// Добавляем информацию о выборе пользователя с сжатыми ключами
@@ -1017,8 +1078,9 @@ func createGenerationPayload(
 		UserID:           progress.UserID.String(),
 		PublishedStoryID: story.ID.String(),
 		PromptType:       sharedMessaging.PromptTypeNovelCreator,
-		InputData:        compressedInputData, // <<< Используем сжатые данные
-		StateHash:        nextStateHash,
+		InputData:        compressedInputData,
+		StateHash:        nextStateHash, // Хеш состояния, ДЛЯ которого генерируем сцену
+		// <<< Возможно, стоит передавать и previousHash в задаче? Пока нет. >>>
 	}
 
 	return payload, nil
