@@ -569,7 +569,7 @@ func (s *IntegrationTestSuite) TestVerifyAccessToken_Malformed() {
 	_, err := s.authService.VerifyAccessToken(ctx, malformedToken)
 	require.Error(t, err, "VerifyAccessToken should fail for malformed token")
 	// Ожидаем ErrTokenMalformed или ErrInvalidToken в зависимости от реализации парсера
-	require.True(t, errors.Is(err, models.ErrTokenMalformed) || errors.Is(err, models.ErrInvalidToken),
+	require.True(t, errors.Is(err, models.ErrTokenMalformed) || errors.Is(err, models.ErrTokenInvalid),
 		"Error should be ErrTokenMalformed or ErrInvalidToken")
 }
 
@@ -599,7 +599,7 @@ func (s *IntegrationTestSuite) TestVerifyAccessToken_Revoked() {
 	_, err = s.authService.VerifyAccessToken(ctx, accessTokenToVerify)
 	require.Error(t, err, "VerifyAccessToken should fail for revoked token")
 	// Сервис должен вернуть ErrInvalidToken, т.к. токен удален из Redis
-	require.True(t, errors.Is(err, models.ErrInvalidToken), "Error should be ErrInvalidToken for revoked token")
+	require.True(t, errors.Is(err, models.ErrTokenInvalid), "Error should be ErrInvalidToken for revoked token")
 }
 
 // Тесты для Inter-Service Tokens
@@ -661,7 +661,7 @@ func (s *IntegrationTestSuite) TestVerifyInterServiceToken_InvalidSignature() {
 	_, err = s.authService.VerifyInterServiceToken(ctx, tokenString)
 	require.Error(t, err, "VerifyInterServiceToken should fail for invalid signature")
 	// Ожидаем общую ошибку невалидного токена
-	require.True(t, errors.Is(err, models.ErrInvalidToken), "Error should be ErrInvalidToken for invalid signature")
+	require.True(t, errors.Is(err, models.ErrTokenInvalid), "Error should be ErrInvalidToken for invalid signature")
 }
 
 func (s *IntegrationTestSuite) TestVerifyInterServiceToken_Malformed() {
@@ -671,7 +671,7 @@ func (s *IntegrationTestSuite) TestVerifyInterServiceToken_Malformed() {
 
 	_, err := s.authService.VerifyInterServiceToken(ctx, malformedToken)
 	require.Error(t, err, "VerifyInterServiceToken should fail for malformed token")
-	require.True(t, errors.Is(err, models.ErrTokenMalformed) || errors.Is(err, models.ErrInvalidToken),
+	require.True(t, errors.Is(err, models.ErrTokenMalformed) || errors.Is(err, models.ErrTokenInvalid),
 		"Error should be ErrTokenMalformed or ErrInvalidToken")
 }
 

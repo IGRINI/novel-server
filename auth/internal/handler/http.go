@@ -141,7 +141,7 @@ func handleServiceError(c *gin.Context, err error) {
 		errResp = ErrorResponse{Code: ErrCodeUserNotFound, Message: "User not found"}
 
 	// --- Token Specific Errors ---
-	case errors.Is(err, models.ErrInvalidToken), errors.Is(err, models.ErrTokenMalformed):
+	case errors.Is(err, models.ErrTokenInvalid), errors.Is(err, models.ErrTokenMalformed):
 		statusCode = http.StatusUnauthorized
 		errResp = ErrorResponse{Code: ErrCodeInvalidToken, Message: "Provided token is invalid or malformed"}
 	case errors.Is(err, models.ErrTokenExpired):
@@ -391,14 +391,14 @@ func (h *AuthHandler) AuthMiddleware() gin.HandlerFunc {
 		if authHeader == "" {
 			zap.L().Warn("Authorization header missing")
 			// Используем ошибку невалидного токена
-			handleServiceError(c, models.ErrInvalidToken)
+			handleServiceError(c, models.ErrTokenInvalid)
 			return
 		}
 
 		parts := strings.Split(authHeader, " ")
 		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
 			zap.L().Warn("Invalid Authorization header format", zap.String("header", authHeader))
-			handleServiceError(c, models.ErrInvalidToken)
+			handleServiceError(c, models.ErrTokenInvalid)
 			return
 		}
 

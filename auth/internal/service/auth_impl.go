@@ -7,8 +7,8 @@ import (
 	"net/mail"
 	"novel-server/auth/internal/config"
 	"novel-server/auth/internal/domain"
+	interfaces "novel-server/shared/interfaces"
 	"novel-server/shared/models"
-	"shared/interfaces"
 	"strings"
 	"time"
 
@@ -190,7 +190,7 @@ func (s *authServiceImpl) Refresh(ctx context.Context, refreshTokenString string
 			return nil, models.ErrTokenMalformed
 		}
 		s.logger.Error("Failed to parse refresh token", zap.Error(err))
-		return nil, models.ErrInvalidToken // Общая ошибка для остальных случаев
+		return nil, models.ErrTokenInvalid // Общая ошибка для остальных случаев
 	}
 
 	if claims, ok := token.Claims.(*domain.Claims); ok && token.Valid {
@@ -210,7 +210,7 @@ func (s *authServiceImpl) Refresh(ctx context.Context, refreshTokenString string
 
 		if userID != claims.UserID {
 			s.logger.Error("Refresh token user ID mismatch", zap.Uint64("tokenUserID", claims.UserID), zap.Uint64("repoUserID", userID), zap.String("refreshUUID", refreshUUID))
-			return nil, models.ErrInvalidToken
+			return nil, models.ErrTokenInvalid // <<< Исправлено
 		}
 
 		s.logger.Debug("Refresh token verified against store", zap.Uint64("userID", userID), zap.String("refreshUUID", refreshUUID))
@@ -243,7 +243,7 @@ func (s *authServiceImpl) Refresh(ctx context.Context, refreshTokenString string
 	}
 
 	s.logger.Warn("Refresh attempt with invalid token structure or signature")
-	return nil, models.ErrInvalidToken
+	return nil, models.ErrTokenInvalid // <<< Исправлено
 }
 
 // VerifyAccessToken parses and validates an access token string.
@@ -266,7 +266,7 @@ func (s *authServiceImpl) VerifyAccessToken(ctx context.Context, tokenString str
 			return nil, models.ErrTokenMalformed
 		}
 		s.logger.Error("Failed to parse access token", zap.Error(err))
-		return nil, models.ErrInvalidToken // Общая ошибка на остальные случаи парсинга
+		return nil, models.ErrTokenInvalid // Общая ошибка на остальные случаи парсинга
 	}
 
 	if claims, ok := token.Claims.(*domain.Claims); ok && token.Valid {
@@ -276,7 +276,7 @@ func (s *authServiceImpl) VerifyAccessToken(ctx context.Context, tokenString str
 		if err != nil {
 			if errors.Is(err, models.ErrTokenNotFound) {
 				s.logger.Debug("Access token not found in store (revoked/logged out)", zap.String("accessUUID", accessUUID))
-				return nil, models.ErrInvalidToken // Возвращаем общую ошибку "невалидный токен"
+				return nil, models.ErrTokenInvalid // Возвращаем общую ошибку "невалидный токен"
 			}
 			// Ошибка репозитория уже залогирована
 			s.logger.Error("Error checking access token existence via repository", zap.Error(err), zap.String("accessUUID", accessUUID))
@@ -287,7 +287,7 @@ func (s *authServiceImpl) VerifyAccessToken(ctx context.Context, tokenString str
 	}
 
 	s.logger.Warn("Access token verification failed (invalid claims type or signature)")
-	return nil, models.ErrInvalidToken
+	return nil, models.ErrTokenInvalid // <<< Исправлено
 }
 
 // GenerateInterServiceToken creates a short-lived token for internal service communication.
@@ -329,7 +329,7 @@ func (s *authServiceImpl) VerifyInterServiceToken(ctx context.Context, tokenStri
 			return "", models.ErrTokenMalformed
 		}
 		s.logger.Error("Failed to parse inter-service token", zap.Error(err))
-		return "", models.ErrInvalidToken
+		return "", models.ErrTokenInvalid // <<< Исправлено
 	}
 
 	if claims, ok := token.Claims.(*jwt.RegisteredClaims); ok && token.Valid {
@@ -339,7 +339,7 @@ func (s *authServiceImpl) VerifyInterServiceToken(ctx context.Context, tokenStri
 	}
 
 	s.logger.Warn("Inter-service token verification failed (invalid claims type or signature)")
-	return "", models.ErrInvalidToken
+	return "", models.ErrTokenInvalid // <<< Исправлено
 }
 
 // --- Helper Functions ---

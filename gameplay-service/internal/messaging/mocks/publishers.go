@@ -18,6 +18,11 @@ func (m *TaskPublisher) PublishGenerationTask(ctx context.Context, payload share
 	return args.Error(0)
 }
 
+func (m *TaskPublisher) PublishGameOverTask(ctx context.Context, payload sharedMessaging.GameOverTaskPayload) error {
+	args := m.Called(ctx, payload)
+	return args.Error(0)
+}
+
 // Mock ClientUpdatePublisher
 type ClientUpdatePublisher struct {
 	mock.Mock

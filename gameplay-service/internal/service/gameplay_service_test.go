@@ -12,14 +12,14 @@ import (
 	repositoryMocks "novel-server/gameplay-service/internal/repository/mocks"
 	"novel-server/gameplay-service/internal/service"
 	sharedMessaging "novel-server/shared/messaging"
+	sharedModels "novel-server/shared/models"
 	"strconv"
 	"testing"
-
-	// "time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"go.uber.org/zap"
 )
 
 // TestGenerateInitialStory tests the GenerateInitialStory method
@@ -31,7 +31,7 @@ func TestGenerateInitialStory(t *testing.T) {
 	t.Run("Successful initial generation", func(t *testing.T) {
 		mockRepo := new(repositoryMocks.StoryConfigRepository) // Используем мок из пакета
 		mockPublisher := new(messagingMocks.TaskPublisher)     // Используем мок из пакета
-		gameplayService := service.NewGameplayService(mockRepo, mockPublisher)
+		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, mockPublisher, nil, zap.NewNop())
 
 		// Ожидаем вызов CountActiveGenerations, возвращаем 0
 		mockRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
@@ -79,7 +79,7 @@ func TestGenerateInitialStory(t *testing.T) {
 	t.Run("Generation limit reached", func(t *testing.T) {
 		mockRepo := new(repositoryMocks.StoryConfigRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, mockPublisher)
+		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, mockPublisher, nil, zap.NewNop())
 
 		// Ожидаем вызов CountActiveGenerations, возвращаем лимит (1)
 		mockRepo.On("CountActiveGenerations", ctx, userID).Return(1, nil).Once()
@@ -90,7 +90,7 @@ func TestGenerateInitialStory(t *testing.T) {
 		// Проверяем результат
 		assert.Error(t, err)
 		assert.Nil(t, createdConfig)
-		assert.True(t, errors.Is(err, service.ErrUserHasActiveGeneration)) // Проверяем тип ошибки
+		assert.True(t, errors.Is(err, sharedModels.ErrUserHasActiveGeneration))
 
 		// Убеждаемся, что Create и Publish не вызывались
 		mockRepo.AssertExpectations(t)
@@ -100,7 +100,7 @@ func TestGenerateInitialStory(t *testing.T) {
 	t.Run("Error counting active generations", func(t *testing.T) {
 		mockRepo := new(repositoryMocks.StoryConfigRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, mockPublisher)
+		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, mockPublisher, nil, zap.NewNop())
 		dbError := errors.New("database error")
 
 		// Ожидаем вызов CountActiveGenerations, возвращаем ошибку
@@ -123,7 +123,7 @@ func TestGenerateInitialStory(t *testing.T) {
 	t.Run("Error creating draft", func(t *testing.T) {
 		mockRepo := new(repositoryMocks.StoryConfigRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, mockPublisher)
+		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, mockPublisher, nil, zap.NewNop())
 		createError := errors.New("failed to create")
 
 		// Ожидаем вызов CountActiveGenerations, возвращаем 0
@@ -149,7 +149,7 @@ func TestGenerateInitialStory(t *testing.T) {
 	t.Run("Error publishing task", func(t *testing.T) {
 		mockRepo := new(repositoryMocks.StoryConfigRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, mockPublisher)
+		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, mockPublisher, nil, zap.NewNop())
 		publishError := errors.New("failed to publish")
 
 		// Ожидаем вызов CountActiveGenerations, возвращаем 0
@@ -214,7 +214,7 @@ func TestReviseDraft(t *testing.T) {
 
 		mockRepo := new(repositoryMocks.StoryConfigRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, mockPublisher)
+		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, mockPublisher, nil, zap.NewNop())
 
 		// Ожидаем GetByID
 		mockRepo.On("GetByID", ctx, storyID, userID).Return(existingConfig, nil).Once()
@@ -265,7 +265,7 @@ func TestReviseDraft(t *testing.T) {
 
 		mockRepo := new(repositoryMocks.StoryConfigRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, mockPublisher)
+		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, mockPublisher, nil, zap.NewNop())
 
 		// Ожидаем GetByID
 		mockRepo.On("GetByID", ctx, storyID, userID).Return(invalidStatusConfig, nil).Once()
@@ -275,7 +275,7 @@ func TestReviseDraft(t *testing.T) {
 
 		// Проверяем результат
 		assert.Error(t, err)
-		assert.True(t, errors.Is(err, service.ErrCannotRevise))
+		assert.True(t, errors.Is(err, sharedModels.ErrCannotRevise))
 		mockRepo.AssertExpectations(t)
 		mockPublisher.AssertNotCalled(t, "PublishGenerationTask", mock.Anything, mock.Anything)
 	})
@@ -294,7 +294,7 @@ func TestReviseDraft(t *testing.T) {
 
 		mockRepo := new(repositoryMocks.StoryConfigRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, mockPublisher)
+		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, mockPublisher, nil, zap.NewNop())
 
 		// Ожидаем GetByID (успешно)
 		mockRepo.On("GetByID", ctx, storyID, userID).Return(existingConfig, nil).Once()
@@ -306,7 +306,7 @@ func TestReviseDraft(t *testing.T) {
 
 		// Проверяем результат
 		assert.Error(t, err)
-		assert.True(t, errors.Is(err, service.ErrUserHasActiveGeneration) || strings.Contains(err.Error(), service.ErrUserHasActiveGeneration.Error()))
+		assert.True(t, errors.Is(err, sharedModels.ErrUserHasActiveGeneration))
 		mockRepo.AssertExpectations(t)
 		mockPublisher.AssertNotCalled(t, "PublishGenerationTask", mock.Anything, mock.Anything)
 	})
@@ -319,7 +319,7 @@ func TestReviseDraft(t *testing.T) {
 
 		mockRepo := new(repositoryMocks.StoryConfigRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, mockPublisher)
+		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, mockPublisher, nil, zap.NewNop())
 
 		// Ожидаем ТОЛЬКО GetByID, возвращаем ошибку
 		mockRepo.On("GetByID", ctx, storyID, userID).Return(nil, getError).Once()
@@ -349,7 +349,7 @@ func TestReviseDraft(t *testing.T) {
 
 		mockRepo := new(repositoryMocks.StoryConfigRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, mockPublisher)
+		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, mockPublisher, nil, zap.NewNop())
 
 		// Ожидаем GetByID (успешно)
 		mockRepo.On("GetByID", ctx, storyID, userID).Return(existingConfig, nil).Once()
@@ -385,7 +385,7 @@ func TestReviseDraft(t *testing.T) {
 
 		mockRepo := new(repositoryMocks.StoryConfigRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, mockPublisher)
+		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, mockPublisher, nil, zap.NewNop())
 
 		// Ожидаем GetByID
 		mockRepo.On("GetByID", ctx, storyID, userID).Return(configToRevise, nil).Once()
@@ -429,7 +429,7 @@ func TestGetStoryConfig(t *testing.T) {
 	t.Run("Successful get", func(t *testing.T) {
 		mockRepo := new(repositoryMocks.StoryConfigRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher) // Publisher не используется в Get
-		gameplayService := service.NewGameplayService(mockRepo, mockPublisher)
+		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, mockPublisher, nil, zap.NewNop())
 
 		// Ожидаем GetByID
 		mockRepo.On("GetByID", ctx, storyID, userID).Return(existingConfig, nil).Once()
@@ -447,7 +447,7 @@ func TestGetStoryConfig(t *testing.T) {
 	t.Run("Config not found", func(t *testing.T) {
 		mockRepo := new(repositoryMocks.StoryConfigRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, mockPublisher)
+		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, mockPublisher, nil, zap.NewNop())
 		notFoundError := errors.New("not found") // Можно использовать sharedModels.ErrNotFound
 
 		// Ожидаем GetByID, возвращаем ошибку

@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
 
@@ -17,14 +16,14 @@ import (
 var _ interfaces.UserRepository = (*pgUserRepository)(nil)
 
 type pgUserRepository struct {
-	pool   *pgxpool.Pool
+	db     interfaces.DBTX
 	logger *zap.Logger
 }
 
 // NewPgUserRepository creates a new PostgreSQL-backed UserRepository.
-func NewPgUserRepository(pool *pgxpool.Pool, logger *zap.Logger) interfaces.UserRepository {
+func NewPgUserRepository(db interfaces.DBTX, logger *zap.Logger) interfaces.UserRepository {
 	return &pgUserRepository{
-		pool:   pool,
+		db:     db,
 		logger: logger.Named("PgUserRepo"),
 	}
 }
@@ -33,7 +32,7 @@ func NewPgUserRepository(pool *pgxpool.Pool, logger *zap.Logger) interfaces.User
 func (r *pgUserRepository) CreateUser(ctx context.Context, user *models.User) error {
 	query := `INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) RETURNING id`
 	r.logger.Debug("Executing query", zap.String("query", query), zap.String("username", user.Username), zap.String("email", user.Email))
-	err := r.pool.QueryRow(ctx, query, user.Username, user.Email, user.Password).Scan(&user.ID)
+	err := r.db.QueryRow(ctx, query, user.Username, user.Email, user.Password).Scan(&user.ID)
 
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -66,7 +65,7 @@ func (r *pgUserRepository) GetUserByUsername(ctx context.Context, username strin
 	query := `SELECT id, username, email, password_hash FROM users WHERE username = $1`
 	user := &models.User{}
 	r.logger.Debug("Executing query", zap.String("query", query), zap.String("username", username))
-	err := r.pool.QueryRow(ctx, query, username).Scan(&user.ID, &user.Username, &user.Email, &user.Password)
+	err := r.db.QueryRow(ctx, query, username).Scan(&user.ID, &user.Username, &user.Email, &user.Password)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -84,7 +83,7 @@ func (r *pgUserRepository) GetUserByEmail(ctx context.Context, email string) (*m
 	query := `SELECT id, username, email, password_hash FROM users WHERE email = $1`
 	user := &models.User{}
 	r.logger.Debug("Executing query", zap.String("query", query), zap.String("email", email))
-	err := r.pool.QueryRow(ctx, query, email).Scan(&user.ID, &user.Username, &user.Email, &user.Password)
+	err := r.db.QueryRow(ctx, query, email).Scan(&user.ID, &user.Username, &user.Email, &user.Password)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -104,7 +103,7 @@ func (r *pgUserRepository) GetUserByID(ctx context.Context, id uint64) (*models.
 	query := `SELECT id, username, email, password_hash FROM users WHERE id = $1`
 	user := &models.User{}
 	r.logger.Debug("Executing query", zap.String("query", query), zap.Uint64("id", id))
-	err := r.pool.QueryRow(ctx, query, id).Scan(&user.ID, &user.Username, &user.Email, &user.Password)
+	err := r.db.QueryRow(ctx, query, id).Scan(&user.ID, &user.Username, &user.Email, &user.Password)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

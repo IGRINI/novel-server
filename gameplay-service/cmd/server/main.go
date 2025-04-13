@@ -10,6 +10,7 @@ import (
 	"novel-server/gameplay-service/internal/messaging"
 	"novel-server/gameplay-service/internal/repository"
 	"novel-server/gameplay-service/internal/service"
+	sharedDatabase "novel-server/shared/database" // Импорт для PublishedStoryRepository
 	"os"
 	"os/signal"
 	"syscall"
@@ -20,80 +21,121 @@ import (
 	"github.com/labstack/echo/v4"
 	echoMiddleware "github.com/labstack/echo/v4/middleware"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.uber.org/zap" // Импорт zap
 )
 
 func main() {
 	_ = godotenv.Load()
 	log.Println("Запуск Gameplay Service...")
 
+	// --- Инициализация логгера --- (Добавляем логгер)
+	logger, err := zap.NewProduction() // Используем production логгер
+	if err != nil {
+		log.Fatalf("Не удалось инициализировать zap логгер: %v", err)
+	}
+	defer logger.Sync() // Flush буфера логгера при выходе
+	// --------------------------
+
+	// Убираем логгер из вызова LoadConfig
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatalf("Ошибка загрузки конфигурации: %v", err)
+		logger.Fatal("Ошибка загрузки конфигурации", zap.Error(err))
 	}
 
 	// Подключение к PostgreSQL
-	dbPool, err := setupDatabase(cfg)
+	dbPool, err := setupDatabase(cfg, logger) // Передаем логгер
 	if err != nil {
-		log.Fatalf("Не удалось подключиться к БД: %v", err)
+		logger.Fatal("Не удалось подключиться к БД", zap.Error(err))
 	}
 	defer dbPool.Close()
-	log.Println("Успешное подключение к PostgreSQL")
+	logger.Info("Успешное подключение к PostgreSQL")
 
 	// Подключение к RabbitMQ
-	rabbitConn, err := connectRabbitMQ(cfg.RabbitMQURL)
+	rabbitConn, err := connectRabbitMQ(cfg.RabbitMQURL, logger) // Передаем логгер
 	if err != nil {
-		log.Fatalf("Не удалось подключиться к RabbitMQ: %v", err)
+		logger.Fatal("Не удалось подключиться к RabbitMQ", zap.Error(err))
 	}
 	defer rabbitConn.Close()
-	log.Println("Успешное подключение к RabbitMQ")
+	logger.Info("Успешное подключение к RabbitMQ")
 
 	// Создаем отдельный канал для TaskPublisher
 	pubTaskChannel, err := rabbitConn.Channel()
 	if err != nil {
-		log.Fatalf("Не удалось открыть канал RabbitMQ для TaskPublisher: %v", err)
+		logger.Fatal("Не удалось открыть канал RabbitMQ для TaskPublisher", zap.Error(err))
 	}
 	defer pubTaskChannel.Close()
 
 	// Создаем отдельный канал для ClientUpdatePublisher
 	pubClientUpdateChannel, err := rabbitConn.Channel()
 	if err != nil {
-		log.Fatalf("Не удалось открыть канал RabbitMQ для ClientUpdatePublisher: %v", err)
+		logger.Fatal("Не удалось открыть канал RabbitMQ для ClientUpdatePublisher", zap.Error(err))
 	}
 	defer pubClientUpdateChannel.Close()
 
 	// Инициализация зависимостей
-	storyConfigRepo := repository.NewPostgresStoryConfigRepository(dbPool)
-	taskPublisher := messaging.NewRabbitMQPublisher(pubTaskChannel, cfg.GenerationTaskQueue)
+	// Используем новый конструктор и передаем логгер
+	storyConfigRepo := repository.NewPgStoryConfigRepository(dbPool, logger)
+	// Создаем PublishedStoryRepository
+	publishedRepo := sharedDatabase.NewPgPublishedStoryRepository(dbPool, logger)
+	// !!! ДОБАВЛЯЕМ СОЗДАНИЕ НОВЫХ РЕПОЗИТОРИЕВ !!!
+	sceneRepo := sharedDatabase.NewPgStorySceneRepository(dbPool, logger)
+	playerProgressRepo := sharedDatabase.NewPgPlayerProgressRepository(dbPool, logger)
+
+	// Используем конструктор для Publisher'а, а не голую реализацию
+	taskPublisher, err := messaging.NewRabbitMQTaskPublisher(rabbitConn, cfg.GenerationTaskQueue)
+	if err != nil {
+		logger.Fatal("Не удалось создать TaskPublisher", zap.Error(err))
+	}
+	// ClientUpdatePublisher теперь создается так же, оставляем
 	clientUpdatePublisher, err := messaging.NewRabbitMQClientUpdatePublisher(rabbitConn, cfg.ClientUpdatesQueueName)
 	if err != nil {
-		log.Fatalf("Не удалось создать ClientUpdatePublisher: %v", err)
+		logger.Fatal("Не удалось создать ClientUpdatePublisher", zap.Error(err))
 	}
-	gameplayService := service.NewGameplayService(storyConfigRepo, taskPublisher)
-	gameplayHandler := handler.NewGameplayHandler(gameplayService)
+	// Передаем все 7 аргументов в сервис
+	gameplayService := service.NewGameplayService(storyConfigRepo, publishedRepo, sceneRepo, playerProgressRepo, taskPublisher, dbPool, logger)
+	// Возвращаем логгер в вызов NewGameplayHandler
+	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger)
 
 	// Инициализация консьюмера уведомлений
+	// Убираем логгер из вызова NewNotificationConsumer
 	notificationConsumer, err := messaging.NewNotificationConsumer(
 		rabbitConn,
 		storyConfigRepo,
+		publishedRepo,
+		sceneRepo,
 		clientUpdatePublisher,
-		cfg.InternalUpdatesQueueName, // Слушаем очередь internal_updates
+		taskPublisher,
+		cfg.InternalUpdatesQueueName,
 	)
 	if err != nil {
-		log.Fatalf("Не удалось создать консьюмер уведомлений: %v", err)
+		logger.Fatal("Не удалось создать консьюмер уведомлений", zap.Error(err))
 	}
 	// Запускаем консьюмер в отдельной горутине
 	go func() {
-		log.Println("Запуск горутины консьюмера уведомлений...")
+		logger.Info("Запуск горутины консьюмера уведомлений...")
 		if err := notificationConsumer.StartConsuming(); err != nil {
-			// В реальном приложении здесь нужна более надежная обработка ошибок
-			log.Printf("Консьюмер уведомлений завершился с ошибкой: %v", err)
+			logger.Error("Консьюмер уведомлений завершился с ошибкой", zap.Error(err))
 		}
-		log.Println("Горутина консьюмера уведомлений завершена.")
+		logger.Info("Горутина консьюмера уведомлений завершена.")
 	}()
 
 	// Настройка Echo
 	e := echo.New()
-	e.Use(echoMiddleware.Logger())
+	e.Use(echoMiddleware.RequestLoggerWithConfig(echoMiddleware.RequestLoggerConfig{ // Используем RequestLogger
+		LogURI:    true,
+		LogStatus: true,
+		LogMethod: true,
+		LogError:  true,
+		LogValuesFunc: func(c echo.Context, v echoMiddleware.RequestLoggerValues) error {
+			logger.Info("request",
+				zap.String("method", v.Method),
+				zap.String("URI", v.URI),
+				zap.Int("status", v.Status),
+				zap.Error(v.Error),
+			)
+			return nil
+		},
+	}))
 	e.Use(echoMiddleware.Recover())
 	e.Use(echoMiddleware.CORSWithConfig(echoMiddleware.CORSConfig{ // TODO: Настроить CORS
 		AllowOrigins: []string{"*"},
@@ -117,7 +159,7 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Println("Получен сигнал завершения, начинаем graceful shutdown...")
+	logger.Info("Получен сигнал завершения, начинаем graceful shutdown...")
 
 	// Останавливаем консьюмер
 	notificationConsumer.Stop()
@@ -133,7 +175,7 @@ func main() {
 }
 
 // setupDatabase инициализирует и возвращает пул соединений с БД
-func setupDatabase(cfg *config.Config) (*pgxpool.Pool, error) {
+func setupDatabase(cfg *config.Config, logger *zap.Logger) (*pgxpool.Pool, error) { // Добавляем логгер
 	// ... (реализация без изменений, как в других сервисах) ...
 	dsn := cfg.GetDSN()
 	config, err := pgxpool.ParseConfig(dsn)
@@ -156,7 +198,7 @@ func setupDatabase(cfg *config.Config) (*pgxpool.Pool, error) {
 }
 
 // connectRabbitMQ пытается подключиться к RabbitMQ с несколькими попытками
-func connectRabbitMQ(url string) (*amqp.Connection, error) {
+func connectRabbitMQ(url string, logger *zap.Logger) (*amqp.Connection, error) { // Добавляем логгер
 	// ... (реализация без изменений, как в других сервисах) ...
 	var conn *amqp.Connection
 	var err error
@@ -167,7 +209,12 @@ func connectRabbitMQ(url string) (*amqp.Connection, error) {
 		if err == nil {
 			return conn, nil
 		}
-		log.Printf("Не удалось подключиться к RabbitMQ (попытка %d/%d): %v. Повтор через %v...", i+1, maxRetries, err, retryDelay)
+		logger.Warn("Не удалось подключиться к RabbitMQ",
+			zap.Int("attempt", i+1),
+			zap.Int("max_attempts", maxRetries),
+			zap.Duration("retry_delay", retryDelay),
+			zap.Error(err),
+		)
 		time.Sleep(retryDelay)
 	}
 	return nil, err

@@ -113,27 +113,121 @@
         *   **Без тела ответа.** Результат (обновленный `StoryConfig`) будет отправлен по WebSocket.
     *   Ответ при ошибке (`404 Not Found`, `409 Conflict` - если статус не `draft` или `error`).
 
+*   **`POST /api/stories/:id/publish`**
+    *   Публикует завершенный черновик истории, делая его доступным для игры.
+    *   Эта операция **удаляет** исходный черновик (`StoryConfig`) и создает запись опубликованной истории (`PublishedStory`).
+    *   Запускает фоновую генерацию начального игрового состояния (`Setup`).
+    *   **Требует заголовок `Authorization`.**
+    *   Параметр пути: `:id` - UUID черновика (`StoryConfig`) для публикации.
+    *   Тело запроса: **Нет.**
+    *   Ответ при успехе (`202 Accepted`):
+        *   Тело ответа (JSON): `{ "published_story_id": "uuid-string" }` - ID созданной опубликованной истории.
+    *   Ответ при ошибке (`404 Not Found`, `400 Bad Request` - если статус не `draft` или `error`, или нет сгенерированного `config`, `401 Unauthorized`).
+
+*   **`GET /api/stories`**
+    *   Получение списка **моих** черновиков (`StoryConfig`) с курсорной пагинацией.
+    *   **Требует заголовок `Authorization`.**
+    *   Query параметры:
+        *   `limit` (int, опционально, default=20, max=100): Количество возвращаемых записей.
+        *   `cursor` (string, опционально): Непрозрачный курсор из поля `next_cursor` предыдущего ответа для получения следующей страницы.
+    *   Ответ при успехе (`200 OK`):
+        *   Тело ответа (JSON): `{\"data\": [StoryConfig, ...], \"next_cursor\": \"string | null\"}`
+    *   Ответ при ошибке (`400 Bad Request` - невалидный курсор, `401 Unauthorized`).
+
+#### Сервис Геймплея (`/api/published-stories`)
+
+*   **`GET /api/published-stories/me`**
+    *   Получение списка **моих** опубликованных историй (`PublishedStory`) с offset/limit пагинацией.
+    *   **Требует заголовок `Authorization`.**
+    *   Query параметры:
+        *   `limit` (int, опционально, default=20, max=100): Количество возвращаемых записей.
+        *   `offset` (int, опционально, default=0): Смещение от начала списка.
+    *   Ответ при успехе (`200 OK`):
+        *   Тело ответа (JSON): `{\"data\": [PublishedStory, ...], \"next_cursor\": null}`
+    *   Ответ при ошибке (`401 Unauthorized`):
+        *   `400 Bad Request`: Invalid `limit` or `offset`.
+        *   `500 Internal Server Error`: Failed to retrieve stories.
+
+*   **`GET /api/published-stories/public`**
+    *   Получение списка **публичных** опубликованных историй (`PublishedStory`) с offset/limit пагинацией.
+    *   **Требует заголовок `Authorization`.** (Примечание: возможно, стоит сделать этот эндпоинт публичным, убрав middleware)
+    *   Query параметры:
+        *   `limit` (int, опционально, default=20, max=100): Количество.
+        *   `offset` (int, опционально, default=0): Смещение.
+    *   Ответ при успехе (`200 OK`):
+        *   Тело ответа (JSON): `{"data": [PublishedStory, ...]}`
+    *   Ответ при ошибке (`401 Unauthorized`).
+
+*   **`GET /api/published-stories/:id/scene`**
+    *   Получение текущей игровой сцены для указанной опубликованной истории.
+    *   **Требует заголовок `Authorization`.**
+    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
+    *   Ответ при успехе (`200 OK`):
+        *   Тело ответа (JSON): Полный объект `StoryScene`, содержащий `id`, `publishedStoryId`, `stateHash` и `content` (JSON сцены).
+            ```json
+            {
+              "id": "scene-uuid-string",
+              "publishedStoryId": "story-uuid-string",
+              "stateHash": "calculated-hash-string",
+              "content": { /* JSON контент сцены от story-generator */ },
+              "createdAt": "timestamp"
+            }
+            ```
+    *   Ответ при ошибке:
+        *   `401 Unauthorized`: Невалидный токен.
+        *   `404 Not Found`: Опубликованная история не найдена.
+        *   `409 Conflict` (`sharedModels.ErrStoryNotReadyYet`): История еще не готова к игре (статус `setup_pending` или `first_scene_pending`).
+        *   `409 Conflict` (`sharedModels.ErrSceneNeedsGeneration`): Текущая сцена для данного состояния еще не сгенерирована.
+        *   `500 Internal Server Error`: Другие ошибки сервера.
+
+*   **`POST /api/published-stories/:id/choice`**
+    *   Обработка выбора игрока в текущей сцене.
+    *   **Требует заголовок `Authorization`.**
+    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
+    *   Тело запроса (JSON):
+        ```json
+        {
+          "selected_option_indices": [0] // Массив индексов выбранных опций (0 или 1 для каждого выбора в сцене)
+        }
+        ```
+    *   Ответ при успехе (`200 OK`):
+        *   Тело ответа: **Пока не определено.** Возвращает пустой ответ или статус OK. В будущем может возвращать следующую сцену или обновленное состояние.
+    *   Ответ при ошибке (`400 Bad Request` - невалидное тело запроса, `401 Unauthorized`, `404 Not Found` - история не найдена, `409 Conflict` - история не в статусе 'ready', `500 Internal Server Error`).
+
+*   **`DELETE /api/published-stories/:id/progress`**
+    *   Удаляет прогресс текущего пользователя для указанной опубликованной истории, позволяя начать ее заново.
+    *   **Требует заголовок `Authorization`.**
+    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
+    *   Тело запроса: **Нет.**
+    *   Ответ при успехе (`204 No Content`):
+        *   **Без тела ответа.**
+    *   Ответ при ошибке:
+        *   `401 Unauthorized`: Невалидный токен.
+        *   `404 Not Found`: Опубликованная история не найдена.
+        *   `500 Internal Server Error`: Ошибка при удалении прогресса.
+
 #### WebSocket Уведомления (`/ws`)
 
 *   **URL для подключения:** `ws://localhost:8080/ws`
-*   **Аутентификация:** Клиент **должен** передать валидный JWT access токен при установке соединения. 
+*   **Аутентификация:** Клиент **должен** передать валидный JWT access токен при установке соединения.
     *   Рекомендуемый способ: через query-параметр `ws://localhost:8080/ws?token=<ваш_access_token>`. Middleware `shared/middleware/auth.go` и `websocket-service/internal/handler/ws_handler.go` были обновлены для поддержки этого метода.
-    *   *Старый метод через заголовок `Authorization` больше не поддерживается стандартными WebSocket API браузеров.* 
+    *   *Старый метод через заголовок `Authorization` больше не поддерживается стандартными WebSocket API браузеров.*
 *   **Получаемые сообщения (от сервера клиенту):**
-    *   Когда генерация или ревизия `StoryConfig` завершена (успешно или с ошибкой), сервер отправит JSON-сообщение следующей структуры (`ClientStoryUpdate`):
+    *   Когда генерация или ревизия **черновика** (`StoryConfig`) завершена (успешно или с ошибкой), сервер отправит JSON-сообщение следующей структуры (`ClientStoryUpdate`):
         ```json
         {
           "id": "uuid-string",             // ID обновленного StoryConfig
           "user_id": "string-user-id",     // ID пользователя
-          "status": "draft" | "error",      // Новый статус
-          "title": "Сгенерированное название", // Из поля "t" JSON-конфига
-          "description": "Сгенерированное описание", // Из поля "sd" JSON-конфига
-          "themes": ["theme1", "theme2"],  // Из поля "pp.th"
-          "world_lore": ["lore1", "lore2"], // Из поля "pp.wl"
-          "player_description": "Описание игрока", // Из поля "p_desc"
-          "error_details": "Текст ошибки" // Только если status == "error"
+          "status": "draft" | "error",      // Новый статус черновика
+          "title": "...",                  // Сгенерированное название
+          "description": "...",            // Сгенерированное описание
+          "themes": ["..."],               // Из поля "pp.th"
+          "world_lore": ["..."],            // Из поля "pp.wl"
+          "player_description": "...",     // Из поля "p_desc"
+          "error_details": "..."           // Только если status == "error"
         }
         ```
+    *   **ВАЖНО:** На данный момент **не отправляются** автоматические WebSocket уведомления об изменении статуса **опубликованной истории** (`PublishedStory`), например, когда завершается генерация `Setup` или готова новая сцена. Клиент должен использовать HTTP эндпоинты (`GET /api/published-stories/:id/scene`) для проверки готовности и получения текущей сцены.
 
 #### Внутренние API (Internal)
 
@@ -171,19 +265,43 @@
 
 ## Задачи для генерации (Story Generator)
 
-*   Сервис `gameplay-service` теперь отправляет задачи в очередь `story_generation_tasks`.
+*   Сервис `gameplay-service` теперь отправляет задачи в очередь `story_generation_tasks` для:
+    *   Начальной генерации (`prompt_type: narrator`)
+    *   Ревизии (`prompt_type: narrator` с `input_data.current_config`)
+    *   Генерации начального состояния игры (`prompt_type: novel_setup`)
 *   `story-generator` получает задачи, выполняет их и отправляет **полные** уведомления (`shared/messaging.NotificationPayload`) в очередь `internal_updates`.
 
 ## Поток Уведомлений
 
-1.  `story-generator` -> `internal_updates` (полное `NotificationPayload`)
+1.  `story-generator` -> `internal_updates` (полное `NotificationPayload` с результатом генерации `narrator`)
 2.  `gameplay-service` слушает `internal_updates`:
-    *   Обновляет `StoryConfig` в БД (включая поля `Config`, `Title`, `Description`).
-    *   Формирует **отфильтрованное** сообщение `ClientStoryUpdate`.
+    *   Получает результат генерации `narrator`.
+    *   Обновляет `StoryConfig` в БД (статус `draft`, поля `Config`, `Title`, `Description`).
+    *   Формирует **отфильтрованное** сообщение `ClientStoryUpdate` (выбирая нужные поля из `Config`).
     *   Отправляет `ClientStoryUpdate` в очередь `client_updates`.
 3.  `websocket-service` слушает `client_updates`:
     *   Получает `ClientStoryUpdate`.
-    *   Находит соединение нужного `UserID`.
+    *   Находит WebSocket соединение для нужного `UserID`.
     *   Пересылает `ClientStoryUpdate` клиенту по WebSocket.
+*   **Примечание:** Обработка уведомлений от генерации `novel_setup` (после публикации) в `gameplay-service` **пока не реализована**. `gameplay-service` на данный момент обрабатывает только уведомления, связанные с `StoryConfig`.
 
-# ... (Остальная часть README) ... 
+## Текущая реализованная логика
+
+На данный момент реализованы следующие основные возможности:
+
+*   **Аутентификация пользователей:** Регистрация, вход, выход, обновление токенов (`auth-service`).
+*   **Управление черновиками историй (`gameplay-service`):**
+    *   **Начальная генерация:** Пользователь отправляет промпт (`/generate`), создается `StoryConfig`, отправляется задача `narrator` в `story-generator`.
+    *   **Ревизия:** Пользователь отправляет правку к существующему черновику (`/revise`), `StoryConfig` обновляется, отправляется задача `narrator` (с текущим конфигом) в `story-generator`.
+
+### List Public Stories
+
+*   **`GET /api/published-stories/public`**
+    *   Получение списка **публичных** опубликованных историй (`PublishedStory`) с offset/limit пагинацией.
+    *   **Требует заголовок `Authorization`.** (Примечание: возможно, стоит сделать этот эндпоинт публичным, убрав middleware)
+    *   Query параметры:
+        *   `limit` (int, опционально, default=20, max=100): Количество.
+        *   `offset` (int, опционально, default=0): Смещение.
+    *   Ответ при успехе (`200 OK`):
+        *   Тело ответа (JSON): `{"data": [PublishedStory, ...]}`
+    *   Ответ при ошибке (`401 Unauthorized`).

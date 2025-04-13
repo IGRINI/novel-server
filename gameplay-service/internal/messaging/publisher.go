@@ -6,18 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"novel-server/shared/messaging" // Используем общие структуры
+	sharedMessaging "novel-server/shared/messaging" // Используем общие структуры
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// TaskPublisher определяет интерфейс для отправки задач генерации.
+// TaskPublisher defines the interface for publishing tasks to the generation queue.
 type TaskPublisher interface {
-	PublishGenerationTask(ctx context.Context, payload messaging.GenerationTaskPayload) error
+	PublishGenerationTask(ctx context.Context, payload sharedMessaging.GenerationTaskPayload) error
+	PublishGameOverTask(ctx context.Context, payload sharedMessaging.GameOverTaskPayload) error
+	// Close() error // Optional: If the publisher needs explicit closing
 }
 
-// ClientUpdatePublisher определяет интерфейс для отправки обновлений клиенту.
+// ClientUpdatePublisher defines the interface for publishing updates to the client.
 type ClientUpdatePublisher interface {
 	PublishClientUpdate(ctx context.Context, payload ClientStoryUpdate) error // Используем новую структуру
 }
@@ -33,26 +35,28 @@ type ClientStoryUpdate struct {
 	Themes            []string `json:"themes,omitempty"`             // Из pp.th
 	WorldLore         []string `json:"world_lore,omitempty"`         // Из pp.wl
 	PlayerDescription string   `json:"player_description,omitempty"` // Из p_desc
-	ErrorDetails      string   `json:"error_details,omitempty"`      // Если status == error
+	IsCompleted       bool     `json:"is_completed"`                 // Флаг завершения истории
+	EndingText        *string  `json:"ending_text,omitempty"`        // Текст концовки, если status == completed
+	ErrorDetails      *string  `json:"error_details,omitempty"`      // Если status == error
 }
 
-// rabbitMQPublisher реализует интерфейсы TaskPublisher и ClientUpdatePublisher для RabbitMQ.
+// rabbitMQPublisher implements the TaskPublisher and ClientUpdatePublisher interfaces for RabbitMQ.
 type rabbitMQPublisher struct {
 	channel   *amqp.Channel
 	queueName string
 }
 
-// NewRabbitMQPublisher создает новый экземпляр паблишера для указанной очереди.
-// Важно: предполагается, что канал уже открыт.
+// NewRabbitMQPublisher creates a new instance of the publisher for the specified queue.
+// Important: assumes the channel is already open.
 func NewRabbitMQPublisher(ch *amqp.Channel, queueName string) *rabbitMQPublisher {
 	// Мы не объявляем очередь здесь, предполагаем, что она уже существует
 	// или будет объявлена консьюмером.
 	return &rabbitMQPublisher{channel: ch, queueName: queueName}
 }
 
-// NewRabbitMQTaskPublisher создает новый экземпляр TaskPublisher.
-// Примечание: Эта функция может быть избыточной, если NewRabbitMQPublisher универсален.
-// Оставляем для возможной специализации в будущем.
+// NewRabbitMQTaskPublisher creates a new instance of TaskPublisher.
+// Note: This function may be redundant if NewRabbitMQPublisher is universal.
+// Leaving it for possible future specialization.
 func NewRabbitMQTaskPublisher(conn *amqp.Connection, queueName string) (TaskPublisher, error) {
 	ch, err := conn.Channel()
 	if err != nil {
@@ -69,7 +73,7 @@ func NewRabbitMQTaskPublisher(conn *amqp.Connection, queueName string) (TaskPubl
 	return &rabbitMQPublisher{channel: ch, queueName: queueName}, nil
 }
 
-// NewRabbitMQClientUpdatePublisher создает новый экземпляр ClientUpdatePublisher.
+// NewRabbitMQClientUpdatePublisher creates a new instance of ClientUpdatePublisher.
 func NewRabbitMQClientUpdatePublisher(conn *amqp.Connection, queueName string) (ClientUpdatePublisher, error) {
 	ch, err := conn.Channel()
 	if err != nil {
@@ -85,8 +89,8 @@ func NewRabbitMQClientUpdatePublisher(conn *amqp.Connection, queueName string) (
 	return &rabbitMQPublisher{channel: ch, queueName: queueName}, nil
 }
 
-// PublishGenerationTask публикует задачу генерации.
-func (p *rabbitMQPublisher) PublishGenerationTask(ctx context.Context, payload messaging.GenerationTaskPayload) error {
+// PublishGenerationTask publishes a generation task.
+func (p *rabbitMQPublisher) PublishGenerationTask(ctx context.Context, payload sharedMessaging.GenerationTaskPayload) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		// Используем %s для UserID (string)
@@ -103,25 +107,29 @@ func (p *rabbitMQPublisher) PublishGenerationTask(ctx context.Context, payload m
 	return nil
 }
 
-// PublishClientUpdate публикует обновление для клиента.
+// PublishClientUpdate publishes an update to the client.
 func (p *rabbitMQPublisher) PublishClientUpdate(ctx context.Context, payload ClientStoryUpdate) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		// Используем %s для UserID (string)
-		log.Printf("[StoryID: %s][UserID: %s] Ошибка сериализации ClientStoryUpdate: %v", payload.ID, payload.UserID, err)
-		return fmt.Errorf("ошибка сериализации обновления клиента для StoryID %s: %w", payload.ID, err)
+		log.Printf("Publisher: Ошибка маршалинга ClientStoryUpdate: %v", err)
+		return fmt.Errorf("ошибка подготовки сообщения ClientStoryUpdate: %w", err)
 	}
-
-	err = p.publishMessage(ctx, body)
-	if err != nil {
-		// Используем %s для UserID (string)
-		log.Printf("[StoryID: %s][UserID: %s] Ошибка публикации ClientStoryUpdate: %v", payload.ID, payload.UserID, err)
-		return fmt.Errorf("ошибка публикации обновления клиента для StoryID %s: %w", payload.ID, err)
-	}
-	return nil
+	// Используем exchange по умолчанию и routing key = имя очереди для client_updates
+	return p.publishMessage(ctx, body)
 }
 
-// publishMessage - вспомогательный метод для публикации сообщения.
+// PublishGameOverTask publishes a game over task.
+func (p *rabbitMQPublisher) PublishGameOverTask(ctx context.Context, payload sharedMessaging.GameOverTaskPayload) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("Publisher: Ошибка маршалинга GameOverTaskPayload: %v", err)
+		return fmt.Errorf("ошибка подготовки сообщения GameOverTask: %w", err)
+	}
+	// Отправляем в ту же очередь задач, что и генерацию сцен
+	return p.publishMessage(ctx, body)
+}
+
+// publishMessage is a helper method for publishing a message.
 func (p *rabbitMQPublisher) publishMessage(ctx context.Context, body []byte) error {
 	if p.channel == nil {
 		log.Println("Ошибка публикации: канал RabbitMQ не инициализирован (nil)")

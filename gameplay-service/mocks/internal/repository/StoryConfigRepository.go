@@ -140,6 +140,43 @@ func (_m *StoryConfigRepository) GetByIDInternal(ctx context.Context, id uuid.UU
 	return r0, r1
 }
 
+// ListByUser provides a mock function with given fields: ctx, userID, limit, cursor
+func (_m *StoryConfigRepository) ListByUser(ctx context.Context, userID uint64, limit int, cursor string) ([]models.StoryConfig, string, error) {
+	ret := _m.Called(ctx, userID, limit, cursor)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ListByUser")
+	}
+
+	var r0 []models.StoryConfig
+	var r1 string
+	var r2 error
+	if rf, ok := ret.Get(0).(func(context.Context, uint64, int, string) ([]models.StoryConfig, string, error)); ok {
+		return rf(ctx, userID, limit, cursor)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, uint64, int, string) []models.StoryConfig); ok {
+		r0 = rf(ctx, userID, limit, cursor)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]models.StoryConfig)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, uint64, int, string) string); ok {
+		r1 = rf(ctx, userID, limit, cursor)
+	} else {
+		r1 = ret.Get(1).(string)
+	}
+
+	if rf, ok := ret.Get(2).(func(context.Context, uint64, int, string) error); ok {
+		r2 = rf(ctx, userID, limit, cursor)
+	} else {
+		r2 = ret.Error(2)
+	}
+
+	return r0, r1, r2
+}
+
 // Update provides a mock function with given fields: ctx, config
 func (_m *StoryConfigRepository) Update(ctx context.Context, config *models.StoryConfig) error {
 	ret := _m.Called(ctx, config)
@@ -156,36 +193,6 @@ func (_m *StoryConfigRepository) Update(ctx context.Context, config *models.Stor
 	}
 
 	return r0
-}
-
-// ListByUser provides a mock function with given fields: ctx, userID, limit, cursor
-func (_m *StoryConfigRepository) ListByUser(ctx context.Context, userID uint64, limit int, cursor string) ([]models.StoryConfig, string, error) {
-	ret := _m.Called(ctx, userID, limit, cursor)
-
-	var r0 []models.StoryConfig
-	if rf, ok := ret.Get(0).(func(context.Context, uint64, int, string) []models.StoryConfig); ok {
-		r0 = rf(ctx, userID, limit, cursor)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).([]models.StoryConfig)
-		}
-	}
-
-	var r1 string
-	if rf, ok := ret.Get(1).(func(context.Context, uint64, int, string) string); ok {
-		r1 = rf(ctx, userID, limit, cursor)
-	} else {
-		r1 = ret.Get(1).(string)
-	}
-
-	var r2 error
-	if rf, ok := ret.Get(2).(func(context.Context, uint64, int, string) error); ok {
-		r2 = rf(ctx, userID, limit, cursor)
-	} else {
-		r2 = ret.Error(2)
-	}
-
-	return r0, r1, r2
 }
 
 // NewStoryConfigRepository creates a new instance of StoryConfigRepository. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.

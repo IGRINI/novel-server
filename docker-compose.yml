@@ -136,6 +136,40 @@ services:
       - "traefik.http.routers.auth-http.middlewares=auth-stripprefix"
       - "traefik.http.middlewares.auth-stripprefix.stripprefix.prefixes=/api/auth"
 
+  # Сервис Геймплея (обработка запросов /api/stories)
+  gameplay-service:
+    build:
+      context: .
+      dockerfile: gameplay-service/Dockerfile
+    container_name: novel_gameplay_service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+         condition: service_completed_successfully
+    environment:
+      <<: *env-vars # Наследуем общие переменные
+      DB_HOST: postgres # Внутреннее имя хоста БД
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/ # URL для Docker
+      SERVER_PORT: ${GAMEPLAY_SERVER_PORT:-8082} # Внутренний порт сервиса
+      SERVICE_ID: gameplay-service
+      # JWT_SECRET уже включен через *env-vars
+    # ports: # Убираем публикацию порта наружу
+    #   - "${GAMEPLAY_SERVER_PORT:-8082}:${GAMEPLAY_SERVER_PORT:-8082}"
+    labels:
+      # Включаем Traefik для этого сервиса
+      - "traefik.enable=true"
+      # Определяем роутер для HTTP запросов к gameplay
+      - "traefik.http.routers.gameplay-http.rule=PathPrefix(`/api/stories`)" # Все пути, начинающиеся с /api/stories
+      - "traefik.http.routers.gameplay-http.entrypoints=web" # Используем точку входа 'web' (порт 8080)
+      # Указываем, на какой внутренний порт Traefik должен перенаправлять трафик
+      - "traefik.http.services.gameplay-service.loadbalancer.server.port=${GAMEPLAY_SERVER_PORT:-8082}"
+      # Middleware для удаления префикса /api/stories перед отправкой запроса в сервис gameplay
+      - "traefik.http.routers.gameplay-http.middlewares=gameplay-stripprefix"
+      - "traefik.http.middlewares.gameplay-stripprefix.stripprefix.prefixes=/api/stories"
+
   # Сервис RabbitMQ
   rabbitmq:
     image: rabbitmq:3.13-management-alpine

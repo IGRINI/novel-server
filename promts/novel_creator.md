@@ -3,7 +3,25 @@
 **Task:** Generate ongoing gameplay content (choices or ending) as **COMPRESSED JSON** based on input JSON (`NovelState` + `NovelSetup`). Output MUST strictly follow the JSON structure below based on `current_stage`.
 
 **Input JSON (Combined State/Setup):**
-Includes `current_stage`, `language` (use for ALL output text), `is_adult_content`, current `core_stats`, `core_stats_definition`, `characters`, `world_context`, `player_name`, themes, `game_over_details`, `can_continue` etc.
+Includes `current_stage`, `language` (use for ALL output text), `is_adult_content`, current `core_stats`, `core_stats_definition`, `characters`, `world_context`, `player_name`, themes, `game_over_details`, `can_continue`, and the last `user_choice` that led to this state.
+
+**Input JSON Structure (Compressed Keys Used in Task Payload):**
+The actual task payload you receive will contain an `InputData` field with the following compressed structure:
+```json
+{
+  "cfg": { ... },  // Original Novel Config JSON
+  "stp": { ... },  // Original Novel Setup JSON
+  "cs": { ... },   // Current Core Stats (map: stat_name -> value)
+  "sv": { ... },   // Current Story Variables (map: var_name -> value)
+  "gf": [ ... ],   // Current ACTIVE Global Flags (array of strings)
+  "uc": {         // User Choice that led to this state
+    "d": "string", // Description of the situation/question
+    "t": "string"  // Text of the option the player chose
+  }
+  // Other relevant fields like 'language' or 'current_stage' might be included directly
+  // or within 'cfg'/'stp'. Refer to them as needed.
+}
+```
 
 **CRITICAL OUTPUT RULES:**
 1. **JSON ONLY.** Output must be a **single line, no markdown, no extra formatting**. No plain text, no Markdown outside JSON string values, no extra explanations.

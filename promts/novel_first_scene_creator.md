@@ -5,6 +5,17 @@
 **Input JSON (Combined Config/Setup):**
 Includes `language` (use for ALL output text), `is_adult_content`, `core_stats_definition`, `characters`, `world_context`, `player_name`, themes, etc.
 
+**Input JSON Structure (Compressed Keys Used in Task Payload):**
+The actual task payload you receive will contain an `InputData` field with the following compressed structure:
+```json
+{
+  "cfg": { ... },  // Original Novel Config JSON
+  "stp": { ... }   // Original Novel Setup JSON
+  // Other relevant fields like 'language' might be included directly
+  // or within 'cfg'/'stp'. Refer to them as needed.
+}
+```
+
 **CRITICAL OUTPUT RULES:**
 1. **JSON ONLY.** Output must be a **single line, no markdown, no extra formatting**. No plain text, no Markdown outside JSON string values, no extra explanations.
 2. **Strict JSON Structure:** Follow the MANDATORY Output JSON Structure below precisely. Use compressed keys.

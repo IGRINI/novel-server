@@ -15,13 +15,16 @@ import (
 	"novel-server/gameplay-service/internal/models"
 	"novel-server/gameplay-service/internal/repository"
 	"novel-server/gameplay-service/internal/service"
+	sharedDatabase "novel-server/shared/database"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedMiddleware "novel-server/shared/middleware"
+	sharedModels "novel-server/shared/models"
 	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/labstack/echo/v4"
@@ -41,6 +44,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 
 	// Добавляем импорт для bcrypt
+	"go.uber.org/zap"            // Добавляем импорт zap
 	"golang.org/x/crypto/bcrypt" // Правильный импорт
 )
 
@@ -107,7 +111,7 @@ func (s *IntegrationTestSuite) SetupSuite() {
 	dbPool, err := pgxpool.New(ctx, pgConnStr)
 	require.NoError(s.T(), err)
 	s.dbPool = dbPool
-	s.repo = repository.NewPostgresStoryConfigRepository(dbPool)
+	s.repo = repository.NewPgStoryConfigRepository(dbPool, zap.NewNop())
 
 	// Применение миграций
 	// Абсолютный путь не обязателен, ToSlash нужен для Windows
@@ -196,12 +200,16 @@ func (s *IntegrationTestSuite) SetupSuite() {
 	require.NoError(s.T(), err)
 	taskPublisher := messaging.NewRabbitMQPublisher(taskChannel, cfg.GenerationTaskQueue)
 
-	// clientUpdatePublisher пока не нужен для этих тестов API
-	// clientUpdatePublisher := messaging.NewRabbitMQClientUpdatePublisher(s.rabbitConn, cfg.ClientUpdatesQueueName)
-	// require.NoError(s.T(), err)
+	// Создаем реальный репозиторий для PublishedStory
+	nopLogger := zap.NewNop()
+	publishedRepo := sharedDatabase.NewPgPublishedStoryRepository(s.dbPool, nopLogger)
+	// !!! ДОБАВЛЯЕМ СОЗДАНИЕ НОВЫХ РЕПОЗИТОРИЕВ !!!
+	sceneRepo := sharedDatabase.NewPgStorySceneRepository(s.dbPool, nopLogger)
+	playerProgressRepo := sharedDatabase.NewPgPlayerProgressRepository(s.dbPool, nopLogger)
 
-	gameplayService := service.NewGameplayService(s.repo, taskPublisher)
-	gameplayHandler := handler.NewGameplayHandler(gameplayService)
+	// Передаем все 7 аргументов
+	gameplayService := service.NewGameplayService(s.repo, publishedRepo, sceneRepo, playerProgressRepo, taskPublisher, s.dbPool, nopLogger)
+	gameplayHandler := handler.NewGameplayHandler(gameplayService, nopLogger)
 
 	app := echo.New()
 	gameplayHandler.RegisterRoutes(app, jwtTestSecret)
@@ -344,6 +352,15 @@ func (s *IntegrationTestSuite) TestGenerateInitialStory_Integration() {
 	err = json.Unmarshal(createdConfig.UserInput, &userInputs)
 	require.NoError(s.T(), err)
 	assert.Equal(s.T(), []string{initialPrompt}, userInputs)
+
+	// *** ДОБАВЛЕНО: Гарантированное удаление созданного конфига ***
+	defer func() {
+		delErr := s.repo.Delete(context.Background(), createdConfig.ID, userID)
+		if delErr != nil {
+			s.T().Logf("WARN: Failed to clean up story config %s: %v", createdConfig.ID, delErr)
+		}
+	}()
+	// *** КОНЕЦ ДОБАВЛЕНИЯ ***
 
 	// Проверяем запись в БД
 	dbConfig, err := s.repo.GetByIDInternal(context.Background(), createdConfig.ID)
@@ -506,4 +523,507 @@ func (s *IntegrationTestSuite) TestReviseDraft_Integration() {
 
 	assert.Equal(s.T(), strconv.FormatUint(userID, 10), revisionPayload.UserID)
 	assert.NotEmpty(s.T(), revisionPayload.TaskID)
+}
+
+// TestFullGameplayFlow_Integration проверяет полный цикл: создание -> имитация -> публикация
+func (s *IntegrationTestSuite) TestFullGameplayFlow_Integration() {
+	userID := uint64(101) // Используем существующего пользователя
+	initialPrompt := "Полный флоу тест"
+	token := createTestJWT(userID)
+	client := &http.Client{}
+
+	// --- Шаг 1: Создание черновика --- //
+	s.T().Log("--- Шаг 1: Создание черновика ---")
+	bodyJSON, _ := json.Marshal(map[string]string{"prompt": initialPrompt})
+	reqGen, err := http.NewRequest(http.MethodPost, s.serviceURL+"/api/stories/generate", bytes.NewBuffer(bodyJSON))
+	require.NoError(s.T(), err)
+	reqGen.Header.Set("Content-Type", "application/json")
+	reqGen.Header.Set("Authorization", "Bearer "+token)
+
+	respGen, err := client.Do(reqGen)
+	require.NoError(s.T(), err)
+	defer respGen.Body.Close()
+	require.Equal(s.T(), http.StatusAccepted, respGen.StatusCode, "Generate request failed")
+
+	var initialConfig models.StoryConfig
+	err = json.NewDecoder(respGen.Body).Decode(&initialConfig)
+	require.NoError(s.T(), err)
+	draftID := initialConfig.ID // Сохраняем ID черновика
+	s.T().Logf("Draft created with ID: %s", draftID)
+
+	// Проверка состояния БД после генерации
+	dbDraftGen, err := s.repo.GetByIDInternal(context.Background(), draftID)
+	require.NoError(s.T(), err, "Draft not found in DB after generation")
+	assert.Equal(s.T(), models.StatusGenerating, dbDraftGen.Status)
+	assert.Nil(s.T(), dbDraftGen.Config)
+
+	// Проверка сообщения для Narrator в RabbitMQ
+	var narratorPayload sharedMessaging.GenerationTaskPayload
+	foundNarratorMsg := false
+	timeoutGen := time.After(10 * time.Second)
+	select {
+	case msg := <-s.taskMessages:
+		s.T().Log("Checking received message for narrator task...")
+		err = json.Unmarshal(msg.Body, &narratorPayload)
+		require.NoError(s.T(), err)
+		if narratorPayload.StoryConfigID == draftID.String() && narratorPayload.PromptType == sharedMessaging.PromptTypeNarrator {
+			foundNarratorMsg = true
+			assert.Equal(s.T(), initialPrompt, narratorPayload.UserInput)
+			assert.Empty(s.T(), narratorPayload.InputData)
+		} else {
+			s.T().Fatalf("Received unexpected message type in Step 1. Expected Narrator, got %s", narratorPayload.PromptType)
+		}
+	case <-timeoutGen:
+		s.T().Fatal("Timeout waiting for NARRATOR message in RabbitMQ task queue")
+	}
+	assert.True(s.T(), foundNarratorMsg, "Narrator message should be found")
+	s.T().Log("Narrator task message verified.")
+
+	// --- Шаг 2: Имитация ответа ИИ (обновление в БД) --- //
+	s.T().Log("--- Шаг 2: Имитация ответа ИИ ---")
+	generatedConfigJSON := `{"t":"Заголовок из теста","sd":"Описание","ac":true,"some_data":"value"}`
+	updateQuery := `UPDATE story_configs SET status = $1, config = $2, title = $3, description = $4 WHERE id = $5`
+	_, err = s.dbPool.Exec(context.Background(), updateQuery,
+		models.StatusDraft, // Ставим статус Draft
+		[]byte(generatedConfigJSON),
+		"Заголовок из теста", // Заполняем Title
+		"Описание",           // Заполняем Description
+		draftID,
+	)
+	require.NoError(s.T(), err, "Failed to update draft status in DB")
+	s.T().Log("Draft status updated to 'draft' in DB.")
+
+	// --- Шаг 3: Публикация черновика --- //
+	s.T().Log("--- Шаг 3: Публикация черновика ---")
+	reqPub, err := http.NewRequest(http.MethodPost, fmt.Sprintf("%s/api/stories/%s/publish", s.serviceURL, draftID), nil)
+	require.NoError(s.T(), err)
+	reqPub.Header.Set("Authorization", "Bearer "+token)
+
+	respPub, err := client.Do(reqPub)
+	require.NoError(s.T(), err)
+	defer respPub.Body.Close()
+	require.Equal(s.T(), http.StatusAccepted, respPub.StatusCode, "Publish request failed")
+
+	var publishResp handler.PublishStoryResponse // Используем тип из handler
+	err = json.NewDecoder(respPub.Body).Decode(&publishResp)
+	require.NoError(s.T(), err)
+	require.NotEmpty(s.T(), publishResp.PublishedStoryID, "PublishedStoryID should not be empty in response")
+	publishedStoryID, err := uuid.Parse(publishResp.PublishedStoryID)
+	require.NoError(s.T(), err, "Failed to parse PublishedStoryID from response")
+	s.T().Logf("Draft published successfully. PublishedStoryID: %s", publishedStoryID)
+
+	// --- Шаг 4: Проверка состояния после публикации --- //
+	s.T().Log("--- Шаг 4: Проверка состояния после публикации ---")
+
+	// 4а: Проверка удаления черновика из БД
+	_, err = s.repo.GetByIDInternal(context.Background(), draftID)
+	assert.Error(s.T(), err, "Draft should be deleted after publishing")
+	// Проверяем, что ошибка именно NotFound (может потребоваться импорт sharedModels)
+	// assert.True(s.T(), errors.Is(err, sharedModels.ErrNotFound), "Error should be NotFound")
+	s.T().Log("Verified draft deletion from DB.")
+
+	// 4б: Проверка создания опубликованной истории в БД
+	// Нужен способ получить PublishedStory по ID. Допустим, есть метод в shared/database/pg_published_story_repository.go
+	// (Если нет, его нужно будет добавить или использовать прямой SQL запрос)
+	var publishedStoryDB sharedModels.PublishedStory // Используем тип из shared
+	selectQuery := `SELECT id, user_id, config, setup, status, is_public, is_adult_content, title, description FROM published_stories WHERE id = $1`
+	err = s.dbPool.QueryRow(context.Background(), selectQuery, publishedStoryID).Scan(
+		&publishedStoryDB.ID,
+		&publishedStoryDB.UserID,
+		&publishedStoryDB.Config,
+		&publishedStoryDB.Setup, // Должно быть nil
+		&publishedStoryDB.Status,
+		&publishedStoryDB.IsPublic,
+		&publishedStoryDB.IsAdultContent,
+		&publishedStoryDB.Title,
+		&publishedStoryDB.Description,
+	)
+	require.NoError(s.T(), err, "Published story not found in DB")
+	s.T().Log("Published story found in DB.")
+
+	// Сравниваем поля
+	assert.Equal(s.T(), publishedStoryID, publishedStoryDB.ID)
+	assert.Equal(s.T(), userID, publishedStoryDB.UserID)
+	assert.JSONEq(s.T(), generatedConfigJSON, string(publishedStoryDB.Config), "Config JSON should match")
+	assert.Nil(s.T(), publishedStoryDB.Setup, "Setup should be nil initially")
+	assert.Equal(s.T(), sharedModels.StatusSetupPending, publishedStoryDB.Status, "Status should be setup_pending")
+	assert.False(s.T(), publishedStoryDB.IsPublic, "IsPublic should be false by default")
+	assert.True(s.T(), publishedStoryDB.IsAdultContent, "IsAdultContent should be true based on config") // Проверяем извлечение 'ac'
+	require.NotNil(s.T(), publishedStoryDB.Title)
+	assert.Equal(s.T(), "Заголовок из теста", *publishedStoryDB.Title)
+	require.NotNil(s.T(), publishedStoryDB.Description)
+	assert.Equal(s.T(), "Описание", *publishedStoryDB.Description)
+	s.T().Log("Published story fields verified.")
+
+	// 4в: Проверка сообщения для Setup в RabbitMQ
+	var setupPayload sharedMessaging.GenerationTaskPayload
+	foundSetupMsg := false
+	timeoutSetup := time.After(10 * time.Second)
+
+	select {
+	case msg := <-s.taskMessages:
+		s.T().Log("Checking received message for setup task...")
+		err = json.Unmarshal(msg.Body, &setupPayload)
+		require.NoError(s.T(), err)
+		// Идентифицируем сообщение по типу и ID опубликованной истории
+		if setupPayload.PublishedStoryID == publishedStoryID.String() && setupPayload.PromptType == sharedMessaging.PromptTypeNovelSetup {
+			foundSetupMsg = true
+			assert.Equal(s.T(), strconv.FormatUint(userID, 10), setupPayload.UserID)
+			assert.Empty(s.T(), setupPayload.StoryConfigID, "StoryConfigID should be empty for setup task")
+			assert.Empty(s.T(), setupPayload.UserInput, "UserInput should be empty for setup task")
+			assert.NotEmpty(s.T(), setupPayload.InputData, "InputData should not be empty for setup task")
+			assert.Contains(s.T(), setupPayload.InputData, "config", "InputData must contain 'config' key for setup task")
+			if configStr, ok := setupPayload.InputData["config"].(string); ok {
+				assert.NotEmpty(s.T(), configStr, "InputData 'config' value should not be empty")
+				var tempCfg map[string]interface{}
+				err = json.Unmarshal([]byte(configStr), &tempCfg)
+				assert.NoError(s.T(), err, "InputData 'config' should be valid JSON")
+				assert.Equal(s.T(), "Заголовок из теста", tempCfg["t"], "Title in config JSON mismatch")
+			} else {
+				s.T().Errorf("InputData 'config' key should contain a string value, got %T", setupPayload.InputData["config"])
+			}
+			assert.NotEmpty(s.T(), setupPayload.TaskID)
+		} else {
+			s.T().Fatalf("Received unexpected message type in Step 4. Expected Setup, got %s with PublishedStoryID %s",
+				setupPayload.PromptType, setupPayload.PublishedStoryID)
+		}
+	case <-timeoutSetup:
+		s.T().Fatal("Timeout waiting for SETUP message in RabbitMQ task queue")
+	}
+	assert.True(s.T(), foundSetupMsg, "Setup message should be found")
+
+	// --- Шаг 5: Имитация ответа ИИ для Setup ---
+	// Проверяем, что это действительно задача на Setup
+	assert.Equal(s.T(), sharedMessaging.PromptTypeNovelSetup, setupPayload.PromptType, "PromptType should be NovelSetup")
+
+	// Проверяем InputData - должен содержать поле "config"
+	assert.NotEmpty(s.T(), setupPayload.InputData, "InputData should not be empty for setup task")
+	assert.Contains(s.T(), setupPayload.InputData, "config", "InputData must contain 'config' key for setup task")
+	if configStr, ok := setupPayload.InputData["config"].(string); ok {
+		assert.NotEmpty(s.T(), configStr, "InputData 'config' value should not be empty")
+		// Можно добавить более строгую проверку содержимого JSON, если нужно
+		var tempCfg map[string]interface{}
+		err := json.Unmarshal([]byte(configStr), &tempCfg)
+		assert.NoError(s.T(), err, "InputData 'config' should be valid JSON")
+		assert.Equal(s.T(), "Заголовок из теста", tempCfg["t"], "Title in config JSON mismatch")
+	} else {
+		s.T().Error("InputData 'config' key should contain a string value")
+	}
+
+	s.T().Log("--- TestFullGameplayFlow_Integration Completed Successfully ---")
+}
+
+// TestListMyDrafts_Integration проверяет получение списка черновиков пользователя с пагинацией.
+func (s *IntegrationTestSuite) TestListMyDrafts_Integration() {
+	userID := uint64(101) // Используем того же пользователя
+	token := createTestJWT(userID)
+	client := &http.Client{}
+	ctx := context.Background()
+
+	// --- Шаг 0: Создаем несколько черновиков для теста --- //
+	s.T().Log("--- Создание тестовых черновиков --- ")
+	draftIDs := make([]uuid.UUID, 0, 5)
+	numDrafts := 5
+	for i := 0; i < numDrafts; i++ {
+		// Создаем через сервис, чтобы получить валидный объект
+		// Используем прямой вызов сервиса, чтобы не перегружать тест HTTP запросами
+		// Важно: Создаем реальный сервис здесь, т.к. в s.Suite нет доступа к сервису из SetupSuite
+		// nopLogger := zap.NewNop()
+		// publishedRepo := sharedDatabase.NewPgPublishedStoryRepository(s.dbPool, nopLogger)
+		// Publisher не нужен для List, создаем фейковый
+		// mockPublisher := new(messagingMocks.TaskPublisher)
+		// mockPublisher.On("PublishGenerationTask", mock.Anything, mock.Anything).Return(nil)
+		// gameplayService := service.NewGameplayService(s.repo, publishedRepo, mockPublisher, s.dbPool, nopLogger)
+
+		// config, err := gameplayService.GenerateInitialStory(ctx, userID, fmt.Sprintf("Тестовый черновик %d", i))
+		// require.NoError(s.T(), err)
+		// require.NotNil(s.T(), config)
+		// draftIDs = append(draftIDs, config.ID)
+
+		// *** ИЗМЕНЕНИЕ: Создаем черновик напрямую в БД ***
+		prompt := fmt.Sprintf("Тестовый черновик %d", i)
+		userInputJSON, err := json.Marshal([]string{prompt})
+		require.NoError(s.T(), err)
+		config := &models.StoryConfig{
+			ID:          uuid.New(),
+			UserID:      userID,
+			Title:       fmt.Sprintf("Draft %d", i),
+			Description: prompt,
+			UserInput:   userInputJSON,
+			Config:      json.RawMessage(`{"t":"Draft Title"}`), // Добавляем минимальный Config
+			Status:      models.StatusDraft,                     // <<< Ставим статус Draft
+			CreatedAt:   time.Now().UTC(),
+			UpdatedAt:   time.Now().UTC(),
+		}
+		err = s.repo.Create(ctx, config) // Используем репозиторий из s.Suite
+		require.NoError(s.T(), err, "Failed to create test draft directly in DB")
+		draftIDs = append(draftIDs, config.ID)
+		// *** КОНЕЦ ИЗМЕНЕНИЯ ***
+
+		// Небольшая задержка, чтобы created_at отличался для сортировки
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Меняем порядок, чтобы проверить сортировку (последний созданный должен быть первым)
+	reverseUUIDs(draftIDs)
+	s.T().Logf("Создано %d тестовых черновиков. Ожидаемый порядок ID (от новых к старым): %v", numDrafts, draftIDs)
+
+	// --- Шаг 1: Получаем первую страницу (limit=2) --- //
+	s.T().Log("--- Шаг 1: Получение первой страницы (limit=2) ---")
+	limit := 2
+	reqPage1, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/stories?limit=%d", s.serviceURL, limit), nil)
+	require.NoError(s.T(), err)
+	reqPage1.Header.Set("Authorization", "Bearer "+token)
+
+	respPage1, err := client.Do(reqPage1)
+	require.NoError(s.T(), err)
+	defer respPage1.Body.Close()
+	require.Equal(s.T(), http.StatusOK, respPage1.StatusCode)
+
+	var page1Resp handler.PaginatedResponse // Используем тип из handler
+	err = json.NewDecoder(respPage1.Body).Decode(&page1Resp)
+	require.NoError(s.T(), err)
+
+	// Проверяем данные первой страницы
+	require.NotNil(s.T(), page1Resp.Data)
+	dataBytes, _ := json.Marshal(page1Resp.Data)
+	var draftsPage1 []models.StoryConfig
+	err = json.Unmarshal(dataBytes, &draftsPage1)
+	require.NoError(s.T(), err)
+
+	assert.Len(s.T(), draftsPage1, limit, "Должно быть получено %d черновика", limit)
+	assert.NotEmpty(s.T(), page1Resp.NextCursor, "Должен быть курсор для следующей страницы")
+	// Проверяем порядок ID
+	assert.Equal(s.T(), draftIDs[0], draftsPage1[0].ID, "Первый элемент первой страницы не совпадает")
+	assert.Equal(s.T(), draftIDs[1], draftsPage1[1].ID, "Второй элемент первой страницы не совпадает")
+	nextCursor := page1Resp.NextCursor
+	s.T().Logf("Первая страница получена. NextCursor: %s", nextCursor)
+
+	// --- Шаг 2: Получаем вторую страницу (limit=2, используем курсор) --- //
+	s.T().Log("--- Шаг 2: Получение второй страницы (limit=2, cursor) ---")
+	reqPage2, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/stories?limit=%d&cursor=%s", s.serviceURL, limit, nextCursor), nil)
+	require.NoError(s.T(), err)
+	reqPage2.Header.Set("Authorization", "Bearer "+token)
+
+	respPage2, err := client.Do(reqPage2)
+	require.NoError(s.T(), err)
+	defer respPage2.Body.Close()
+	require.Equal(s.T(), http.StatusOK, respPage2.StatusCode)
+
+	var page2Resp handler.PaginatedResponse
+	err = json.NewDecoder(respPage2.Body).Decode(&page2Resp)
+	require.NoError(s.T(), err)
+
+	// Проверяем данные второй страницы
+	require.NotNil(s.T(), page2Resp.Data)
+	dataBytes2, _ := json.Marshal(page2Resp.Data)
+	var draftsPage2 []models.StoryConfig
+	err = json.Unmarshal(dataBytes2, &draftsPage2)
+	require.NoError(s.T(), err)
+
+	assert.Len(s.T(), draftsPage2, limit, "Должно быть получено %d черновика на второй странице", limit)
+	assert.NotEmpty(s.T(), page2Resp.NextCursor, "Должен быть курсор для третьей страницы")
+	// Проверяем порядок ID
+	assert.Equal(s.T(), draftIDs[2], draftsPage2[0].ID, "Первый элемент второй страницы не совпадает")
+	assert.Equal(s.T(), draftIDs[3], draftsPage2[1].ID, "Второй элемент второй страницы не совпадает")
+	nextCursor = page2Resp.NextCursor
+	s.T().Logf("Вторая страница получена. NextCursor: %s", nextCursor)
+
+	// --- Шаг 3: Получаем третью страницу (limit=2, последний элемент) --- //
+	s.T().Log("--- Шаг 3: Получение третьей страницы (limit=2, cursor) ---")
+	reqPage3, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/stories?limit=%d&cursor=%s", s.serviceURL, limit, nextCursor), nil)
+	require.NoError(s.T(), err)
+	reqPage3.Header.Set("Authorization", "Bearer "+token)
+
+	respPage3, err := client.Do(reqPage3)
+	require.NoError(s.T(), err)
+	defer respPage3.Body.Close()
+	require.Equal(s.T(), http.StatusOK, respPage3.StatusCode)
+
+	var page3Resp handler.PaginatedResponse
+	err = json.NewDecoder(respPage3.Body).Decode(&page3Resp)
+	require.NoError(s.T(), err)
+
+	// Проверяем данные третьей страницы
+	require.NotNil(s.T(), page3Resp.Data)
+	dataBytes3, _ := json.Marshal(page3Resp.Data)
+	var draftsPage3 []models.StoryConfig
+	err = json.Unmarshal(dataBytes3, &draftsPage3)
+	require.NoError(s.T(), err)
+
+	assert.Len(s.T(), draftsPage3, 1, "Должен быть получен 1 черновик на третьей странице")
+	assert.Empty(s.T(), page3Resp.NextCursor, "Не должно быть курсора для следующей страницы")
+	// Проверяем ID
+	assert.Equal(s.T(), draftIDs[4], draftsPage3[0].ID, "Элемент третьей страницы не совпадает")
+	s.T().Log("Третья (последняя) страница получена.")
+
+	// --- Шаг 4: Проверяем запрос с невалидным курсором --- //
+	s.T().Log("--- Шаг 4: Проверка невалидного курсора ---")
+	invalidCursor := "not_a_valid_base64_cursor"
+	reqInvalid, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/stories?limit=%d&cursor=%s", s.serviceURL, limit, invalidCursor), nil)
+	require.NoError(s.T(), err)
+	reqInvalid.Header.Set("Authorization", "Bearer "+token)
+
+	respInvalid, err := client.Do(reqInvalid)
+	require.NoError(s.T(), err)
+	defer respInvalid.Body.Close()
+	assert.Equal(s.T(), http.StatusBadRequest, respInvalid.StatusCode, "Запрос с невалидным курсором должен вернуть 400")
+	s.T().Log("Проверка невалидного курсора завершена.")
+
+	// --- Очистка: Удаляем созданные черновики --- //
+	s.T().Log("--- Очистка тестовых черновиков --- ")
+	deleteQuery := `DELETE FROM story_configs WHERE id = $1 AND user_id = $2`
+	for _, id := range draftIDs {
+		_, err := s.dbPool.Exec(ctx, deleteQuery, id, userID)
+		assert.NoError(s.T(), err, "Ошибка при удалении тестового черновика %s", id)
+	}
+	s.T().Log("Очистка завершена.")
+}
+
+// TestListMyPublishedStories_Integration проверяет получение списка опубликованных историй пользователя.
+func (s *IntegrationTestSuite) TestListMyPublishedStories_Integration() {
+	userID := uint64(102) // Другой пользователь
+	token := createTestJWT(userID)
+	client := &http.Client{}
+	ctx := context.Background()
+
+	// --- Шаг 0: Создаем несколько опубликованных историй --- //
+	s.T().Log("--- Создание тестовых опубликованных историй --- ")
+	publishedIDs := make([]uuid.UUID, 0, 4)
+	numStories := 4
+	storyData := []struct {
+		configJSON string
+		title      string
+		desc       string // Добавим поле для описания
+		isPublic   bool
+	}{
+		{`{"t":"Pub 1","sd":"Desc 1","ac":false}`, "Pub 1", "Desc 1", false},
+		{`{"t":"Pub 2","sd":"Desc 2","ac":true}`, "Pub 2", "Desc 2", true},
+		{`{"t":"Pub 3","sd":"Desc 3","ac":false}`, "Pub 3", "Desc 3", false},
+		{`{"t":"Pub 4","sd":"Desc 4","ac":false}`, "Pub 4", "Desc 4", true},
+	}
+
+	for i := 0; i < numStories; i++ {
+		// Извлекаем описание в переменную
+		desc := storyData[i].desc
+		// Создаем напрямую в БД для теста
+		story := &sharedModels.PublishedStory{
+			UserID:         userID,
+			Config:         json.RawMessage(storyData[i].configJSON),
+			Status:         sharedModels.StatusSetupPending, // <<< Исправлено
+			IsPublic:       storyData[i].isPublic,
+			IsAdultContent: storyData[i].configJSON[len(storyData[i].configJSON)-7:len(storyData[i].configJSON)-6] == "t", // Extract 'ac'
+			Title:          &storyData[i].title,
+			Description:    &desc, // Используем адрес переменной
+			CreatedAt:      time.Now().UTC(),
+			UpdatedAt:      time.Now().UTC(),
+		}
+		// Используем реальный репозиторий
+		nopLogger := zap.NewNop()
+		publishedRepo := sharedDatabase.NewPgPublishedStoryRepository(s.dbPool, nopLogger)
+		err := publishedRepo.Create(ctx, story)
+		require.NoError(s.T(), err)
+		publishedIDs = append(publishedIDs, story.ID)
+		time.Sleep(5 * time.Millisecond) // Для сортировки по updated_at (в реализации offset/limit)
+	}
+	reverseUUIDs(publishedIDs) // Ожидаемый порядок - от новых к старым
+	s.T().Logf("Создано %d тестовых опубликованных историй. Ожидаемый порядок ID: %v", numStories, publishedIDs)
+
+	// --- Шаг 1: Получаем первую страницу (limit=2, offset=0) --- //
+	s.T().Log("--- Шаг 1: Получение первой страницы (limit=2, offset=0) ---")
+	limit := 2
+	offset := 0
+	reqPage1, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/published-stories/me?limit=%d&offset=%d", s.serviceURL, limit, offset), nil)
+	require.NoError(s.T(), err)
+	reqPage1.Header.Set("Authorization", "Bearer "+token)
+
+	respPage1, err := client.Do(reqPage1)
+	require.NoError(s.T(), err)
+	defer respPage1.Body.Close()
+	require.Equal(s.T(), http.StatusOK, respPage1.StatusCode)
+
+	var page1Resp handler.PaginatedResponse
+	err = json.NewDecoder(respPage1.Body).Decode(&page1Resp)
+	require.NoError(s.T(), err)
+
+	require.NotNil(s.T(), page1Resp.Data)
+	dataBytes, _ := json.Marshal(page1Resp.Data)
+	var storiesPage1 []*sharedModels.PublishedStory // Ожидаем []*...
+	err = json.Unmarshal(dataBytes, &storiesPage1)
+	require.NoError(s.T(), err)
+
+	assert.Len(s.T(), storiesPage1, limit, "Должно быть получено %d истории", limit)
+	assert.Empty(s.T(), page1Resp.NextCursor, "NextCursor должен быть пустым для offset пагинации")
+	assert.Equal(s.T(), publishedIDs[0], storiesPage1[0].ID)
+	assert.Equal(s.T(), publishedIDs[1], storiesPage1[1].ID)
+	s.T().Log("Первая страница 'моих' опубликованных историй получена.")
+
+	// --- Шаг 2: Получаем вторую страницу (limit=2, offset=2) --- //
+	s.T().Log("--- Шаг 2: Получение второй страницы (limit=2, offset=2) ---")
+	offset = 2
+	reqPage2, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/published-stories/me?limit=%d&offset=%d", s.serviceURL, limit, offset), nil)
+	require.NoError(s.T(), err)
+	reqPage2.Header.Set("Authorization", "Bearer "+token)
+
+	respPage2, err := client.Do(reqPage2)
+	require.NoError(s.T(), err)
+	defer respPage2.Body.Close()
+	require.Equal(s.T(), http.StatusOK, respPage2.StatusCode)
+
+	var page2Resp handler.PaginatedResponse
+	err = json.NewDecoder(respPage2.Body).Decode(&page2Resp)
+	require.NoError(s.T(), err)
+
+	require.NotNil(s.T(), page2Resp.Data)
+	dataBytes2, _ := json.Marshal(page2Resp.Data)
+	var storiesPage2 []*sharedModels.PublishedStory
+	err = json.Unmarshal(dataBytes2, &storiesPage2)
+	require.NoError(s.T(), err)
+
+	assert.Len(s.T(), storiesPage2, limit, "Должно быть получено %d истории на второй странице", limit)
+	assert.Empty(s.T(), page2Resp.NextCursor)
+	assert.Equal(s.T(), publishedIDs[2], storiesPage2[0].ID)
+	assert.Equal(s.T(), publishedIDs[3], storiesPage2[1].ID)
+	s.T().Log("Вторая страница 'моих' опубликованных историй получена.")
+
+	// --- Шаг 3: Получаем пустую страницу (limit=2, offset=4) --- //
+	s.T().Log("--- Шаг 3: Получение пустой страницы (limit=2, offset=4) ---")
+	offset = 4
+	reqPage3, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/published-stories/me?limit=%d&offset=%d", s.serviceURL, limit, offset), nil)
+	require.NoError(s.T(), err)
+	reqPage3.Header.Set("Authorization", "Bearer "+token)
+
+	respPage3, err := client.Do(reqPage3)
+	require.NoError(s.T(), err)
+	defer respPage3.Body.Close()
+	require.Equal(s.T(), http.StatusOK, respPage3.StatusCode)
+
+	var page3Resp handler.PaginatedResponse
+	err = json.NewDecoder(respPage3.Body).Decode(&page3Resp)
+	require.NoError(s.T(), err)
+
+	require.NotNil(s.T(), page3Resp.Data)
+	dataBytes3, _ := json.Marshal(page3Resp.Data)
+	var storiesPage3 []*sharedModels.PublishedStory
+	err = json.Unmarshal(dataBytes3, &storiesPage3)
+	require.NoError(s.T(), err)
+
+	assert.Empty(s.T(), storiesPage3, "Третья страница должна быть пустой")
+	assert.Empty(s.T(), page3Resp.NextCursor)
+	s.T().Log("Пустая страница 'моих' опубликованных историй получена.")
+
+	// --- Очистка: Удаляем созданные истории --- //
+	s.T().Log("--- Очистка тестовых опубликованных историй --- ")
+	deleteQuery := `DELETE FROM published_stories WHERE id = $1 AND user_id = $2`
+	for _, id := range publishedIDs {
+		_, err := s.dbPool.Exec(ctx, deleteQuery, id, userID)
+		assert.NoError(s.T(), err, "Ошибка при удалении тестовой опубликованной истории %s", id)
+	}
+	s.T().Log("Очистка завершена.")
+}
+
+// Вспомогательная функция для разворота слайса UUID
+func reverseUUIDs(s []uuid.UUID) {
+	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
+		s[i], s[j] = s[j], s[i]
+	}
 }
