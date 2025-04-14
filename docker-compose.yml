@@ -50,7 +50,26 @@ services:
     volumes:
       # Монтируем Docker сокет, чтобы Traefik мог слушать события Docker
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    networks:
+      - novel_network
     # Можно добавить depends_on, если нужно дождаться старта других сервисов, но обычно Traefik сам справляется
+    labels:
+      # <<< УДАЛЯЕМ метки, связанные с custom-errors и catch-all-web >>>
+      # - "traefik.http.middlewares.custom-errors.errors.status=404"
+      # - "traefik.http.middlewares.custom-errors.errors.service=error-pages@docker"
+      # - "traefik.http.middlewares.custom-errors.errors.query=/{status}.html"
+      # - "traefik.http.routers.catch-all-web.rule=PathPrefix(`/`)" 
+      # - "traefik.http.routers.catch-all-web.entrypoints=web"
+      # - "traefik.http.routers.catch-all-web.priority=1"
+      # - "traefik.http.routers.catch-all-web.middlewares=custom-errors@docker"
+      
+      # --- Определяем другие middleware (stripprefix) --- 
+      - "traefik.http.middlewares.auth-stripprefix.stripprefix.prefixes=/api"
+      - "traefik.http.middlewares.gameplay-stripprefix.stripprefix.prefixes=/api/stories"
+      - "traefik.http.middlewares.admin-stripprefix.stripprefix.prefixes=/admin"
+      
+      # Важно: нужна метка enable=true, чтобы Traefik вообще работал с Docker
+      - "traefik.enable=true" 
 
   # База данных PostgreSQL
   postgres:
@@ -103,7 +122,7 @@ services:
     ]
 
   # Сервис авторизации
-  auth:
+  auth-service:
     build:
       context: .
       dockerfile: auth/Dockerfile
@@ -117,24 +136,24 @@ services:
          condition: service_completed_successfully
     environment:
       <<: *env-vars
-      DB_HOST: postgres # Внутреннее имя хоста БД
-      REDIS_ADDR: redis:6379 # Внутренний адрес Redis
-      SERVER_PORT: ${AUTH_SERVER_PORT:-8081} # Внутренний порт сервиса
+      DB_HOST: postgres
+      REDIS_ADDR: redis:6379
+      SERVER_PORT: ${AUTH_SERVER_PORT:-8081}
       SERVICE_ID: auth-service
-    # ports: # Убираем публикацию порта наружу
-    #   - "${AUTH_SERVER_PORT:-8081}:${AUTH_SERVER_PORT:-8081}"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s # Даем больше времени на первый старт
+    ports: # <<< Раскомментируем обратно публикацию порта 8081
+      - "${AUTH_SERVER_PORT:-8081}:8081"
     labels:
-      # Включаем Traefik для этого сервиса
       - "traefik.enable=true"
-      # Определяем роутер для HTTP запросов к auth
-      - "traefik.http.routers.auth-http.rule=PathPrefix(`/api/auth`)" # Все пути, начинающиеся с /api/auth
-      - "traefik.http.routers.auth-http.entrypoints=web" # Используем точку входа 'web' (порт 8080)
-      # Указываем, на какой внутренний порт Traefik должен перенаправлять трафик
+      - "traefik.http.routers.auth-http.rule=PathPrefix(`/api/auth`)" 
+      - "traefik.http.routers.auth-http.entrypoints=web" 
       - "traefik.http.services.auth-service.loadbalancer.server.port=${AUTH_SERVER_PORT:-8081}"
-      # Middleware для удаления префикса /api/auth перед отправкой запроса в сервис auth
-      # Сервис auth ожидает запросы на /register, /login и т.д., а не /api/auth/register
       - "traefik.http.routers.auth-http.middlewares=auth-stripprefix"
-      - "traefik.http.middlewares.auth-stripprefix.stripprefix.prefixes=/api/auth"
 
   # Сервис Геймплея (обработка запросов /api/stories)
   gameplay-service:
@@ -159,16 +178,61 @@ services:
     # ports: # Убираем публикацию порта наружу
     #   - "${GAMEPLAY_SERVER_PORT:-8082}:${GAMEPLAY_SERVER_PORT:-8082}"
     labels:
-      # Включаем Traefik для этого сервиса
       - "traefik.enable=true"
-      # Определяем роутер для HTTP запросов к gameplay
-      - "traefik.http.routers.gameplay-http.rule=PathPrefix(`/api/stories`)" # Все пути, начинающиеся с /api/stories
-      - "traefik.http.routers.gameplay-http.entrypoints=web" # Используем точку входа 'web' (порт 8080)
-      # Указываем, на какой внутренний порт Traefik должен перенаправлять трафик
+      - "traefik.http.routers.gameplay-http.rule=PathPrefix(`/api/stories`)" 
+      - "traefik.http.routers.gameplay-http.entrypoints=web" 
       - "traefik.http.services.gameplay-service.loadbalancer.server.port=${GAMEPLAY_SERVER_PORT:-8082}"
-      # Middleware для удаления префикса /api/stories перед отправкой запроса в сервис gameplay
+      # <<< УБИРАЕМ custom-errors отсюда >>>
       - "traefik.http.routers.gameplay-http.middlewares=gameplay-stripprefix"
-      - "traefik.http.middlewares.gameplay-stripprefix.stripprefix.prefixes=/api/stories"
+
+  # Сервис Админки
+  admin-service:
+    build:
+      context: .
+      dockerfile: admin-service/Dockerfile
+    container_name: novel_admin_service
+    ports:
+      - "8084:8084" # Порт admin-service
+    environment:
+      - APP_ENV=development
+      - PORT=8084
+      - LOG_LEVEL=debug
+      - AUTH_SERVICE_URL=http://host.docker.internal:8081 # <<< Возвращаем URL с host.docker.internal
+      - CLIENT_TIMEOUT=10s
+      - INTER_SERVICE_SECRET=${INTER_SERVICE_SECRET} # <<< Меняем на переменную окружения
+      - SERVICE_ID=admin-service # Идентификатор сервиса
+      - JWT_SECRET=${JWT_SECRET}
+    depends_on:
+      auth-service:
+        condition: service_healthy # Запускаем только после healthcheck auth-service
+    networks:
+      - novel_network
+    healthcheck: # <<< Возвращаем Healthcheck для admin-service
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8084/metrics"] # Проверяем доступность metrics
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s # Даем время на запуск
+    volumes:
+      - ./admin-service:/app/admin-service # Volume mounting for hot-reloading
+      - ./shared:/app/shared # Mount shared directory
+    labels:
+      - "traefik.enable=true"
+
+      # --- Роутер для страницы входа --- 
+      - "traefik.http.routers.admin-login-http.rule=Path(`/login`)" # Точный путь /login
+      - "traefik.http.routers.admin-login-http.entrypoints=web"
+      - "traefik.http.services.admin-service.loadbalancer.server.port=${ADMIN_SERVER_PORT:-8084}"
+      # <<< УБИРАЕМ custom-errors отсюда >>>
+      # - "traefik.http.routers.admin-login-http.middlewares=custom-errors@docker"
+
+      # --- Роутер для защищенных путей админки --- 
+      - "traefik.http.routers.admin-protected-http.rule=PathPrefix(`/admin`)" # Пути, начинающиеся с /admin
+      - "traefik.http.routers.admin-protected-http.entrypoints=web"
+      # Сервис тот же, что и для логина
+      # - "traefik.http.services.admin-service.loadbalancer.server.port=${ADMIN_SERVER_PORT:-8084}" # Можно не повторять
+      # <<< УБИРАЕМ custom-errors отсюда >>>
+      - "traefik.http.routers.admin-protected-http.middlewares=admin-stripprefix"
 
   # Сервис RabbitMQ
   rabbitmq:
@@ -243,14 +307,55 @@ services:
       - "traefik.http.services.websocket-service.loadbalancer.server.port=${WEBSOCKET_SERVER_PORT:-8083}"
       # Для WebSocket не нужен stripprefix, т.к. сервис ожидает запрос на /ws
 
+# Новые сервисы для мониторинга
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: novel_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml # Конфигурация Prometheus
+      - prometheus_data:/prometheus # Хранилище данных Prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - novel_network
+    depends_on:
+      - admin-service # Зависит от сервисов, которые мониторит
+      - auth-service
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: novel_grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana # Хранилище данных Grafana
+      # Опционально: можно заранее создать provisioning для datasources и dashboards
+      # - ./grafana/provisioning:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin # Учетные данные по умолчанию
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=false # Оставляем форму входа
+      # GF_INSTALL_PLUGINS: можно указать плагины для установки
+    networks:
+      - novel_network
+    depends_on:
+      - prometheus # <<< Формат списка для grafana
+
 volumes:
   postgres_data:
   redis_data:
   rabbitmq_data:
+  prometheus_data: {} # Volume для данных Prometheus
+  grafana_data: {} # Volume для данных Grafana
   # Добавляем том для данных Traefik (если нужно хранить SSL сертификаты и т.д.)
   # traefik_data:
 
-# Можно определить внешние сети, если необходимо
-# networks:
-#   default:
-#     driver: bridge
+# Определяем сеть, чтобы сервисы могли общаться друг с другом по именам
+networks:
+  novel_network:
+    driver: bridge

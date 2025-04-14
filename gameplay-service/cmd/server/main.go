@@ -11,6 +11,8 @@ import (
 	"novel-server/gameplay-service/internal/repository"
 	"novel-server/gameplay-service/internal/service"
 	sharedDatabase "novel-server/shared/database" // Импорт для PublishedStoryRepository
+	sharedLogger "novel-server/shared/logger"   // <<< Импортируем общий логгер
+	sharedMiddleware "novel-server/shared/middleware" // <<< Импортируем shared/middleware
 	"os"
 	"os/signal"
 	"syscall"
@@ -28,19 +30,28 @@ func main() {
 	_ = godotenv.Load()
 	log.Println("Запуск Gameplay Service...")
 
-	// --- Инициализация логгера --- (Добавляем логгер)
-	logger, err := zap.NewProduction() // Используем production логгер
-	if err != nil {
-		log.Fatalf("Не удалось инициализировать zap логгер: %v", err)
-	}
-	defer logger.Sync() // Flush буфера логгера при выходе
-	// --------------------------
-
-	// Убираем логгер из вызова LoadConfig
+	// <<< Загружаем конфиг ДО инициализации логгера
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		logger.Fatal("Ошибка загрузки конфигурации", zap.Error(err))
+		log.Fatalf("Ошибка загрузки конфигурации: %v", err) // Используем стандартный логгер, т.к. zap еще нет
 	}
+
+	// --- Инициализация логгера (Используем shared/logger) ---
+	logger, err := sharedLogger.New(sharedLogger.Config{
+		Level: cfg.LogLevel, // <<< Берем уровень из конфига
+	})
+	if err != nil {
+		log.Fatalf("Не удалось инициализировать логгер: %v", err)
+	}
+	defer logger.Sync() // Flush буфера логгера при выходе
+	logger.Info("Logger initialized", zap.String("logLevel", cfg.LogLevel))
+	// --------------------------
+
+	// Убираем повторную загрузку конфига
+	// cfg, err := config.LoadConfig()
+	// if err != nil {
+	// 	logger.Fatal("Ошибка загрузки конфигурации", zap.Error(err))
+	// }
 
 	// Подключение к PostgreSQL
 	dbPool, err := setupDatabase(cfg, logger) // Передаем логгер
@@ -73,31 +84,24 @@ func main() {
 	defer pubClientUpdateChannel.Close()
 
 	// Инициализация зависимостей
-	// Используем новый конструктор и передаем логгер
+	// Передаем logger, он будет использован внутри через .Named()
 	storyConfigRepo := repository.NewPgStoryConfigRepository(dbPool, logger)
-	// Создаем PublishedStoryRepository
 	publishedRepo := sharedDatabase.NewPgPublishedStoryRepository(dbPool, logger)
-	// !!! ДОБАВЛЯЕМ СОЗДАНИЕ НОВЫХ РЕПОЗИТОРИЕВ !!!
 	sceneRepo := sharedDatabase.NewPgStorySceneRepository(dbPool, logger)
 	playerProgressRepo := sharedDatabase.NewPgPlayerProgressRepository(dbPool, logger)
 
-	// Используем конструктор для Publisher'а, а не голую реализацию
 	taskPublisher, err := messaging.NewRabbitMQTaskPublisher(rabbitConn, cfg.GenerationTaskQueue)
 	if err != nil {
 		logger.Fatal("Не удалось создать TaskPublisher", zap.Error(err))
 	}
-	// ClientUpdatePublisher теперь создается так же, оставляем
 	clientUpdatePublisher, err := messaging.NewRabbitMQClientUpdatePublisher(rabbitConn, cfg.ClientUpdatesQueueName)
 	if err != nil {
 		logger.Fatal("Не удалось создать ClientUpdatePublisher", zap.Error(err))
 	}
-	// Передаем все 7 аргументов в сервис
 	gameplayService := service.NewGameplayService(storyConfigRepo, publishedRepo, sceneRepo, playerProgressRepo, taskPublisher, dbPool, logger)
-	// Возвращаем логгер в вызов NewGameplayHandler
-	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger)
+	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret)
 
 	// Инициализация консьюмера уведомлений
-	// Убираем логгер из вызова NewNotificationConsumer
 	notificationConsumer, err := messaging.NewNotificationConsumer(
 		rabbitConn,
 		storyConfigRepo,
@@ -121,21 +125,8 @@ func main() {
 
 	// Настройка Echo
 	e := echo.New()
-	e.Use(echoMiddleware.RequestLoggerWithConfig(echoMiddleware.RequestLoggerConfig{ // Используем RequestLogger
-		LogURI:    true,
-		LogStatus: true,
-		LogMethod: true,
-		LogError:  true,
-		LogValuesFunc: func(c echo.Context, v echoMiddleware.RequestLoggerValues) error {
-			logger.Info("request",
-				zap.String("method", v.Method),
-				zap.String("URI", v.URI),
-				zap.Int("status", v.Status),
-				zap.Error(v.Error),
-			)
-			return nil
-		},
-	}))
+	// <<< Используем общий логгер запросов из shared/middleware
+	e.Use(sharedMiddleware.EchoZapLogger(logger))
 	e.Use(echoMiddleware.Recover())
 	e.Use(echoMiddleware.CORSWithConfig(echoMiddleware.CORSConfig{ // TODO: Настроить CORS
 		AllowOrigins: []string{"*"},
@@ -144,7 +135,7 @@ func main() {
 	}))
 
 	// Регистрация маршрутов
-	gameplayHandler.RegisterRoutes(e, cfg.JWTSecret)
+	gameplayHandler.RegisterRoutes(e)
 
 	log.Printf("Gameplay сервер слушает на порту %s", cfg.Port)
 

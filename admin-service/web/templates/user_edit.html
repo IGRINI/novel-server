@@ -1,0 +1,80 @@
+{{ template "layout.html" . }}
+
+{{ define "title" }}Редактирование пользователя {{ .User.Username }} - Админ-панель{{ end }}
+
+{{ define "content" }}
+    <nav aria-label="breadcrumb">
+        <ul>
+            <li><a href="/admin/dashboard">Дашборд</a></li>
+            <li><a href="/admin/users">Пользователи</a></li>
+            <li>Редактирование: {{ .User.Username }}</li>
+        </ul>
+    </nav>
+
+    <h1>Редактирование пользователя #{{ .User.ID }} - {{ .User.Username }}</h1>
+
+    {{ if .Error }}
+        <article aria-invalid="true">
+            {{ .Error }}
+        </article>
+    {{ end }}
+    {{ if .Success }}
+        <article style="background-color: var(--pico-color-green-150); border-color: var(--pico-color-green-400);">
+            {{ .Success }}
+        </article>
+    {{ end }}
+
+    <form method="post" action="/admin/users/{{ .User.ID }}"> 
+        <div class="grid">
+            <label for="username">
+                Имя пользователя (Username)
+                <input type="text" id="username" name="username" value="{{ .User.Username }}" readonly disabled>
+            </label>
+            <label for="email">
+                Email
+                <input type="email" id="email" name="email" value="{{ .User.Email }}" required>
+            </label>
+        </div>
+        
+        <label for="roles">Роли</label>
+        <select id="roles" name="roles" multiple required>
+            {{ range $role := .AllRoles }} 
+                <option value="{{ $role }}" {{ if hasRole $.CurrentUserRoles $role }}selected{{ end }}>
+                    {{ $role }}
+                </option>
+            {{ end }}
+        </select>
+
+        <fieldset>
+            <legend>Статус</legend>
+            <label for="is_banned">
+                <input type="checkbox" id="is_banned" name="is_banned" value="true" {{ if .User.IsBanned }}checked{{ end }}>
+                Забанен
+            </label>
+        </fieldset>
+
+        <button type="submit">Сохранить изменения</button>
+        <a href="/admin/users" role="button" class="secondary">Отмена</a>
+    </form>
+
+    <hr>
+
+    <h2>Сброс пароля</h2>
+    <p>Нажмите кнопку ниже, чтобы сгенерировать новый случайный пароль для пользователя. 
+    <strong>Внимание:</strong> Текущий пароль будет утерян, а все активные сессии пользователя будут завершены.
+    </p>
+    
+    {{/* Кнопка для сброса пароля через HTMX */}}
+    <button 
+        hx-post="/admin/users/{{ .User.ID }}/reset-password" 
+        hx-target="#password-reset-status" 
+        hx-swap="innerHTML" 
+        hx-confirm="Вы уверены, что хотите сбросить пароль для пользователя {{ .User.Username }}? Это действие необратимо."
+        class="secondary">
+        Сбросить пароль
+    </button>
+
+    {{/* Див для отображения результата сброса пароля */}}
+    <div id="password-reset-status" style="margin-top: 1em;"></div>
+
+{{ end }} 

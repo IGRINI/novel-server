@@ -1,0 +1,23 @@
+{{ template "layout.html" . }}
+
+{{ define "title" }}Вход{{ end }}
+
+{{ define "content" }}
+    <form id="login-form" hx-post="/login" hx-target="#login-form" hx-swap="outerHTML">
+        <h1>Вход</h1>
+        <label for="username">Имя пользователя (или Email):</label>
+        <input type="text" id="username" name="username" required value="{{ .Username }}">
+
+        <label for="password">Пароль:</label>
+        <input type="password" id="password" name="password" required>
+
+        <button type="submit">Войти</button>
+
+        <!-- Сюда HTMX будет вставлять сообщение об ошибке или всю форму целиком -->
+        <div id="error-message">
+            {{ if .Error }}
+                <p class="error">{{ .Error }}</p>
+            {{ end }}
+        </div>
+    </form>
+{{ end }} 

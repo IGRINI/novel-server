@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport"
+          content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <!-- Простой стиль, можно заменить на CSS фреймворк типа Bootstrap/Tailwind/Pico.css -->
+    <link rel="stylesheet" href="https://unpkg.com/@picocss/pico@latest/css/pico.min.css">
+    <title>{{ block "title" . }}Админ-панель{{ end }}</title>
+    <!-- Подключаем HTMX -->
+    <script src="https://unpkg.com/htmx.org@1.9.10" integrity="sha384-D1Kt99CQMDuVetoL1lrYwg5t+9QdHe7NLX/SoJYkXDFfX37iInKRy5xLSi8nO7UC" crossorigin="anonymous"></script>
+    <!-- Можно подключить Alpine.js, если нужно -->
+    <!-- <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script> -->
+    <style>
+        body { padding-top: 70px; } /* Добавляем отступ сверху для фиксированного хедера */
+        .error { color: red; margin-top: 10px; }
+        header {
+            position: fixed; /* Фиксируем хедер */
+            top: 0;
+            left: 0;
+            right: 0;
+            background: var(--card-background-color);
+            border-bottom: 1px solid var(--card-border-color);
+            padding: 0.5rem 1rem;
+            z-index: 100;
+            display: flex; /* Используем flexbox для выравнивания */
+            justify-content: space-between; /* Разносим элементы по краям */
+            align-items: center; /* Выравниваем по центру вертикально */
+        }
+        header nav ul {
+            margin-bottom: 0; /* Убираем нижний отступ у списка */
+        }
+        header nav li {
+            padding: 0 0.5rem; /* Отступы для пунктов меню */
+        }
+        header .logout-link a {
+            color: var(--secondary);
+        }
+    </style>
+</head>
+<body>
+    {{if not .IsLoginPage}}
+    <header>
+        <nav>
+            <ul>
+                <li><a href="/admin/dashboard">Дашборд</a></li>
+                <li><a href="/admin/users">Пользователи</a></li>
+                <!-- Добавить другие основные разделы -->
+            </ul>
+        </nav>
+        <div class="logout-link">
+            <a href="/admin/logout">Выход</a>
+        </div>
+    </header>
+    {{end}}
+
+    <main class="container">
+        {{ block "content" . }}
+        <!-- Содержимое страницы будет вставлено сюда -->
+        {{ end }}
+    </main>
+</body>
+</html> 

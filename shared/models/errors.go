@@ -2,29 +2,39 @@ package models
 
 import "errors"
 
-// Common Authentication Errors
+// Application-wide standard errors
 var (
-	ErrUserNotFound       = errors.New("user not found")           // User doesn't exist in the database
-	ErrUserAlreadyExists  = errors.New("user already exists")      // Username/ID conflict
-	ErrEmailAlreadyExists = errors.New("email already exists")     // Email conflict
-	ErrInvalidCredentials = errors.New("invalid credentials")      // Password mismatch or similar
-	ErrTokenInvalid       = errors.New("token is invalid")         // Token failed validation (wrong signature, etc.)
-	ErrTokenMalformed     = errors.New("token malformed")          // Token structure is wrong
-	ErrTokenExpired       = errors.New("token expired")            // Token is valid but past expiry
-	ErrTokenNotFound      = errors.New("token not found in store") // Token doesn't exist in persistent store (e.g., Redis)
-	// Common database/model level errors
-	ErrNotFound = errors.New("запись не найдена")
-	// Add other common errors if needed
-)
+	// Common Resource/DB Errors
+	ErrNotFound            = errors.New("resource not found") // General not found
+	ErrStoryConfigNotFound = errors.New("story config not found")
 
-// Specific errors related to story generation/publishing
-var (
-	ErrUserHasActiveGeneration = errors.New("у пользователя уже есть активная генерация")
-	ErrCannotRevise            = errors.New("нельзя редактировать историю в текущем статусе")
-)
+	// User & Authentication Errors
+	ErrUserNotFound       = errors.New("user not found")
+	ErrUserAlreadyExists  = errors.New("user with this username already exists")
+	ErrEmailAlreadyExists = errors.New("user with this email already exists")
+	ErrInvalidCredentials = errors.New("invalid username or password")
+	ErrUnauthorized       = errors.New("unauthorized") // Authentication required or failed
+	ErrForbidden          = errors.New("forbidden")    // Authenticated, but lacks permission
 
-// Specific errors related to gameplay loop/scenes
-var (
-	ErrStoryNotReadyYet     = errors.New("история или ее первая сцена еще не готовы")
-	ErrSceneNeedsGeneration = errors.New("следующая сцена для данного состояния еще не сгенерирована")
+	// Token Errors
+	ErrTokenInvalid   = errors.New("token is invalid")
+	ErrTokenMalformed = errors.New("token is malformed")
+	ErrTokenExpired   = errors.New("token has expired")
+	ErrTokenNotFound  = errors.New("token not found in storage")
+
+	// Story Generation & Publishing Errors
+	ErrUserHasActiveGeneration = errors.New("user already has an active generation task")
+	ErrCannotRevise            = errors.New("story config cannot be revised in its current state")
+	ErrGenerationInProgress    = errors.New("generation is already in progress for this story")
+
+	// Gameplay & Scene Errors
+	ErrStoryNotReadyYet     = errors.New("story content is not ready yet")
+	ErrSceneNeedsGeneration = errors.New("requested scene needs to be generated")
+
+	// General Request/Server Errors
+	ErrInternalServer = errors.New("internal server error")
+	ErrBadRequest     = errors.New("bad request")
+	ErrInvalidInput   = errors.New("invalid input data")
+
+	// Add other specific errors as needed
 )

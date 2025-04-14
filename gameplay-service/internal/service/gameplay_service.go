@@ -84,9 +84,9 @@ type GameplayService interface {
 
 	// TODO: Остальные методы тоже должны использовать userID uuid.UUID
 	ListPublicStories(ctx context.Context, limit, offset int) ([]*sharedModels.PublishedStory, error)
-	GetStoryScene(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error)
-	MakeChoice(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID, selectedOptionIndex int) error
-	DeletePlayerProgress(ctx context.Context, userID, publishedStoryID uuid.UUID) error
+	GetStoryScene(ctx context.Context, userID uint64, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error)
+	MakeChoice(ctx context.Context, userID uint64, publishedStoryID uuid.UUID, selectedOptionIndex int) error
+	DeletePlayerProgress(ctx context.Context, userID uint64, publishedStoryID uuid.UUID) error
 }
 
 type gameplayServiceImpl struct {
@@ -479,13 +479,13 @@ func (s *gameplayServiceImpl) ListPublicStories(ctx context.Context, limit, offs
 	return stories, nil
 }
 
-// --- Методы игрового цикла (используют userID uuid.UUID) ---
+// --- Методы игрового цикла (теперь используют userID uint64) ---
 
 // GetStoryScene получает текущую сцену для игрока.
-func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error) {
-	s.logger.Info("GetStoryScene called", zap.String("userID", userID.String()), zap.String("publishedStoryID", publishedStoryID.String()))
+func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uint64, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error) {
+	s.logger.Info("GetStoryScene called", zap.Uint64("userID", userID), zap.String("publishedStoryID", publishedStoryID.String()))
 
-	// 1. Получаем опубликованную историю, чтобы проверить статус и UserID
+	// 1. Получаем опубликованную историю
 	publishedStory, err := s.publishedRepo.GetByID(ctx, publishedStoryID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -494,13 +494,10 @@ func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUI
 		return nil, fmt.Errorf("ошибка получения опубликованной истории: %w", err)
 	}
 
-	// 2. Проверяем, принадлежит ли история пользователю
-	// TODO: Сменить publishedStory.UserID на UUID, когда будет рефакторинг
-	/*
-	   if publishedStory.UserID != userID {
-	       return nil, sharedModels.ErrForbidden
-	   }
-	*/
+	// 2. Проверка UserID - TODO: Раскомментировать, когда UserID в PublishedStory станет uint64
+	// if publishedStory.UserID != userID {
+	// 	 return nil, sharedModels.ErrForbidden
+	// }
 
 	// 3. Проверяем статус истории
 	if publishedStory.Status == sharedModels.StatusSetupPending || publishedStory.Status == sharedModels.StatusFirstScenePending {
@@ -510,7 +507,6 @@ func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUI
 		s.logger.Warn("Attempt to get scene for story in invalid state",
 			zap.String("publishedStoryID", publishedStoryID.String()),
 			zap.String("status", string(publishedStory.Status)))
-		// TODO: Какую ошибку возвращать? Пока возвращаем общую ошибку.
 		return nil, fmt.Errorf("история находится в неиграбельном статусе: %s", publishedStory.Status)
 	}
 
@@ -518,13 +514,12 @@ func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUI
 	playerProgress, err := s.playerProgressRepo.GetByUserIDAndStoryID(ctx, userID, publishedStoryID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Прогресс не найден, создаем начальный
-			s.logger.Info("Player progress not found, creating initial progress", zap.String("userID", userID.String()), zap.String("publishedStoryID", publishedStoryID.String()))
+			s.logger.Info("Player progress not found, creating initial progress", zap.Uint64("userID", userID), zap.String("publishedStoryID", publishedStoryID.String()))
 			playerProgress = &sharedModels.PlayerProgress{
 				UserID:           userID,
 				PublishedStoryID: publishedStoryID,
-				CurrentStateHash: sharedModels.InitialStateHash, // Используем константу
-				CoreStats:        make(map[string]int),          // Будут заполнены из Setup при первом MakeChoice?
+				CurrentStateHash: sharedModels.InitialStateHash,
+				CoreStats:        make(map[string]int),
 				StoryVariables:   make(map[string]interface{}),
 				GlobalFlags:      []string{},
 				CreatedAt:        time.Now().UTC(),
@@ -534,84 +529,76 @@ func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUI
 				return nil, fmt.Errorf("ошибка создания начального прогресса игрока: %w", errCreate)
 			}
 		} else {
-			// Другая ошибка при получении прогресса
 			return nil, fmt.Errorf("ошибка получения прогресса игрока: %w", err)
 		}
 	}
 
-	// 5. Получаем сцену по текущему хешу состояния из прогресса
+	// 5. Получаем сцену по хешу
 	scene, err := s.sceneRepo.FindByStoryAndHash(ctx, publishedStoryID, playerProgress.CurrentStateHash)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Сцена не найдена - это означает, что ее нужно сгенерировать
 			s.logger.Info("Scene not found for hash, requires generation",
 				zap.String("publishedStoryID", publishedStoryID.String()),
 				zap.String("stateHash", playerProgress.CurrentStateHash))
-			// TODO: Запустить генерацию сцены (в MakeChoice?)
 			return nil, sharedModels.ErrSceneNeedsGeneration
 		}
-		// Другая ошибка при получении сцены
 		return nil, fmt.Errorf("ошибка получения сцены: %w", err)
 	}
 
-	// 6. Возвращаем найденную сцену
 	s.logger.Info("Scene found and returned", zap.String("sceneID", scene.ID.String()))
 	return scene, nil
 }
 
-// MakeChoice обрабатывает выбор игрока и возвращает следующую сцену (или ошибку).
-func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID, selectedOptionIndex int) error {
+// MakeChoice обрабатывает выбор игрока.
+func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, publishedStoryID uuid.UUID, selectedOptionIndex int) error {
 	logFields := []zap.Field{
-		zap.String("userID", userID.String()),
+		zap.Uint64("userID", userID),
 		zap.String("publishedStoryID", publishedStoryID.String()),
 		zap.Int("selectedOptionIndex", selectedOptionIndex),
 	}
 	s.logger.Info("MakeChoice called", logFields...)
 
-	// 1. Получаем текущий прогресс игрока
+	// 1. Получаем прогресс
 	progress, err := s.playerProgressRepo.GetByUserIDAndStoryID(ctx, userID, publishedStoryID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			s.logger.Warn("Player progress not found for MakeChoice", logFields...)
-			// Используем новую ошибку
 			return ErrPlayerProgressNotFound
 		}
 		s.logger.Error("Failed to get player progress", append(logFields, zap.Error(err))...)
-		return ErrInternal // Используем новую ошибку
+		return ErrInternal
 	}
 
-	// 2. Получаем опубликованную историю для проверки статуса и получения Setup/Config
+	// 2. Получаем историю
 	publishedStory, err := s.publishedRepo.GetByID(ctx, publishedStoryID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			s.logger.Warn("Published story not found for MakeChoice", logFields...)
-			return ErrStoryNotFound // Используем новую ошибку
+			return ErrStoryNotFound
 		}
 		s.logger.Error("Failed to get published story", append(logFields, zap.Error(err))...)
 		return ErrInternal
 	}
 
 	// Проверяем статус опубликованной истории
-	if publishedStory.Status != sharedModels.StatusReady && publishedStory.Status != sharedModels.StatusGeneratingScene { // Разрешаем выбор во время генерации?
+	if publishedStory.Status != sharedModels.StatusReady && publishedStory.Status != sharedModels.StatusGeneratingScene {
 		s.logger.Warn("Attempt to make choice in non-ready/generating story state", append(logFields, zap.String("status", string(publishedStory.Status)))...)
-		return ErrStoryNotReady // Используем новую ошибку
+		return ErrStoryNotReady
 	}
 
-	// 3. Получаем текущую сцену по хешу из прогресса
+	// Получаем текущую сцену по хешу из прогресса
 	currentScene, err := s.sceneRepo.FindByStoryAndHash(ctx, publishedStoryID, progress.CurrentStateHash)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			s.logger.Error("CRITICAL: Current scene not found for hash in player progress", append(logFields, zap.String("stateHash", progress.CurrentStateHash))...)
-			// Это нештатная ситуация, прогресс указывает на несуществующую сцену
-			// TODO: Как обрабатывать? Откатить прогресс? Вернуть ошибку?
-			return ErrSceneNotFound // Используем новую ошибку
+			return ErrSceneNotFound
 		}
 		s.logger.Error("Failed to get current scene by hash", append(logFields, zap.String("stateHash", progress.CurrentStateHash), zap.Error(err))...)
 		return ErrInternal
 	}
 
-	// 4. Парсим контент текущей сцены
-	var sceneData sceneContentChoices // Используем существующую структуру парсинга
+	// Парсим контент текущей сцены
+	var sceneData sceneContentChoices
 	if err := json.Unmarshal(currentScene.Content, &sceneData); err != nil {
 		s.logger.Error("Failed to unmarshal current scene content", append(logFields, zap.String("sceneID", currentScene.ID.String()), zap.Error(err))...)
 		return ErrInternal
@@ -619,60 +606,48 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 
 	if sceneData.Type != "choices" {
 		s.logger.Warn("Scene content is not of type 'choices'", append(logFields, zap.String("sceneID", currentScene.ID.String()), zap.String("type", sceneData.Type))...)
-		// TODO: Что делать, если тип не 'choices'? Завершение игры?
-		return ErrInternal // Неожиданный тип контента
+		return ErrInternal
 	}
 
-	// 5. Валидируем selectedOptionIndex
-	// <<< Упрощенная логика: предполагаем выбор в ПЕРВОМ блоке
+	// Валидируем selectedOptionIndex
 	if len(sceneData.Choices) == 0 {
 		s.logger.Error("Current scene has no choice blocks", append(logFields, zap.String("sceneID", currentScene.ID.String()))...)
-		return ErrNoChoicesAvailable // Используем новую ошибку
+		return ErrNoChoicesAvailable
 	}
-	choiceBlock := sceneData.Choices[0] // Берем первый блок
+	choiceBlock := sceneData.Choices[0]
 	if selectedOptionIndex < 0 || selectedOptionIndex >= len(choiceBlock.Options) {
 		s.logger.Warn("Invalid selected option index for choice block 0",
 			append(logFields, zap.Int("optionsAvailable", len(choiceBlock.Options)))...)
-		return ErrInvalidChoice // Используем новую ошибку
+		return ErrInvalidChoice
 	}
 
-	// 6. Загружаем NovelSetup (нужен для проверки Game Over условий)
+	// Загружаем NovelSetup
 	if publishedStory.Setup == nil {
-		// Этого не должно происходить, если сцена существует и статус Ready
 		s.logger.Error("CRITICAL: PublishedStory Setup is nil, but scene exists and status is Ready/Generating", append(logFields, zap.String("status", string(publishedStory.Status)))...)
-		return ErrInternal // Ошибка данных
+		return ErrInternal
 	}
 	var setupContent sharedModels.NovelSetupContent
 	if err := json.Unmarshal(publishedStory.Setup, &setupContent); err != nil {
 		s.logger.Error("Failed to unmarshal NovelSetup content", append(logFields, zap.Error(err))...)
-		return ErrInternal // Ошибка данных
+		return ErrInternal
 	}
 
-	// 7. Применяем последствия выбранной опции
+	// 7. Применяем последствия
 	selectedOption := choiceBlock.Options[selectedOptionIndex]
 	gameOverStat, isGameOver := applyConsequences(progress, selectedOption.Consequences, &setupContent)
 
-	// 8. Обработка Game Over (логика без изменений, кроме UserID в payload)
+	// 8. Обработка Game Over
 	if isGameOver {
 		s.logger.Info("Game Over condition met", append(logFields, zap.String("gameOverStat", gameOverStat))...)
-
-		// Меняем статус PublishedStory на GameOverPending
 		if err := s.publishedRepo.UpdateStatusDetails(ctx, publishedStoryID, sharedModels.StatusGameOverPending, nil, nil, nil); err != nil {
 			s.logger.Error("Failed to update published story status to GameOverPending", append(logFields, zap.Error(err))...)
-			// TODO: Как обрабатывать ошибку? Продолжать ли отправку задачи?
 		}
-
-		// Сохраняем финальное состояние прогресса
 		progress.UpdatedAt = time.Now().UTC()
 		if err := s.playerProgressRepo.CreateOrUpdate(ctx, progress); err != nil {
 			s.logger.Error("Failed to save final player progress before game over", append(logFields, zap.Error(err))...)
-			// TODO: Ошибка сохранения прогресса - что делать?
 		}
 
-		// Отправляем задачу на генерацию концовки
 		taskID := uuid.New().String()
-
-		// Определяем причину Game Over
 		var reasonCondition string
 		finalValue := progress.CoreStats[gameOverStat]
 		if def, ok := setupContent.CoreStatsDefinition[gameOverStat]; ok {
@@ -688,7 +663,6 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 			Condition: reasonCondition,
 			Value:     finalValue,
 		}
-
 		var novelConfig sharedModels.Config
 		if err := json.Unmarshal(publishedStory.Config, &novelConfig); err != nil {
 			s.logger.Error("Failed to unmarshal novel config for game over task", append(logFields, zap.Error(err))...)
@@ -696,7 +670,7 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 
 		gameOverPayload := sharedMessaging.GameOverTaskPayload{
 			TaskID:           taskID,
-			UserID:           userID.String(), // <<< Используем UUID как строку
+			UserID:           strconv.FormatUint(userID, 10),
 			PublishedStoryID: publishedStoryID.String(),
 			LastState:        *progress,
 			Reason:           reason,
@@ -705,16 +679,15 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		}
 		if err := s.publisher.PublishGameOverTask(ctx, gameOverPayload); err != nil {
 			s.logger.Error("Failed to publish game over generation task", append(logFields, zap.Error(err))...)
-			return ErrInternal // Возвращаем внутреннюю ошибку, если не удалось отправить задачу
+			return ErrInternal
 		}
 		s.logger.Info("Game over task published", append(logFields, zap.String("taskID", taskID))...)
-		return nil // Игра окончена
+		return nil
 	}
 
-	// 9. Расчет нового хеша состояния (если не Game Over)
-	// <<< Сохраняем текущий хэш как предыдущий >>>
+	// 9. Расчет нового хеша
 	previousHash := progress.CurrentStateHash
-	newStateHash, err := calculateStateHash(previousHash, progress.CoreStats, progress.StoryVariables, progress.GlobalFlags) // <<< Добавлен previousHash
+	newStateHash, err := calculateStateHash(previousHash, progress.CoreStats, progress.StoryVariables, progress.GlobalFlags)
 	if err != nil {
 		s.logger.Error("Failed to calculate new state hash", append(logFields, zap.Error(err))...)
 		return ErrInternal
@@ -722,32 +695,23 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	logFields = append(logFields, zap.String("newStateHash", newStateHash))
 	s.logger.Debug("New state hash calculated", logFields...)
 
-	// 10. Обновляем хеш в прогрессе и сохраняем
+	// 10. Обновляем хеш в прогрессе
 	progress.CurrentStateHash = newStateHash
 	progress.UpdatedAt = time.Now().UTC()
-	if err := s.playerProgressRepo.CreateOrUpdate(ctx, progress); err != nil {
-		s.logger.Error("Failed to update player progress with new hash", append(logFields, zap.Error(err))...)
-		return ErrInternal
-	}
 
-	// 11. Ищем следующую сцену по новому хешу
-	var nextScene *sharedModels.StoryScene // <<< Сохраним найденную сцену
-	nextScene, err = s.sceneRepo.FindByStoryAndHash(ctx, publishedStoryID, newStateHash)
+	// 11. Ищем следующую сцену
+	nextScene, err := s.sceneRepo.FindByStoryAndHash(ctx, publishedStoryID, newStateHash)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Сцена не найдена - запускаем генерацию
 			s.logger.Info("Next scene not found, publishing generation task", logFields...)
-
-			// Меняем статус PublishedStory на GeneratingScene
 			if errStatus := s.publishedRepo.UpdateStatusDetails(ctx, publishedStoryID, sharedModels.StatusGeneratingScene, nil, nil, nil); errStatus != nil {
 				s.logger.Error("Failed to update published story status to GeneratingScene", append(logFields, zap.Error(errStatus))...)
 			}
 
-			// <<< Используем новую функцию createGenerationPayload, передаем progress и previousHash >>>
 			generationPayload, errGenPayload := createGenerationPayload(
 				publishedStory,
-				progress,     // Передаем весь прогресс для извлечения сводок
-				previousHash, // <<< Добавлен previousHash
+				progress,
+				previousHash,
 				newStateHash,
 				choiceBlock.Description,
 				selectedOption.Text,
@@ -757,64 +721,53 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 				return ErrInternal
 			}
 
+			generationPayload.UserID = strconv.FormatUint(userID, 10)
+
 			if errPub := s.publisher.PublishGenerationTask(ctx, generationPayload); errPub != nil {
 				s.logger.Error("Failed to publish next scene generation task", append(logFields, zap.Error(errPub))...)
 				return ErrInternal
 			}
 			s.logger.Info("Next scene generation task published", append(logFields, zap.String("taskID", generationPayload.TaskID))...)
 
-			// <<< Очистка sv и gf >>>
 			s.logger.Debug("Clearing StoryVariables and GlobalFlags before saving progress", logFields...)
-			progress.StoryVariables = make(map[string]interface{}) // Очищаем!
-			progress.GlobalFlags = []string{}                      // Очищаем!
+			progress.StoryVariables = make(map[string]interface{})
+			progress.GlobalFlags = []string{}
 
-			// <<< Обновляем прогресс с новым хешем и очищенными sv/gf >>>
-			progress.CurrentStateHash = newStateHash // Обновляем хэш
-			progress.UpdatedAt = time.Now().UTC()
 			if err := s.playerProgressRepo.CreateOrUpdate(ctx, progress); err != nil {
 				s.logger.Error("Ошибка сохранения обновленного PlayerProgress после запуска генерации", append(logFields, zap.Error(err))...)
 				return ErrInternal
 			}
 			s.logger.Info("PlayerProgress (с очищенными sv/gf) успешно обновлен после запуска генерации", logFields...)
 
-			return nil // Сцена генерируется
+			return nil
 		} else {
-			// Другая ошибка при поиске сцены
 			s.logger.Error("Error searching for next scene", append(logFields, zap.Error(err))...)
 			return ErrInternal
 		}
 	}
 
-	// 12. Следующая сцена найдена (err == nil, nextScene != nil)
+	// 12. Следующая сцена найдена
 	s.logger.Info("Next scene found in DB", logFields...)
 
-	// <<< Парсим найденную сцену, чтобы извлечь sssf, fd, vis >>>
 	type SceneOutputFormat struct {
 		Sssf string `json:"sssf"`
 		Fd   string `json:"fd"`
 		Vis  string `json:"vis"`
-		// Остальные поля (ch, svd) нам здесь не нужны
 	}
 	var sceneOutput SceneOutputFormat
 	if errUnmarshal := json.Unmarshal(nextScene.Content, &sceneOutput); errUnmarshal != nil {
 		s.logger.Error("Failed to unmarshal next scene content to get summaries",
 			append(logFields, zap.String("nextSceneID", nextScene.ID.String()), zap.Error(errUnmarshal))...)
-		// Не критично для MakeChoice, но нужно залогировать. Не обновляем сводки.
 	} else {
-		// <<< Обновляем поля сводок в прогрессе перед очисткой sv/gf >>>
 		progress.LastStorySummary = sceneOutput.Sssf
 		progress.LastFutureDirection = sceneOutput.Fd
 		progress.LastVarImpactSummary = sceneOutput.Vis
 	}
 
-	// <<< Очистка sv и gf >>>
 	s.logger.Debug("Clearing StoryVariables and GlobalFlags before saving progress", logFields...)
-	progress.StoryVariables = make(map[string]interface{}) // Очищаем!
-	progress.GlobalFlags = []string{}                      // Очищаем!
+	progress.StoryVariables = make(map[string]interface{})
+	progress.GlobalFlags = []string{}
 
-	// <<< Обновляем прогресс с новым хешем, очищенными sv/gf и НОВЫМИ сводками >>>
-	progress.CurrentStateHash = newStateHash // Обновляем хэш
-	progress.UpdatedAt = time.Now().UTC()
 	if err := s.playerProgressRepo.CreateOrUpdate(ctx, progress); err != nil {
 		s.logger.Error("Ошибка сохранения обновленного PlayerProgress после нахождения след. сцены", append(logFields, zap.Error(err))...)
 		return ErrInternal
@@ -827,37 +780,29 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 // calculateStateHash вычисляет детерминированный хеш состояния, включая хэш предыдущего состояния.
 func calculateStateHash(previousHash string, coreStats map[string]int, storyVars map[string]interface{}, globalFlags []string) (string, error) {
 	// 1. Подготовка данных
-	stateMap := make(map[string]interface{}) // Используем interface{} для универсальности
+	stateMap := make(map[string]interface{})
 
-	// Добавляем хэш предыдущего состояния
-	stateMap["_ph"] = previousHash // Используем префикс для избежания коллизий
+	stateMap["_ph"] = previousHash
 
-	// Добавляем coreStats
 	for k, v := range coreStats {
-		stateMap["cs_"+k] = v // Префикс для избежания коллизий
+		stateMap["cs_"+k] = v
 	}
 
-	// Добавляем storyVars
 	for k, v := range storyVars {
-		stateMap["sv_"+k] = v // Префикс
+		stateMap["sv_"+k] = v
 	}
 
-	// Добавляем globalFlags (сортируем для детерминизма)
 	sortedFlags := make([]string, len(globalFlags))
 	copy(sortedFlags, globalFlags)
 	sort.Strings(sortedFlags)
-	stateMap["gf"] = sortedFlags // Добавляем отсортированный срез
+	stateMap["gf"] = sortedFlags
 
-	// 2. Сериализация в канонический JSON
-	// Сортировка ключей карты для канонического представления
 	keys := make([]string, 0, len(stateMap))
 	for k := range stateMap {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
-	// Собираем JSON вручную или используем библиотеку, гарантирующую канонический вывод
-	// Простой ручной способ (может быть неэффективным для сложных структур):
 	var sb strings.Builder
 	sb.WriteString("{")
 	for i, k := range keys {
@@ -873,12 +818,10 @@ func calculateStateHash(previousHash string, coreStats map[string]int, storyVars
 	sb.WriteString("}")
 	canonicalJSON := sb.String()
 
-	// 3. Вычисление SHA256
 	hasher := sha256.New()
-	hasher.Write([]byte(canonicalJSON)) // Ошибки записи в хешер маловероятны
+	hasher.Write([]byte(canonicalJSON))
 	hashBytes := hasher.Sum(nil)
 
-	// 4. Представление в виде hex-строки
 	return hex.EncodeToString(hashBytes), nil
 }
 
@@ -888,10 +831,9 @@ func calculateStateHash(previousHash string, coreStats map[string]int, storyVars
 func applyConsequences(progress *sharedModels.PlayerProgress, cons sharedModels.Consequences, setup *sharedModels.NovelSetupContent) (gameOverStat string, isGameOver bool) {
 	if progress == nil || setup == nil {
 		log.Println("ERROR: applyConsequences called with nil progress or setup")
-		return "", false // Не можем применить последствия
+		return "", false
 	}
 
-	// Инициализируем карты/слайсы, если они nil
 	if progress.CoreStats == nil {
 		progress.CoreStats = make(map[string]int)
 	}
@@ -902,18 +844,15 @@ func applyConsequences(progress *sharedModels.PlayerProgress, cons sharedModels.
 		progress.GlobalFlags = []string{}
 	}
 
-	// 1. Применяем изменения Core Stats
 	if cons.CoreStatsChange != nil {
 		for statName, change := range cons.CoreStatsChange {
 			progress.CoreStats[statName] += change
 		}
 	}
 
-	// 2. Применяем изменения Story Variables
 	if cons.StoryVariables != nil {
 		for varName, value := range cons.StoryVariables {
 			if value == nil {
-				// Если значение null, удаляем переменную
 				delete(progress.StoryVariables, varName)
 			} else {
 				progress.StoryVariables[varName] = value
@@ -921,7 +860,6 @@ func applyConsequences(progress *sharedModels.PlayerProgress, cons sharedModels.
 		}
 	}
 
-	// 3. Удаляем Global Flags
 	if len(cons.GlobalFlagsRemove) > 0 {
 		flagsToRemove := make(map[string]struct{})
 		for _, flag := range cons.GlobalFlagsRemove {
@@ -936,7 +874,6 @@ func applyConsequences(progress *sharedModels.PlayerProgress, cons sharedModels.
 		progress.GlobalFlags = newFlags
 	}
 
-	// 4. Добавляем Global Flags (только уникальные)
 	if len(cons.GlobalFlags) > 0 {
 		existingFlags := make(map[string]struct{}, len(progress.GlobalFlags))
 		for _, flag := range progress.GlobalFlags {
@@ -945,53 +882,45 @@ func applyConsequences(progress *sharedModels.PlayerProgress, cons sharedModels.
 		for _, flagToAdd := range cons.GlobalFlags {
 			if _, found := existingFlags[flagToAdd]; !found {
 				progress.GlobalFlags = append(progress.GlobalFlags, flagToAdd)
-				existingFlags[flagToAdd] = struct{}{} // Добавляем в карту, чтобы избежать дублей из cons.GlobalFlags
+				existingFlags[flagToAdd] = struct{}{}
 			}
 		}
 	}
 
-	// 5. Проверяем условия Game Over после всех изменений
 	if setup.CoreStatsDefinition != nil {
 		for statName, definition := range setup.CoreStatsDefinition {
-			currentValue := progress.CoreStats[statName] // Получаем текущее значение
+			currentValue := progress.CoreStats[statName]
 			if currentValue <= definition.Min {
-				return statName, true // Game Over по минимальному значению
+				return statName, true
 			}
 			if currentValue >= definition.Max {
-				return statName, true // Game Over по максимальному значению
+				return statName, true
 			}
 		}
 	}
 
-	return "", false // Не Game Over
+	return "", false
 }
 
 // DeletePlayerProgress удаляет прогресс игрока для указанной истории.
-func (s *gameplayServiceImpl) DeletePlayerProgress(ctx context.Context, userID, publishedStoryID uuid.UUID) error {
+func (s *gameplayServiceImpl) DeletePlayerProgress(ctx context.Context, userID uint64, publishedStoryID uuid.UUID) error {
 	s.logger.Info("Deleting player progress",
-		zap.String("userID", userID.String()),
+		zap.Uint64("userID", userID),
 		zap.String("publishedStoryID", publishedStoryID.String()))
 
-	// Проверяем, существует ли опубликованная история (опционально, но хорошо для валидации)
 	_, err := s.publishedRepo.GetByID(ctx, publishedStoryID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return sharedModels.ErrNotFound // История не найдена
+			return sharedModels.ErrNotFound
 		}
 		return fmt.Errorf("ошибка проверки опубликованной истории: %w", err)
 	}
 
-	// TODO: Проверка прав? Должен ли пользователь удалять только свой прогресс?
-	// Пока предполагаем, что userID из контекста уже проверен middleware
-
-	// Удаляем прогресс
 	err = s.playerProgressRepo.Delete(ctx, userID, publishedStoryID)
 	if err != nil {
-		// Логирование ошибки происходит внутри репозитория
 		return fmt.Errorf("ошибка удаления прогресса игрока: %w", err)
 	}
 
-	// Успех (даже если прогресса не было, репозиторий возвращает nil)
 	return nil
 }
 
@@ -1005,7 +934,6 @@ func createGenerationPayload(
 	userChoiceDescription string,
 	userChoiceText string,
 ) (sharedMessaging.GenerationTaskPayload, error) {
-	// --- Шаг 1: Распарсить Config и Setup --- //
 	var configMap map[string]interface{}
 	if len(story.Config) > 0 {
 		if err := json.Unmarshal(story.Config, &configMap); err != nil {
@@ -1026,61 +954,48 @@ func createGenerationPayload(
 		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("отсутствует Setup в PublishedStory ID %s", story.ID)
 	}
 
-	// --- Шаг 2: Собрать данные с сжатыми ключами --- //
 	compressedInputData := make(map[string]interface{})
 
-	compressedInputData["cfg"] = configMap // Config
-	compressedInputData["stp"] = setupMap  // Setup
+	compressedInputData["cfg"] = configMap
+	compressedInputData["stp"] = setupMap
 
-	// Добавляем текущие Core Stats
 	if progress.CoreStats != nil {
 		compressedInputData["cs"] = progress.CoreStats
 	}
 
-	// <<< Добавляем СВОДКИ из предыдущего шага >>>
 	compressedInputData["pss"] = progress.LastStorySummary
 	compressedInputData["pfd"] = progress.LastFutureDirection
 	compressedInputData["pvis"] = progress.LastVarImpactSummary
 
-	// <<< ДОБАВЛЯЕМ StoryVariables и GlobalFlags ПОСЛЕДНЕГО ШАГА (для генерации vis) >>>
 	if progress.StoryVariables != nil {
-		compressedInputData["sv"] = progress.StoryVariables // Передаем текущие (last) sv
+		compressedInputData["sv"] = progress.StoryVariables
 	}
 	if progress.GlobalFlags != nil {
-		// Передаем текущие (last) gf как есть (уже []string)
-		// Сортировка не обязательна для передачи AI, но не помешает для консистентности
 		sortedFlags := make([]string, len(progress.GlobalFlags))
 		copy(sortedFlags, progress.GlobalFlags)
 		sort.Strings(sortedFlags)
-		compressedInputData["gf"] = sortedFlags // Передаем текущие (last) gf
+		compressedInputData["gf"] = sortedFlags
 	} else {
 		compressedInputData["gf"] = []string{}
 	}
 
-	// Добавляем информацию о выборе пользователя с сжатыми ключами
 	type CompressedUserChoiceContext struct {
 		Desc string `json:"d"` // description
 		Text string `json:"t"` // choice_text
 	}
+
 	compressedInputData["uc"] = CompressedUserChoiceContext{
 		Desc: userChoiceDescription,
 		Text: userChoiceText,
 	}
 
-	// TODO: Добавить другие необходимые поля из NovelState, если они нужны промпту
-	// Например, язык, текущий этап и т.д. Их можно извлечь из configMap или setupMap
-	// compressedInputData["lang"] = configMap["language"] // Пример
-	// compressedInputData["stage"] = "choices_ready" // Пример
-
-	// --- Шаг 3: Формируем итоговый payload --- //
 	payload := sharedMessaging.GenerationTaskPayload{
 		TaskID:           uuid.New().String(),
-		UserID:           progress.UserID.String(),
+		UserID:           strconv.FormatUint(progress.UserID, 10),
 		PublishedStoryID: story.ID.String(),
 		PromptType:       sharedMessaging.PromptTypeNovelCreator,
 		InputData:        compressedInputData,
-		StateHash:        nextStateHash, // Хеш состояния, ДЛЯ которого генерируем сцену
-		// <<< Возможно, стоит передавать и previousHash в задаче? Пока нет. >>>
+		StateHash:        nextStateHash,
 	}
 
 	return payload, nil

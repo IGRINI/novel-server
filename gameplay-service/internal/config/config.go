@@ -11,7 +11,8 @@ import (
 // Config содержит конфигурацию для Gameplay Service
 type Config struct {
 	// Настройки сервера
-	Port string `envconfig:"PORT" default:"8082"` // Пример порта
+	Port     string `envconfig:"GAMEPLAY_SERVER_PORT" default:"8082"` // Пример порта
+	LogLevel string `envconfig:"LOG_LEVEL" default:"info"`         // Добавляем LogLevel
 
 	// Настройки PostgreSQL
 	DBHost        string        `envconfig:"DB_HOST" required:"true"`
@@ -49,6 +50,7 @@ func LoadConfig() (*Config, error) {
 
 	log.Printf("Конфигурация Gameplay Service загружена:")
 	log.Printf("  Port: %s", cfg.Port)
+	log.Printf("  LogLevel: %s", cfg.LogLevel)
 	log.Printf("  DB DSN: postgres://%s:***@%s:%s/%s?sslmode=%s", cfg.DBUser, cfg.DBHost, cfg.DBPort, cfg.DBName, cfg.DBSSLMode)
 	log.Printf("  DB Max Conns: %d", cfg.DBMaxConns)
 	log.Printf("  DB Idle Timeout: %v", cfg.DBIdleTimeout)

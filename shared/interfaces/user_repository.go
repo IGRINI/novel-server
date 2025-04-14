@@ -23,4 +23,20 @@ type UserRepository interface {
 	// GetUserByEmail retrieves a user by their email address.
 	// Returns models.ErrUserNotFound if the user does not exist.
 	GetUserByEmail(ctx context.Context, email string) (*models.User, error)
+
+	// GetUserCount retrieves the total number of users.
+	GetUserCount(ctx context.Context) (int64, error)
+
+	// ListUsers retrieves a list of users (add pagination parameters later).
+	ListUsers(ctx context.Context) ([]models.User, error)
+
+	// SetUserBanStatus sets the ban status of a user.
+	SetUserBanStatus(ctx context.Context, userID uint64, isBanned bool) error
+
+	// UpdateUserFields updates specific fields of a user.
+	// nil pointers mean the field should not be updated.
+	UpdateUserFields(ctx context.Context, userID uint64, email *string, roles []string, isBanned *bool) error
+
+	// UpdatePasswordHash обновляет хеш пароля пользователя.
+	UpdatePasswordHash(ctx context.Context, userID uint64, passwordHash string) error
 }

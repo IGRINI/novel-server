@@ -65,43 +65,43 @@ const deletePlayerProgressQuery = `
 DELETE FROM player_progress
 WHERE user_id = $1 AND published_story_id = $2`
 
-func (r *pgPlayerProgressRepository) GetByUserIDAndStoryID(ctx context.Context, userID, publishedStoryID uuid.UUID) (*models.PlayerProgress, error) {
+func (r *pgPlayerProgressRepository) GetByUserIDAndStoryID(ctx context.Context, userID uint64, publishedStoryID uuid.UUID) (*models.PlayerProgress, error) {
 	progress := &models.PlayerProgress{}
 	var coreStatsJSON, storyVarsJSON []byte // Use []byte for scanning jsonb
 	var globalFlags pq.StringArray
 
 	err := r.pool.QueryRow(ctx, getPlayerProgressQuery, userID, publishedStoryID).Scan(
 		&progress.ID,
-		&progress.UserID,           // Correct field
-		&progress.PublishedStoryID, // Correct field
-		&coreStatsJSON,             // Target for jsonb
-		&storyVarsJSON,             // Target for jsonb
-		&globalFlags,               // Target for text[]
-		&progress.CurrentStateHash, // Correct field
-		&progress.CreatedAt,        // Correct field
-		&progress.UpdatedAt,        // Correct field
+		&progress.UserID,
+		&progress.PublishedStoryID,
+		&coreStatsJSON,
+		&storyVarsJSON,
+		&globalFlags,
+		&progress.CurrentStateHash,
+		&progress.CreatedAt,
+		&progress.UpdatedAt,
 	)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, models.ErrNotFound // Use specific error for not found
 		}
-		r.logger.Error("Failed to get player progress", zap.Error(err), zap.String("userID", userID.String()), zap.String("publishedStoryID", publishedStoryID.String()))
+		r.logger.Error("Failed to get player progress", zap.Error(err), zap.Uint64("userID", userID), zap.String("publishedStoryID", publishedStoryID.String()))
 		return nil, err // Return generic error after logging
 	}
 
 	// Unmarshal JSONB fields
-	if err := utils.UnmarshalMap(coreStatsJSON, &progress.CoreStats); err != nil { // Correct field
-		r.logger.Error("Failed to unmarshal core stats", zap.Error(err), zap.String("userID", userID.String()))
+	if err := utils.UnmarshalMap(coreStatsJSON, &progress.CoreStats); err != nil {
+		r.logger.Error("Failed to unmarshal core stats", zap.Error(err), zap.Uint64("userID", userID))
 		return nil, err
 	}
-	if err := utils.UnmarshalMap(storyVarsJSON, &progress.StoryVariables); err != nil { // Correct field
-		r.logger.Error("Failed to unmarshal story variables", zap.Error(err), zap.String("userID", userID.String()))
+	if err := utils.UnmarshalMap(storyVarsJSON, &progress.StoryVariables); err != nil {
+		r.logger.Error("Failed to unmarshal story variables", zap.Error(err), zap.Uint64("userID", userID))
 		return nil, err
 	}
 	progress.GlobalFlags = []string(globalFlags) // Assign scanned array
 
-	r.logger.Debug("Retrieved player progress", zap.String("userID", userID.String()), zap.String("publishedStoryID", publishedStoryID.String()))
+	r.logger.Debug("Retrieved player progress", zap.Uint64("userID", userID), zap.String("publishedStoryID", publishedStoryID.String()))
 	return progress, nil
 }
 
@@ -116,12 +116,12 @@ func (r *pgPlayerProgressRepository) CreateOrUpdate(ctx context.Context, progres
 	progress.UpdatedAt = now
 
 	// Marshal map fields to JSON
-	coreStatsJSON, err := utils.MarshalMap(progress.CoreStats) // Correct field
+	coreStatsJSON, err := utils.MarshalMap(progress.CoreStats)
 	if err != nil {
 		r.logger.Error("Failed to marshal core stats for upsert", zap.Error(err), zap.String("progressID", progress.ID.String()))
 		return err
 	}
-	storyVarsJSON, err := utils.MarshalMap(progress.StoryVariables) // Correct field
+	storyVarsJSON, err := utils.MarshalMap(progress.StoryVariables)
 	if err != nil {
 		r.logger.Error("Failed to marshal story variables for upsert", zap.Error(err), zap.String("progressID", progress.ID.String()))
 		return err
@@ -133,40 +133,40 @@ func (r *pgPlayerProgressRepository) CreateOrUpdate(ctx context.Context, progres
 		progress.PublishedStoryID,
 		coreStatsJSON,
 		storyVarsJSON,
-		pq.Array(progress.GlobalFlags), // Correct field
-		progress.CurrentStateHash,      // Correct field
+		pq.Array(progress.GlobalFlags),
+		progress.CurrentStateHash,
 		progress.CreatedAt,
 		progress.UpdatedAt,
 	)
 
 	if err != nil {
 		r.logger.Error("Failed to upsert player progress", zap.Error(err),
-			zap.String("userID", progress.UserID.String()), // Log UserID as string
+			zap.Uint64("userID", progress.UserID),
 			zap.String("publishedStoryID", progress.PublishedStoryID.String()))
 		return err // Return generic error after logging
 	}
 
-	r.logger.Debug("Upserted player progress", zap.String("userID", progress.UserID.String()), zap.String("stateHash", progress.CurrentStateHash)) // Log CurrentStateHash
+	r.logger.Debug("Upserted player progress", zap.Uint64("userID", progress.UserID), zap.String("stateHash", progress.CurrentStateHash))
 	return nil
 }
 
-func (r *pgPlayerProgressRepository) Delete(ctx context.Context, userID, publishedStoryID uuid.UUID) error {
+func (r *pgPlayerProgressRepository) Delete(ctx context.Context, userID uint64, publishedStoryID uuid.UUID) error {
 	cmdTag, err := r.pool.Exec(ctx, deletePlayerProgressQuery, userID, publishedStoryID)
 	if err != nil {
 		r.logger.Error("Failed to delete player progress", zap.Error(err),
-			zap.String("userID", userID.String()),
+			zap.Uint64("userID", userID),
 			zap.String("publishedStoryID", publishedStoryID.String()))
 		return err // Return generic error after logging
 	}
 
 	if cmdTag.RowsAffected() == 0 {
 		r.logger.Warn("Attempted to delete non-existent player progress",
-			zap.String("userID", userID.String()),
+			zap.Uint64("userID", userID),
 			zap.String("publishedStoryID", publishedStoryID.String()))
 		// Возвращаем nil, так как цель (отсутствие прогресса) достигнута
 	} else {
 		r.logger.Info("Deleted player progress",
-			zap.String("userID", userID.String()),
+			zap.Uint64("userID", userID),
 			zap.String("publishedStoryID", publishedStoryID.String()))
 	}
 

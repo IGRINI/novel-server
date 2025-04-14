@@ -17,7 +17,6 @@ import (
 	"novel-server/gameplay-service/internal/service"
 	sharedDatabase "novel-server/shared/database"
 	sharedMessaging "novel-server/shared/messaging"
-	sharedMiddleware "novel-server/shared/middleware"
 	sharedModels "novel-server/shared/models"
 	"path/filepath"
 	"strconv"
@@ -44,6 +43,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 
 	// Добавляем импорт для bcrypt
+	"github.com/golang-jwt/jwt/v5"
 	"go.uber.org/zap"            // Добавляем импорт zap
 	"golang.org/x/crypto/bcrypt" // Правильный импорт
 )
@@ -209,10 +209,10 @@ func (s *IntegrationTestSuite) SetupSuite() {
 
 	// Передаем все 7 аргументов
 	gameplayService := service.NewGameplayService(s.repo, publishedRepo, sceneRepo, playerProgressRepo, taskPublisher, s.dbPool, nopLogger)
-	gameplayHandler := handler.NewGameplayHandler(gameplayService, nopLogger)
+	gameplayHandler := handler.NewGameplayHandler(gameplayService, nopLogger, jwtTestSecret)
 
 	app := echo.New()
-	gameplayHandler.RegisterRoutes(app, jwtTestSecret)
+	gameplayHandler.RegisterRoutes(app)
 	s.app = app
 
 	testServer := httptest.NewServer(app)
@@ -308,11 +308,38 @@ func TestIntegrationSuite(t *testing.T) {
 
 // createTestJWT создает JWT токен для тестов
 func createTestJWT(userID uint64) string {
-	// Используем функцию из shared/middleware или генерируем здесь
-	// Для простоты пока возвращаем фиктивный токен, middleware должен быть настроен
-	// на использование jwtTestSecret
-	token, _ := sharedMiddleware.GenerateTestJWT(userID, jwtTestSecret, time.Minute*5)
+	// <<< Вызываем локальную функцию GenerateTestJWT >>>
+	token, err := GenerateTestJWT(userID, jwtTestSecret, time.Minute*5)
+	if err != nil {
+		// В тесте проще паниковать, если токен не создался
+		log.Fatalf("Failed to generate test JWT: %v", err)
+	}
 	return token
+}
+
+// GenerateTestJWT создает тестовый JWT токен.
+// ВАЖНО: Эта функция предназначена ТОЛЬКО для использования в тестах.
+func GenerateTestJWT(userID uint64, secretKey string, validityDuration time.Duration) (string, error) {
+	expirationTime := time.Now().Add(validityDuration)
+	// Используем Claims из shared/models
+	claims := &sharedModels.Claims{
+		UserID: userID,
+		Roles:  []string{sharedModels.RoleUser}, // <<< Добавляем базовую роль
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(expirationTime),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
+			ID:        uuid.NewString(), // Генерируем 'jti'
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString([]byte(secretKey))
+	if err != nil {
+		return "", fmt.Errorf("failed to sign test JWT: %w", err)
+	}
+
+	return tokenString, nil
 }
 
 // --- Тесты API ---

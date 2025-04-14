@@ -173,3 +173,94 @@ func (r *redisTokenRepository) DeleteRefreshUUID(ctx context.Context, refreshUUI
 	r.logger.Info("Refresh token deleted from Redis", zap.String("refreshUUID", refreshUUID))
 	return nil
 }
+
+// DeleteTokensByUserID removes all tokens associated with a user ID.
+// WARNING: This implementation uses SCAN and might be inefficient on large Redis instances.
+// Consider alternative data structures (like sets per user) if performance becomes an issue.
+func (r *redisTokenRepository) DeleteTokensByUserID(ctx context.Context, userID uint64) (int64, error) {
+	log := r.logger.With(zap.Uint64("userID", userID))
+	log.Info("Attempting to delete all tokens for user")
+
+	userIDStr := strconv.FormatUint(userID, 10)
+	var cursor uint64
+	var keysToDelete []string
+	var totalDeleted int64
+
+	// Сканируем ключи access_uuid:*
+	log.Debug("Scanning for access tokens")
+	for {
+		var keys []string
+		var err error
+		keys, cursor, err = r.client.Scan(ctx, cursor, "access_uuid:*", 100).Result() // Сканируем пачками по 100
+		if err != nil {
+			log.Error("Redis SCAN failed for access tokens", zap.Error(err))
+			return totalDeleted, fmt.Errorf("redis scan failed for access tokens: %w", err)
+		}
+
+		// Проверяем найденные ключи
+		if len(keys) > 0 {
+			values, err := r.client.MGet(ctx, keys...).Result()
+			if err != nil {
+				log.Error("Redis MGET failed for access tokens", zap.Error(err))
+				// Пытаемся продолжить, но это плохой знак
+			} else {
+				for i, key := range keys {
+					if i < len(values) && values[i] != nil && values[i].(string) == userIDStr {
+						keysToDelete = append(keysToDelete, key)
+					}
+				}
+			}
+		}
+
+		if cursor == 0 { // Сканирование завершено
+			break
+		}
+	}
+
+	// Сканируем ключи refresh_uuid:*
+	cursor = 0 // Сбрасываем курсор
+	log.Debug("Scanning for refresh tokens")
+	for {
+		var keys []string
+		var err error
+		keys, cursor, err = r.client.Scan(ctx, cursor, "refresh_uuid:*", 100).Result()
+		if err != nil {
+			log.Error("Redis SCAN failed for refresh tokens", zap.Error(err))
+			return totalDeleted, fmt.Errorf("redis scan failed for refresh tokens: %w", err)
+		}
+
+		// Проверяем найденные ключи
+		if len(keys) > 0 {
+			values, err := r.client.MGet(ctx, keys...).Result()
+			if err != nil {
+				log.Error("Redis MGET failed for refresh tokens", zap.Error(err))
+			} else {
+				for i, key := range keys {
+					if i < len(values) && values[i] != nil && values[i].(string) == userIDStr {
+						keysToDelete = append(keysToDelete, key)
+					}
+				}
+			}
+		}
+
+		if cursor == 0 {
+			break
+		}
+	}
+
+	// Удаляем найденные ключи
+	if len(keysToDelete) > 0 {
+		log.Debug("Deleting found tokens", zap.Strings("keys", keysToDelete))
+		deletedCount, err := r.client.Del(ctx, keysToDelete...).Result()
+		if err != nil {
+			log.Error("Failed to delete tokens by user ID", zap.Error(err))
+			return totalDeleted, fmt.Errorf("failed to delete tokens by user ID: %w", err)
+		}
+		totalDeleted = deletedCount
+		log.Info("Deleted tokens for user", zap.Int64("deletedCount", totalDeleted))
+	} else {
+		log.Info("No tokens found to delete for user")
+	}
+
+	return totalDeleted, nil
+}

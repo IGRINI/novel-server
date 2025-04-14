@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s # Интервал опроса по умолчанию
+
+scrape_configs:
+  - job_name: 'admin-service'
+    static_configs:
+      - targets: ['host.docker.internal:8084']
+
+  - job_name: 'auth-service'
+    static_configs:
+      - targets: ['host.docker.internal:8081'] 

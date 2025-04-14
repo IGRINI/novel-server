@@ -1,42 +1,39 @@
 # --- Стадия сборки ---
 FROM golang:1.24-alpine as builder
 
-# Устанавливаем рабочую директорию
-WORKDIR /app
+# Устанавливаем рабочую директорию СРАЗУ в модуль
+WORKDIR /app/gameplay-service
 
-# Копируем go.work и go.work.sum
-COPY go.work go.work.sum ./
+# Копируем go.mod / go.sum для gameplay-service В ТЕКУЩУЮ директорию (.)
+COPY gameplay-service/go.mod gameplay-service/go.sum ./
 
-# Копируем ВСЕ модули, указанные в go.work, чтобы go build мог их найти
-# Копируем сначала go.mod/go.sum для кеширования слоя зависимостей
-COPY auth/go.mod auth/go.sum ./auth/
-COPY story-generator/go.mod story-generator/go.sum ./story-generator/
-COPY shared/go.mod shared/go.sum ./shared/
-COPY gameplay-service/go.mod gameplay-service/go.sum ./gameplay-service/
+# Копируем go.mod / go.sum для shared В ОТДЕЛЬНУЮ директорию ../shared
+# чтобы директива replace в go.mod сработала
+# Создаем директорию, если ее нет (на всякий случай)
+RUN mkdir -p ../shared
+COPY shared/go.mod shared/go.sum ../shared/
 
-# --- Опционально: Загрузка зависимостей ---
-# Возможно, этот шаг не нужен, так как go build сам скачает зависимости.
-# Если go build будет медленным, можно раскомментировать.
-# Сначала синхронизируем go.work с go.mod файлов
-# RUN go work sync
-# Затем скачиваем зависимости
-# RUN go mod download
+# Загружаем зависимости ТОЛЬКО для gameplay-service
+# go mod download поймет replace ../shared, но пока не найдет там код (это нормально на этом шаге)
+# Этот шаг опционален, т.к. go build тоже скачает зависимости, но может ускорить сборку
+RUN go mod download
 
-# Копируем исходный код ВСЕХ модулей
-COPY auth/ ./auth/
-COPY story-generator/ ./story-generator/
-COPY shared/ ./shared/
-COPY gameplay-service/ ./gameplay-service/
+# Копируем исходный код shared в ../shared
+COPY shared/ ../shared/
 
-# Собираем приложение gameplay-service
-# Запускаем go build из корневой директории воркспейса (/app),
-# указывая путь к main.go сервиса.
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /server ./gameplay-service/cmd/server/main.go
+# Копируем исходный код gameplay-service в текущую директорию (.)
+# Копируем всё из локальной директории gameplay-service в /app/gameplay-service контейнера
+COPY gameplay-service/ .
+
+# Собираем приложение (мы уже в /app/gameplay-service)
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /server ./cmd/server/main.go
 
 # --- Финальная стадия ---
 FROM alpine:latest
 
 # Копируем собранный бинарник из стадии сборки
+WORKDIR / 
+# Устанавливаем рабочую директорию в корень для финального образа
 COPY --from=builder /server /server
 
 # Опционально: Копируем другие нужные файлы (например, конфиги, если они читаются из файлов)

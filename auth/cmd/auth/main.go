@@ -8,9 +8,9 @@ import (
 	"novel-server/auth/internal/handler"
 	"novel-server/auth/internal/service"
 	"novel-server/shared/database"
+	sharedLogger "novel-server/shared/logger"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -20,6 +20,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	// Импорт для метрик Prometheus
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -30,17 +32,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	// --- Logger Setup (zap) ---
-	logger, err := setupZapLogger(cfg.LogLevel)
+	// --- Logger Setup (Используем shared/logger) ---
+	logger, err := sharedLogger.New(sharedLogger.Config{
+		Level: cfg.LogLevel, // Берем уровень из конфига
+		// Encoding: "json", // Можно задать формат вывода (json или console по умолчанию)
+		// OutputPath: "/var/log/auth-service.log", // Можно задать файл
+	})
 	if err != nil {
-		fmt.Printf("Failed to initialize zap logger: %v\n", err)
+		fmt.Printf("Failed to initialize logger: %v\n", err)
 		os.Exit(1)
 	}
 	defer logger.Sync()
 
 	zap.ReplaceGlobals(logger)
 	zap.L().Info("Logger initialized successfully", zap.String("logLevel", cfg.LogLevel))
-	zap.L().Info("Configuration loaded", zap.Any("config", cfg))
+	zap.L().Info("Configuration loaded") // Убираем вывод всего конфига
 
 	// --- Database Connections ---
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -61,14 +67,11 @@ func main() {
 	zap.L().Info("Connected to Redis")
 
 	// --- Dependency Injection ---
-	userRepoLogger := logger.Named("PgUserRepo")
-	tokenRepoLogger := logger.Named("RedisTokenRepo")
-	authServiceLogger := logger.Named("AuthService")
-
-	userRepo := database.NewPgUserRepository(pgPool, userRepoLogger)
-	tokenRepo := database.NewRedisTokenRepository(redisClient, tokenRepoLogger)
-	authService := service.NewAuthService(userRepo, tokenRepo, cfg, authServiceLogger)
-	authHandler := handler.NewAuthHandler(authService, userRepo)
+	// Логгеры для репозиториев и сервиса теперь создаются через .Named()
+	userRepo := database.NewPgUserRepository(pgPool, logger.Named("PgUserRepo"))
+	tokenRepo := database.NewRedisTokenRepository(redisClient, logger.Named("RedisTokenRepo"))
+	authService := service.NewAuthService(userRepo, tokenRepo, cfg, logger.Named("AuthService"))
+	authHandler := handler.NewAuthHandler(authService, userRepo, cfg)
 
 	// --- HTTP Server Setup (Gin) ---
 	gin.SetMode(gin.ReleaseMode)
@@ -103,6 +106,10 @@ func main() {
 	// Register Application Routes
 	authHandler.RegisterRoutes(router)
 
+	// <<< Возвращаем явную регистрацию /metrics >>>
+	zap.L().Info("Registering Prometheus metrics endpoint")
+	router.GET("/metrics", gin.WrapH(promhttp.Handler())) // Используем gin.WrapH
+
 	// --- Start Server ---
 	srv := &http.Server{
 		Addr:         ":" + cfg.ServerPort,
@@ -134,21 +141,6 @@ func main() {
 	}
 
 	zap.L().Info("Server exiting")
-}
-
-// setupZapLogger initializes a zap logger based on the configured level.
-func setupZapLogger(logLevel string) (*zap.Logger, error) {
-	level := zap.NewAtomicLevel()
-	err := level.UnmarshalText([]byte(strings.ToLower(logLevel)))
-	if err != nil {
-		level.SetLevel(zap.InfoLevel)
-		fmt.Printf("Invalid log level '%s', defaulting to 'info'\n", logLevel)
-	}
-
-	config := zap.NewDevelopmentConfig()
-	config.Level = level
-
-	return config.Build()
 }
 
 // setupPostgres initializes the PostgreSQL connection pool.

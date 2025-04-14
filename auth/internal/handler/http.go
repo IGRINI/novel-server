@@ -13,7 +13,40 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5" // Нужен для парсинга refresh token
 	"go.uber.org/zap"
+	"novel-server/auth/internal/config" // <<< Добавляем импорт конфига
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+// <<< Определение и регистрация кастомных метрик >>>
+var (
+	registrationsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "auth_registrations_total",
+		Help: "Total number of successful user registrations.",
+	})
+
+	// Счетчик успешных обновлений токенов
+	refreshesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "auth_refreshes_total",
+		Help: "Total number of successful token refreshes.",
+	})
+
+	// Счетчик сгенерированных межсервисных токенов
+	interServiceTokensGeneratedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "auth_inter_service_tokens_generated_total",
+		Help: "Total number of generated inter-service tokens.",
+	})
+
+	// Счетчик проверок токенов с метками типа и статуса
+	tokenVerificationsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "auth_token_verifications_total",
+			Help: "Total number of token verification attempts by type and status.",
+		},
+		[]string{"type", "status"}, // Метки: тип токена и статус проверки
+	)
+)
+// <<< Конец определения >>>
 
 // --- Коды ошибок API ---
 const (
@@ -36,13 +69,15 @@ const (
 type AuthHandler struct {
 	authService service.AuthService
 	userRepo    interfaces.UserRepository // Добавляем репозиторий
+	cfg         *config.Config // <<< Добавляем поле для конфига
 }
 
 // NewAuthHandler creates a new AuthHandler.
-func NewAuthHandler(authService service.AuthService, userRepo interfaces.UserRepository) *AuthHandler { // Добавляем userRepo
+func NewAuthHandler(authService service.AuthService, userRepo interfaces.UserRepository, cfg *config.Config) *AuthHandler { // <<< Добавляем cfg
 	return &AuthHandler{
 		authService: authService,
 		userRepo:    userRepo, // Инициализируем поле
+		cfg:         cfg, // <<< Сохраняем конфиг
 	}
 }
 
@@ -67,11 +102,25 @@ func (h *AuthHandler) RegisterRoutes(router *gin.Engine) {
 
 	// Группа для межсервисного взаимодействия
 	interServiceGroup := router.Group("/internal/auth")
+	interServiceGroup.Use(h.InternalAuthMiddleware()) // Добавляем middleware
 	{
 		// Потенциально нужна своя защита для генерации
 		interServiceGroup.POST("/token/generate", h.generateInterServiceToken)
 		// Верификация должна быть доступна для внутренних сервисов
 		interServiceGroup.POST("/token/verify", h.verifyInterServiceToken)
+
+		// Новые маршруты для админки
+		interServiceGroup.GET("/users/count", h.getUserCount)
+		interServiceGroup.GET("/users", h.listUsers)
+		interServiceGroup.POST("/users/:user_id/ban", h.banUser)
+		interServiceGroup.DELETE("/users/:user_id/ban", h.unbanUser)
+		interServiceGroup.POST("/token/validate", h.validateToken)
+		// <<< Маршрут для получения деталей пользователя >>>
+		interServiceGroup.GET("/users/:user_id", h.getUserDetails)
+		// <<< Маршрут для обновления пользователя >>>
+		interServiceGroup.PUT("/users/:user_id", h.updateUser)
+		// <<< Маршрут для обновления пароля >>>
+		interServiceGroup.PUT("/users/:user_id/password", h.updatePassword)
 	}
 }
 
@@ -105,11 +154,26 @@ type generateInterServiceTokenRequest struct {
 	ServiceName string `json:"service_name" binding:"required"`
 }
 
-// DTO для ответа /api/me
+// DTO для ответа /api/me и /internal/auth/users
 type meResponse struct {
-	ID       uint64 `json:"id"`
-	Username string `json:"username"`
-	Email    string `json:"email"`
+	ID       uint64   `json:"id"`
+	Username string   `json:"username"`
+	Email    string   `json:"email"`
+	Roles    []string `json:"roles,omitempty"`
+	IsBanned bool     `json:"isBanned"`
+}
+
+// --- Структура для запроса на обновление --- 
+type updateUserRequest struct {
+	// Используем указатели, чтобы различать неуказанные поля и поля с нулевыми значениями
+	Email    *string  `json:"email,omitempty"`
+	Roles    []string `json:"roles,omitempty"` // Если roles не передано, оно будет nil
+	IsBanned *bool    `json:"is_banned,omitempty"`
+}
+
+// --- Структура для запроса на обновление пароля ---
+type updatePasswordRequest struct {
+	NewPassword string `json:"new_password" binding:"required"`
 }
 
 // --- Error Handling Helper ---
@@ -176,6 +240,10 @@ func (h *AuthHandler) register(c *gin.Context) {
 		handleServiceError(c, err)
 		return
 	}
+
+	// <<< Инкрементируем счетчик успешных регистраций >>>
+	registrationsTotal.Inc()
+	// <<< Конец инкремента >>>
 
 	c.JSON(http.StatusCreated, gin.H{"message": "user registered successfully", "user_id": user.ID, "username": user.Username, "email": user.Email})
 }
@@ -271,9 +339,18 @@ func (h *AuthHandler) refresh(c *gin.Context) {
 
 	tokens, err := h.authService.Refresh(c.Request.Context(), req.RefreshToken)
 	if err != nil {
+		// Можно добавить проверку типа ошибки, чтобы инкрементировать только при ошибках токена
+		if errors.Is(err, models.ErrTokenNotFound) || errors.Is(err, models.ErrTokenExpired) || errors.Is(err, models.ErrTokenInvalid) || errors.Is(err, models.ErrTokenMalformed) {
+			tokenVerificationsTotal.WithLabelValues("refresh", "failure").Inc()
+		}
 		handleServiceError(c, err)
 		return
 	}
+
+	// <<< Инкремент счетчика успешных обновлений >>>
+	refreshesTotal.Inc()
+	tokenVerificationsTotal.WithLabelValues("refresh", "success").Inc()
+	// <<< Конец инкремента >>>
 
 	c.JSON(http.StatusOK, tokens)
 }
@@ -288,9 +365,14 @@ func (h *AuthHandler) verify(c *gin.Context) {
 
 	claims, err := h.authService.VerifyAccessToken(c.Request.Context(), req.Token)
 	if err != nil {
+		// <<< Инкремент счетчика ошибок верификации >>>
+		tokenVerificationsTotal.WithLabelValues("access", "failure").Inc()
 		handleServiceError(c, err)
 		return
 	}
+
+	// <<< Инкремент счетчика успешной верификации >>>
+	tokenVerificationsTotal.WithLabelValues("access", "success").Inc()
 
 	c.JSON(http.StatusOK, gin.H{"user_id": claims.UserID, "valid": true})
 }
@@ -304,6 +386,9 @@ func (h *AuthHandler) generateInterServiceToken(c *gin.Context) {
 
 	token, err := h.authService.GenerateInterServiceToken(c.Request.Context(), req.ServiceName)
 	if err != nil {
+		// <<< Инкремент счетчика генерации межсервисных токенов >>>
+		interServiceTokensGeneratedTotal.Inc()
+		// <<< Конец инкремента >>>
 		handleServiceError(c, err)
 		return
 	}
@@ -378,6 +463,8 @@ func (h *AuthHandler) getMe(c *gin.Context) {
 		ID:       user.ID,
 		Username: user.Username,
 		Email:    user.Email,
+		Roles:    user.Roles,
+		IsBanned: user.IsBanned,
 	}
 
 	// Отправляем успешный ответ
@@ -390,7 +477,8 @@ func (h *AuthHandler) AuthMiddleware() gin.HandlerFunc {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
 			zap.L().Warn("Authorization header missing")
-			// Используем ошибку невалидного токена
+			// <<< Инкремент счетчика ошибок верификации >>>
+			tokenVerificationsTotal.WithLabelValues("access", "failure").Inc()
 			handleServiceError(c, models.ErrTokenInvalid)
 			return
 		}
@@ -398,6 +486,8 @@ func (h *AuthHandler) AuthMiddleware() gin.HandlerFunc {
 		parts := strings.Split(authHeader, " ")
 		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
 			zap.L().Warn("Invalid Authorization header format", zap.String("header", authHeader))
+			// <<< Инкремент счетчика ошибок верификации >>>
+			tokenVerificationsTotal.WithLabelValues("access", "failure").Inc()
 			handleServiceError(c, models.ErrTokenInvalid)
 			return
 		}
@@ -406,12 +496,14 @@ func (h *AuthHandler) AuthMiddleware() gin.HandlerFunc {
 		claims, err := h.authService.VerifyAccessToken(c.Request.Context(), tokenString)
 		if err != nil {
 			zap.L().Warn("Access token verification failed", zap.Error(err))
-			handleServiceError(c, err) // Передаем ошибку из VerifyAccessToken (может быть ErrTokenExpired, ErrInvalidToken, ErrTokenNotFound)
+			// <<< Инкремент счетчика ошибок верификации >>>
+			tokenVerificationsTotal.WithLabelValues("access", "failure").Inc()
+			handleServiceError(c, err) // Передаем ошибку из VerifyAccessToken
 			return
 		}
 
-		// Проверка, что токен не отозван (не в Redis)
-		// authService.VerifyAccessToken уже должен это делать внутри себя, проверяя access_uuid в Redis
+		// <<< Инкремент счетчика успешной верификации >>>
+		tokenVerificationsTotal.WithLabelValues("access", "success").Inc()
 
 		// Сохраняем ID пользователя и UUID токена в контексте для дальнейшего использования
 		c.Set("user_id", strconv.FormatUint(claims.UserID, 10))
@@ -422,4 +514,254 @@ func (h *AuthHandler) AuthMiddleware() gin.HandlerFunc {
 
 		c.Next() // Передаем управление следующему обработчику
 	}
+}
+
+// --- Новые обработчики для внутреннего API ---
+
+// getUserCount возвращает общее количество пользователей
+func (h *AuthHandler) getUserCount(c *gin.Context) {
+	// Здесь не нужна информация о текущем пользователе,
+	// middleware InternalAuthMiddleware уже проверил доступ.
+
+	count, err := h.userRepo.GetUserCount(c.Request.Context()) // Предполагаем, что такой метод есть
+	if err != nil {
+		zap.L().Error("Failed to get user count from repository", zap.Error(err))
+		handleServiceError(c, err) // Возвращаем внутреннюю ошибку
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"count": count})
+}
+
+// listUsers возвращает список пользователей
+func (h *AuthHandler) listUsers(c *gin.Context) {
+	// TODO: Добавить пагинацию (offset, limit)
+	users, err := h.userRepo.ListUsers(c.Request.Context())
+	if err != nil {
+		zap.L().Error("Failed to list users from repository", zap.Error(err))
+		handleServiceError(c, err)
+		return
+	}
+
+	// Преобразуем в DTO, чтобы не светить хэши паролей и т.д.
+	userDTOs := make([]meResponse, 0, len(users))
+	for _, u := range users {
+		userDTOs = append(userDTOs, meResponse{
+			ID:       u.ID,
+			Username: u.Username,
+			Email:    u.Email,
+			Roles:    u.Roles,
+			IsBanned: u.IsBanned,
+		})
+	}
+
+	c.JSON(http.StatusOK, userDTOs)
+}
+
+// banUser handles the request to ban a user.
+func (h *AuthHandler) banUser(c *gin.Context) {
+	userIDStr := c.Param("user_id")
+	userID, err := strconv.ParseUint(userIDStr, 10, 64)
+	if err != nil {
+		zap.L().Warn("Invalid user ID format for ban request", zap.String("userID", userIDStr), zap.Error(err))
+		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid user ID format"})
+		return
+	}
+
+	err = h.authService.BanUser(c.Request.Context(), userID)
+	if err != nil {
+		// Обрабатываем специфичные ошибки, например, UserNotFound
+		handleServiceError(c, err)
+		return
+	}
+
+	c.Status(http.StatusNoContent) // 204 No Content при успехе
+}
+
+// unbanUser handles the request to unban a user.
+func (h *AuthHandler) unbanUser(c *gin.Context) {
+	userIDStr := c.Param("user_id")
+	userID, err := strconv.ParseUint(userIDStr, 10, 64)
+	if err != nil {
+		zap.L().Warn("Invalid user ID format for unban request", zap.String("userID", userIDStr), zap.Error(err))
+		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid user ID format"})
+		return
+	}
+
+	err = h.authService.UnbanUser(c.Request.Context(), userID)
+	if err != nil {
+		// Обрабатываем специфичные ошибки, например, UserNotFound
+		handleServiceError(c, err)
+		return
+	}
+
+	c.Status(http.StatusNoContent) // 204 No Content при успехе
+}
+
+// validateToken handles the request to validate a token and user status.
+type validateTokenRequest struct {
+	Token string `json:"token" binding:"required"`
+}
+
+func (h *AuthHandler) validateToken(c *gin.Context) {
+	var req validateTokenRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
+		return
+	}
+
+	claims, err := h.authService.ValidateAndGetClaims(c.Request.Context(), req.Token)
+	if err != nil {
+		// Возвращаем ошибку, которую вернул сервис (401 с разными кодами)
+		handleServiceError(c, err) 
+		return
+	}
+
+	// Возвращаем claims при успехе (ID, роли и т.д.)
+	c.JSON(http.StatusOK, claims)
+}
+
+// getUserDetails возвращает детальную информацию о пользователе по ID.
+func (h *AuthHandler) getUserDetails(c *gin.Context) {
+	userIDStr := c.Param("user_id")
+	userID, err := strconv.ParseUint(userIDStr, 10, 64)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid user ID format"})
+		return
+	}
+
+	// Получаем пользователя из репозитория
+	// Метод GetUserByID уже существует и возвращает нужные поля (включая roles, is_banned)
+	user, err := h.userRepo.GetUserByID(c.Request.Context(), userID)
+	if err != nil {
+		// Обрабатываем ошибку (UserNotFound или другую)
+		handleServiceError(c, err)
+		return
+	}
+
+	// Преобразуем в DTO (используем тот же meResponse, т.к. он содержит нужные поля)
+	userDTO := meResponse{
+		ID:       user.ID,
+		Username: user.Username,
+		Email:    user.Email,
+		Roles:    user.Roles,
+		IsBanned: user.IsBanned,
+	}
+
+	c.JSON(http.StatusOK, userDTO)
+}
+
+// --- Middleware ---
+
+// InternalAuthMiddleware - middleware для проверки межсервисного токена
+func (h *AuthHandler) InternalAuthMiddleware() gin.HandlerFunc {
+	// --- Читаем секрет из конфига для проверки --- 
+	staticSecret := h.cfg.InterServiceSecret 
+	if staticSecret == "" {
+		zap.L().Warn("InternalAuthMiddleware: INTER_SERVICE_SECRET is not configured on auth-service! Static secret check will fail.")
+	}
+
+	return func(c *gin.Context) {
+		tokenString := c.GetHeader("X-Internal-Service-Token") 
+		if tokenString == "" {
+			// <<< Инкремент счетчика ошибок верификации >>>
+			tokenVerificationsTotal.WithLabelValues("inter-service", "failure").Inc()
+			// ... (ошибка: токен отсутствует)
+			// --- Добавляем стандартную обработку ошибки --- 
+			c.AbortWithStatusJSON(http.StatusUnauthorized, ErrorResponse{
+				Code:    ErrCodeInvalidToken,
+				Message: "Missing internal service token",
+			})
+			return
+		}
+
+		// --- Проверка: Статичный секрет ИЛИ JWT --- 
+		if staticSecret != "" && tokenString == staticSecret {
+			// Это статичный секрет (вероятно, запрос на генерацию JWT)
+			zap.L().Debug("Internal service access granted via static secret")
+			// <<< НЕ инкрементируем здесь, т.к. это не верификация JWT >>>
+			c.Set("service_name", "_static_secret_") 
+			c.Next()
+			return 
+		} else {
+			// Пытаемся проверить как JWT токен
+			ctx := c.Request.Context()
+			serviceName, err := h.authService.VerifyInterServiceToken(ctx, tokenString)
+			if err != nil {
+				zap.L().Warn("Internal service JWT token verification failed (or it was an invalid static secret)", zap.Error(err))
+				// <<< Инкремент счетчика ошибок верификации >>>
+				tokenVerificationsTotal.WithLabelValues("inter-service", "failure").Inc()
+				c.AbortWithStatusJSON(http.StatusUnauthorized, ErrorResponse{
+					Code:    ErrCodeInvalidToken,
+					Message: "Invalid internal service token",
+				})
+				return
+			}
+			// JWT валиден
+			// <<< Инкремент счетчика успешной верификации >>>
+			tokenVerificationsTotal.WithLabelValues("inter-service", "success").Inc()
+			// TODO: Добавить проверку, что serviceName имеет право доступа к этим ресурсам
+			c.Set("service_name", serviceName)
+			c.Next()
+		}
+		// --- Конец проверки --- 
+	}
+}
+
+// --- Новый обработчик для обновления пользователя ---
+
+// updateUser handles the PUT request to update user details.
+func (h *AuthHandler) updateUser(c *gin.Context) {
+	userIDStr := c.Param("user_id")
+	userID, err := strconv.ParseUint(userIDStr, 10, 64)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid user ID format"})
+		return
+	}
+
+	var req updateUserRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
+		return
+	}
+
+	// Вызываем сервис для обновления
+	err = h.authService.UpdateUser(c.Request.Context(), userID, req.Email, req.Roles, req.IsBanned)
+	if err != nil {
+		// Обрабатываем ошибку из сервиса (может быть UserNotFound, EmailAlreadyExists, InvalidInput и т.д.)
+		handleServiceError(c, err)
+		return
+	}
+
+	// Успех
+	c.Status(http.StatusNoContent) // Возвращаем 204 No Content
+}
+
+// --- Новый обработчик для обновления пароля ---
+
+// updatePassword handles the PUT request to update a user's password.
+func (h *AuthHandler) updatePassword(c *gin.Context) {
+	userIDStr := c.Param("user_id")
+	userID, err := strconv.ParseUint(userIDStr, 10, 64)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid user ID format"})
+		return
+	}
+
+	var req updatePasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
+		return
+	}
+
+	// Вызываем сервис для обновления пароля
+	err = h.authService.UpdatePassword(c.Request.Context(), userID, req.NewPassword)
+	if err != nil {
+		// Обрабатываем ошибку из сервиса (может быть UserNotFound)
+		handleServiceError(c, err)
+		return
+	}
+
+	// Успех
+	c.Status(http.StatusNoContent) // Возвращаем 204 No Content
 }

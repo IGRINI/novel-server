@@ -4,7 +4,8 @@ import (
 	"context"
 	"log"
 	"net/http"
-	"novel-server/shared/middleware"
+	"novel-server/shared/authutils"
+	sharedMiddleware "novel-server/shared/middleware"
 	"novel-server/websocket-service/internal/config"
 	"novel-server/websocket-service/internal/handler"
 	"novel-server/websocket-service/internal/messaging"
@@ -17,96 +18,92 @@ import (
 	"github.com/labstack/echo/v4"
 	echoMiddleware "github.com/labstack/echo/v4/middleware"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.uber.org/zap"
+	"novel-server/shared/logger"
 )
 
 func main() {
 	// Загружаем .env файл (если есть) для локальной разработки
 	_ = godotenv.Load()
 
-	log.Println("Запуск WebSocket сервиса...")
+	logCfg := logger.Config{ Level: "info" }
+	appLogger, err := logger.New(logCfg)
+	if err != nil {
+		log.Fatalf("Failed to init logger: %v", err)
+	}
+	defer appLogger.Sync()
+	appLogger.Info("Starting WebSocket Service...")
 
-	// Загружаем конфигурацию
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatalf("Ошибка загрузки конфигурации: %v", err)
+		appLogger.Fatal("Failed to load config", zap.Error(err))
 	}
+	appLogger.Info("Config loaded")
 
-	// Подключаемся к RabbitMQ
-	rabbitConn, err := connectRabbitMQ(cfg.RabbitMQURL)
+	rabbitConn, err := connectRabbitMQ(cfg.RabbitMQURL, appLogger)
 	if err != nil {
-		log.Fatalf("Не удалось подключиться к RabbitMQ: %v", err)
+		appLogger.Fatal("Failed to connect to RabbitMQ", zap.Error(err))
 	}
 	defer rabbitConn.Close()
-	log.Println("Успешное подключение к RabbitMQ")
+	appLogger.Info("Connected to RabbitMQ")
 
-	// Инициализация менеджера соединений
-	connManager := handler.NewConnectionManager()
+	connManager := handler.NewConnectionManager( /* appLogger.Named("ConnManager") */ )
 
-	// Инициализация и запуск консьюмера RabbitMQ
-	mqConsumer, err := messaging.NewConsumer(rabbitConn, connManager, cfg.ClientUpdatesQueueName)
+	mqConsumer, err := messaging.NewConsumer(rabbitConn, connManager, cfg.ClientUpdatesQueueName /* , appLogger.Named("Consumer") */)
 	if err != nil {
-		log.Fatalf("Не удалось создать консьюмер RabbitMQ: %v", err)
+		appLogger.Fatal("Failed to create RabbitMQ consumer", zap.Error(err))
 	}
 	go func() {
 		if err := mqConsumer.StartConsuming(); err != nil {
-			log.Printf("Ошибка при работе консьюмера RabbitMQ: %v", err)
-			// Можно добавить логику перезапуска или уведомления
+			appLogger.Error("RabbitMQ consumer error", zap.Error(err))
 		}
 	}()
-	log.Println("Консьюмер RabbitMQ запущен")
+	appLogger.Info("RabbitMQ consumer started")
 
-	// Настройка Echo
 	e := echo.New()
-	e.Use(echoMiddleware.Logger())
+	e.Use(sharedMiddleware.EchoZapLogger(appLogger))
 	e.Use(echoMiddleware.Recover())
 
-	// Настройка CORS (пример, настройте по своим требованиям)
 	e.Use(echoMiddleware.CORSWithConfig(echoMiddleware.CORSConfig{
-		AllowOrigins: []string{"*"}, // TODO: Замените на ваш фронтенд URL
+		AllowOrigins: []string{"*"},
 		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodOptions},
 		AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization},
 	}))
 
-	// Создаем обработчик WebSocket
+	tokenVerifier, err := authutils.NewJWTVerifier(cfg.JWTSecret, appLogger)
+	if err != nil {
+		appLogger.Fatal("Failed to create JWT verifier", zap.Error(err))
+	}
+
 	wsHandler := handler.NewWebSocketHandler(connManager)
 
-	// Определяем маршрут для WebSocket
-	// Применяем middleware для аутентификации JWT
-	// Внутри middleware будет извлечен user_id и сохранен в контекст
 	wsGroup := e.Group("/ws")
-	wsGroup.Use(middleware.JWTAuthMiddleware(cfg.JWTSecret)) // Используем общий middleware
+	wsGroup.Use(echo.WrapMiddleware(sharedMiddleware.AuthMiddleware(tokenVerifier.VerifyToken, appLogger)))
 	wsGroup.GET("", wsHandler.Handle)
 
-	log.Printf("WebSocket сервер слушает на порту %s", cfg.Port)
+	appLogger.Info("WebSocket server listening", zap.String("port", cfg.Port))
 
-	// Запуск сервера в горутине
 	go func() {
 		if err := e.Start(":" + cfg.Port); err != nil && err != http.ErrServerClosed {
-			e.Logger.Fatal("Ошибка запуска сервера: ", err)
+			appLogger.Fatal("Server start error", zap.Error(err))
 		}
 	}()
 
-	// Ожидание сигнала завершения для graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Println("Получен сигнал завершения, начинаем graceful shutdown...")
+	appLogger.Info("Shutting down server...")
 
-	// Graceful shutdown Echo
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := e.Shutdown(ctx); err != nil {
-		e.Logger.Fatal("Ошибка при graceful shutdown Echo: ", err)
+		appLogger.Error("Echo shutdown error", zap.Error(err))
 	}
 
-	// Останавливаем консьюмер (если необходимо реализовать логику остановки)
-	// mqConsumer.Stop()
-
-	log.Println("WebSocket сервис успешно остановлен")
+	appLogger.Info("WebSocket service stopped")
 }
 
-// connectRabbitMQ пытается подключиться к RabbitMQ с несколькими попытками
-func connectRabbitMQ(url string) (*amqp.Connection, error) {
+func connectRabbitMQ(url string, logger *zap.Logger) (*amqp.Connection, error) {
 	var conn *amqp.Connection
 	var err error
 	maxRetries := 5
@@ -115,10 +112,15 @@ func connectRabbitMQ(url string) (*amqp.Connection, error) {
 	for i := 0; i < maxRetries; i++ {
 		conn, err = amqp.Dial(url)
 		if err == nil {
-			return conn, nil // Успешное подключение
+			return conn, nil
 		}
-		log.Printf("Не удалось подключиться к RabbitMQ (попытка %d/%d): %v. Повтор через %v...", i+1, maxRetries, err, retryDelay)
+		logger.Warn("Failed to connect to RabbitMQ",
+			zap.Int("attempt", i+1),
+			zap.Int("max_attempts", maxRetries),
+			zap.Duration("retry_delay", retryDelay),
+			zap.Error(err),
+		)
 		time.Sleep(retryDelay)
 	}
-	return nil, err // Не удалось подключиться после всех попыток
+	return nil, err
 }

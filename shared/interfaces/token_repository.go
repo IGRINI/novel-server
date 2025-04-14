@@ -29,4 +29,8 @@ type TokenRepository interface {
 	// DeleteRefreshUUID removes only the refresh token UUID from the store.
 	// Useful for testing scenarios or specific logout logic.
 	DeleteRefreshUUID(ctx context.Context, refreshUUID string) error
+
+	// DeleteTokensByUserID removes all tokens (access and refresh) associated with a user ID.
+	// Returns the number of tokens deleted.
+	DeleteTokensByUserID(ctx context.Context, userID uint64) (int64, error)
 }

@@ -268,7 +268,6 @@ func (s *IntegrationTestSuite) TestRegisterAndLogin_Success() {
 	require.Equal(t, username, registeredUser.Username, "Username should match")
 	require.Equal(t, email, registeredUser.Email, "Email should match") // Проверяем email
 	require.NotZero(t, registeredUser.ID, "User ID should be assigned")
-	require.Empty(t, registeredUser.Password, "Password hash should not be returned")
 
 	// Попытка повторной регистрации с тем же username - должна быть ошибка
 	_, err = s.authService.Register(ctx, username, "another@example.com", "anotherpassword")

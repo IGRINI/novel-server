@@ -91,9 +91,10 @@ func (s *authServiceImpl) Register(ctx context.Context, username, email, passwor
 	}
 
 	user := &models.User{
-		Username: username,
-		Email:    email,
-		Password: hashedPassword,
+		Username:     username,
+		Email:        email,
+		PasswordHash: hashedPassword,
+		Roles:        []string{"ROLE_USER"},
 	}
 
 	err = s.userRepo.CreateUser(ctx, user)
@@ -109,8 +110,6 @@ func (s *authServiceImpl) Register(ctx context.Context, username, email, passwor
 		return nil, err
 	}
 
-	// Don't return password hash
-	user.Password = ""
 	s.logger.Info("User registered successfully", zap.Uint64("userID", user.ID), zap.String("username", user.Username), zap.String("email", user.Email))
 	return user, nil
 }
@@ -130,11 +129,19 @@ func (s *authServiceImpl) Login(ctx context.Context, username, password string) 
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 
-	if !checkPasswordHash(password, s.cfg.PasswordSalt, user.Password) {
+	if !checkPasswordHash(password, s.cfg.PasswordSalt, user.PasswordHash) {
 		// Логируем неуспешную попытку входа (неверный пароль)
 		s.logger.Warn("Login failed: invalid password", zap.String("username", username), zap.Uint64("userID", user.ID))
 		return nil, models.ErrInvalidCredentials
 	}
+
+	// <<< Проверка на бан >>>
+	if user.IsBanned {
+		s.logger.Warn("Login failed: user is banned", zap.String("username", username), zap.Uint64("userID", user.ID))
+		// Возвращаем стандартную ошибку, чтобы не раскрывать причину
+		return nil, models.ErrInvalidCredentials 
+	}
+	// <<< Конец проверки на бан >>>
 
 	td, err := s.createTokens(ctx, user.ID)
 	if err != nil {
@@ -153,21 +160,26 @@ func (s *authServiceImpl) Login(ctx context.Context, username, password string) 
 	return td, nil
 }
 
-// Logout invalidates user's tokens.
+// Logout removes the access and refresh tokens from the store.
 func (s *authServiceImpl) Logout(ctx context.Context, accessUUID, refreshUUID string) error {
-	s.logger.Info("Logout attempt", zap.String("accessUUID", accessUUID), zap.String("refreshUUID", refreshUUID))
-	deleted, err := s.tokenRepo.DeleteTokens(ctx, accessUUID, refreshUUID)
+	log := s.logger.With(zap.String("accessUUID", accessUUID), zap.String("refreshUUID", refreshUUID))
+	log.Debug("Attempting to logout user by deleting tokens")
+
+	// Используем DeleteTokens для удаления обоих UUID
+	deletedCount, err := s.tokenRepo.DeleteTokens(ctx, accessUUID, refreshUUID)
+
 	if err != nil {
-		// Ошибка уже залогирована репозиторием
-		s.logger.Error("Error deleting tokens via repository during logout", zap.Error(err), zap.String("accessUUID", accessUUID), zap.String("refreshUUID", refreshUUID))
-		return fmt.Errorf("failed to delete tokens: %w", err) // Ошибка уже обернута репо
+		// Логируем ошибку, но не возвращаем ее клиенту, т.к. токены могли уже быть удалены.
+		log.Error("Failed to delete tokens during logout", zap.Error(err))
 	}
-	if deleted == 0 {
-		s.logger.Warn("Logout attempt: No tokens found to delete", zap.String("accessUUID", accessUUID), zap.String("refreshUUID", refreshUUID))
+
+	if deletedCount > 0 {
+		log.Info("Tokens deleted successfully during logout", zap.Int64("deletedCount", deletedCount))
 	} else {
-		s.logger.Info("Tokens deleted successfully during logout", zap.Int64("deletedCount", deleted), zap.String("accessUUID", accessUUID), zap.String("refreshUUID", refreshUUID))
+		log.Info("No tokens found to delete during logout (already expired or logged out)")
 	}
-	return nil
+
+	return nil // Успех, даже если токены уже были удалены
 }
 
 // Refresh issues new access and refresh tokens based on a valid refresh token.
@@ -342,6 +354,42 @@ func (s *authServiceImpl) VerifyInterServiceToken(ctx context.Context, tokenStri
 	return "", models.ErrTokenInvalid // <<< Исправлено
 }
 
+// ValidateAndGetClaims проверяет токен и статус пользователя.
+func (s *authServiceImpl) ValidateAndGetClaims(ctx context.Context, tokenString string) (*domain.Claims, error) {
+	log := s.logger.With(zap.String("operation", "ValidateAndGetClaims"))
+	log.Debug("Validating token and user status")
+
+	// 1. Проверяем подпись, срок действия и наличие токена в Redis
+	claims, err := s.VerifyAccessToken(ctx, tokenString)
+	if err != nil {
+		// Ошибка уже залогирована в VerifyAccessToken
+		// Возвращаем ошибку (ErrTokenExpired, ErrTokenMalformed, ErrTokenInvalid)
+		return nil, err 
+	}
+
+	// 2. Проверяем статус пользователя (не забанен ли)
+	log = log.With(zap.Uint64("userID", claims.UserID))
+	user, err := s.userRepo.GetUserByID(ctx, claims.UserID)
+	if err != nil {
+		if errors.Is(err, models.ErrUserNotFound) {
+			// Пользователь из токена не найден в БД - токен невалиден
+			log.Warn("User from valid token not found in DB")
+			return nil, models.ErrTokenInvalid // Считаем токен невалидным
+		}
+		// Другая ошибка БД
+		log.Error("Failed to get user by ID during token validation", zap.Error(err))
+		return nil, fmt.Errorf("failed to get user for validation: %w", err)
+	}
+
+	if user.IsBanned {
+		log.Warn("Token validation failed: user is banned")
+		return nil, models.ErrTokenInvalid // Возвращаем общую ошибку невалидного токена
+	}
+
+	log.Debug("Token and user status validated successfully")
+	return claims, nil
+}
+
 // --- Helper Functions ---
 
 // hashPassword generates a bcrypt hash of the password using a salt.
@@ -362,47 +410,186 @@ func checkPasswordHash(password, salt, hash string) bool {
 // createTokens generates new access and refresh tokens for a user.
 func (s *authServiceImpl) createTokens(ctx context.Context, userID uint64) (*models.TokenDetails, error) {
 	s.logger.Debug("Creating new token pair", zap.Uint64("userID", userID))
+	user, err := s.userRepo.GetUserByID(ctx, userID)
+	if err != nil {
+		s.logger.Error("Failed to get user by ID during token creation", zap.Uint64("userID", userID), zap.Error(err))
+		return nil, fmt.Errorf("ошибка получения пользователя для создания токена: %w", err)
+	}
+
 	td := &models.TokenDetails{}
 	td.AtExpires = time.Now().Add(s.cfg.AccessTokenTTL).Unix()
-	td.AccessUUID = uuid.NewString()
+	td.AccessUUID = uuid.New().String()
 
 	td.RtExpires = time.Now().Add(s.cfg.RefreshTokenTTL).Unix()
-	td.RefreshUUID = uuid.NewString()
-
-	var err error
+	td.RefreshUUID = uuid.New().String()
 
 	// Creating Access Token
-	atClaims := domain.Claims{
+	acClaims := &domain.Claims{
 		UserID: userID,
+		Roles:  user.Roles,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Unix(td.AtExpires, 0)),
 			ID:        td.AccessUUID,
+			ExpiresAt: jwt.NewNumericDate(time.Unix(td.AtExpires, 0)),
+			Subject:   fmt.Sprintf("%d", userID),
+			Issuer:    "novel-server-auth",
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Issuer:    s.cfg.ServiceID,
 		},
 	}
-	at := jwt.NewWithClaims(jwt.SigningMethodHS256, atClaims)
-	td.AccessToken, err = at.SignedString([]byte(s.cfg.JWTSecret))
+	acToken := jwt.NewWithClaims(jwt.SigningMethodHS256, acClaims)
+	td.AccessToken, err = acToken.SignedString([]byte(s.cfg.JWTSecret))
 	if err != nil {
 		s.logger.Error("Failed to sign access token", zap.Error(err), zap.Uint64("userID", userID))
 		return nil, fmt.Errorf("failed to sign access token: %w", err)
 	}
 
 	// Creating Refresh Token
-	rtClaims := domain.Claims{
+	rcClaims := &domain.Claims{
 		UserID: userID,
+		Roles:  user.Roles,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Unix(td.RtExpires, 0)),
 			ID:        td.RefreshUUID,
+			ExpiresAt: jwt.NewNumericDate(time.Unix(td.RtExpires, 0)),
+			Subject:   fmt.Sprintf("%d", userID),
+			Issuer:    "novel-server-auth",
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			Issuer:    s.cfg.ServiceID,
 		},
 	}
-	rt := jwt.NewWithClaims(jwt.SigningMethodHS256, rtClaims)
-	td.RefreshToken, err = rt.SignedString([]byte(s.cfg.JWTSecret))
+	rtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, rcClaims)
+	td.RefreshToken, err = rtToken.SignedString([]byte(s.cfg.JWTSecret))
 	if err != nil {
 		s.logger.Error("Failed to sign refresh token", zap.Error(err), zap.Uint64("userID", userID))
 		return nil, fmt.Errorf("failed to sign refresh token: %w", err)
 	}
+
 	return td, nil
+}
+
+// BanUser sets the user's status to banned.
+func (s *authServiceImpl) BanUser(ctx context.Context, userID uint64) error {
+	log := s.logger.With(zap.Uint64("userID", userID))
+	log.Info("Attempting to ban user")
+	err := s.userRepo.SetUserBanStatus(ctx, userID, true)
+	if err != nil {
+		log.Error("Failed to set user ban status", zap.Error(err), zap.Bool("isBanned", true))
+		return err // Возвращаем ошибку как есть (может быть ErrUserNotFound)
+	}
+	log.Info("User banned successfully")
+
+	// <<< Удаляем токены пользователя >>>
+	deletedCount, delErr := s.tokenRepo.DeleteTokensByUserID(ctx, userID)
+	if delErr != nil {
+		// Логируем ошибку удаления токенов, но не возвращаем ее, т.к. бан уже произошел
+		log.Error("Failed to delete user tokens after ban", zap.Error(delErr))
+	} else {
+		log.Info("Deleted user tokens after ban", zap.Int64("deletedCount", deletedCount))
+	}
+	// <<< Конец удаления токенов >>>
+
+	return nil
+}
+
+// UnbanUser sets the user's status to not banned.
+func (s *authServiceImpl) UnbanUser(ctx context.Context, userID uint64) error {
+	log := s.logger.With(zap.Uint64("userID", userID))
+	log.Info("Attempting to unban user")
+	err := s.userRepo.SetUserBanStatus(ctx, userID, false)
+	if err != nil {
+		log.Error("Failed to set user ban status", zap.Error(err), zap.Bool("isBanned", false))
+		return err // Возвращаем ошибку как есть (может быть ErrUserNotFound)
+	}
+	log.Info("User unbanned successfully")
+	return nil
+}
+
+// UpdateUser обновляет данные пользователя (email, роли, статус бана).
+// Использует метод репозитория UpdateUserFields для атомарного обновления.
+func (s *authServiceImpl) UpdateUser(ctx context.Context, userID uint64, email *string, roles []string, isBanned *bool) error {
+	logFields := []zap.Field{zap.Uint64("userID", userID)}
+	if email != nil {
+		logFields = append(logFields, zap.Stringp("email", email))
+	}
+	if roles != nil {
+		logFields = append(logFields, zap.Strings("roles", roles))
+	}
+	if isBanned != nil {
+		logFields = append(logFields, zap.Boolp("isBanned", isBanned))
+	}
+	s.logger.Info("Attempting to update user", logFields...)
+
+	// Валидация email, если он передается
+	if email != nil {
+		*email = strings.ToLower(strings.TrimSpace(*email))
+		if _, err := mail.ParseAddress(*email); err != nil {
+			s.logger.Warn("Update user attempt with invalid email format", append(logFields, zap.Error(err))...)
+			// Используем общую ошибку для невалидных входных данных
+			return fmt.Errorf("invalid email format: %w", models.ErrInvalidInput)
+		}
+	}
+
+	// Вызываем метод репозитория для обновления
+	err := s.userRepo.UpdateUserFields(ctx, userID, email, roles, isBanned)
+	if err != nil {
+		// Логирование уже произошло в репозитории или здесь (для ErrInvalidInput)
+		// Просто возвращаем ошибку (может быть ErrUserNotFound, ErrEmailAlreadyExists, ErrInvalidInput или другая ошибка БД)
+		return err
+	}
+
+	// Если пользователя забанили, нужно удалить его токены
+	if isBanned != nil && *isBanned {
+		s.logger.Info("User was banned during update, deleting tokens", zap.Uint64("userID", userID))
+		deletedCount, delErr := s.tokenRepo.DeleteTokensByUserID(ctx, userID)
+		if delErr != nil {
+			// Логируем ошибку удаления токенов, но не возвращаем ее, т.к. обновление уже произошло
+			s.logger.Error("Failed to delete user tokens after ban during update", zap.Error(delErr), zap.Uint64("userID", userID))
+		} else {
+			s.logger.Info("Deleted user tokens after ban during update", zap.Int64("deletedCount", deletedCount), zap.Uint64("userID", userID))
+		}
+	}
+
+	s.logger.Info("User updated successfully", logFields...)
+	return nil
+}
+
+// UpdatePassword обновляет пароль пользователя и инвалидирует его текущие токены.
+func (s *authServiceImpl) UpdatePassword(ctx context.Context, userID uint64, newPassword string) error {
+	log := s.logger.With(zap.Uint64("userID", userID))
+	log.Info("Attempting to update user password")
+
+	// Проверяем, существует ли пользователь (дополнительная проверка)
+	_, err := s.userRepo.GetUserByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, models.ErrUserNotFound) {
+			log.Warn("Attempted to update password for non-existent user")
+		}
+		// Логирование уже произошло в GetUserByID или здесь
+		return err // Возвращаем ошибку (может быть ErrUserNotFound)
+	}
+
+	// Генерируем хеш нового пароля
+	newPasswordHash, err := hashPassword(newPassword, s.cfg.PasswordSalt)
+	if err != nil {
+		log.Error("Failed to hash new password during update", zap.Error(err))
+		return fmt.Errorf("failed to hash new password: %w", err)
+	}
+
+	// Обновляем хеш в базе данных
+	err = s.userRepo.UpdatePasswordHash(ctx, userID, newPasswordHash)
+	if err != nil {
+		// Логирование уже произошло в UpdatePasswordHash
+		return err // Возвращаем ошибку (может быть ErrUserNotFound)
+	}
+
+	log.Info("User password hash updated successfully, invalidating tokens...")
+
+	// Инвалидируем все токены пользователя
+	deletedCount, delErr := s.tokenRepo.DeleteTokensByUserID(ctx, userID)
+	if delErr != nil {
+		// Логируем ошибку удаления токенов, но не возвращаем ее, т.к. пароль уже обновлен
+		log.Error("Failed to delete user tokens after password update", zap.Error(delErr))
+	} else {
+		log.Info("Deleted user tokens after password update", zap.Int64("deletedCount", deletedCount))
+	}
+
+	log.Info("User password updated and tokens invalidated successfully")
+	return nil
 }

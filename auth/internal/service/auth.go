@@ -15,4 +15,9 @@ type AuthService interface {
 	VerifyAccessToken(ctx context.Context, tokenString string) (*domain.Claims, error)
 	GenerateInterServiceToken(ctx context.Context, serviceName string) (string, error) // Межсервисная авторизация
 	VerifyInterServiceToken(ctx context.Context, tokenString string) (string, error)   // Межсервисная авторизация
+	BanUser(ctx context.Context, userID uint64) error   // Бан пользователя
+	UnbanUser(ctx context.Context, userID uint64) error // Разбан пользователя
+	ValidateAndGetClaims(ctx context.Context, tokenString string) (*domain.Claims, error) // ValidateAndGetClaims method
+	UpdateUser(ctx context.Context, userID uint64, email *string, roles []string, isBanned *bool) error // UpdateUser method
+	UpdatePassword(ctx context.Context, userID uint64, newPassword string) error // Смена пароля (для админа)
 }
