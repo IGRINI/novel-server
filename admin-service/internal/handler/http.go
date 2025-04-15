@@ -14,8 +14,32 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.uber.org/zap"
 )
+
+// <<< Определение и регистрация кастомных метрик админки >>>
+var (
+	userBansTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "admin_user_bans_total",
+		Help: "Total number of successful user bans.",
+	})
+	userUnbansTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "admin_user_unbans_total",
+		Help: "Total number of successful user unbans.",
+	})
+	passwordResetsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "admin_password_resets_total",
+		Help: "Total number of successful password resets.",
+	})
+	userUpdatesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "admin_user_updates_total",
+		Help: "Total number of successful user updates.",
+	})
+)
+
+// <<< Конец определения >>>
 
 // AdminHandler обрабатывает HTTP запросы для admin-service.
 type AdminHandler struct {
@@ -355,6 +379,9 @@ func (h *AdminHandler) handleBanUser(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, userFacingError)
 	}
 
+	// <<< Инкремент счетчика банов >>>
+	userBansTotal.Inc()
+
 	// При успехе возвращаем обновленную строку таблицы пользователя для HTMX
 	// Получаем обновленные данные пользователя (или только статус бана?)
 	// Проще всего - просто перезапросить весь список и отрендерить его заново
@@ -419,6 +446,9 @@ func (h *AdminHandler) handleUnbanUser(c echo.Context) error {
 		}
 		return echo.NewHTTPError(http.StatusInternalServerError, userFacingError)
 	}
+
+	// <<< Инкремент счетчика разбанов >>>
+	userUnbansTotal.Inc()
 
 	// При успехе, также перезагружаем страницу (простой вариант)
 	c.Response().Header().Set("HX-Refresh", "true")
@@ -588,6 +618,9 @@ func (h *AdminHandler) handleUserUpdate(c echo.Context) error {
 		return c.Render(http.StatusOK, "user_edit.html", data)           // Рендерим снова с ошибкой
 	}
 
+	// <<< Инкремент счетчика обновлений >>>
+	userUpdatesTotal.Inc()
+
 	// Успех
 	data["Success"] = "Изменения успешно сохранены!"
 	// Можно сделать редирект обратно на список: return c.Redirect(http.StatusSeeOther, "/admin/users")
@@ -625,6 +658,9 @@ func (h *AdminHandler) handleResetPassword(c echo.Context) error {
 		c.Response().Header().Set("HX-Reswap", "innerHTML")
 		return c.String(http.StatusInternalServerError, fmt.Sprintf("<article aria-invalid='true'>%s</article>", errorMessage))
 	}
+
+	// <<< Инкремент счетчика сброса паролей >>>
+	passwordResetsTotal.Inc()
 
 	// Успех: Возвращаем HTML с новым паролем для отображения через HTMX
 	h.logger.Info("Password reset successful for user", zap.Uint64("targetUserID", userID))

@@ -20,8 +20,11 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
 	// Импорт для метрик Prometheus
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	// "github.com/prometheus/client_golang/prometheus/promhttp"
+	// <<< Добавляем импорт Gin Prometheus middleware >>>
+	ginprometheus "github.com/zsais/go-gin-prometheus"
 )
 
 func main() {
@@ -83,6 +86,11 @@ func main() {
 	router.Use(ginZapLogger(logger))
 	router.Use(gin.Recovery())
 
+	// <<< Возвращаем Prometheus Middleware >>>
+	p := ginprometheus.NewPrometheus("gin") // Префикс для метрик (например, gin_request_...)
+	p.Use(router)                           // Регистрируем middleware (он сам зарегистрирует /metrics)
+	// <<< Конец возвращения >>>
+
 	// Configure CORS Middleware
 	corsConfig := cors.DefaultConfig()
 	allowedOrigins := cfg.GetAllowedOrigins()
@@ -105,10 +113,6 @@ func main() {
 
 	// Register Application Routes
 	authHandler.RegisterRoutes(router)
-
-	// <<< Возвращаем явную регистрацию /metrics >>>
-	zap.L().Info("Registering Prometheus metrics endpoint")
-	router.GET("/metrics", gin.WrapH(promhttp.Handler())) // Используем gin.WrapH
 
 	// --- Start Server ---
 	srv := &http.Server{
@@ -143,9 +147,9 @@ func main() {
 	zap.L().Info("Server exiting")
 }
 
-// setupPostgres initializes the PostgreSQL connection pool.
+// setupPostgres initializes the PostgreSQL connection pool with retry logic.
 func setupPostgres(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
-	zap.L().Debug("Connecting to PostgreSQL...")
+	zap.L().Debug("Setting up PostgreSQL connection...")
 	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
 		cfg.DBUser, cfg.DBPassword, cfg.DBHost, cfg.DBPort, cfg.DBName, cfg.DBSSLMode)
 
@@ -153,37 +157,117 @@ func setupPostgres(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, erro
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse postgres config: %w", err)
 	}
+	// Устанавливаем параметры пула из конфига (можно добавить сюда)
+	// poolConfig.MaxConns = ...
+	// poolConfig.MinConns = ...
+	// poolConfig.MaxConnIdleTime = ...
 
-	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
-	if err != nil {
-		return nil, fmt.Errorf("unable to create postgres connection pool: %w", err)
+	// --- Retry Logic ---
+	var pool *pgxpool.Pool
+	var lastErr error
+	maxRetries := 50              // <<< УВЕЛИЧИВАЕМ КОЛИЧЕСТВО ПОПЫТОК
+	retryDelay := 5 * time.Second // Оставляем 5 секунд
+
+	zap.L().Info("Attempting to connect to PostgreSQL", zap.Int("max_retries", maxRetries), zap.Duration("retry_delay", retryDelay))
+
+	for i := 0; i < maxRetries; i++ {
+		attempt := i + 1
+		// Используем общий контекст ctx, но с таймаутом на *эту* попытку
+		connectCtx, connectCancel := context.WithTimeout(ctx, 5*time.Second) // Таймаут на попытку подключения
+		pool, err = pgxpool.NewWithConfig(connectCtx, poolConfig)
+		connectCancel() // Отменяем контекст этой попытки
+
+		if err != nil {
+			lastErr = fmt.Errorf("unable to create postgres connection pool (attempt %d/%d): %w", attempt, maxRetries, err)
+			zap.L().Warn("Postgres connection pool creation failed, retrying...",
+				zap.Int("attempt", attempt),
+				zap.Int("max_retries", maxRetries),
+				zap.Error(err),
+			)
+			if i < maxRetries-1 {
+				time.Sleep(retryDelay)
+			}
+			continue // Следующая попытка
+		}
+
+		// Пытаемся пинговать, чтобы убедиться, что соединение живое
+		pingCtx, pingCancel := context.WithTimeout(ctx, 2*time.Second) // Таймаут на пинг
+		err = pool.Ping(pingCtx)
+		pingCancel() // Отменяем контекст пинга
+
+		if err == nil {
+			zap.L().Info("Successfully connected and pinged PostgreSQL", zap.Int("attempt", attempt))
+			return pool, nil // Успех!
+		}
+
+		// Если пинг не удался, закрываем созданный пул и повторяем
+		pool.Close() // Важно закрыть неудачный пул
+		lastErr = fmt.Errorf("unable to ping postgres database (attempt %d/%d): %w", attempt, maxRetries, err)
+		zap.L().Warn("Postgres ping failed, retrying...",
+			zap.Int("attempt", attempt),
+			zap.Int("max_retries", maxRetries),
+			zap.Error(err),
+		)
+		if i < maxRetries-1 {
+			time.Sleep(retryDelay)
+		}
 	}
 
-	zap.L().Debug("Pinging PostgreSQL...")
-	if err = pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("unable to ping postgres database: %w", err)
-	}
-
-	return pool, nil
+	// Если все попытки не удались
+	zap.L().Error("Failed to connect to PostgreSQL after all retries", zap.Int("attempts", maxRetries), zap.Error(lastErr))
+	return nil, fmt.Errorf("failed to connect to postgres after %d attempts: %w", maxRetries, lastErr)
 }
 
-// setupRedis initializes the Redis client.
+// setupRedis initializes the Redis client with retry logic.
 func setupRedis(ctx context.Context, cfg *config.Config) (*redis.Client, error) {
-	zap.L().Debug("Connecting to Redis...")
+	zap.L().Debug("Setting up Redis connection...")
+	zap.L().Info("Attempting to connect to Redis",
+		zap.String("address", cfg.RedisAddr),
+		zap.Int("db", cfg.RedisDB),
+	)
 	client := redis.NewClient(&redis.Options{
 		Addr:     cfg.RedisAddr,
 		Password: cfg.RedisPassword,
 		DB:       cfg.RedisDB,
+		// Можно добавить таймауты на операции Redis, если нужно
+		// ReadTimeout:  3 * time.Second,
+		// WriteTimeout: 3 * time.Second,
 	})
 
-	zap.L().Debug("Pinging Redis...")
-	if _, err := client.Ping(ctx).Result(); err != nil {
-		client.Close()
-		return nil, fmt.Errorf("unable to ping redis: %w", err)
+	// --- Retry Logic ---
+	var lastErr error
+	maxRetries := 50              // <<< УВЕЛИЧИВАЕМ КОЛИЧЕСТВО ПОПЫТОК
+	retryDelay := 5 * time.Second // Оставляем 5 секунд
+
+	zap.L().Info("Attempting to ping Redis", zap.Int("max_retries", maxRetries), zap.Duration("retry_delay", retryDelay))
+
+	for i := 0; i < maxRetries; i++ {
+		attempt := i + 1
+		// Используем общий контекст ctx, но с таймаутом на *эту* попытку пинга
+		pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second) // Таймаут на пинг
+		_, err := client.Ping(pingCtx).Result()
+		pingCancel() // Отменяем контекст этой попытки
+
+		if err == nil {
+			zap.L().Info("Successfully connected and pinged Redis", zap.Int("attempt", attempt))
+			return client, nil // Успех!
+		}
+
+		lastErr = fmt.Errorf("unable to ping redis (attempt %d/%d): %w", attempt, maxRetries, err)
+		zap.L().Warn("Redis ping failed, retrying...",
+			zap.Int("attempt", attempt),
+			zap.Int("max_retries", maxRetries),
+			zap.Error(err),
+		)
+		if i < maxRetries-1 {
+			time.Sleep(retryDelay)
+		}
 	}
 
-	return client, nil
+	// Если все попытки не удались
+	client.Close() // Закрываем клиент, так как подключиться не удалось
+	zap.L().Error("Failed to connect to Redis after all retries", zap.Int("attempts", maxRetries), zap.Error(lastErr))
+	return nil, fmt.Errorf("failed to connect to redis after %d attempts: %w", maxRetries, lastErr)
 }
 
 // ginZapLogger returns a gin.HandlerFunc (middleware) that logs requests using zap.

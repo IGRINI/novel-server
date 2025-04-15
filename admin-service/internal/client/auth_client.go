@@ -10,17 +10,20 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"novel-server/shared/models" // Для структуры TokenDetails и кодов ошибок
+
 	"go.uber.org/zap"
 )
 
 // authClient реализует AuthServiceHttpClient (интерфейс определен в auth.go).
 type authClient struct {
-	baseURL    string
-	httpClient *http.Client
-	logger     *zap.Logger
+	baseURL           string
+	httpClient        *http.Client
+	logger            *zap.Logger
+	mu                sync.RWMutex
 	interServiceToken string // Поле для JWT токена
 	staticSecret      string // Поле для статичного секрета
 }
@@ -47,7 +50,7 @@ func NewAuthServiceClient(baseURL string, timeout time.Duration, logger *zap.Log
 			Timeout: timeout, // Таймаут на весь запрос
 			// TODO: Настроить Transport для keep-alive, max idle conns и т.д.
 		},
-		logger: logger.Named("AuthServiceClient"),
+		logger:       logger.Named("AuthServiceClient"),
 		staticSecret: staticSecret, // Сохраняем статичный секрет
 	}, nil
 }
@@ -137,7 +140,7 @@ func (c *authClient) Login(ctx context.Context, username, password string) (*mod
 	return nil, fmt.Errorf("received unexpected status %d from auth service", httpResp.StatusCode)
 }
 
-// --- Новые методы --- 
+// --- Новые методы ---
 
 // GetUserCount - вызывает эндпоинт /internal/auth/users/count в auth-service
 func (c *authClient) GetUserCount(ctx context.Context) (int, error) {
@@ -151,7 +154,7 @@ func (c *authClient) GetUserCount(ctx context.Context) (int, error) {
 	}
 	httpReq.Header.Set("Accept", "application/json")
 	// Используем JWT токен
-	if c.interServiceToken != "" { 
+	if c.interServiceToken != "" {
 		httpReq.Header.Set("X-Internal-Service-Token", c.interServiceToken)
 	} else {
 		log.Warn("Inter-service token is not set, internal API call might fail")
@@ -207,7 +210,7 @@ func (c *authClient) ListUsers(ctx context.Context) ([]models.User, error) {
 	}
 	httpReq.Header.Set("Accept", "application/json")
 	// Используем JWT токен
-	if c.interServiceToken != "" { 
+	if c.interServiceToken != "" {
 		httpReq.Header.Set("X-Internal-Service-Token", c.interServiceToken)
 	} else {
 		log.Warn("Inter-service token is not set, internal API call might fail")
@@ -247,7 +250,7 @@ func (c *authClient) ListUsers(ctx context.Context) ([]models.User, error) {
 	return users, nil
 }
 
-// --- Новый метод --- 
+// --- Новый метод ---
 
 // generateInterServiceTokenRequest - структура для запроса /internal/auth/token/generate
 type generateInterServiceTokenRequest struct {
@@ -280,9 +283,9 @@ func (c *authClient) GenerateInterServiceToken(ctx context.Context, serviceName 
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
-	// --- Используем статичный секрет для запроса ГЕНЕРАЦИИ токена --- 
+	// --- Используем статичный секрет для запроса ГЕНЕРАЦИИ токена ---
 	if c.staticSecret != "" { // Используем поле staticSecret
-		httpReq.Header.Set("X-Internal-Service-Token", c.staticSecret) 
+		httpReq.Header.Set("X-Internal-Service-Token", c.staticSecret)
 	} else {
 		log.Warn("Static Inter-service secret is not set for token generation request")
 	}
@@ -433,12 +436,13 @@ func (c *authClient) ValidateAdminToken(ctx context.Context, token string) (*mod
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
-	// Используем JWT токен для межсервисного взаимодействия
-	if c.interServiceToken == "" {
-		log.Warn("Inter-service token is not set, token validation API call might fail")
-		return nil, fmt.Errorf("inter-service token not available")
+	// <<< Добавляем межсервисный токен, т.к. обращаемся к /internal эндпоинту >>>
+	if c.interServiceToken != "" {
+		httpReq.Header.Set("X-Internal-Service-Token", c.interServiceToken)
+	} else {
+		log.Warn("Inter-service token is not set, internal validation call might fail")
+		// Возможно, здесь стоит вернуть ошибку, если токен обязателен?
 	}
-	httpReq.Header.Set("X-Internal-Service-Token", c.interServiceToken)
 
 	log.Debug("Sending token validation request to auth-service")
 	httpResp, err := c.httpClient.Do(httpReq)
@@ -470,7 +474,7 @@ func (c *authClient) ValidateAdminToken(ctx context.Context, token string) (*mod
 	// Обрабатываем ошибки валидации от auth-service
 	log.Warn("Received error response from auth-service for token validation", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
 
-	// --- Исправленная обработка ошибок --- 
+	// --- Исправленная обработка ошибок ---
 	if httpResp.StatusCode == http.StatusUnauthorized {
 		// Пытаемся понять, протух ли токен или просто невалиден/отозван/юзер забанен
 		type authErrorResponse struct {
@@ -485,7 +489,7 @@ func (c *authClient) ValidateAdminToken(ctx context.Context, token string) (*mod
 		// Во всех остальных случаях 401 (невалидный, отозван, пользователь забанен) возвращаем общую ошибку
 		return nil, models.ErrTokenInvalid
 	}
-	// --- Конец исправленной обработки --- 
+	// --- Конец исправленной обработки ---
 
 	// Другие ошибки (500 и т.д.)
 	return nil, fmt.Errorf("auth service validation returned status %d", httpResp.StatusCode)
@@ -493,6 +497,9 @@ func (c *authClient) ValidateAdminToken(ctx context.Context, token string) (*mod
 
 // SetInterServiceToken устанавливает JWT токен для последующих запросов.
 func (c *authClient) SetInterServiceToken(token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	c.logger.Info("Inter-service token has been set")
 	c.interServiceToken = token
 }
@@ -574,9 +581,9 @@ func (c *authClient) UpdateUser(ctx context.Context, userID uint64, payload User
 }
 
 // --- Генерация случайного пароля ---
-const ( 
+const (
 	passwordLength = 12
-	passwordChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	passwordChars  = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 )
 
 // generateRandomPassword создает случайную строку заданной длины.
@@ -600,7 +607,7 @@ type updatePasswordRequestClient struct {
 // ResetPassword генерирует новый пароль и отправляет запрос на его установку в auth-service.
 func (c *authClient) ResetPassword(ctx context.Context, userID uint64) (string, error) {
 	log := c.logger.With(zap.Uint64("userID", userID))
-	
+
 	// 1. Генерируем новый случайный пароль
 	newPassword, err := generateRandomPassword(passwordLength)
 	if err != nil {

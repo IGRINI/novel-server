@@ -125,12 +125,11 @@ func (s *IntegrationTestSuite) SetupSuite() {
 		DBSSLMode:  "disable",
 		RedisAddr:  redisAddr,
 		// Устанавливаем короткие TTL для тестов (если нужно проверять истечение)
-		AccessTokenTTL:  5 * time.Minute, // Или даже секунды
-		RefreshTokenTTL: 10 * time.Minute,
-		InterServiceTTL: 1 * time.Minute,
+		AccessTokenTTL:       5 * time.Minute, // Или даже секунды
+		RefreshTokenTTL:      10 * time.Minute,
+		InterServiceTokenTTL: 1 * time.Minute,
 		// Секреты можно оставить дефолтными для тестов или сгенерировать
 		JWTSecret:          "test-jwt-secret",
-		PasswordSalt:       "test-salt",
 		InterServiceSecret: "test-inter-service-secret",
 		ServiceID:          "test-auth-service",
 		Env:                "test",
@@ -624,9 +623,9 @@ func (s *IntegrationTestSuite) TestVerifyInterServiceToken_Expired() {
 	serviceName := "expired-service"
 
 	// 1. Генерация токена с коротким TTL
-	originalTTL := s.config.InterServiceTTL                   // Сохраняем оригинальный TTL
-	s.config.InterServiceTTL = 1 * time.Millisecond           // Устанавливаем короткий TTL
-	defer func() { s.config.InterServiceTTL = originalTTL }() // Восстанавливаем TTL после теста
+	originalTTL := s.config.InterServiceTokenTTL                   // Сохраняем оригинальный TTL
+	s.config.InterServiceTokenTTL = 1 * time.Millisecond           // Устанавливаем короткий TTL
+	defer func() { s.config.InterServiceTokenTTL = originalTTL }() // Восстанавливаем TTL после теста
 
 	tokenString, err := s.authService.GenerateInterServiceToken(ctx, serviceName)
 	require.NoError(t, err)

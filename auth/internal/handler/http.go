@@ -2,20 +2,24 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"novel-server/auth/internal/domain" // Нужен для Claims при парсинге
 	"novel-server/auth/internal/service"
 	"novel-server/shared/interfaces" // Импортируем интерфейс репозитория
 	"novel-server/shared/models"
+	"regexp"  // <<< Добавляем для валидации username
 	"strconv" // Добавляем для парсинга ID
 	"strings"
+	"unicode" // <<< Добавляем для валидации пароля
+
+	"novel-server/auth/internal/config" // <<< Добавляем импорт конфига
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5" // Нужен для парсинга refresh token
-	"go.uber.org/zap"
-	"novel-server/auth/internal/config" // <<< Добавляем импорт конфига
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"go.uber.org/zap"
 )
 
 // <<< Определение и регистрация кастомных метрик >>>
@@ -46,6 +50,7 @@ var (
 		[]string{"type", "status"}, // Метки: тип токена и статус проверки
 	)
 )
+
 // <<< Конец определения >>>
 
 // --- Коды ошибок API ---
@@ -65,11 +70,23 @@ const (
 	ErrCodeInternalError = 50001
 )
 
+// --- Константы для валидации ---
+const (
+	minUsernameLength = 3
+	maxUsernameLength = 30
+	minPasswordLength = 8
+	maxPasswordLength = 100
+)
+
+// Регулярное выражение для проверки допустимых символов в имени пользователя
+// (латинские буквы, цифры, подчеркивание, дефис)
+var usernameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
 // AuthHandler handles HTTP requests related to authentication.
 type AuthHandler struct {
 	authService service.AuthService
 	userRepo    interfaces.UserRepository // Добавляем репозиторий
-	cfg         *config.Config // <<< Добавляем поле для конфига
+	cfg         *config.Config            // <<< Добавляем поле для конфига
 }
 
 // NewAuthHandler creates a new AuthHandler.
@@ -77,7 +94,7 @@ func NewAuthHandler(authService service.AuthService, userRepo interfaces.UserRep
 	return &AuthHandler{
 		authService: authService,
 		userRepo:    userRepo, // Инициализируем поле
-		cfg:         cfg, // <<< Сохраняем конфиг
+		cfg:         cfg,      // <<< Сохраняем конфиг
 	}
 }
 
@@ -163,7 +180,7 @@ type meResponse struct {
 	IsBanned bool     `json:"isBanned"`
 }
 
-// --- Структура для запроса на обновление --- 
+// --- Структура для запроса на обновление ---
 type updateUserRequest struct {
 	// Используем указатели, чтобы различать неуказанные поля и поля с нулевыми значениями
 	Email    *string  `json:"email,omitempty"`
@@ -235,15 +252,55 @@ func (h *AuthHandler) register(c *gin.Context) {
 		return
 	}
 
+	// --- ДОБАВЛЯЕМ ВАЛИДАЦИЮ ---
+	// Валидация имени пользователя
+	if len(req.Username) < minUsernameLength || len(req.Username) > maxUsernameLength {
+		errResp := ErrorResponse{Code: ErrCodeBadRequest, Message: fmt.Sprintf("Username length must be between %d and %d characters", minUsernameLength, maxUsernameLength)}
+		c.AbortWithStatusJSON(http.StatusBadRequest, errResp)
+		return
+	}
+	if !usernameRegex.MatchString(req.Username) {
+		errResp := ErrorResponse{Code: ErrCodeBadRequest, Message: "Username can only contain letters, numbers, underscores, and hyphens"}
+		c.AbortWithStatusJSON(http.StatusBadRequest, errResp)
+		return
+	}
+
+	// Валидация пароля
+	if len(req.Password) < minPasswordLength || len(req.Password) > maxPasswordLength {
+		errResp := ErrorResponse{Code: ErrCodeBadRequest, Message: fmt.Sprintf("Password length must be between %d and %d characters", minPasswordLength, maxPasswordLength)}
+		c.AbortWithStatusJSON(http.StatusBadRequest, errResp)
+		return
+	}
+	var ( // Проверяем сложность пароля
+		hasLetter bool
+		hasDigit  bool
+	)
+	for _, char := range req.Password {
+		if unicode.IsLetter(char) {
+			hasLetter = true
+		}
+		if unicode.IsDigit(char) {
+			hasDigit = true
+		}
+		if hasLetter && hasDigit {
+			break // Достаточно, выходим из цикла
+		}
+	}
+	if !hasLetter || !hasDigit {
+		errResp := ErrorResponse{Code: ErrCodeBadRequest, Message: "Password must contain at least one letter and one digit"}
+		c.AbortWithStatusJSON(http.StatusBadRequest, errResp)
+		return
+	}
+	// --- КОНЕЦ ВАЛИДАЦИИ ---
+
+	// Если валидация прошла, вызываем сервис
 	user, err := h.authService.Register(c.Request.Context(), req.Username, req.Email, req.Password)
 	if err != nil {
 		handleServiceError(c, err)
 		return
 	}
 
-	// <<< Инкрементируем счетчик успешных регистраций >>>
 	registrationsTotal.Inc()
-	// <<< Конец инкремента >>>
 
 	c.JSON(http.StatusCreated, gin.H{"message": "user registered successfully", "user_id": user.ID, "username": user.Username, "email": user.Email})
 }
@@ -613,7 +670,7 @@ func (h *AuthHandler) validateToken(c *gin.Context) {
 	claims, err := h.authService.ValidateAndGetClaims(c.Request.Context(), req.Token)
 	if err != nil {
 		// Возвращаем ошибку, которую вернул сервис (401 с разными кодами)
-		handleServiceError(c, err) 
+		handleServiceError(c, err)
 		return
 	}
 
@@ -655,19 +712,19 @@ func (h *AuthHandler) getUserDetails(c *gin.Context) {
 
 // InternalAuthMiddleware - middleware для проверки межсервисного токена
 func (h *AuthHandler) InternalAuthMiddleware() gin.HandlerFunc {
-	// --- Читаем секрет из конфига для проверки --- 
-	staticSecret := h.cfg.InterServiceSecret 
+	// --- Читаем секрет из конфига для проверки ---
+	staticSecret := h.cfg.InterServiceSecret
 	if staticSecret == "" {
 		zap.L().Warn("InternalAuthMiddleware: INTER_SERVICE_SECRET is not configured on auth-service! Static secret check will fail.")
 	}
 
 	return func(c *gin.Context) {
-		tokenString := c.GetHeader("X-Internal-Service-Token") 
+		tokenString := c.GetHeader("X-Internal-Service-Token")
 		if tokenString == "" {
 			// <<< Инкремент счетчика ошибок верификации >>>
 			tokenVerificationsTotal.WithLabelValues("inter-service", "failure").Inc()
 			// ... (ошибка: токен отсутствует)
-			// --- Добавляем стандартную обработку ошибки --- 
+			// --- Добавляем стандартную обработку ошибки ---
 			c.AbortWithStatusJSON(http.StatusUnauthorized, ErrorResponse{
 				Code:    ErrCodeInvalidToken,
 				Message: "Missing internal service token",
@@ -675,14 +732,14 @@ func (h *AuthHandler) InternalAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// --- Проверка: Статичный секрет ИЛИ JWT --- 
+		// --- Проверка: Статичный секрет ИЛИ JWT ---
 		if staticSecret != "" && tokenString == staticSecret {
 			// Это статичный секрет (вероятно, запрос на генерацию JWT)
 			zap.L().Debug("Internal service access granted via static secret")
 			// <<< НЕ инкрементируем здесь, т.к. это не верификация JWT >>>
-			c.Set("service_name", "_static_secret_") 
+			c.Set("service_name", "_static_secret_")
 			c.Next()
-			return 
+			return
 		} else {
 			// Пытаемся проверить как JWT токен
 			ctx := c.Request.Context()
@@ -704,7 +761,7 @@ func (h *AuthHandler) InternalAuthMiddleware() gin.HandlerFunc {
 			c.Set("service_name", serviceName)
 			c.Next()
 		}
-		// --- Конец проверки --- 
+		// --- Конец проверки ---
 	}
 }
 

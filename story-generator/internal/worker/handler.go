@@ -17,7 +17,60 @@ import (
 	"path/filepath"
 	"text/template" // Для шаблонизации промтов
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+var (
+	// Счетчик полученных задач
+	tasksReceivedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "story_generator_tasks_received_total",
+		Help: "Total number of tasks received by the worker.",
+	})
+	// Счетчик успешно обработанных задач
+	tasksSucceededTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "story_generator_tasks_succeeded_total",
+		Help: "Total number of tasks successfully processed.",
+	})
+	// Счетчик задач с ошибкой
+	tasksFailedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "story_generator_tasks_failed_total",
+		Help: "Total number of tasks failed during processing, labeled by error type.",
+	}, []string{"error_type"}) // Добавляем label для типа ошибки
+	// Счетчик вызовов AI API
+	aiCallsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "story_generator_ai_calls_total",
+		Help: "Total number of AI API calls made.",
+	})
+	// Счетчик ошибок AI API
+	aiErrorsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "story_generator_ai_errors_total",
+		Help: "Total number of errors encountered during AI API calls.",
+	})
+	// Гистограмма длительности вызовов AI API
+	aiCallDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "story_generator_ai_call_duration_seconds",
+		Help:    "Duration of AI API calls.",
+		Buckets: prometheus.ExponentialBuckets(0.1, 2, 10), // Базовые бакеты: 0.1s, 0.2s, 0.4s ... ~8.5min
+	})
+	// Гистограмма общей длительности обработки задачи
+	taskProcessingDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "story_generator_task_processing_duration_seconds",
+		Help:    "Total duration of task processing.",
+		Buckets: prometheus.ExponentialBuckets(0.5, 2, 10), // Базовые бакеты: 0.5s, 1s, 2s ... ~4 min
+	})
+)
+
+// IncrementTasksReceived инкрементирует счетчик полученных задач.
+func IncrementTasksReceived() {
+	tasksReceivedTotal.Inc()
+}
+
+// IncrementTaskFailed инкрементирует счетчик задач с ошибкой, указывая тип ошибки.
+func IncrementTaskFailed(errorType string) {
+	tasksFailedTotal.WithLabelValues(errorType).Inc()
+}
 
 // TaskHandler обрабатывает задачи генерации
 type TaskHandler struct {
@@ -45,6 +98,9 @@ func NewTaskHandler(cfg *config.Config, aiClient service.AIClient, resultRepo re
 
 // Handle обрабатывает одну задачу генерации
 func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
+	// <<< Метрика: Счетчик полученных задач >>>
+	// (Перенесено в main.go, где задача фактически получается из очереди)
+
 	log.Printf("[TaskID: %s] Обработка задачи: UserID=%s, PromptType=%s, InputData=%v",
 		payload.TaskID, payload.UserID, payload.PromptType, payload.InputData)
 
@@ -64,6 +120,10 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 		log.Printf("[TaskID: %s] Ошибка подготовки промта: %v", payload.TaskID, err)
 		completedAt = time.Now()
 		processingTime = completedAt.Sub(fullStartTime)
+		// <<< Метрика: Задача с ошибкой (подготовка промта) >>>
+		tasksFailedTotal.WithLabelValues("prompt_preparation").Inc()
+		// <<< Метрика: Время обработки задачи (ошибка) >>>
+		taskProcessingDuration.Observe(processingTime.Seconds())
 		// Сразу вызываем сохранение и уведомление с ошибкой
 		return h.saveAndNotifyResult(payload, "", err, createdAt, completedAt, processingTime)
 	}
@@ -77,13 +137,21 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 		aiStartTime := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), h.aiTimeout)
 
+		// <<< Метрика: Счетчик вызовов AI >>>
+		aiCallsTotal.Inc()
+
 		aiResponse, err = h.aiClient.GenerateText(ctx, finalSystemPrompt, userInput)
 		cancel()
 
-		processingTime = time.Since(aiStartTime)
+		// <<< Метрика: Время вызова AI >>>
+		aiDuration := time.Since(aiStartTime)
+		aiCallDuration.Observe(aiDuration.Seconds())
+		processingTime = aiDuration // Обновляем время обработки последним вызовом
 
 		if err == nil {
 			log.Printf("[TaskID: %s] AI API успешно ответил (Попытка %d).", payload.TaskID, attempt)
+			// <<< Метрика: Успешная задача >>>
+			// (Инкрементируется в конце, после сохранения)
 			break
 		}
 
@@ -91,6 +159,8 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 
 		if attempt == h.maxAttempts {
 			log.Printf("[TaskID: %s] Достигнуто максимальное количество попыток (%d) вызова AI.", payload.TaskID, h.maxAttempts)
+			// <<< Метрика: Задача с ошибкой (ошибка AI после ретраев) >>>
+			// (Инкрементируется ниже, после цикла)
 			break
 		}
 
@@ -106,9 +176,35 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 		time.Sleep(waitDuration)
 	}
 	completedAt = time.Now()
+	totalDuration := completedAt.Sub(fullStartTime) // Общее время от начала до конца
+
+	// <<< Метрика: Время обработки задачи (общее) >>>
+	taskProcessingDuration.Observe(totalDuration.Seconds())
+
+	// Проверяем, была ли ошибка AI после всех попыток
+	if err != nil {
+		// <<< Метрика: Задача с ошибкой (ошибка AI) >>>
+		tasksFailedTotal.WithLabelValues("ai_error").Inc()
+	}
 
 	// --- Этап 4-6: Сохранение и уведомление ---
-	return h.saveAndNotifyResult(payload, aiResponse, err, createdAt, completedAt, processingTime)
+	saveErr := h.saveAndNotifyResult(payload, aiResponse, err, createdAt, completedAt, processingTime) // 'err' здесь - это ошибка AI или nil
+
+	// Определяем финальный статус задачи для метрик
+	if saveErr != nil {
+		// Ошибка сохранения - это отдельная категория ошибки задачи
+		tasksFailedTotal.WithLabelValues("save_error").Inc()
+		// Возвращаем ошибку сохранения, чтобы сообщение было nack-нуто
+		return saveErr
+	} else if err != nil {
+		// Ошибка была на этапе AI (уже посчитана выше), но сохранение прошло успешно.
+		// Возвращаем исходную ошибку AI, чтобы сообщение было nack-нуто.
+		return err
+	} else {
+		// Все прошло успешно (и AI, и сохранение)
+		tasksSucceededTotal.Inc()
+		return nil // Возвращаем nil для ack
+	}
 }
 
 // preparePrompt загружает и рендерит шаблон промта
@@ -159,6 +255,8 @@ func (h *TaskHandler) saveAndNotifyResult(
 	inputDataJSON, jsonErr := json.Marshal(payload.InputData)
 	if jsonErr != nil {
 		log.Printf("[TaskID: %s] КРИТИЧЕСКАЯ ОШИБКА: Не удалось сериализовать InputData в JSON: %v", payload.TaskID, jsonErr)
+		// <<< Метрика: Задача с ошибкой (ошибка JSON) >>>
+		tasksFailedTotal.WithLabelValues("json_marshal_error").Inc()
 		if errorMsg != "" {
 			errorMsg = fmt.Sprintf("%s; КРИТИЧЕСКАЯ ОШИБКА: %v", errorMsg, jsonErr)
 		} else {
@@ -184,6 +282,10 @@ func (h *TaskHandler) saveAndNotifyResult(
 	saveErr := h.resultRepo.Save(saveCtx, result)
 	if saveErr != nil {
 		log.Printf("[TaskID: %s] Ошибка сохранения результата в БД: %v", payload.TaskID, saveErr)
+		// <<< Метрика: Задача с ошибкой (ошибка сохранения) >>>
+		// (Дублируется? Нет, здесь ошибка именно в *момент* сохранения)
+		// Мы уже инкрементировали save_error в Handle, если saveErr не nil.
+		// Поэтому здесь не инкрементируем, чтобы не задвоить.
 		if errorMsg != "" {
 			errorMsg = fmt.Sprintf("%s; Ошибка сохранения: %v", errorMsg, saveErr)
 		} else {
@@ -217,10 +319,12 @@ func (h *TaskHandler) saveAndNotifyResult(
 
 	// Если была ошибка AI, подготовки или JSON, но сохранение прошло успешно,
 	// возвращаем исходную ошибку, чтобы инициировать Nack.
+	// Метрики для этих ошибок уже инкрементированы в Handle.
 	if processingErr != nil {
 		return fmt.Errorf("задача завершилась с ошибкой подготовки/AI (сохранено, уведомление отправлено/ошибка логирована): %w", processingErr)
 	}
 	if jsonErr != nil { // Ошибка была только при сериализации JSON
+		// Метрика json_marshal_error уже инкрементирована выше
 		return fmt.Errorf("задача завершилась с критической ошибкой JSON (сохранено как null, уведомление отправлено/ошибка логирована): %w", jsonErr)
 	}
 

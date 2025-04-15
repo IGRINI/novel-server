@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"novel-server/shared/messaging"
 	"novel-server/story-generator/internal/config"
 	"novel-server/story-generator/internal/repository"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -25,10 +27,15 @@ const (
 	// Имена для Dead Letter Exchange и Queue
 	deadLetterExchange = "tasks_dlx"            // Общий DLX для задач
 	deadLetterQueue    = taskQueueName + "_dlq" // DLQ для этой конкретной очереди
+	// Порт для метрик Prometheus
+	metricsPort = "9091"
 )
 
 func main() {
 	log.Println("Запуск воркера генерации историй...")
+
+	// --- Запуск HTTP-сервера для метрик Prometheus в отдельной горутине ---
+	go startMetricsServer()
 
 	// Загружаем конфигурацию
 	cfg, err := config.LoadConfig()
@@ -153,17 +160,26 @@ func main() {
 	stopChan := make(chan os.Signal, 1)
 	signal.Notify(stopChan, syscall.SIGINT, syscall.SIGTERM)
 
+	// Канал для синхронизации завершения горутины обработки сообщений
+	done := make(chan struct{})
+
 	log.Println("Воркер готов к работе. Ожидание задач...")
 
 	// Запускаем горутину для обработки сообщений
 	go func() {
+		defer close(done) // Сигнализируем о завершении горутины
 		for msg := range msgs {
+			// <<< Метрика: Счетчик полученных задач >>>
+			worker.IncrementTasksReceived()
+
 			log.Printf("[TaskID: %s] Получена задача (DeliveryTag: %d): %s", "N/A", msg.DeliveryTag, msg.Body)
 
 			var payload messaging.GenerationTaskPayload
 			err := json.Unmarshal(msg.Body, &payload)
 			if err != nil {
 				log.Printf("[TaskID: %s] Ошибка десериализации JSON: %v. Отклоняем сообщение (nack, no requeue).", "N/A", err)
+				// <<< Метрика: Задача с ошибкой (десериализация) >>>
+				worker.IncrementTaskFailed("deserialization")
 				msg.Nack(false, false) // Nack(multiple, requeue=false) - не возвращаем в очередь
 				continue
 			}
@@ -187,8 +203,9 @@ func main() {
 
 	log.Println(" [*] Ожидание сообщений. Для выхода нажмите CTRL+C")
 
-	// Блокируем до получения сигнала завершения
-	<-stopChan
+	// Ожидаем завершения горутины обработки сообщений
+	log.Println("Ожидание завершения обработки текущих сообщений...")
+	<-done
 
 	log.Println("Получен сигнал завершения. Закрытие соединений...")
 	// При завершении приложения канал msgs закроется, горутина выше завершится.
@@ -196,33 +213,71 @@ func main() {
 	log.Println("Воркер остановлен.")
 }
 
+// startMetricsServer запускает HTTP-сервер для эндпоинта /metrics
+func startMetricsServer() {
+	http.Handle("/metrics", promhttp.Handler())
+	addr := ":" + metricsPort
+	log.Printf("Запуск сервера метрик Prometheus на %s", addr)
+	if err := http.ListenAndServe(addr, nil); err != nil {
+		log.Fatalf("Не удалось запустить сервер метрик: %v", err)
+	}
+}
+
 // setupDatabase инициализирует и возвращает пул соединений с БД
 func setupDatabase(cfg *config.Config) (*pgxpool.Pool, error) {
+	var dbPool *pgxpool.Pool
+	var err error
+	maxRetries := 50 // Количество попыток
+	retryDelay := 3 * time.Second
+
 	dsn := cfg.GetDSN()
-	config, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка парсинга DSN: %w", err)
+	poolConfig, parseErr := pgxpool.ParseConfig(dsn)
+	if parseErr != nil {
+		// DSN некорректен, нет смысла пытаться дальше
+		return nil, fmt.Errorf("ошибка парсинга DSN: %w", parseErr)
+	}
+	poolConfig.MaxConns = int32(cfg.DBMaxConns)
+	poolConfig.MaxConnIdleTime = cfg.DBIdleTimeout
+
+	log.Printf("Попытка подключения к PostgreSQL (до %d раз с интервалом %v)...", maxRetries, retryDelay)
+
+	for i := 0; i < maxRetries; i++ {
+		attempt := i + 1
+		log.Printf("Попытка %d/%d подключения к PostgreSQL...", attempt, maxRetries)
+
+		// Таймаут на одну попытку подключения и пинга
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+		dbPool, err = pgxpool.NewWithConfig(ctx, poolConfig)
+		if err != nil {
+			log.Printf("[Попытка %d/%d] Не удалось создать пул соединений: %v", attempt, maxRetries, err)
+			cancel()
+			if i < maxRetries-1 {
+				time.Sleep(retryDelay)
+			}
+			continue // Переходим к следующей попытке
+		}
+
+		// Пытаемся пинговать
+		if err = dbPool.Ping(ctx); err != nil {
+			log.Printf("[Попытка %d/%d] Не удалось выполнить ping к PostgreSQL: %v", attempt, maxRetries, err)
+			dbPool.Close() // Закрываем неудачный пул
+			cancel()
+			if i < maxRetries-1 {
+				time.Sleep(retryDelay)
+			}
+			continue // Переходим к следующей попытке
+		}
+
+		// Если дошли сюда, подключение и пинг успешны
+		cancel() // Отменяем таймаут текущей попытки
+		log.Printf("Успешное подключение и ping к PostgreSQL (попытка %d)", attempt)
+		return dbPool, nil
 	}
 
-	config.MaxConns = int32(cfg.DBMaxConns)
-	config.MaxConnIdleTime = cfg.DBIdleTimeout
-
-	// Устанавливаем таймаут на подключение
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	dbPool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		return nil, fmt.Errorf("не удалось создать пул соединений: %w", err)
-	}
-
-	// Проверяем соединение
-	if err = dbPool.Ping(ctx); err != nil {
-		dbPool.Close() // Закрываем пул, если пинг не удался
-		return nil, fmt.Errorf("не удалось подключиться к БД (ping failed): %w", err)
-	}
-
-	return dbPool, nil
+	// Если цикл завершился без успешного подключения
+	log.Printf("Не удалось подключиться к PostgreSQL после %d попыток.", maxRetries)
+	return nil, fmt.Errorf("не удалось подключиться к БД после %d попыток: %w", maxRetries, err) // Возвращаем последнюю ошибку
 }
 
 // connectRabbitMQ пытается подключиться к RabbitMQ с несколькими попытками

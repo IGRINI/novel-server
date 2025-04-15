@@ -5,43 +5,47 @@ import (
 	"os"
 	"time"
 
+	"novel-server/shared/utils"
+
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 )
 
 // Config хранит конфигурацию сервиса админки
 type Config struct {
-	Env             string
-	ServerPort      string
-	LogLevel        string
-	JWTSecret       string
-	AuthServiceURL  string
-	ClientTimeout   time.Duration
+	Env                  string
+	ServerPort           string
+	LogLevel             string
+	AuthServiceURL       string
+	ClientTimeout        time.Duration
+	InterServiceTokenTTL time.Duration
+	AuthServiceTimeout   time.Duration
+	ServiceID            string
+	// Секреты без тегов
+	JWTSecret          string
 	InterServiceSecret string
-	ServiceID         string
-	// Добавьте другие нужные параметры
 }
 
-// LoadConfig загружает конфигурацию из переменных окружения
+// LoadConfig загружает конфигурацию из переменных окружения и секретов
 func LoadConfig(logger *zap.Logger) (*Config, error) {
 	_ = godotenv.Load() // Загружаем .env, игнорируем ошибку
 
-	port := os.Getenv("ADMIN_SERVER_PORT")
-	if port == "" {
-		port = "8084" // Порт по умолчанию
+	port := getEnv("ADMIN_SERVER_PORT", "8084")
+
+	// Используем utils.ReadSecret
+	jwtSecret, err := utils.ReadSecret("jwt_secret")
+	if err != nil {
+		logger.Error("Не удалось прочитать JWT_SECRET из секрета Docker", zap.Error(err))
+		return nil, err
 	}
 
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		logger.Error("Переменная окружения JWT_SECRET не установлена")
-		return nil, fmt.Errorf("JWT_SECRET is not set")
+	interServiceSecret, err := utils.ReadSecret("inter_service_secret")
+	if err != nil {
+		logger.Error("Не удалось прочитать INTER_SERVICE_SECRET из секрета Docker", zap.Error(err))
+		return nil, err
 	}
 
-	authServiceURL := os.Getenv("AUTH_SERVICE_URL")
-	if authServiceURL == "" {
-		authServiceURL = "http://auth-service:8081"
-		logger.Warn("AUTH_SERVICE_URL not set, using default", zap.String("url", authServiceURL))
-	}
+	authServiceURL := getEnv("AUTH_SERVICE_URL", "http://auth-service:8081")
 
 	clientTimeoutStr := getEnv("HTTP_CLIENT_TIMEOUT", "10s")
 	clientTimeout, err := time.ParseDuration(clientTimeoutStr)
@@ -51,24 +55,26 @@ func LoadConfig(logger *zap.Logger) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Env:             getEnv("ENV", "development"),
-		ServerPort:      port,
-		LogLevel:        getEnv("LOG_LEVEL", "debug"),
-		JWTSecret:       jwtSecret,
-		AuthServiceURL:  authServiceURL,
-		ClientTimeout:   clientTimeout,
-		InterServiceSecret: getEnv("INTER_SERVICE_SECRET", ""),
-		ServiceID:       getEnv("SERVICE_ID", "admin-service"),
+		Env:                  getEnv("ENV", "development"),
+		ServerPort:           port,
+		LogLevel:             getEnv("LOG_LEVEL", "debug"),
+		JWTSecret:            jwtSecret,
+		AuthServiceURL:       authServiceURL,
+		ClientTimeout:        clientTimeout,
+		InterServiceSecret:   interServiceSecret,
+		InterServiceTokenTTL: getDurationEnv("INTER_SERVICE_TOKEN_TTL", "1h"),
+		AuthServiceTimeout:   getDurationEnv("AUTH_SERVICE_TIMEOUT", "5s"),
+		ServiceID:            getEnv("SERVICE_ID", "admin-service"),
 	}
 
-	secretLoaded := cfg.InterServiceSecret != ""
-	logger.Info("Конфигурация Admin Service загружена",
+	logger.Info("Конфигурация Admin Service загружена (секреты из файлов)",
 		zap.String("env", cfg.Env),
 		zap.String("port", cfg.ServerPort),
 		zap.String("logLevel", cfg.LogLevel),
 		zap.String("authServiceURL", cfg.AuthServiceURL),
 		zap.Duration("clientTimeout", cfg.ClientTimeout),
-		zap.Bool("interServiceSecretLoaded", secretLoaded),
+		zap.Bool("jwtSecretLoaded", cfg.JWTSecret != ""),
+		zap.Bool("interServiceSecretLoaded", cfg.InterServiceSecret != ""),
 		zap.String("serviceID", cfg.ServiceID),
 	)
 
@@ -80,4 +86,21 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func getDurationEnv(key string, fallback string) time.Duration {
+	if value, ok := os.LookupEnv(key); ok {
+		duration, err := time.ParseDuration(value)
+		if err != nil {
+			fmt.Printf("Invalid %s format, using default %s\n", key, fallback)
+			return time.Duration(0)
+		}
+		return duration
+	}
+	duration, err := time.ParseDuration(fallback)
+	if err != nil {
+		fmt.Printf("Invalid fallback format for %s, using default 0s\n", fallback)
+		return time.Duration(0)
+	}
+	return duration
 }

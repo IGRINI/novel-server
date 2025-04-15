@@ -27,30 +27,29 @@ import (
 	"go.uber.org/zap"
 )
 
-// Определяем локальные ошибки уровня сервиса
+// Define local service-level errors
 var (
-	ErrInvalidOperation      = errors.New("недопустимая операция")
-	ErrInvalidLimit          = errors.New("недопустимое значение limit")
-	ErrInvalidOffset         = errors.New("недопустимое значение offset")
-	ErrInvalidCursor         = errors.New("недопустимый формат курсора")
-	ErrChoiceNotFound        = errors.New("выбранный вариант или сцена не найдены")
-	ErrInvalidChoiceIndex    = errors.New("недопустимый индекс выбора")
-	ErrCannotPublish         = errors.New("историю нельзя опубликовать в текущем статусе")
-	ErrCannotPublishNoConfig = errors.New("отсутствует сгенерированный конфиг для публикации")
-	// Ошибки, определенные в shared/models/errors.go, будут использоваться напрямую:
+	ErrInvalidOperation      = errors.New("invalid operation")
+	ErrInvalidLimit          = errors.New("invalid limit value")
+	ErrInvalidOffset         = errors.New("invalid offset value")
+	ErrChoiceNotFound        = errors.New("choice or scene not found")
+	ErrInvalidChoiceIndex    = errors.New("invalid choice index")
+	ErrCannotPublish         = errors.New("story cannot be published in its current status")
+	ErrCannotPublishNoConfig = errors.New("cannot publish without a generated config")
+	// Errors defined in shared/models/errors.go will be used directly:
 	// sharedModels.ErrUserHasActiveGeneration
 	// sharedModels.ErrCannotRevise
 	// sharedModels.ErrStoryNotReadyYet
 	// sharedModels.ErrSceneNeedsGeneration
 
-	// Добавляем ошибки, ожидаемые в handler/http.go
-	ErrStoryNotFound          = errors.New("опубликованная история не найдена")
-	ErrSceneNotFound          = errors.New("текущая сцена не найдена")
-	ErrPlayerProgressNotFound = errors.New("прогресс игрока не найден")
-	ErrStoryNotReady          = errors.New("история еще не готова к игре")
-	ErrInternal               = errors.New("внутренняя ошибка сервиса")
-	ErrInvalidChoice          = errors.New("недопустимый выбор")
-	ErrNoChoicesAvailable     = errors.New("в текущей сцене нет доступных выборов")
+	// Add errors expected in handler/http.go
+	ErrStoryNotFound          = errors.New("published story not found")
+	ErrSceneNotFound          = errors.New("current scene not found")
+	ErrPlayerProgressNotFound = errors.New("player progress not found")
+	ErrStoryNotReady          = errors.New("story is not ready for gameplay yet")
+	ErrInternal               = errors.New("internal service error")
+	ErrInvalidChoice          = errors.New("invalid choice")
+	ErrNoChoicesAvailable     = errors.New("no choices available in the current scene")
 )
 
 // --- Структуры для парсинга SceneContent ---
@@ -72,17 +71,14 @@ type sceneOption struct {
 	Consequences sharedModels.Consequences `json:"cons"` // Используем общую структуру
 }
 
-// GameplayService определяет интерфейс для бизнес-логики gameplay.
+// GameplayService defines the interface for gameplay business logic.
 type GameplayService interface {
-	// TODO: Поменять userID uint64 на uuid.UUID везде где он используется
 	GenerateInitialStory(ctx context.Context, userID uint64, initialPrompt string) (*models.StoryConfig, error)
 	ReviseDraft(ctx context.Context, id uuid.UUID, userID uint64, revisionPrompt string) error
 	GetStoryConfig(ctx context.Context, id uuid.UUID, userID uint64) (*models.StoryConfig, error)
 	PublishDraft(ctx context.Context, draftID uuid.UUID, userID uint64) (publishedStoryID uuid.UUID, err error)
 	ListMyDrafts(ctx context.Context, userID uint64, limit int, cursor string) ([]models.StoryConfig, string, error)
 	ListMyPublishedStories(ctx context.Context, userID uint64, limit, offset int) ([]*sharedModels.PublishedStory, error)
-
-	// TODO: Остальные методы тоже должны использовать userID uuid.UUID
 	ListPublicStories(ctx context.Context, limit, offset int) ([]*sharedModels.PublishedStory, error)
 	GetStoryScene(ctx context.Context, userID uint64, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error)
 	MakeChoice(ctx context.Context, userID uint64, publishedStoryID uuid.UUID, selectedOptionIndex int) error
@@ -119,182 +115,178 @@ func NewGameplayService(
 	}
 }
 
-// GenerateInitialStory создает новую запись StoryConfig и отправляет задачу на генерацию.
-// TODO: Рефакторинг на userID uuid.UUID
+// GenerateInitialStory creates a new StoryConfig entry and sends a generation task.
 func (s *gameplayServiceImpl) GenerateInitialStory(ctx context.Context, userID uint64, initialPrompt string) (*models.StoryConfig, error) {
-	// Проверяем количество активных генераций для этого userID
+	// Check the number of active generations for this userID
 	activeCount, err := s.repo.CountActiveGenerations(ctx, userID)
 	if err != nil {
-		// Ошибка при проверке, возвращаем 500
-		log.Printf("[GameplayService] Ошибка подсчета активных генераций для UserID %d: %v", userID, err)
-		return nil, fmt.Errorf("ошибка проверки статуса генерации: %w", err)
+		// Error during check, return 500
+		log.Printf("[GameplayService] Error counting active generations for UserID %d: %v", userID, err)
+		return nil, fmt.Errorf("error checking generation status: %w", err)
 	}
-	// TODO: Сделать лимит настраиваемым (например, через конфиг или профиль пользователя)
+	// TODO: Make the limit configurable (e.g., via config or user profile)
 	generationLimit := 1
 	if activeCount >= generationLimit {
-		log.Printf("[GameplayService] Пользователь UserID %d достиг лимита активных генераций (%d).", userID, generationLimit)
-		return nil, sharedModels.ErrUserHasActiveGeneration // Используем ту же ошибку
+		log.Printf("[GameplayService] User UserID %d reached the active generation limit (%d).", userID, generationLimit)
+		return nil, sharedModels.ErrUserHasActiveGeneration // Use the same error
 	}
 
-	// Создаем JSON массив с начальным промптом
+	// Create a JSON array with the initial prompt
 	userInputJSON, err := json.Marshal([]string{initialPrompt})
 	if err != nil {
-		log.Printf("[GameplayService] Ошибка маршалинга initialPrompt для UserID %d: %v", userID, err)
-		return nil, fmt.Errorf("ошибка подготовки данных для БД: %w", err)
+		log.Printf("[GameplayService] Error marshalling initialPrompt for UserID %d: %v", userID, err)
+		return nil, fmt.Errorf("error preparing data for DB: %w", err)
 	}
 
 	config := &models.StoryConfig{
 		ID:          uuid.New(),
 		UserID:      userID,
-		Title:       "",                      // Будет заполнено после генерации
-		Description: initialPrompt,           // Сохраняем исходный промпт в Description для первого запроса
-		UserInput:   userInputJSON,           // Массив промптов
-		Config:      nil,                     // JSON конфиг будет после генерации
-		Status:      models.StatusGenerating, // Сразу ставим generating
+		Title:       "",                      // Will be filled after generation
+		Description: initialPrompt,           // Save the initial prompt in Description for the first request
+		UserInput:   userInputJSON,           // Array of prompts
+		Config:      nil,                     // JSON config will be available after generation
+		Status:      models.StatusGenerating, // Set to generating immediately
 		CreatedAt:   time.Now().UTC(),
 		UpdatedAt:   time.Now().UTC(),
 	}
 
-	// 1. Сохраняем черновик в БД со статусом 'generating'
+	// 1. Save the draft to the DB with status 'generating'
 	err = s.repo.Create(ctx, config)
 	if err != nil {
-		return nil, fmt.Errorf("ошибка сохранения начального драфта: %w", err)
+		return nil, fmt.Errorf("error saving initial draft: %w", err)
 	}
-	log.Printf("[GameplayService] Начальный драфт создан и сохранен: ID=%s, UserID=%d", config.ID, config.UserID)
+	log.Printf("[GameplayService] Initial draft created and saved: ID=%s, UserID=%d", config.ID, config.UserID)
 
-	// 2. Формируем и отправляем задачу на генерацию
-	taskID := uuid.New().String() // ID для задачи генерации
+	// 2. Form and send the generation task
+	taskID := uuid.New().String() // ID for the generation task
 	generationPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:        taskID,
 		UserID:        strconv.FormatUint(config.UserID, 10),
-		PromptType:    sharedMessaging.PromptTypeNarrator, // Пока используем только Narrator
-		InputData:     make(map[string]interface{}),       // Пустой для начальной генерации
-		UserInput:     initialPrompt,                      // Исходный промпт пользователя
-		StoryConfigID: config.ID.String(),                 // Связь с созданным конфигом
+		PromptType:    sharedMessaging.PromptTypeNarrator, // Use only Narrator for now
+		InputData:     make(map[string]interface{}),       // Empty for initial generation
+		UserInput:     initialPrompt,                      // User's initial prompt
+		StoryConfigID: config.ID.String(),                 // Link to the created config
 	}
 
 	if err := s.publisher.PublishGenerationTask(ctx, generationPayload); err != nil {
-		log.Printf("[GameplayService] Ошибка публикации задачи начальной генерации для ConfigID=%s, TaskID=%s: %v. Попытка откатить статус...", config.ID, taskID, err)
-		// Пытаемся откатить статус обратно на Error (или Draft?)
+		log.Printf("[GameplayService] Error publishing initial generation task for ConfigID=%s, TaskID=%s: %v. Attempting to roll back status...", config.ID, taskID, err)
+		// Try to roll back the status to Error
 		config.Status = models.StatusError
 		config.UpdatedAt = time.Now().UTC()
 		if rollbackErr := s.repo.Update(context.Background(), config); rollbackErr != nil {
-			log.Printf("[GameplayService] КРИТИЧЕСКАЯ ОШИБКА: Не удалось откатить статус на Error для ConfigID=%s после ошибки публикации: %v", config.ID, rollbackErr)
+			log.Printf("[GameplayService] CRITICAL ERROR: Failed to roll back status to Error for ConfigID=%s after publish error: %v", config.ID, rollbackErr)
 		}
-		// Возвращаем ошибку клиенту, но конфиг в БД остался со статусом Error
-		return config, fmt.Errorf("ошибка отправки задачи на генерацию: %w", err) // Возвращаем конфиг с ID и ошибку
+		// Return the error to the client, but the config in DB remains with status Error
+		return config, fmt.Errorf("error sending generation task: %w", err) // Return config with ID and error
 	}
 
-	log.Printf("[GameplayService] Задача начальной генерации успешно отправлена: ConfigID=%s, TaskID=%s", config.ID, taskID)
+	log.Printf("[GameplayService] Initial generation task sent successfully: ConfigID=%s, TaskID=%s", config.ID, taskID)
 
-	// Возвращаем созданный конфиг (со статусом generating), чтобы клиент знал ID
+	// Return the created config (with status generating) so the client knows the ID
 	return config, nil
 }
 
-// ReviseDraft обновляет существующий черновик истории
-// TODO: Рефакторинг на userID uuid.UUID
+// ReviseDraft updates an existing story draft
 func (s *gameplayServiceImpl) ReviseDraft(ctx context.Context, id uuid.UUID, userID uint64, revisionPrompt string) error {
-	// 1. Получаем текущий конфиг
+	// 1. Get the current config
 	config, err := s.repo.GetByID(ctx, id, userID)
 	log.Printf("!!!!!! DEBUG [ReviseDraft]: GetByID returned -> Config: %+v, Error: %v", config, err) // <-- DEBUG LOG
 	if err != nil {
-		return fmt.Errorf("ошибка получения драфта для ревизии: %w", err)
+		return fmt.Errorf("error getting draft for revision: %w", err)
 	}
 
-	// 2. Проверяем статус
+	// 2. Check status
 	if config.Status != models.StatusDraft && config.Status != models.StatusError {
-		log.Printf("[UserID: %d][StoryID: %s] Попытка ревизии в недопустимом статусе: %s", userID, id, config.Status)
+		log.Printf("[UserID: %d][StoryID: %s] Attempt to revise in invalid status: %s", userID, id, config.Status)
 		return sharedModels.ErrCannotRevise
 	}
 
-	// Проверяем количество активных генераций для этого userID
+	// Check the number of active generations for this userID
 	activeCount, err := s.repo.CountActiveGenerations(ctx, userID)
 	if err != nil {
-		log.Printf("[GameplayService] Ошибка подсчета активных генераций для UserID %d перед ревизией ConfigID %s: %v", userID, id, err)
-		return fmt.Errorf("ошибка проверки статуса генерации: %w", err)
+		log.Printf("[GameplayService] Error counting active generations for UserID %d before revising ConfigID %s: %v", userID, id, err)
+		return fmt.Errorf("error checking generation status: %w", err)
 	}
-	// TODO: Сделать лимит настраиваемым
+	// TODO: Make the limit configurable
 	generationLimit := 1
 	if activeCount >= generationLimit {
-		log.Printf("[GameplayService] Пользователь UserID %d достиг лимита активных генераций (%d), ревизия ConfigID %s отклонена.", userID, generationLimit, id)
+		log.Printf("[GameplayService] User UserID %d reached active generation limit (%d), revision for ConfigID %s rejected.", userID, generationLimit, id)
 		return sharedModels.ErrUserHasActiveGeneration
 	}
 
-	// 3. Обновляем историю UserInput
+	// 3. Update UserInput history
 	var userInputs []string
 	if config.UserInput != nil {
 		if err := json.Unmarshal(config.UserInput, &userInputs); err != nil {
-			log.Printf("[GameplayService] Ошибка десериализации UserInput для ConfigID %s: %v. Создаем новый массив.", config.ID, err)
+			log.Printf("[GameplayService] Error deserializing UserInput for ConfigID %s: %v. Creating new array.", config.ID, err)
 			userInputs = make([]string, 0)
 		}
 	}
 	userInputs = append(userInputs, revisionPrompt)
 	updatedUserInputJSON, err := json.Marshal(userInputs)
 	if err != nil {
-		log.Printf("[GameplayService] Ошибка маршалинга обновленного UserInput для ConfigID %s: %v", config.ID, err)
-		return fmt.Errorf("ошибка подготовки данных для БД: %w", err)
+		log.Printf("[GameplayService] Error marshalling updated UserInput for ConfigID %s: %v", config.ID, err)
+		return fmt.Errorf("error preparing data for DB: %w", err)
 	}
 	config.UserInput = updatedUserInputJSON
 
-	// 4. Обновляем статус на 'generating' и сохраняем ИЗМЕНЕННЫЙ UserInput
+	// 4. Update status to 'generating' and save the MODIFIED UserInput
 	config.Status = models.StatusGenerating
 	config.UpdatedAt = time.Now().UTC()
 	if err := s.repo.Update(ctx, config); err != nil {
-		return fmt.Errorf("ошибка обновления статуса/UserInput перед ревизией: %w", err)
+		return fmt.Errorf("error updating status/UserInput before revision: %w", err)
 	}
 
-	// 5. Формируем payload для задачи ревизии
+	// 5. Form payload for the revision task
 	taskID := uuid.New().String()
 	generationPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:        taskID,
 		UserID:        strconv.FormatUint(config.UserID, 10),
 		PromptType:    sharedMessaging.PromptTypeNarrator,
-		InputData:     map[string]interface{}{"current_config": string(config.Config)}, // Передаем текущий JSON из поля Config
-		UserInput:     revisionPrompt,                                                  // Передаем только последнюю правку
+		InputData:     map[string]interface{}{"current_config": string(config.Config)}, // Pass the current JSON from Config field
+		UserInput:     revisionPrompt,                                                  // Pass only the latest revision prompt
 		StoryConfigID: config.ID.String(),
 	}
 
-	// 6. Публикуем задачу в очередь
+	// 6. Publish the task to the queue
 	if err := s.publisher.PublishGenerationTask(ctx, generationPayload); err != nil {
-		log.Printf("[GameplayService] Ошибка публикации задачи ревизии для ConfigID=%s, TaskID=%s: %v. Попытка откатить статус...", config.ID, taskID, err)
-		// Пытаемся откатить статус обратно на предыдущий (Draft или Error)
-		if len(userInputs) > 1 { // Если это была ревизия, а не первая генерация после ошибки
+		log.Printf("[GameplayService] Error publishing revision task for ConfigID=%s, TaskID=%s: %v. Attempting to roll back status...", config.ID, taskID, err)
+		// Try to roll back the status to the previous one (Draft or Error)
+		if len(userInputs) > 1 { // If this was a revision, not the first generation after an error
 			config.Status = models.StatusDraft
 		} else {
-			config.Status = models.StatusError // Если первая попытка после ошибки не удалась
+			config.Status = models.StatusError // If the first attempt after an error failed
 		}
-		// Убираем последний UserInput, так как ревизия не удалась
+		// Remove the last UserInput since the revision failed
 		config.UserInput, _ = json.Marshal(userInputs[:len(userInputs)-1])
 		config.UpdatedAt = time.Now().UTC()
 		if rollbackErr := s.repo.Update(context.Background(), config); rollbackErr != nil {
-			log.Printf("[GameplayService] КРИТИЧЕСКАЯ ОШИБКА: Не удалось откатить статус/UserInput для ConfigID=%s после ошибки публикации ревизии: %v", config.ID, rollbackErr)
+			log.Printf("[GameplayService] CRITICAL ERROR: Failed to roll back status/UserInput for ConfigID=%s after revision publish error: %v", config.ID, rollbackErr)
 		}
-		return fmt.Errorf("ошибка публикации задачи ревизии: %w", err)
+		return fmt.Errorf("error publishing revision task: %w", err)
 	}
 
-	log.Printf("[GameplayService] Задача ревизии успешно отправлена: ConfigID=%s, TaskID=%s", config.ID, taskID)
-	return nil // Успех, возвращаем только nil
+	log.Printf("[GameplayService] Revision task sent successfully: ConfigID=%s, TaskID=%s", config.ID, taskID)
+	return nil // Success, return only nil
 }
 
-// GetStoryConfig получает конфиг истории
-// TODO: Рефакторинг на userID uuid.UUID
+// GetStoryConfig gets the story config
 func (s *gameplayServiceImpl) GetStoryConfig(ctx context.Context, id uuid.UUID, userID uint64) (*models.StoryConfig, error) {
 	config, err := s.repo.GetByID(ctx, id, userID)
 	if err != nil {
-		// Обработка ошибок (включая NotFound) происходит в репозитории
-		return nil, fmt.Errorf("ошибка получения StoryConfig в сервисе: %w", err)
+		// Error handling (including NotFound) happens in the repository
+		return nil, fmt.Errorf("error getting StoryConfig in service: %w", err)
 	}
 	return config, nil
 }
 
-// PublishDraft публикует черновик, удаляет его и создает PublishedStory.
-// TODO: Рефакторинг на userID uuid.UUID
+// PublishDraft publishes a draft, deletes it, and creates a PublishedStory.
 func (s *gameplayServiceImpl) PublishDraft(ctx context.Context, draftID uuid.UUID, userID uint64) (publishedStoryID uuid.UUID, err error) {
-	// Начало транзакции
+	// Begin transaction
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		s.logger.Error("Failed to begin transaction for publishing draft", zap.String("draftID", draftID.String()), zap.Error(err))
-		return uuid.Nil, fmt.Errorf("ошибка начала транзакции: %w", err)
+		return uuid.Nil, fmt.Errorf("error beginning transaction: %w", err)
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -309,86 +301,86 @@ func (s *gameplayServiceImpl) PublishDraft(ctx context.Context, draftID uuid.UUI
 		} else {
 			if commitErr := tx.Commit(ctx); commitErr != nil {
 				s.logger.Error("Failed to commit transaction", zap.String("draftID", draftID.String()), zap.Error(commitErr))
-				err = fmt.Errorf("ошибка подтверждения транзакции: %w", commitErr)
+				err = fmt.Errorf("error committing transaction: %w", commitErr)
 			}
 		}
 	}()
 
-	// Используем транзакцию для репозиториев
+	// Use transaction for repositories
 	repoTx := repository.NewPgStoryConfigRepository(tx, s.logger)
 	publishedRepoTx := database.NewPgPublishedStoryRepository(tx, s.logger)
 
-	// 1. Получаем черновик в транзакции
+	// 1. Get the draft within the transaction
 	draft, err := repoTx.GetByID(ctx, draftID, userID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return uuid.Nil, sharedModels.ErrNotFound // Используем стандартную ошибку
+			return uuid.Nil, sharedModels.ErrNotFound // Use standard error
 		}
-		return uuid.Nil, fmt.Errorf("ошибка получения черновика: %w", err)
+		return uuid.Nil, fmt.Errorf("error getting draft: %w", err)
 	}
 
-	// 2. Проверяем статус и наличие Config
+	// 2. Check status and Config presence
 	if draft.Status != models.StatusDraft && draft.Status != models.StatusError {
-		return uuid.Nil, ErrCannotPublish // Используем локальную ошибку
+		return uuid.Nil, ErrCannotPublish // Use local error
 	}
 	if draft.Config == nil || len(draft.Config) == 0 {
 		s.logger.Warn("Attempt to publish draft without generated config", zap.String("draftID", draftID.String()))
-		return uuid.Nil, ErrCannotPublishNoConfig // Используем локальную ошибку
+		return uuid.Nil, ErrCannotPublishNoConfig // Use local error
 	}
 
-	// 3. Извлекаем необходимые поля из draft.Config
+	// 3. Extract necessary fields from draft.Config
 	var tempConfig struct {
 		IsAdultContent bool `json:"ac"`
 	}
 	if err = json.Unmarshal(draft.Config, &tempConfig); err != nil {
 		s.logger.Error("Failed to unmarshal draft config to extract adult content flag", zap.String("draftID", draftID.String()), zap.Error(err))
-		return uuid.Nil, fmt.Errorf("ошибка чтения конфигурации черновика: %w", err)
+		return uuid.Nil, fmt.Errorf("error reading draft configuration: %w", err)
 	}
 
-	// 4. Создаем PublishedStory в транзакции
+	// 4. Create PublishedStory within the transaction
 	newPublishedStory := &sharedModels.PublishedStory{
 		ID:             uuid.New(),
-		UserID:         userID, // TODO: Сменить UserID на uuid.UUID когда будет рефакторинг
+		UserID:         userID,
 		Config:         draft.Config,
-		Setup:          nil, // Будет сгенерировано позже
+		Setup:          nil, // Will be generated later
 		Status:         sharedModels.StatusSetupPending,
-		IsPublic:       false, // По умолчанию приватная
+		IsPublic:       false, // Private by default
 		IsAdultContent: tempConfig.IsAdultContent,
-		Title:          &draft.Title,       // <<< Исправлено: передаем указатель
-		Description:    &draft.Description, // <<< Исправлено: передаем указатель
+		Title:          &draft.Title,       // <<< Fixed: pass pointer
+		Description:    &draft.Description, // <<< Fixed: pass pointer
 		CreatedAt:      time.Now().UTC(),
 		UpdatedAt:      time.Now().UTC(),
 	}
 
 	if err = publishedRepoTx.Create(ctx, newPublishedStory); err != nil {
-		return uuid.Nil, fmt.Errorf("ошибка создания опубликованной истории: %w", err)
+		return uuid.Nil, fmt.Errorf("error creating published story: %w", err)
 	}
 	s.logger.Info("Published story created in DB", zap.String("publishedStoryID", newPublishedStory.ID.String()))
 
-	// 5. Удаляем черновик в транзакции
+	// 5. Delete the draft within the transaction
 	if err = repoTx.Delete(ctx, draftID, userID); err != nil {
-		return uuid.Nil, fmt.Errorf("ошибка удаления черновика: %w", err)
+		return uuid.Nil, fmt.Errorf("error deleting draft: %w", err)
 	}
 	s.logger.Info("Draft deleted from DB", zap.String("draftID", draftID.String()))
 
-	// 6. Отправляем задачу на генерацию Setup
+	// 6. Send task for Setup generation
 	taskID := uuid.New().String()
 	setupPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:           taskID,
-		UserID:           strconv.FormatUint(newPublishedStory.UserID, 10), // TODO: Поменять UserID на uuid.UUID
+		UserID:           strconv.FormatUint(newPublishedStory.UserID, 10),
 		PromptType:       sharedMessaging.PromptTypeNovelSetup,
-		InputData:        map[string]interface{}{"config": string(newPublishedStory.Config)}, // Передаем JSON конфиг
-		PublishedStoryID: newPublishedStory.ID.String(),                                      // Связь с опубликованной историей
+		InputData:        map[string]interface{}{"config": string(newPublishedStory.Config)}, // Pass JSON config
+		PublishedStoryID: newPublishedStory.ID.String(),                                      // Link to published story
 	}
 
-	// Публикация задачи ВНЕ транзакции, после того как она почти наверняка будет закоммичена
+	// Publish task OUTSIDE the transaction, after it's almost certainly committed
 	go func(payload sharedMessaging.GenerationTaskPayload) {
 		publishCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := s.publisher.PublishGenerationTask(publishCtx, payload); err != nil {
-			// Ошибка публикации Setup задачи - критично, так как транзакция уже закоммичена.
-			// Статус останется SetupPending, но задача не уйдет.
-			// TODO: Нужна система ретраев или мониторинг для таких случаев.
+			// Error publishing Setup task - critical, as the transaction is already committed.
+			// Status will remain SetupPending, but the task won't be sent.
+			// A retry system or monitoring is needed for such cases.
 			s.logger.Error("CRITICAL: Failed to publish setup generation task after DB commit",
 				zap.String("publishedStoryID", payload.PublishedStoryID),
 				zap.String("taskID", payload.TaskID),
@@ -400,106 +392,102 @@ func (s *gameplayServiceImpl) PublishDraft(ctx context.Context, draftID uuid.UUI
 		}
 	}(setupPayload)
 
-	// Если дошли сюда без ошибок, defer tx.Commit() сработает при выходе
+	// If we reached here without errors, defer tx.Commit() will work on exit
 	publishedStoryID = newPublishedStory.ID
 	return publishedStoryID, nil
 }
 
-// ListMyDrafts возвращает список черновиков пользователя.
+// ListMyDrafts returns a list of the user's drafts.
 func (s *gameplayServiceImpl) ListMyDrafts(ctx context.Context, userID uint64, limit int, cursor string) ([]models.StoryConfig, string, error) {
-	// Валидация limit (можно вынести в хендлер)
-	if limit <= 0 || limit > 100 { // Примерный максимальный лимит
+	// Validate limit (could be moved to handler)
+	if limit <= 0 || limit > 100 { // Approximate max limit
 		s.logger.Warn("Invalid limit requested for ListMyDrafts", zap.Int("limit", limit), zap.Uint64("userID", userID))
-		limit = 20 // Возвращаем значение по умолчанию или ошибку?
-		// return nil, "", ErrInvalidLimit // Или устанавливаем дефолтное
+		limit = 20 // Return default value or error? Perhaps set default.
 	}
 
 	s.logger.Debug("Calling repo.ListByUser for drafts", zap.Uint64("userID", userID), zap.Int("limit", limit), zap.String("cursor", cursor))
 	configs, nextCursor, err := s.repo.ListByUser(ctx, userID, limit, cursor)
 	if err != nil {
-		// Обработка ошибок репозитория (включая неверный курсор)
 		s.logger.Error("Failed to list user drafts from repository", zap.Uint64("userID", userID), zap.Error(err))
-		if strings.Contains(err.Error(), "неверный формат курсора") { // Проверяем текст ошибки, т.к. decodeCursor не возвращает ErrInvalidCursor
-			return nil, "", ErrInvalidCursor
+		// Check for specific cursor error returned by the repository
+		if errors.Is(err, repository.ErrInvalidCursor) {
+			return nil, "", repository.ErrInvalidCursor
 		}
-		return nil, "", fmt.Errorf("ошибка получения списка черновиков: %w", err)
+		// Wrap other repository errors
+		return nil, "", fmt.Errorf("error getting list of drafts: %w", err)
 	}
 
 	s.logger.Info("User drafts listed successfully", zap.Uint64("userID", userID), zap.Int("count", len(configs)))
 	return configs, nextCursor, nil
 }
 
-// ListMyPublishedStories возвращает список опубликованных историй пользователя.
+// ListMyPublishedStories returns a list of the user's published stories.
 func (s *gameplayServiceImpl) ListMyPublishedStories(ctx context.Context, userID uint64, limit, offset int) ([]*sharedModels.PublishedStory, error) {
-	// Валидация limit и offset (можно вынести в хендлер)
+	// Validate limit and offset (could be moved to handler)
 	if limit <= 0 || limit > 100 {
 		s.logger.Warn("Invalid limit requested for ListMyPublishedStories", zap.Int("limit", limit), zap.Uint64("userID", userID))
 		limit = 20 // Default
-		// return nil, ErrInvalidLimit
 	}
 	if offset < 0 {
 		s.logger.Warn("Invalid offset requested for ListMyPublishedStories", zap.Int("offset", offset), zap.Uint64("userID", userID))
 		offset = 0 // Default
-		// return nil, ErrInvalidOffset
 	}
 
 	s.logger.Debug("Calling publishedRepo.ListByUser", zap.Uint64("userID", userID), zap.Int("limit", limit), zap.Int("offset", offset))
 	stories, err := s.publishedRepo.ListByUser(ctx, userID, limit, offset)
 	if err != nil {
 		s.logger.Error("Failed to list user published stories from repository", zap.Uint64("userID", userID), zap.Error(err))
-		return nil, fmt.Errorf("ошибка получения списка опубликованных историй пользователя: %w", err)
+		return nil, fmt.Errorf("error getting list of user's published stories: %w", err)
 	}
 
 	s.logger.Info("User published stories listed successfully", zap.Uint64("userID", userID), zap.Int("count", len(stories)))
 	return stories, nil
 }
 
-// ListPublicStories возвращает список публичных опубликованных историй.
+// ListPublicStories returns a list of public published stories.
 func (s *gameplayServiceImpl) ListPublicStories(ctx context.Context, limit, offset int) ([]*sharedModels.PublishedStory, error) {
-	// Валидация limit и offset
+	// Validate limit and offset
 	if limit <= 0 || limit > 100 {
 		s.logger.Warn("Invalid limit requested for ListPublicStories", zap.Int("limit", limit))
 		limit = 20
-		// return nil, ErrInvalidLimit
 	}
 	if offset < 0 {
 		s.logger.Warn("Invalid offset requested for ListPublicStories", zap.Int("offset", offset))
 		offset = 0
-		// return nil, ErrInvalidOffset
 	}
 
 	s.logger.Debug("Calling publishedRepo.ListPublic", zap.Int("limit", limit), zap.Int("offset", offset))
 	stories, err := s.publishedRepo.ListPublic(ctx, limit, offset)
 	if err != nil {
 		s.logger.Error("Failed to list public stories from repository", zap.Error(err))
-		return nil, fmt.Errorf("ошибка получения списка публичных историй: %w", err)
+		return nil, fmt.Errorf("error getting list of public stories: %w", err)
 	}
 
 	s.logger.Info("Public stories listed successfully", zap.Int("count", len(stories)))
 	return stories, nil
 }
 
-// --- Методы игрового цикла (теперь используют userID uint64) ---
+// --- Gameplay Loop Methods ---
 
-// GetStoryScene получает текущую сцену для игрока.
+// GetStoryScene gets the current scene for the player.
 func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uint64, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error) {
 	s.logger.Info("GetStoryScene called", zap.Uint64("userID", userID), zap.String("publishedStoryID", publishedStoryID.String()))
 
-	// 1. Получаем опубликованную историю
+	// 1. Get the published story
 	publishedStory, err := s.publishedRepo.GetByID(ctx, publishedStoryID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, sharedModels.ErrNotFound
 		}
-		return nil, fmt.Errorf("ошибка получения опубликованной истории: %w", err)
+		return nil, fmt.Errorf("error getting published story: %w", err)
 	}
 
-	// 2. Проверка UserID - TODO: Раскомментировать, когда UserID в PublishedStory станет uint64
+	// 2. Check UserID access (assuming UserID is uint64 in PublishedStory for now)
 	// if publishedStory.UserID != userID {
-	// 	 return nil, sharedModels.ErrForbidden
+	// 	 return nil, sharedModels.ErrForbidden // Or ErrNotFound?
 	// }
 
-	// 3. Проверяем статус истории
+	// 3. Check story status
 	if publishedStory.Status == sharedModels.StatusSetupPending || publishedStory.Status == sharedModels.StatusFirstScenePending {
 		return nil, sharedModels.ErrStoryNotReadyYet
 	}
@@ -507,10 +495,10 @@ func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uint64, 
 		s.logger.Warn("Attempt to get scene for story in invalid state",
 			zap.String("publishedStoryID", publishedStoryID.String()),
 			zap.String("status", string(publishedStory.Status)))
-		return nil, fmt.Errorf("история находится в неиграбельном статусе: %s", publishedStory.Status)
+		return nil, fmt.Errorf("story is in a non-playable state: %s", publishedStory.Status)
 	}
 
-	// 4. Получаем прогресс игрока или создаем начальный
+	// 4. Get player progress or create initial progress
 	playerProgress, err := s.playerProgressRepo.GetByUserIDAndStoryID(ctx, userID, publishedStoryID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -526,14 +514,14 @@ func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uint64, 
 				UpdatedAt:        time.Now().UTC(),
 			}
 			if errCreate := s.playerProgressRepo.CreateOrUpdate(ctx, playerProgress); errCreate != nil {
-				return nil, fmt.Errorf("ошибка создания начального прогресса игрока: %w", errCreate)
+				return nil, fmt.Errorf("error creating initial player progress: %w", errCreate)
 			}
 		} else {
-			return nil, fmt.Errorf("ошибка получения прогресса игрока: %w", err)
+			return nil, fmt.Errorf("error getting player progress: %w", err)
 		}
 	}
 
-	// 5. Получаем сцену по хешу
+	// 5. Get scene by hash
 	scene, err := s.sceneRepo.FindByStoryAndHash(ctx, publishedStoryID, playerProgress.CurrentStateHash)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -542,14 +530,14 @@ func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uint64, 
 				zap.String("stateHash", playerProgress.CurrentStateHash))
 			return nil, sharedModels.ErrSceneNeedsGeneration
 		}
-		return nil, fmt.Errorf("ошибка получения сцены: %w", err)
+		return nil, fmt.Errorf("error getting scene: %w", err)
 	}
 
 	s.logger.Info("Scene found and returned", zap.String("sceneID", scene.ID.String()))
 	return scene, nil
 }
 
-// MakeChoice обрабатывает выбор игрока.
+// MakeChoice handles player choice.
 func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, publishedStoryID uuid.UUID, selectedOptionIndex int) error {
 	logFields := []zap.Field{
 		zap.Uint64("userID", userID),
@@ -558,7 +546,7 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, pub
 	}
 	s.logger.Info("MakeChoice called", logFields...)
 
-	// 1. Получаем прогресс
+	// 1. Get the progress
 	progress, err := s.playerProgressRepo.GetByUserIDAndStoryID(ctx, userID, publishedStoryID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -569,7 +557,7 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, pub
 		return ErrInternal
 	}
 
-	// 2. Получаем историю
+	// 2. Get the story
 	publishedStory, err := s.publishedRepo.GetByID(ctx, publishedStoryID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -580,13 +568,13 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, pub
 		return ErrInternal
 	}
 
-	// Проверяем статус опубликованной истории
+	// Check the status of the published story
 	if publishedStory.Status != sharedModels.StatusReady && publishedStory.Status != sharedModels.StatusGeneratingScene {
 		s.logger.Warn("Attempt to make choice in non-ready/generating story state", append(logFields, zap.String("status", string(publishedStory.Status)))...)
 		return ErrStoryNotReady
 	}
 
-	// Получаем текущую сцену по хешу из прогресса
+	// Get the current scene by hash from progress
 	currentScene, err := s.sceneRepo.FindByStoryAndHash(ctx, publishedStoryID, progress.CurrentStateHash)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -597,7 +585,7 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, pub
 		return ErrInternal
 	}
 
-	// Парсим контент текущей сцены
+	// Parse the content of the current scene
 	var sceneData sceneContentChoices
 	if err := json.Unmarshal(currentScene.Content, &sceneData); err != nil {
 		s.logger.Error("Failed to unmarshal current scene content", append(logFields, zap.String("sceneID", currentScene.ID.String()), zap.Error(err))...)
@@ -609,7 +597,7 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, pub
 		return ErrInternal
 	}
 
-	// Валидируем selectedOptionIndex
+	// Validate selectedOptionIndex
 	if len(sceneData.Choices) == 0 {
 		s.logger.Error("Current scene has no choice blocks", append(logFields, zap.String("sceneID", currentScene.ID.String()))...)
 		return ErrNoChoicesAvailable
@@ -621,7 +609,7 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, pub
 		return ErrInvalidChoice
 	}
 
-	// Загружаем NovelSetup
+	// Load NovelSetup
 	if publishedStory.Setup == nil {
 		s.logger.Error("CRITICAL: PublishedStory Setup is nil, but scene exists and status is Ready/Generating", append(logFields, zap.String("status", string(publishedStory.Status)))...)
 		return ErrInternal
@@ -632,11 +620,11 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, pub
 		return ErrInternal
 	}
 
-	// 7. Применяем последствия
+	// 7. Apply consequences
 	selectedOption := choiceBlock.Options[selectedOptionIndex]
 	gameOverStat, isGameOver := applyConsequences(progress, selectedOption.Consequences, &setupContent)
 
-	// 8. Обработка Game Over
+	// 8. Handle Game Over
 	if isGameOver {
 		s.logger.Info("Game Over condition met", append(logFields, zap.String("gameOverStat", gameOverStat))...)
 		if err := s.publishedRepo.UpdateStatusDetails(ctx, publishedStoryID, sharedModels.StatusGameOverPending, nil, nil, nil); err != nil {
@@ -679,13 +667,15 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, pub
 		}
 		if err := s.publisher.PublishGameOverTask(ctx, gameOverPayload); err != nil {
 			s.logger.Error("Failed to publish game over generation task", append(logFields, zap.Error(err))...)
+			// Note: Status remains GameOverPending, progress is saved.
+			// Manual intervention or a retry mechanism might be needed if publishing fails.
 			return ErrInternal
 		}
 		s.logger.Info("Game over task published", append(logFields, zap.String("taskID", taskID))...)
 		return nil
 	}
 
-	// 9. Расчет нового хеша
+	// 9. Calculate new hash
 	previousHash := progress.CurrentStateHash
 	newStateHash, err := calculateStateHash(previousHash, progress.CoreStats, progress.StoryVariables, progress.GlobalFlags)
 	if err != nil {
@@ -695,11 +685,11 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, pub
 	logFields = append(logFields, zap.String("newStateHash", newStateHash))
 	s.logger.Debug("New state hash calculated", logFields...)
 
-	// 10. Обновляем хеш в прогрессе
+	// 10. Update hash in progress
 	progress.CurrentStateHash = newStateHash
 	progress.UpdatedAt = time.Now().UTC()
 
-	// 11. Ищем следующую сцену
+	// 11. Find next scene
 	nextScene, err := s.sceneRepo.FindByStoryAndHash(ctx, publishedStoryID, newStateHash)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -725,6 +715,8 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, pub
 
 			if errPub := s.publisher.PublishGenerationTask(ctx, generationPayload); errPub != nil {
 				s.logger.Error("Failed to publish next scene generation task", append(logFields, zap.Error(errPub))...)
+				// Note: Status remains GeneratingScene, progress will be saved shortly.
+				// Manual intervention or a retry mechanism might be needed.
 				return ErrInternal
 			}
 			s.logger.Info("Next scene generation task published", append(logFields, zap.String("taskID", generationPayload.TaskID))...)
@@ -746,7 +738,7 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, pub
 		}
 	}
 
-	// 12. Следующая сцена найдена
+	// 12. Next scene found
 	s.logger.Info("Next scene found in DB", logFields...)
 
 	type SceneOutputFormat struct {
@@ -777,9 +769,9 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, pub
 	return nil
 }
 
-// calculateStateHash вычисляет детерминированный хеш состояния, включая хэш предыдущего состояния.
+// calculateStateHash calculates a deterministic state hash, including the previous state hash.
 func calculateStateHash(previousHash string, coreStats map[string]int, storyVars map[string]interface{}, globalFlags []string) (string, error) {
-	// 1. Подготовка данных
+	// 1. Prepare data
 	stateMap := make(map[string]interface{})
 
 	stateMap["_ph"] = previousHash
@@ -808,7 +800,7 @@ func calculateStateHash(previousHash string, coreStats map[string]int, storyVars
 	for i, k := range keys {
 		valueBytes, err := json.Marshal(stateMap[k])
 		if err != nil {
-			return "", fmt.Errorf("ошибка сериализации значения для ключа '%s': %w", k, err)
+			return "", fmt.Errorf("error serializing value for key '%s': %w", k, err)
 		}
 		sb.WriteString(fmt.Sprintf("\"%s\":%s", k, string(valueBytes)))
 		if i < len(keys)-1 {
@@ -825,9 +817,9 @@ func calculateStateHash(previousHash string, coreStats map[string]int, storyVars
 	return hex.EncodeToString(hashBytes), nil
 }
 
-// applyConsequences применяет последствия выбора к прогрессу игрока
-// и проверяет условия Game Over.
-// Возвращает имя стата, вызвавшего Game Over, и флаг Game Over.
+// applyConsequences applies consequences of choice to player progress
+// and checks Game Over conditions.
+// Returns stat name causing Game Over and Game Over flag.
 func applyConsequences(progress *sharedModels.PlayerProgress, cons sharedModels.Consequences, setup *sharedModels.NovelSetupContent) (gameOverStat string, isGameOver bool) {
 	if progress == nil || setup == nil {
 		log.Println("ERROR: applyConsequences called with nil progress or setup")
@@ -902,7 +894,7 @@ func applyConsequences(progress *sharedModels.PlayerProgress, cons sharedModels.
 	return "", false
 }
 
-// DeletePlayerProgress удаляет прогресс игрока для указанной истории.
+// DeletePlayerProgress deletes player progress for the specified story.
 func (s *gameplayServiceImpl) DeletePlayerProgress(ctx context.Context, userID uint64, publishedStoryID uuid.UUID) error {
 	s.logger.Info("Deleting player progress",
 		zap.Uint64("userID", userID),
@@ -913,19 +905,20 @@ func (s *gameplayServiceImpl) DeletePlayerProgress(ctx context.Context, userID u
 		if errors.Is(err, pgx.ErrNoRows) {
 			return sharedModels.ErrNotFound
 		}
-		return fmt.Errorf("ошибка проверки опубликованной истории: %w", err)
+		return fmt.Errorf("error checking published story: %w", err)
 	}
 
 	err = s.playerProgressRepo.Delete(ctx, userID, publishedStoryID)
 	if err != nil {
-		return fmt.Errorf("ошибка удаления прогресса игрока: %w", err)
+		// Wrap the error from the repository, could be ErrNoRows (progress not found) or other DB errors
+		return fmt.Errorf("error deleting player progress: %w", err)
 	}
 
 	return nil
 }
 
-// createGenerationPayload создает payload для задачи генерации следующей сцены,
-// используя сжатые ключи и сводки из предыдущего шага.
+// createGenerationPayload creates the payload for the next scene generation task,
+// using compressed keys and summaries from the previous step.
 func createGenerationPayload(
 	story *sharedModels.PublishedStory,
 	progress *sharedModels.PlayerProgress,
@@ -937,21 +930,21 @@ func createGenerationPayload(
 	var configMap map[string]interface{}
 	if len(story.Config) > 0 {
 		if err := json.Unmarshal(story.Config, &configMap); err != nil {
-			log.Printf("WARN: Не удалось распарсить Config JSON для задачи генерации StoryID %s: %v", story.ID, err)
-			return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("ошибка парсинга Config JSON: %w", err)
+			log.Printf("WARN: Failed to parse Config JSON for generation task StoryID %s: %v", story.ID, err)
+			return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Config JSON: %w", err)
 		}
 	} else {
-		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("отсутствует Config в PublishedStory ID %s", story.ID)
+		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("missing Config in PublishedStory ID %s", story.ID)
 	}
 
 	var setupMap map[string]interface{}
 	if len(story.Setup) > 0 {
 		if err := json.Unmarshal(story.Setup, &setupMap); err != nil {
-			log.Printf("WARN: Не удалось распарсить Setup JSON для задачи генерации StoryID %s: %v", story.ID, err)
-			return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("ошибка парсинга Setup JSON: %w", err)
+			log.Printf("WARN: Failed to parse Setup JSON for generation task StoryID %s: %v", story.ID, err)
+			return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Setup JSON: %w", err)
 		}
 	} else {
-		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("отсутствует Setup в PublishedStory ID %s", story.ID)
+		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("missing Setup in PublishedStory ID %s", story.ID)
 	}
 
 	compressedInputData := make(map[string]interface{})

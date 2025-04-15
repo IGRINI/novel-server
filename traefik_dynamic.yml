@@ -1,0 +1,108 @@
+# traefik_dynamic.yml
+http:
+  # ============================================
+  # Middlewares
+  # ============================================
+  middlewares:
+    # --- Strip Prefixes ---
+    # Убирает /api перед отправкой запроса в auth-service
+    auth-stripprefix:
+      stripPrefix:
+        prefixes:
+          - "/api"
+
+    # Убирает /api/stories перед отправкой запроса в gameplay-service
+    gameplay-stripprefix:
+      stripPrefix:
+        prefixes:
+          - "/api"
+
+    # Убирает /admin перед отправкой запроса в admin-service (для защищенных путей)
+    admin-protected-stripprefix:
+      stripPrefix:
+        prefixes:
+          - "/admin"
+
+  # ============================================
+  # Routers
+  # ============================================
+  routers:
+    # --- Auth Service ---
+    auth-http-router:
+      entryPoints:
+        - "web" # Точка входа для пользовательского трафика
+      rule: "PathPrefix(`/api/auth`)" # Правило для /api/auth/...
+      service: "auth-service" # На какой сервис направить
+      middlewares:
+        - "auth-stripprefix" # Применяем middleware
+
+    # --- Auth Service (Get Me) ---
+    auth-me-router:
+      entryPoints:
+        - "web"
+      rule: "Path(`/api/me`)" # Точный путь /api/me
+      service: "auth-service" # Направляем на auth-service
+      # Middleware не нужен, т.к. сервис ожидает /api/me
+
+    # --- Gameplay Service ---
+    gameplay-http-router:
+      entryPoints:
+        - "web"
+      rule: "PathPrefix(`/api/stories`)"
+      service: "gameplay-service"
+      # Возвращаем middleware, который удаляет /api
+      middlewares:
+       - "gameplay-stripprefix"
+
+    # --- Admin Service (Login Page) ---
+    admin-login-router:
+      entryPoints:
+        - "web"
+      rule: "Path(`/login`)" # Точный путь
+      service: "admin-service"
+      # Middleware не нужен
+
+    # --- Admin Service (Protected Routes) ---
+    admin-protected-router:
+      entryPoints:
+        - "web"
+      rule: "PathPrefix(`/admin`)" # Пути, начинающиеся с /admin
+      service: "admin-service"
+      middlewares:
+        - "admin-protected-stripprefix" # Применяем middleware
+
+    # --- Websocket Service ---
+    websocket-router:
+      entryPoints:
+        - "web"
+      rule: "Path(`/ws`)" # Точный путь для WebSocket
+      service: "websocket-service"
+      # Middleware не нужен
+
+  # ============================================
+  # Services (Load Balancers)
+  # ============================================
+  services:
+    auth-service:
+      loadBalancer:
+        servers:
+          # Указываем внутренний адрес и порт сервиса в Docker
+          - url: "http://auth-service:8081"
+
+    gameplay-service:
+      loadBalancer:
+        servers:
+          # Порт по умолчанию 8082 (или из $GAMEPLAY_SERVER_PORT)
+          - url: "http://gameplay-service:8082"
+
+    admin-service:
+      loadBalancer:
+        servers:
+          # Порт по умолчанию 8084 (или из $ADMIN_SERVER_PORT)
+          - url: "http://admin-service:8084"
+
+    websocket-service:
+      loadBalancer:
+        servers:
+          # Порт по умолчанию 8083 (или из $WEBSOCKET_SERVER_PORT)
+          - url: "http://websocket-service:8083"

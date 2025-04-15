@@ -2,125 +2,113 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"net/http"
-	"novel-server/shared/authutils"
-	sharedMiddleware "novel-server/shared/middleware"
-	"novel-server/websocket-service/internal/config"
-	"novel-server/websocket-service/internal/handler"
-	"novel-server/websocket-service/internal/messaging"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
-	"github.com/labstack/echo/v4"
-	echoMiddleware "github.com/labstack/echo/v4/middleware"
-	amqp "github.com/rabbitmq/amqp091-go"
-	"go.uber.org/zap"
-	"novel-server/shared/logger"
+	"github.com/kelseyhightower/envconfig"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/rs/zerolog"
+
+	"novel-server/websocket-service/internal/config"
+	"novel-server/websocket-service/internal/handler"
+	"novel-server/websocket-service/internal/messaging"
+	"novel-server/websocket-service/internal/service"
 )
 
 func main() {
-	// Загружаем .env файл (если есть) для локальной разработки
-	_ = godotenv.Load()
+	// Инициализация логгера
+	output := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
+	logger := zerolog.New(output).With().Timestamp().Logger()
 
-	logCfg := logger.Config{ Level: "info" }
-	appLogger, err := logger.New(logCfg)
-	if err != nil {
-		log.Fatalf("Failed to init logger: %v", err)
+	// Загрузка .env файла (если есть)
+	if err := godotenv.Load(); err != nil {
+		logger.Info().Msg("No .env file found")
 	}
-	defer appLogger.Sync()
-	appLogger.Info("Starting WebSocket Service...")
 
-	cfg, err := config.LoadConfig()
+	// Загрузка конфигурации
+	var cfg config.Config
+	err := envconfig.Process("", &cfg)
 	if err != nil {
-		appLogger.Fatal("Failed to load config", zap.Error(err))
+		logger.Fatal().Err(err).Msg("Failed to process config")
 	}
-	appLogger.Info("Config loaded")
 
-	rabbitConn, err := connectRabbitMQ(cfg.RabbitMQURL, appLogger)
+	logger.Info().Msgf("Конфигурация загружена: %+v", cfg)
+
+	// Создание менеджера соединений
+	connManager := handler.NewConnectionManager()
+
+	// Создание и запуск консьюмера RabbitMQ
+	rabbitConsumer, err := messaging.NewRabbitMQConsumer(&cfg.RabbitMQ, connManager, logger)
 	if err != nil {
-		appLogger.Fatal("Failed to connect to RabbitMQ", zap.Error(err))
-	}
-	defer rabbitConn.Close()
-	appLogger.Info("Connected to RabbitMQ")
-
-	connManager := handler.NewConnectionManager( /* appLogger.Named("ConnManager") */ )
-
-	mqConsumer, err := messaging.NewConsumer(rabbitConn, connManager, cfg.ClientUpdatesQueueName /* , appLogger.Named("Consumer") */)
-	if err != nil {
-		appLogger.Fatal("Failed to create RabbitMQ consumer", zap.Error(err))
+		logger.Fatal().Err(err).Msg("Failed to create RabbitMQ consumer")
 	}
 	go func() {
-		if err := mqConsumer.StartConsuming(); err != nil {
-			appLogger.Error("RabbitMQ consumer error", zap.Error(err))
-		}
-	}()
-	appLogger.Info("RabbitMQ consumer started")
-
-	e := echo.New()
-	e.Use(sharedMiddleware.EchoZapLogger(appLogger))
-	e.Use(echoMiddleware.Recover())
-
-	e.Use(echoMiddleware.CORSWithConfig(echoMiddleware.CORSConfig{
-		AllowOrigins: []string{"*"},
-		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodOptions},
-		AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization},
-	}))
-
-	tokenVerifier, err := authutils.NewJWTVerifier(cfg.JWTSecret, appLogger)
-	if err != nil {
-		appLogger.Fatal("Failed to create JWT verifier", zap.Error(err))
-	}
-
-	wsHandler := handler.NewWebSocketHandler(connManager)
-
-	wsGroup := e.Group("/ws")
-	wsGroup.Use(echo.WrapMiddleware(sharedMiddleware.AuthMiddleware(tokenVerifier.VerifyToken, appLogger)))
-	wsGroup.GET("", wsHandler.Handle)
-
-	appLogger.Info("WebSocket server listening", zap.String("port", cfg.Port))
-
-	go func() {
-		if err := e.Start(":" + cfg.Port); err != nil && err != http.ErrServerClosed {
-			appLogger.Fatal("Server start error", zap.Error(err))
+		if err := rabbitConsumer.StartConsuming(); err != nil {
+			logger.Error().Err(err).Msg("RabbitMQ consumer stopped with error")
 		}
 	}()
 
+	// Создание сервиса аутентификации
+	authService := service.NewAuthService(&cfg.AuthService, logger)
+
+	// Создание обработчика WebSocket
+	wsHandler := handler.NewWebSocketHandler(connManager, authService, logger)
+
+	// Настройка основного HTTP-сервера
+	mainMux := http.NewServeMux()
+	mainMux.HandleFunc("/ws", wsHandler.ServeWS) // Основной эндпоинт для WebSocket
+
+	mainServer := &http.Server{
+		Addr:    fmt.Sprintf(":%s", cfg.Server.Port),
+		Handler: mainMux,
+	}
+
+	// Настройка и запуск HTTP-сервера для метрик Prometheus
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsServer := &http.Server{
+		Addr:    fmt.Sprintf(":%s", cfg.Server.MetricsPort), // Используем отдельный порт для метрик
+		Handler: metricsMux,
+	}
+
+	go func() {
+		logger.Info().Msgf("Starting main server on port %s", cfg.Server.Port)
+		if err := mainServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Fatal().Err(err).Msg("Failed to start main server")
+		}
+	}()
+
+	go func() {
+		logger.Info().Msgf("Starting metrics server on port %s", cfg.Server.MetricsPort)
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Fatal().Err(err).Msg("Failed to start metrics server")
+		}
+	}()
+
+	// Ожидание сигнала завершения
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	appLogger.Info("Shutting down server...")
+	logger.Info().Msg("Shutting down servers...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Graceful shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := e.Shutdown(ctx); err != nil {
-		appLogger.Error("Echo shutdown error", zap.Error(err))
+
+	if err := mainServer.Shutdown(ctx); err != nil {
+		logger.Error().Err(err).Msg("Main server shutdown failed")
+	}
+	if err := metricsServer.Shutdown(ctx); err != nil {
+		logger.Error().Err(err).Msg("Metrics server shutdown failed")
+	}
+	if err := rabbitConsumer.StopConsuming(); err != nil {
+		logger.Error().Err(err).Msg("RabbitMQ consumer stop failed")
 	}
 
-	appLogger.Info("WebSocket service stopped")
-}
-
-func connectRabbitMQ(url string, logger *zap.Logger) (*amqp.Connection, error) {
-	var conn *amqp.Connection
-	var err error
-	maxRetries := 5
-	retryDelay := 5 * time.Second
-
-	for i := 0; i < maxRetries; i++ {
-		conn, err = amqp.Dial(url)
-		if err == nil {
-			return conn, nil
-		}
-		logger.Warn("Failed to connect to RabbitMQ",
-			zap.Int("attempt", i+1),
-			zap.Int("max_attempts", maxRetries),
-			zap.Duration("retry_delay", retryDelay),
-			zap.Error(err),
-		)
-		time.Sleep(retryDelay)
-	}
-	return nil, err
+	logger.Info().Msg("Servers gracefully stopped")
 }

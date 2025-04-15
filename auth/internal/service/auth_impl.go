@@ -2,8 +2,11 @@ package service
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log"
 	"net/mail"
 	"novel-server/auth/internal/config"
 	"novel-server/auth/internal/domain"
@@ -31,6 +34,11 @@ type authServiceImpl struct {
 
 // NewAuthService creates a new instance of authServiceImpl.
 func NewAuthService(userRepo interfaces.UserRepository, tokenRepo interfaces.TokenRepository, cfg *config.Config, logger *zap.Logger) AuthService {
+	if logger == nil {
+		log.Println("CRITICAL: Logger passed to NewAuthService is nil!") // Use stdlib log as fallback
+	} else {
+		logger.Info("Initializing AuthService with logger") // Use the passed logger
+	}
 	return &authServiceImpl{
 		userRepo:  userRepo,
 		tokenRepo: tokenRepo,
@@ -84,7 +92,8 @@ func (s *authServiceImpl) Register(ctx context.Context, username, email, passwor
 		return nil, models.ErrEmailAlreadyExists // Возвращаем новую ошибку
 	}
 
-	hashedPassword, err := hashPassword(password, s.cfg.PasswordSalt)
+	// Используем перец перед хешированием
+	hashedPassword, err := hashPassword(password, s.cfg.PasswordPepper)
 	if err != nil {
 		s.logger.Error("Failed to hash password during registration", append(logFields, zap.Error(err))...)
 		return nil, fmt.Errorf("failed to hash password: %w", err)
@@ -129,7 +138,8 @@ func (s *authServiceImpl) Login(ctx context.Context, username, password string) 
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 
-	if !checkPasswordHash(password, s.cfg.PasswordSalt, user.PasswordHash) {
+	// Используем перец при проверке
+	if !checkPasswordHash(password, user.PasswordHash, s.cfg.PasswordPepper) {
 		// Логируем неуспешную попытку входа (неверный пароль)
 		s.logger.Warn("Login failed: invalid password", zap.String("username", username), zap.Uint64("userID", user.ID))
 		return nil, models.ErrInvalidCredentials
@@ -139,7 +149,7 @@ func (s *authServiceImpl) Login(ctx context.Context, username, password string) 
 	if user.IsBanned {
 		s.logger.Warn("Login failed: user is banned", zap.String("username", username), zap.Uint64("userID", user.ID))
 		// Возвращаем стандартную ошибку, чтобы не раскрывать причину
-		return nil, models.ErrInvalidCredentials 
+		return nil, models.ErrInvalidCredentials
 	}
 	// <<< Конец проверки на бан >>>
 
@@ -302,22 +312,47 @@ func (s *authServiceImpl) VerifyAccessToken(ctx context.Context, tokenString str
 	return nil, models.ErrTokenInvalid // <<< Исправлено
 }
 
-// GenerateInterServiceToken creates a short-lived token for internal service communication.
+// GenerateInterServiceToken creates a short-lived JWT for inter-service communication.
+// The 'serviceName' will be included as the 'subject' claim.
 func (s *authServiceImpl) GenerateInterServiceToken(ctx context.Context, serviceName string) (string, error) {
-	s.logger.Info("Generating inter-service token", zap.String("targetService", serviceName))
-	claims := jwt.RegisteredClaims{
-		Issuer:    s.cfg.ServiceID,
-		Subject:   serviceName,
-		ExpiresAt: jwt.NewNumericDate(time.Now().Add(s.cfg.InterServiceTTL)),
-		IssuedAt:  jwt.NewNumericDate(time.Now()),
-		ID:        uuid.NewString(),
+	s.logger.Debug("Entering GenerateInterServiceToken") // Use Debug level
+	s.logger.Info("Generating inter-service token",
+		zap.String("targetService", serviceName),
+		zap.Duration("configuredTTL", s.cfg.InterServiceTokenTTL))
+
+	now := time.Now()
+	// Используем TTL из конфигурации
+
+	// <<< Добавляем детальное логирование >>>
+	currentTTL := s.cfg.InterServiceTokenTTL // Читаем значение в локальную переменную
+	s.logger.Debug("TTL value just before Add()", zap.Duration("readTTL", currentTTL), zap.Time("now", now))
+
+	expirationTime := now.Add(currentTTL) // Используем локальную переменную
+
+	s.logger.Debug("Expiration time calculated", zap.Time("calculatedExp", expirationTime), zap.Duration("usedTTL", currentTTL))
+	// <<< Конец детального логирования >>>
+
+	// Используем кастомные claims, включающие RegisteredClaims
+	claims := &models.InterServiceClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    s.cfg.ServiceID,
+			Subject:   serviceName,
+			ExpiresAt: jwt.NewNumericDate(expirationTime), // Используем вычисленное время
+			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
+			ID:        uuid.NewString(),
+		},
+		RequestingService: serviceName, // Добавляем кастомное поле
 	}
+
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signedToken, err := token.SignedString([]byte(s.cfg.InterServiceSecret))
 	if err != nil {
-		s.logger.Error("Failed to sign inter-service token", zap.Error(err))
-		return "", fmt.Errorf("failed to sign inter-service token: %w", err)
+		s.logger.Error("Failed to sign inter-service token", zap.Error(err), zap.String("requestingService", serviceName))
+		return "", fmt.Errorf("failed to sign token: %w", err)
 	}
+
+	s.logger.Debug("Inter-service token signed successfully", zap.String("requestingService", serviceName))
 	return signedToken, nil
 }
 
@@ -333,8 +368,15 @@ func (s *authServiceImpl) VerifyInterServiceToken(ctx context.Context, tokenStri
 
 	if err != nil {
 		if errors.Is(err, jwt.ErrTokenExpired) {
-			s.logger.Debug("Inter-service token verification failed: expired")
-			return "", models.ErrTokenExpired
+			// <<< Log details before returning expired error >>>
+			var expTime time.Time
+			if claims, ok := token.Claims.(*jwt.RegisteredClaims); ok && claims.ExpiresAt != nil {
+				expTime = claims.ExpiresAt.Time
+			}
+			s.logger.Warn("Inter-service token verification failed: expired",
+				zap.Time("expiresAt", expTime),
+				zap.Time("currentTime", time.Now()))
+			return "", models.ErrTokenExpired // Return the original error
 		}
 		if errors.Is(err, jwt.ErrTokenMalformed) {
 			s.logger.Warn("Inter-service token verification failed: malformed")
@@ -364,7 +406,7 @@ func (s *authServiceImpl) ValidateAndGetClaims(ctx context.Context, tokenString 
 	if err != nil {
 		// Ошибка уже залогирована в VerifyAccessToken
 		// Возвращаем ошибку (ErrTokenExpired, ErrTokenMalformed, ErrTokenInvalid)
-		return nil, err 
+		return nil, err
 	}
 
 	// 2. Проверяем статус пользователя (не забанен ли)
@@ -392,18 +434,28 @@ func (s *authServiceImpl) ValidateAndGetClaims(ctx context.Context, tokenString 
 
 // --- Helper Functions ---
 
-// hashPassword generates a bcrypt hash of the password using a salt.
-func hashPassword(password, salt string) (string, error) {
-	// Combine password and salt before hashing
-	saltedPassword := password + salt
-	bytes, err := bcrypt.GenerateFromPassword([]byte(saltedPassword), bcrypt.DefaultCost)
+// applyPepper applies HMAC-SHA256 using the pepper as the key.
+func applyPepper(password, pepper string) []byte {
+	h := hmac.New(sha256.New, []byte(pepper))
+	h.Write([]byte(password)) // Неважно, если Write возвращает ошибку, она всегда nil для sha256
+	return h.Sum(nil)
+}
+
+// hashPassword generates a bcrypt hash of the password after applying the pepper.
+func hashPassword(password, pepper string) (string, error) {
+	// Применяем перец к паролю через HMAC-SHA256
+	pepperedPassword := applyPepper(password, pepper)
+	// Хешируем результат с помощью bcrypt (он сам добавит свою соль)
+	bytes, err := bcrypt.GenerateFromPassword(pepperedPassword, bcrypt.DefaultCost)
 	return string(bytes), err
 }
 
-// checkPasswordHash compares a plain text password with a stored hash.
-func checkPasswordHash(password, salt, hash string) bool {
-	saltedPassword := password + salt
-	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(saltedPassword))
+// checkPasswordHash compares a plain text password (after applying pepper) with a stored hash.
+func checkPasswordHash(password, hash, pepper string) bool {
+	// Применяем тот же перец к введенному паролю
+	pepperedPassword := applyPepper(password, pepper)
+	// bcrypt сам извлечет свою соль из хеша и сравнит
+	err := bcrypt.CompareHashAndPassword([]byte(hash), pepperedPassword)
 	return err == nil
 }
 
@@ -565,8 +617,8 @@ func (s *authServiceImpl) UpdatePassword(ctx context.Context, userID uint64, new
 		return err // Возвращаем ошибку (может быть ErrUserNotFound)
 	}
 
-	// Генерируем хеш нового пароля
-	newPasswordHash, err := hashPassword(newPassword, s.cfg.PasswordSalt)
+	// Генерируем хеш нового пароля с перцем
+	newPasswordHash, err := hashPassword(newPassword, s.cfg.PasswordPepper)
 	if err != nil {
 		log.Error("Failed to hash new password during update", zap.Error(err))
 		return fmt.Errorf("failed to hash new password: %w", err)

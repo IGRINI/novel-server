@@ -4,72 +4,57 @@ x-environment-defaults: &env-vars
   DB_HOST: ${DB_HOST:-localhost}
   DB_PORT: ${DB_PORT:-5432}
   DB_USER: ${DB_USER:-postgres}
-  DB_PASSWORD: ${DB_PASSWORD}
   DB_NAME: ${DB_NAME:-novel_db}
   DB_SSL_MODE: ${DB_SSL_MODE:-disable}
   REDIS_ADDR: ${REDIS_ADDR:-localhost:6379}
-  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
   REDIS_DB: ${REDIS_DB:-0}
-  JWT_SECRET: ${JWT_SECRET}
-  PASSWORD_SALT: ${PASSWORD_SALT}
   JWT_ACCESS_TOKEN_TTL: ${JWT_ACCESS_TOKEN_TTL:-15m}
   JWT_REFRESH_TOKEN_TTL: ${JWT_REFRESH_TOKEN_TTL:-168h}
   SERVICE_ID: ${SERVICE_ID:-default-service}
-  INTER_SERVICE_SECRET: ${INTER_SERVICE_SECRET}
-  INTER_SERVICE_TTL: ${INTER_SERVICE_TTL:-5m}
-  AI_API_KEY: ${AI_API_KEY}
   RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
 
 services:
   # API Gateway (Traefik)
   api-gateway:
-    image: traefik:v2.11 # Используем стабильную версию Traefik
+    image: traefik:v2.11
     container_name: novel_api_gateway
     command:
-      # Включаем Docker провайдер
-      - "--providers.docker=true"
-      # Не разрешаем Traefik обнаруживать контейнеры без явной метки traefik.enable=true
-      - "--providers.docker.exposedbydefault=false"
-      # Определяем точку входа 'web' на порту 8080 (для пользовательского трафика)
+      # --- Удаляем конфигурацию Docker Provider ---
+      # - "--providers.docker=true"
+      # - "--providers.docker.swarmMode=true"
+      # - "--providers.docker.network=novel_stack_novel_network"
+      # - "--providers.docker.exposedbydefault=false"
+      # - "--providers.docker.constraints=Label(`com.docker.stack.namespace`, `novel_stack`)"
+      
+      # --- Добавляем конфигурацию File Provider ---
+      - "--providers.file.filename=/etc/traefik/dynamic/traefik_dynamic.yml" # Путь к динамической конфигурации
+      - "--providers.file.watch=true" # Включаем отслеживание изменений файла
+
+      # --- Остальные команды Traefik (точки входа, api, логи) остаются ---
       - "--entrypoints.web.address=:8080"
-      # Определяем точку входа 'traefik' (для API/Dashboard) на порту 8081
       - "--entrypoints.traefik.address=:8081"
-      # Включаем API Traefik и Dashboard, указывая, что они должны использовать точку входа 'traefik'
       - "--api=true"
       - "--api.dashboard=true"
-      - "--api.insecure=true" # В продакшене защитить!
-      # Включаем логирование доступа
+      - "--api.insecure=true"
       - "--accesslog=true"
-      # Указываем уровень логов Traefik
-      - "--log.level=INFO" # Или DEBUG для отладки
+      - "--log.level=DEBUG" # Оставляем DEBUG для отладки
+
+      # --- Добавляем конфигурацию для Prometheus Metrics ---
+      - "--metrics.prometheus=true"                # Включаем endpoint /metrics
+      - "--metrics.prometheus.addrouterslabels=true" # Добавляем метки роутеров
+      - "--metrics.prometheus.addserviceslabels=true" # Добавляем метки сервисов
+      - "--metrics.prometheus.entryPoint=traefik"    # Указываем, на какой точке входа будет /metrics (обычно отдельная, здесь используем traefik @ 8081)
     ports:
-      # Публикуем порт 8080 (хост) -> 8080 (контейнер, entrypoint 'web')
-      - "8080:8080"
-      # Публикуем порт 8888 (хост) -> 8081 (контейнер, entrypoint 'traefik' для API/Dashboard)
+      - "28960:8080"
       - "8888:8081"
     volumes:
-      # Монтируем Docker сокет, чтобы Traefik мог слушать события Docker
-      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "/var/run/docker.sock:/var/run/docker.sock:ro" # Оставляем на всякий случай, хотя для file provider не нужен
+      # --- Подключаем файл с динамической конфигурацией --- 
+      - "./traefik_dynamic.yml:/etc/traefik/dynamic/traefik_dynamic.yml:ro" # Read-only
     networks:
       - novel_network
-    # Можно добавить depends_on, если нужно дождаться старта других сервисов, но обычно Traefik сам справляется
-    labels:
-      # <<< УДАЛЯЕМ метки, связанные с custom-errors и catch-all-web >>>
-      # - "traefik.http.middlewares.custom-errors.errors.status=404"
-      # - "traefik.http.middlewares.custom-errors.errors.service=error-pages@docker"
-      # - "traefik.http.middlewares.custom-errors.errors.query=/{status}.html"
-      # - "traefik.http.routers.catch-all-web.rule=PathPrefix(`/`)" 
-      # - "traefik.http.routers.catch-all-web.entrypoints=web"
-      # - "traefik.http.routers.catch-all-web.priority=1"
-      # - "traefik.http.routers.catch-all-web.middlewares=custom-errors@docker"
-      
-      # --- Определяем другие middleware (stripprefix) --- 
-      - "traefik.http.middlewares.auth-stripprefix.stripprefix.prefixes=/api"
-      - "traefik.http.middlewares.gameplay-stripprefix.stripprefix.prefixes=/api/stories"
-      - "traefik.http.middlewares.admin-stripprefix.stripprefix.prefixes=/admin"
-      
-      # Важно: нужна метка enable=true, чтобы Traefik вообще работал с Docker
-      - "traefik.enable=true" 
+    # labels: # labels для самого Traefik больше не нужны
+      # - "traefik.enable=true" 
 
   # База данных PostgreSQL
   postgres:
@@ -77,18 +62,22 @@ services:
     container_name: novel_postgres
     environment:
       POSTGRES_USER: ${DB_USER:-postgres}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
       POSTGRES_DB: ${DB_NAME:-novel_db}
     ports:
       # Порт публикуется только для локального доступа к БД, если нужно
       - "${DB_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    secrets:
+      - db_password
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-novel_db}"]
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - novel_network
 
   # Кэш Redis
   redis:
@@ -104,92 +93,117 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - novel_network
 
-  # Сервис миграций (запускается перед auth)
+  # Сервис миграций
   migrate:
     build:
       context: .
       dockerfile: deploy/docker/migrate/Dockerfile
-    container_name: novel_migrate
-    env_file: .env
+    image: novel-migrate:latest
+    deploy:
+      mode: replicated-job # <<< Указываем, что это одноразовая задача
+      restart_policy:
+        condition: none # Не перезапускать после завершения
+    environment:
+      # Передаем переменные, нужные для скрипта entrypoint.sh
+      DB_HOST: postgres
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USER: ${DB_USER:-postgres}
+      DB_NAME: ${DB_NAME:-novel_db}
+      DB_SSL_MODE: ${DB_SSL_MODE:-disable}
+    secrets:
+      - source: db_password
+        target: /run/secrets/db_password # Скрипт будет читать отсюда
     depends_on:
-      postgres:
-        condition: service_healthy
-    command: [
-      "-path", "/migrations",
-      "-database", "postgres://${DB_USER:-postgres}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-novel_db}?sslmode=${DB_SSL_MODE:-disable}",
-      "up"
-    ]
+      - postgres
+    networks:
+      - novel_network
 
   # Сервис авторизации
   auth-service:
     build:
       context: .
       dockerfile: auth/Dockerfile
+    image: novel-auth-service:latest
     container_name: novel_auth
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      migrate:
-         condition: service_completed_successfully
+      - postgres
+      - redis
+      - migrate
     environment:
       <<: *env-vars
       DB_HOST: postgres
       REDIS_ADDR: redis:6379
       SERVER_PORT: ${AUTH_SERVER_PORT:-8081}
       SERVICE_ID: auth-service
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "http://localhost:8081/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s # Даем больше времени на первый старт
-    ports: # <<< Раскомментируем обратно публикацию порта 8081
+      INTER_SERVICE_TOKEN_TTL: ${INTER_SERVICE_TOKEN_TTL:-1h}
+    secrets:
+      - source: db_password
+        target: /run/secrets/db_password
+      - source: jwt_secret
+        target: /run/secrets/jwt_secret
+      - source: password_pepper
+        target: /run/secrets/password_pepper
+      - source: inter_service_secret
+        target: /run/secrets/inter_service_secret
+    # healthcheck: # <<< ВРЕМЕННО ОТКЛЮЧАЕМ
+    #   test: ["CMD", "wget", "--spider", "http://localhost:8081/health"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 5
+    #   start_period: 30s
+    ports:
       - "${AUTH_SERVER_PORT:-8081}:8081"
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.auth-http.rule=PathPrefix(`/api/auth`)" 
-      - "traefik.http.routers.auth-http.entrypoints=web" 
-      - "traefik.http.services.auth-service.loadbalancer.server.port=${AUTH_SERVER_PORT:-8081}"
-      - "traefik.http.routers.auth-http.middlewares=auth-stripprefix"
+    # labels: # <<< УДАЛЯЕМ LABELS ПОЛНОСТЬЮ
+    networks:
+      - novel_network
 
-  # Сервис Геймплея (обработка запросов /api/stories)
+  # Сервис Геймплея
   gameplay-service:
     build:
       context: .
       dockerfile: gameplay-service/Dockerfile
+    image: novel-gameplay-service:latest
     container_name: novel_gameplay_service
     depends_on:
-      postgres:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-      migrate:
-         condition: service_completed_successfully
+      - postgres
+      - rabbitmq
+      - migrate
+      - auth-service # Добавим зависимость от auth на всякий случай
     environment:
       <<: *env-vars # Наследуем общие переменные
       DB_HOST: postgres # Внутреннее имя хоста БД
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/ # URL для Docker
       SERVER_PORT: ${GAMEPLAY_SERVER_PORT:-8082} # Внутренний порт сервиса
       SERVICE_ID: gameplay-service
-      # JWT_SECRET уже включен через *env-vars
+      AUTH_SERVICE_URL: http://auth-service:8081 # Добавляем URL для auth-service
+    secrets:
+      - source: db_password
+        target: /run/secrets/db_password
+      - source: jwt_secret
+        target: /run/secrets/jwt_secret
+      - source: inter_service_secret
+        target: /run/secrets/inter_service_secret
     # ports: # Убираем публикацию порта наружу
     #   - "${GAMEPLAY_SERVER_PORT:-8082}:${GAMEPLAY_SERVER_PORT:-8082}"
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.gameplay-http.rule=PathPrefix(`/api/stories`)" 
-      - "traefik.http.routers.gameplay-http.entrypoints=web" 
-      - "traefik.http.services.gameplay-service.loadbalancer.server.port=${GAMEPLAY_SERVER_PORT:-8082}"
-      # <<< УБИРАЕМ custom-errors отсюда >>>
-      - "traefik.http.routers.gameplay-http.middlewares=gameplay-stripprefix"
+    # labels: # <<< УДАЛЯЕМ LABELS ПОЛНОСТЬЮ
+      # --- ВРЕМЕННО УБИРАЕМ ВСЕ МЕТКИ --- 
+      # - "traefik.enable=true"
+      # - "traefik.http.routers.gameplay-http.rule=PathPrefix(`/api/stories`)" 
+      # - "traefik.http.routers.gameplay-http.entrypoints=web" 
+      # - "traefik.http.services.gameplay-service.loadbalancer.server.port=${GAMEPLAY_SERVER_PORT:-8082}"
+      # - "traefik.http.routers.gameplay-http.middlewares=gameplay-stripprefix"
+    networks:
+      - novel_network
 
   # Сервис Админки
   admin-service:
     build:
       context: .
       dockerfile: admin-service/Dockerfile
+    image: novel-admin-service:latest
     container_name: novel_admin_service
     ports:
       - "8084:8084" # Порт admin-service
@@ -197,14 +211,16 @@ services:
       - APP_ENV=development
       - PORT=8084
       - LOG_LEVEL=debug
-      - AUTH_SERVICE_URL=http://host.docker.internal:8081 # <<< Возвращаем URL с host.docker.internal
+      - AUTH_SERVICE_URL=http://auth-service:8081 # <<< Возвращаем URL с host.docker.internal
       - CLIENT_TIMEOUT=10s
-      - INTER_SERVICE_SECRET=${INTER_SERVICE_SECRET} # <<< Меняем на переменную окружения
       - SERVICE_ID=admin-service # Идентификатор сервиса
-      - JWT_SECRET=${JWT_SECRET}
+    secrets:
+      - source: inter_service_secret
+        target: /run/secrets/inter_service_secret
+      - source: jwt_secret
+        target: /run/secrets/jwt_secret
     depends_on:
-      auth-service:
-        condition: service_healthy # Запускаем только после healthcheck auth-service
+      - auth-service
     networks:
       - novel_network
     healthcheck: # <<< Возвращаем Healthcheck для admin-service
@@ -216,23 +232,15 @@ services:
     volumes:
       - ./admin-service:/app/admin-service # Volume mounting for hot-reloading
       - ./shared:/app/shared # Mount shared directory
-    labels:
-      - "traefik.enable=true"
-
-      # --- Роутер для страницы входа --- 
-      - "traefik.http.routers.admin-login-http.rule=Path(`/login`)" # Точный путь /login
-      - "traefik.http.routers.admin-login-http.entrypoints=web"
-      - "traefik.http.services.admin-service.loadbalancer.server.port=${ADMIN_SERVER_PORT:-8084}"
-      # <<< УБИРАЕМ custom-errors отсюда >>>
-      # - "traefik.http.routers.admin-login-http.middlewares=custom-errors@docker"
-
-      # --- Роутер для защищенных путей админки --- 
-      - "traefik.http.routers.admin-protected-http.rule=PathPrefix(`/admin`)" # Пути, начинающиеся с /admin
-      - "traefik.http.routers.admin-protected-http.entrypoints=web"
-      # Сервис тот же, что и для логина
-      # - "traefik.http.services.admin-service.loadbalancer.server.port=${ADMIN_SERVER_PORT:-8084}" # Можно не повторять
-      # <<< УБИРАЕМ custom-errors отсюда >>>
-      - "traefik.http.routers.admin-protected-http.middlewares=admin-stripprefix"
+    # labels: # <<< УДАЛЯЕМ LABELS ПОЛНОСТЬЮ
+      # --- ВРЕМЕННО УБИРАЕМ ВСЕ МЕТКИ --- 
+      # - "traefik.enable=true"
+      # - "traefik.http.routers.admin-login-http.rule=Path(`/login`)" # Точный путь /login
+      # - "traefik.http.routers.admin-login-http.entrypoints=web"
+      # - "traefik.http.services.admin-service.loadbalancer.server.port=${ADMIN_SERVER_PORT:-8084}"
+      # - "traefik.http.routers.admin-protected-http.rule=PathPrefix(`/admin`)" # Пути, начинающиеся с /admin
+      # - "traefik.http.routers.admin-protected-http.entrypoints=web"
+      # - "traefik.http.routers.admin-protected-http.middlewares=admin-stripprefix"
 
   # Сервис RabbitMQ
   rabbitmq:
@@ -246,26 +254,25 @@ services:
       - rabbitmq_data:/var/lib/rabbitmq/
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
     healthcheck:
       test: rabbitmq-diagnostics -q ping
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - novel_network
 
   # Сервис Story Generator
   story-generator:
     build:
       context: .
       dockerfile: story-generator/Dockerfile
+    image: novel-story-generator:latest
     container_name: novel_story_generator
     depends_on:
-      postgres:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
+      - postgres
+      - rabbitmq
+      - migrate
     volumes:
       - ./promts:/app/promts
     environment:
@@ -274,38 +281,52 @@ services:
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
       PROMPTS_DIR: /app/promts
       SERVICE_ID: story-generator-service
-    # Этот сервис не обрабатывает внешние HTTP запросы, поэтому не нуждается в метках Traefik
+      AI_BASE_URL: ${AI_BASE_URL}
+      AI_MODEL: ${AI_MODEL}
+      AI_TIMEOUT: ${AI_TIMEOUT:-500s}
+      AI_MAX_ATTEMPTS: ${AI_MAX_ATTEMPTS:-1}
+      AI_BASE_RETRY_DELAY: ${AI_BASE_RETRY_DELAY:-1s}
+    secrets:
+      - source: db_password
+        target: /run/secrets/db_password
+      - source: ai_api_key
+        target: /run/secrets/ai_api_key
+    ports:
+      - "9091:9091"
+    networks:
+      - novel_network
+    # Нет healthcheck, так как это воркер
 
   # Сервис WebSocket уведомлений
   websocket-service:
     build:
       context: .
       dockerfile: websocket-service/Dockerfile
+    image: novel-websocket-service:latest
     container_name: novel_websocket_service
     depends_on:
-      rabbitmq:
-        condition: service_healthy
-      # auth сервис не обязателен для *запуска* websocket-service,
-      # но нужен для валидации токенов при установке соединения.
-      # depends_on auth не требуется, если auth стартует быстро.
+      - rabbitmq
+      # Зависимость от auth-service неявная (нужен для валидации токена)
     environment:
       <<: *env-vars # Наследуем общие переменные
       PORT: ${WEBSOCKET_SERVER_PORT:-8083} # Внутренний порт сервиса
+      METRICS_PORT: ${WEBSOCKET_METRICS_PORT:-9092} # Внутренний порт для метрик
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/ # URL для Docker
       SERVICE_ID: websocket-service
-      # JWT_SECRET уже включен через *env-vars
-    # ports: # Убираем публикацию порта наружу
-    #   - "${WEBSOCKET_SERVER_PORT:-8083}:${WEBSOCKET_SERVER_PORT:-8083}"
-    labels:
-      # Включаем Traefik для этого сервиса
-      - "traefik.enable=true"
-      # Определяем роутер для WebSocket запросов
-      # Используем Path(`/ws`) для точного совпадения пути
-      - "traefik.http.routers.websocket-ws.rule=Path(`/ws`)"
-      - "traefik.http.routers.websocket-ws.entrypoints=web" # Используем точку входа 'web' (порт 8080)
-      # Указываем внутренний порт сервиса
-      - "traefik.http.services.websocket-service.loadbalancer.server.port=${WEBSOCKET_SERVER_PORT:-8083}"
-      # Для WebSocket не нужен stripprefix, т.к. сервис ожидает запрос на /ws
+      AUTH_SERVICE_URL: http://auth-service:8081 # Добавляем URL для auth-service
+    secrets:
+      - source: jwt_secret
+        target: /run/secrets/jwt_secret
+    ports: # Публикуем порт метрик для Prometheus
+      - "${WEBSOCKET_METRICS_PORT:-9092}:${WEBSOCKET_METRICS_PORT:-9092}"
+    # labels: # <<< УДАЛЯЕМ LABELS ПОЛНОСТЬЮ
+      # --- ВРЕМЕННО УБИРАЕМ ВСЕ МЕТКИ --- 
+      # - "traefik.enable=true"
+      # - "traefik.http.routers.websocket-ws.rule=Path(`/ws`)"
+      # - "traefik.http.routers.websocket-ws.entrypoints=web" # Используем точку входа 'web' (порт 8080)
+      # - "traefik.http.services.websocket-service.loadbalancer.server.port=${WEBSOCKET_SERVER_PORT:-8083}"
+    networks:
+      - novel_network
 
 # Новые сервисы для мониторинга
   prometheus:
@@ -324,8 +345,10 @@ services:
     networks:
       - novel_network
     depends_on:
-      - admin-service # Зависит от сервисов, которые мониторит
+      - admin-service
       - auth-service
+      - story-generator
+      - rabbitmq-exporter
 
   grafana:
     image: grafana/grafana:latest
@@ -344,7 +367,21 @@ services:
     networks:
       - novel_network
     depends_on:
-      - prometheus # <<< Формат списка для grafana
+      - prometheus
+
+# --- Добавляем RabbitMQ Exporter --- #
+  rabbitmq-exporter:
+    image: kbudde/rabbitmq-exporter:latest # Возвращаемся к kbudde, но с тегом latest
+    container_name: novel_rabbitmq_exporter
+    environment:
+      - RABBIT_URL=http://rabbitmq:15672
+      - RABBIT_USER=${RABBITMQ_USER:-guest}
+    ports:
+      - "9419:9419" # Публикуем порт для Prometheus
+    networks:
+      - novel_network
+    depends_on:
+      - rabbitmq
 
 volumes:
   postgres_data:
@@ -358,4 +395,21 @@ volumes:
 # Определяем сеть, чтобы сервисы могли общаться друг с другом по именам
 networks:
   novel_network:
-    driver: bridge
+    driver: overlay
+
+# Объявляем все используемые секреты как внешние
+secrets:
+  db_password:
+    external: true
+  jwt_secret:
+    external: true
+  password_pepper:
+    external: true
+  inter_service_secret:
+    external: true
+  ai_api_key:
+    external: true
+  # redis_password:
+  #   external: true # Если используется
+  # rabbitmq_password:
+  #   external: true # Если используется

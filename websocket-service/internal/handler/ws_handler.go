@@ -1,12 +1,15 @@
 package handler
 
 import (
-	"log"
+	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
-	"github.com/labstack/echo/v4"
+	"github.com/rs/zerolog"
+
+	"novel-server/websocket-service/internal/service" // Добавляем импорт service
 )
 
 const (
@@ -32,34 +35,57 @@ var upgrader = websocket.Upgrader{
 
 // WebSocketHandler обрабатывает запросы на установку WebSocket соединения.
 type WebSocketHandler struct {
-	manager *ConnectionManager
+	manager     *ConnectionManager
+	authService *service.AuthService // Добавляем зависимость от AuthService
+	logger      zerolog.Logger       // Добавляем логгер
 }
 
 // NewWebSocketHandler создает новый обработчик WebSocket.
-func NewWebSocketHandler(manager *ConnectionManager) *WebSocketHandler {
-	return &WebSocketHandler{manager: manager}
+func NewWebSocketHandler(manager *ConnectionManager, authService *service.AuthService, logger zerolog.Logger) *WebSocketHandler {
+	return &WebSocketHandler{
+		manager:     manager,
+		authService: authService,
+		logger:      logger.With().Str("component", "WebSocketHandler").Logger(),
+	}
 }
 
-// Handle обрабатывает входящий HTTP запрос для WebSocket.
-func (h *WebSocketHandler) Handle(c echo.Context) error {
-	userID := c.Get("user_id") // Получаем user_id из контекста, установленного JWT middleware
-	if userID == nil || userID.(string) == "" {
-		log.Println("Ошибка: user_id не найден в контексте JWT")
-		return c.String(http.StatusUnauthorized, "Unauthorized: user_id not found")
+// ServeWS обрабатывает входящий HTTP запрос для WebSocket.
+func (h *WebSocketHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
+	// Извлекаем токен из query-параметра 'token'
+	tokenString := r.URL.Query().Get("token")
+	if tokenString == "" {
+		h.logger.Warn().Msg("Missing 'token' query parameter")
+		http.Error(w, "Unauthorized: Missing token", http.StatusUnauthorized)
+		return
 	}
-	userIDStr := userID.(string)
 
-	conn, err := upgrader.Upgrade(c.Response(), c.Request(), nil)
+	// Валидируем токен и извлекаем UserID
+	claims, err := h.validateToken(tokenString)
 	if err != nil {
-		log.Printf("Ошибка обновления до WebSocket для UserID=%s: %v", userIDStr, err)
-		// Echo уже отправил ответ при ошибке Upgrade, так что просто возвращаем ошибку
-		return err
+		h.logger.Warn().Err(err).Str("token", tokenString).Msg("Invalid token")
+		http.Error(w, fmt.Sprintf("Unauthorized: %s", err.Error()), http.StatusUnauthorized)
+		return
 	}
 
-	log.Printf("WebSocket соединение установлено для UserID=%s", userIDStr)
+	userID, ok := claims["sub"].(string) // "sub" обычно используется для User ID
+	if !ok || userID == "" {
+		h.logger.Error().Interface("claims", claims).Msg("UserID ('sub') not found or empty in token claims")
+		http.Error(w, "Unauthorized: Invalid token claims", http.StatusUnauthorized)
+		return
+	}
+
+	// Обновляем соединение до WebSocket
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		h.logger.Error().Err(err).Str("userID", userID).Msg("Failed to upgrade connection")
+		// Не пишем ошибку в http.ResponseWriter, так как upgrader уже это сделал
+		return
+	}
+
+	h.logger.Info().Str("userID", userID).Msg("WebSocket connection established")
 
 	client := &Client{
-		UserID: userIDStr,
+		UserID: userID,
 		Conn:   conn,
 		send:   make(chan []byte, 256), // Буферизованный канал для отправки
 	}
@@ -67,103 +93,122 @@ func (h *WebSocketHandler) Handle(c echo.Context) error {
 	h.manager.RegisterClient(client)
 
 	// Запускаем горутины для чтения и записи в этом соединении
-	go client.writePump(h.manager)
-	go client.readPump(h.manager)
+	go client.writePump(h.manager, h.logger.With().Str("userID", userID).Logger())
+	go client.readPump(h.manager, h.logger.With().Str("userID", userID).Logger())
+}
 
-	// Возвращаем nil, так как соединение установлено и управляется горутинами
-	return nil
+// validateToken проверяет JWT токен и возвращает claims.
+func (h *WebSocketHandler) validateToken(tokenString string) (jwt.MapClaims, error) {
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		// Проверяем метод подписи
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		// Возвращаем секрет из AuthService
+		return h.authService.GetJWTSecret(), nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("token parse error: %w", err)
+	}
+
+	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+		// Дополнительные проверки (например, время жизни 'exp') выполняются библиотекой
+		return claims, nil
+	} else {
+		return nil, fmt.Errorf("invalid token")
+	}
 }
 
 // readPump откачивает сообщения от WebSocket соединения.
-func (c *Client) readPump(manager *ConnectionManager) {
+func (c *Client) readPump(manager *ConnectionManager, logger zerolog.Logger) {
 	defer func() {
 		manager.UnregisterClient(c.UserID)
 		_ = c.Conn.Close() // Закрываем соединение при выходе из readPump
-		log.Printf("readPump завершен для UserID=%s", c.UserID)
+		logger.Info().Msg("readPump finished")
 	}()
 	c.Conn.SetReadLimit(maxMessageSize)
 	_ = c.Conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.Conn.SetPongHandler(func(string) error {
+		logger.Debug().Msg("Pong received")
 		_ = c.Conn.SetReadDeadline(time.Now().Add(pongWait))
 		return nil
 	})
 
-	// Цикл чтения сообщений от клиента (в данной реализации он пуст,
-	// так как мы только отправляем уведомления)
 	for {
 		_, message, err := c.Conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("Ошибка чтения WebSocket для UserID=%s: %v", c.UserID, err)
+				logger.Warn().Err(err).Msg("WebSocket read error")
 			} else {
-				log.Printf("WebSocket соединение закрыто для UserID=%s (ожидаемое закрытие): %v", c.UserID, err)
+				logger.Info().Msg("WebSocket connection closed (expected)")
 			}
-			break // Выход из цикла при любой ошибке чтения
+			break
 		}
-		// В этой версии мы не ожидаем сообщений от клиента, но можно добавить обработку здесь
-		log.Printf("Получено сообщение от UserID=%s: %s (игнорируется)", c.UserID, message)
+		logger.Warn().Bytes("message", message).Msg("Received unexpected message from client (ignored)")
 	}
 }
 
 // writePump откачивает сообщения из канала send в WebSocket соединение.
-func (c *Client) writePump(manager *ConnectionManager) {
+func (c *Client) writePump(manager *ConnectionManager, logger zerolog.Logger) {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
 		ticker.Stop()
-		// Не закрываем соединение здесь, так как readPump может быть еще активен
-		// manager.UnregisterClient(c.UserID) // Дерегистрация происходит в readPump
-		log.Printf("writePump завершен для UserID=%s", c.UserID)
+		logger.Info().Msg("writePump finished")
 	}()
 	for {
 		select {
 		case message, ok := <-c.send:
 			_ = c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if !ok {
-				// Канал send был закрыт менеджером (клиент дерегистрирован)
-				log.Printf("Канал send закрыт для UserID=%s, отправляем CloseMessage", c.UserID)
+				logger.Info().Msg("Send channel closed, sending CloseMessage")
 				_ = c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return // Выход из writePump
+				return
 			}
 
 			w, err := c.Conn.NextWriter(websocket.TextMessage)
 			if err != nil {
-				log.Printf("Ошибка получения NextWriter для UserID=%s: %v", c.UserID, err)
-				return // Выход из writePump
-			}
-			_, err = w.Write(message)
-			if err != nil {
-				log.Printf("Ошибка записи сообщения для UserID=%s: %v", c.UserID, err)
-				// Не выходим сразу, пытаемся закрыть writer
+				logger.Error().Err(err).Msg("Failed to get next writer")
+				return
 			}
 
-			// Если были еще сообщения в очереди, добавить их в текущий writer
+			logger.Debug().Int("messageSize", len(message)).Msg("Sending message")
+			_, err = w.Write(message)
+			if err != nil {
+				logger.Error().Err(err).Msg("Failed to write message")
+				// Пытаемся закрыть writer даже при ошибке записи
+			}
+
+			// Отправляем все сообщения из очереди за раз
 			n := len(c.send)
 			for i := 0; i < n; i++ {
-				_, err = w.Write([]byte("\n")) // Разделитель сообщений (если нужно)
+				queuedMsg := <-c.send
+				logger.Debug().Int("messageSize", len(queuedMsg)).Int("queueNum", i+1).Msg("Sending queued message")
+				_, err = w.Write([]byte("\n")) // Используем newline как разделитель, если клиент поддерживает
 				if err != nil {
-					log.Printf("Ошибка записи разделителя для UserID=%s: %v", c.UserID, err)
+					logger.Error().Err(err).Msg("Failed to write newline separator")
 					_ = w.Close() // Закрываем writer при ошибке
 					return
 				}
-				queuedMsg := <-c.send
 				_, err = w.Write(queuedMsg)
 				if err != nil {
-					log.Printf("Ошибка записи сообщения из очереди для UserID=%s: %v", c.UserID, err)
+					logger.Error().Err(err).Msg("Failed to write queued message")
 					_ = w.Close() // Закрываем writer при ошибке
 					return
 				}
 			}
 
 			if err := w.Close(); err != nil {
-				log.Printf("Ошибка закрытия writer для UserID=%s: %v", c.UserID, err)
-				return // Выход из writePump при ошибке закрытия
+				logger.Error().Err(err).Msg("Failed to close writer")
+				return
 			}
 
 		case <-ticker.C:
+			logger.Debug().Msg("Sending ping")
 			_ = c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				log.Printf("Ошибка отправки Ping для UserID=%s: %v", c.UserID, err)
-				return // Выход из writePump при ошибке пинга
+				logger.Warn().Err(err).Msg("Failed to send ping")
+				return
 			}
 		}
 	}

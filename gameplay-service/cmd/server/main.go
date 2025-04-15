@@ -10,8 +10,8 @@ import (
 	"novel-server/gameplay-service/internal/messaging"
 	"novel-server/gameplay-service/internal/repository"
 	"novel-server/gameplay-service/internal/service"
-	sharedDatabase "novel-server/shared/database" // Импорт для PublishedStoryRepository
-	sharedLogger "novel-server/shared/logger"   // <<< Импортируем общий логгер
+	sharedDatabase "novel-server/shared/database"     // Импорт для PublishedStoryRepository
+	sharedLogger "novel-server/shared/logger"         // <<< Импортируем общий логгер
 	sharedMiddleware "novel-server/shared/middleware" // <<< Импортируем shared/middleware
 	"os"
 	"os/signal"
@@ -166,26 +166,67 @@ func main() {
 }
 
 // setupDatabase инициализирует и возвращает пул соединений с БД
-func setupDatabase(cfg *config.Config, logger *zap.Logger) (*pgxpool.Pool, error) { // Добавляем логгер
-	// ... (реализация без изменений, как в других сервисах) ...
+func setupDatabase(cfg *config.Config, logger *zap.Logger) (*pgxpool.Pool, error) {
+	var dbPool *pgxpool.Pool
+	var err error
+	maxRetries := 50 // Увеличим количество попыток
+	retryDelay := 3 * time.Second
+
 	dsn := cfg.GetDSN()
-	config, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка парсинга DSN: %w", err)
+	poolConfig, parseErr := pgxpool.ParseConfig(dsn)
+	if parseErr != nil {
+		// Если DSN некорректен, нет смысла пытаться подключаться
+		return nil, fmt.Errorf("ошибка парсинга DSN: %w", parseErr)
 	}
-	config.MaxConns = int32(cfg.DBMaxConns)
-	config.MaxConnIdleTime = cfg.DBIdleTimeout
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	dbPool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		return nil, fmt.Errorf("не удалось создать пул соединений: %w", err)
+	poolConfig.MaxConns = int32(cfg.DBMaxConns)
+	poolConfig.MaxConnIdleTime = cfg.DBIdleTimeout
+
+	for i := 0; i < maxRetries; i++ {
+		attempt := i + 1
+		logger.Debug("Попытка подключения к PostgreSQL...",
+			zap.Int("attempt", attempt),
+			zap.Int("max_attempts", maxRetries),
+		)
+
+		// Таймаут на одну попытку подключения и пинга
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+		dbPool, err = pgxpool.NewWithConfig(ctx, poolConfig)
+		if err != nil {
+			logger.Warn("Не удалось создать пул соединений",
+				zap.Int("attempt", attempt),
+				zap.Error(err),
+			)
+			cancel()
+			if i < maxRetries-1 {
+				time.Sleep(retryDelay)
+			}
+			continue // Переходим к следующей попытке
+		}
+
+		// Пытаемся пинговать
+		if err = dbPool.Ping(ctx); err != nil {
+			logger.Warn("Не удалось выполнить ping к PostgreSQL",
+				zap.Int("attempt", attempt),
+				zap.Error(err),
+			)
+			dbPool.Close() // Закрываем неудачный пул
+			cancel()
+			if i < maxRetries-1 {
+				time.Sleep(retryDelay)
+			}
+			continue // Переходим к следующей попытке
+		}
+
+		// Если дошли сюда, подключение и пинг успешны
+		cancel() // Отменяем таймаут текущей попытки
+		logger.Info("Успешное подключение и ping к PostgreSQL", zap.Int("attempt", attempt))
+		return dbPool, nil
 	}
-	if err = dbPool.Ping(ctx); err != nil {
-		dbPool.Close()
-		return nil, fmt.Errorf("не удалось подключиться к БД (ping failed): %w", err)
-	}
-	return dbPool, nil
+
+	// Если цикл завершился без успешного подключения
+	logger.Error("Не удалось подключиться к PostgreSQL после всех попыток", zap.Int("attempts", maxRetries))
+	return nil, fmt.Errorf("не удалось подключиться к БД после %d попыток: %w", maxRetries, err) // Возвращаем последнюю ошибку
 }
 
 // connectRabbitMQ пытается подключиться к RabbitMQ с несколькими попытками

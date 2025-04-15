@@ -2,11 +2,15 @@ package repository
 
 import (
 	"context"
+	"errors"
 
 	models "novel-server/gameplay-service/internal/models"
 
 	"github.com/google/uuid"
 )
+
+// ErrInvalidCursor сигнализирует о некорректном формате курсора пагинации.
+var ErrInvalidCursor = errors.New("invalid cursor format")
 
 //go:generate mockery --name StoryConfigRepository --output ./mocks --outpkg mocks --case=underscore
 type StoryConfigRepository interface {

@@ -11,23 +11,13 @@ COPY admin-service/go.mod admin-service/go.sum ./
 # Копируем go.mod / go.sum для shared В ОТДЕЛЬНУЮ директорию /app/shared
 # Используем абсолютный путь для ясности
 RUN mkdir -p /app/shared
-COPY shared/go.mod shared/go.sum /app/shared/
+COPY shared/ /app/shared/
 
 # Загружаем зависимости ТОЛЬКО для admin-service (мы в /app/admin-service)
 RUN go mod download
 
 # Копируем исходный код shared в /app/shared
 # Контекст сборки = ., поэтому путь к shared начинается с shared/
-COPY shared/go.mod shared/go.sum /app/shared/
-COPY shared/authutils/ /app/shared/authutils/
-COPY shared/config/ /app/shared/config/
-COPY shared/database/ /app/shared/database/
-COPY shared/interfaces/ /app/shared/interfaces/
-COPY shared/messaging/ /app/shared/messaging/
-COPY shared/middleware/ /app/shared/middleware/
-COPY shared/models/ /app/shared/models/
-COPY shared/utils/ /app/shared/utils/
-COPY shared/logger/ /app/shared/logger/
 
 # Копируем исходный код admin-service в текущую директорию (/app/admin-service)
 # Контекст сборки = ., поэтому путь к admin-service начинается с admin-service/

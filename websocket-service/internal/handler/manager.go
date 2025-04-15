@@ -5,6 +5,16 @@ import (
 	"sync"
 
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+// --- Prometheus Metrics ---
+var (
+	activeConnections = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "websocket_connections_active",
+		Help: "The total number of active WebSocket connections.",
+	})
 )
 
 // Client представляет собой одно WebSocket соединение с идентификатором пользователя.
@@ -48,8 +58,10 @@ func (m *ConnectionManager) run() {
 				log.Printf("Закрытие старого соединения для UserID=%s", client.UserID)
 				close(oldClient.send)
 				_ = oldClient.Conn.Close() // Игнорируем ошибку закрытия
+				// Не уменьшаем счетчик здесь, т.к. новый клиент его сразу увеличит
 			}
 			m.clients[client.UserID] = client
+			activeConnections.Inc() // Увеличиваем счетчик активных соединений
 			m.mu.Unlock()
 
 		case userID := <-m.unregister:
@@ -59,6 +71,7 @@ func (m *ConnectionManager) run() {
 				delete(m.clients, userID)
 				close(client.send)
 				// Соединение закрывается в readPump/writePump клиента
+				activeConnections.Dec() // Уменьшаем счетчик активных соединений
 			}
 			m.mu.Unlock()
 

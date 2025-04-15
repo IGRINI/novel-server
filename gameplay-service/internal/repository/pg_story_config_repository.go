@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	models "novel-server/gameplay-service/internal/models"
+
+	// service "novel-server/gameplay-service/internal/service" // <<< Убираем импорт сервиса
 	"strconv"
 	"strings"
 	"time"
@@ -236,7 +238,7 @@ func (r *pgStoryConfigRepository) ListByUser(ctx context.Context, userID uint64,
 	cursorTime, cursorID, err := decodeCursor(cursor)
 	if err != nil {
 		r.logger.Warn("Failed to decode cursor", zap.Uint64("userID", userID), zap.String("cursor", cursor), zap.Error(err))
-		return nil, "", fmt.Errorf("неверный формат курсора: %w", err)
+		return nil, "", ErrInvalidCursor
 	}
 
 	var queryBuilder strings.Builder
