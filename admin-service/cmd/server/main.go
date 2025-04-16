@@ -56,6 +56,15 @@ func main() {
 		appLogger.Fatal("Failed to create initial Auth Service client", zap.Error(err))
 	}
 
+	// --- Инициализация клиента story-generator ---
+	storyGenClientInstance, err := client.NewStoryGeneratorClient(cfg.StoryGeneratorURL, cfg.ClientTimeout, appLogger)
+	if err != nil {
+		appLogger.Fatal("Failed to create Story Generator client", zap.Error(err))
+	}
+	// TODO: Если story-generator требует токен, установить его:
+	// storyGenClientInstance.SetInterServiceToken(receivedToken)
+	// --- Конец инициализации клиента story-generator ---
+
 	// --- Получаем первоначальный межсервисный JWT токен С ПОВТОРАМИ ---
 	var receivedToken string
 	maxRetries := 50
@@ -92,15 +101,18 @@ func main() {
 			zap.Error(lastTokenErr))
 	}
 
+	// <<< Устанавливаем токен в ОБА клиента >>>
 	authClientInstance.SetInterServiceToken(receivedToken)
-	// appLogger.Info("Successfully obtained and set initial inter-service JWT token") // Уже залогировали успех выше
+	// TODO: Раскомментировать, если нужно
+	// storyGenClientInstance.SetInterServiceToken(receivedToken)
+	appLogger.Info("Inter-service token set for clients")
 
 	// --- Контекст для Graceful Shutdown и запуска горутин ---
 	appCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	// --- Запускаем горутину для обновления токена ---
-	go startTokenRenewer(appCtx, authClientInstance, cfg.InterServiceTokenTTL, cfg.ServiceID, appLogger)
+	go startTokenRenewer(appCtx, authClientInstance, storyGenClientInstance, cfg.InterServiceTokenTTL, cfg.ServiceID, appLogger)
 	appLogger.Info("Token renewer goroutine started")
 
 	// 3. Инициализация рендерера шаблонов
@@ -122,7 +134,7 @@ func main() {
 	p.Use(e)
 
 	// 5. Инициализация обработчика (Handler)
-	adminHandler := handler.NewAdminHandler(cfg, appLogger, authClientInstance)
+	adminHandler := handler.NewAdminHandler(cfg, appLogger, authClientInstance, storyGenClientInstance)
 
 	// 6. Регистрация маршрутов (роутов)
 	adminHandler.RegisterRoutes(e)
@@ -131,6 +143,11 @@ func main() {
 	// --- Регистрация эндпоинта для метрик Prometheus ---
 	appLogger.Info("Registering Prometheus metrics endpoint")
 	e.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
+
+	// --- Регистрация healthcheck эндпоинта ---
+	e.GET("/health", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
 
 	// 7. Запуск сервера
 	serverAddr := fmt.Sprintf(":%s", cfg.ServerPort)
@@ -158,7 +175,12 @@ func main() {
 
 // <<< Добавляем функцию startTokenRenewer >>>
 // startTokenRenewer - горутина для периодического обновления межсервисного JWT токена.
-func startTokenRenewer(ctx context.Context, authClient client.AuthServiceHttpClient, tokenTTL time.Duration, serviceID string, logger *zap.Logger) {
+func startTokenRenewer(ctx context.Context,
+	authClient client.AuthServiceHttpClient,
+	storyGenClient client.StoryGeneratorClient,
+	tokenTTL time.Duration,
+	serviceID string,
+	logger *zap.Logger) {
 	log := logger.Named("TokenRenewer")
 	// Рассчитываем интервал обновления (например, 90% от TTL)
 	renewInterval := time.Duration(float64(tokenTTL) * 0.9)
@@ -196,6 +218,8 @@ func startTokenRenewer(ctx context.Context, authClient client.AuthServiceHttpCli
 			}
 
 			authClient.SetInterServiceToken(newToken)
+			// TODO: Раскомментировать, если нужно
+			// storyGenClient.SetInterServiceToken(newToken)
 			log.Info("Inter-service token renewed successfully")
 
 		case <-ctx.Done():

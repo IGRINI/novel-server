@@ -16,15 +16,155 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
-          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
+          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "smooth", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "normal" }, "thresholdsStyle": { "mode": "off" } },
           "mappings": [],
           "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
-          "unit": "tsk/s"
+          "unit": "reqps"
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "id": 2,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+          "editorMode": "code",
+          "expr": "sum(rate(story_generator_ai_requests_total{job=\"story-generator\"}[$Interval])) by (status, model)",
+          "legendFormat": "{{status}} - {{model}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "AI API Request Rate (by status, model)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 5 }, { "color": "red", "value": 10 } ] },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 },
+      "id": 4,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+          "editorMode": "code",
+          "expr": "sum(rate(story_generator_ai_requests_total{job=\"story-generator\", status=\"error\"}[$Interval])) / sum(rate(story_generator_ai_requests_total{job=\"story-generator\"}[$Interval])) * 100",
+          "legendFormat": "Error Rate %",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "AI API Error Rate (%)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 60 }, { "color": "red", "value": 120 } ] },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 6,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(story_generator_ai_request_duration_seconds_bucket{job=\"story-generator\"}[$Interval])) by (le, model))",
+          "legendFormat": "P95 Latency - {{model}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "AI API Request Latency P95 (seconds)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "smooth", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 8,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+          "editorMode": "code",
+          "expr": "sum(rate(story_generator_ai_prompt_tokens_sum{job=\"story-generator\"}[$Interval])) by (model) / sum(rate(story_generator_ai_prompt_tokens_count{job=\"story-generator\"}[$Interval])) by (model)",
+          "legendFormat": "Avg Prompt Tokens - {{model}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+          "editorMode": "code",
+          "expr": "sum(rate(story_generator_ai_completion_tokens_sum{job=\"story-generator\"}[$Interval])) by (model) / sum(rate(story_generator_ai_completion_tokens_count{job=\"story-generator\"}[$Interval])) by (model)",
+          "legendFormat": "Avg Completion Tokens - {{model}}",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+          "editorMode": "code",
+          "expr": "sum(rate(story_generator_ai_total_tokens_sum{job=\"story-generator\"}[$Interval])) by (model) / sum(rate(story_generator_ai_total_tokens_count{job=\"story-generator\"}[$Interval])) by (model)",
+          "legendFormat": "Avg Total Tokens - {{model}}",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Average Token Usage (per request)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "unit": "tskps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
+      "id": 10,
       "options": {
         "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
         "tooltip": { "mode": "multi", "sort": "none" }
@@ -43,27 +183,8 @@
           "refId": "B"
         }
       ],
-      "title": "Task Throughput",
-      "type": "timeseries",
-      "alert": {
-        "alertRuleTags": {},
-        "conditions": [
-          {
-            "evaluator": { "params": [0], "type": "eq" },
-            "operator": { "type": "and" },
-            "query": { "params": ["A"] },
-            "reducer": { "params": [], "type": "avg" },
-            "type": "query"
-          }
-        ],
-        "executionErrorState": "alerting",
-        "for": "5m",
-        "frequency": "1m",
-        "handler": 1,
-        "name": "Task Throughput is Zero",
-        "noDataState": "no_data",
-        "notifications": []
-      }
+      "title": "Task Throughput (tasks/sec)",
+      "type": "timeseries"
     },
     {
       "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
@@ -73,12 +194,12 @@
           "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": true, "stacking": { "group": "A", "mode": "normal" }, "thresholdsStyle": { "mode": "off" } },
           "mappings": [],
           "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null } ] },
-          "unit": "tsk/s"
+          "unit": "tskps"
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
-      "id": 4,
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
+      "id": 12,
       "options": {
         "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
         "tooltip": { "mode": "multi", "sort": "desc" }
@@ -91,55 +212,7 @@
           "refId": "A"
         }
       ],
-      "title": "Task Failure Rate by Type",
-      "type": "timeseries",
-      "alert": {
-        "alertRuleTags": {},
-        "conditions": [
-          {
-            "evaluator": { "params": [10], "type": "gt" },
-            "operator": { "type": "and" },
-            "query": { "params": ["A"] },
-            "reducer": { "params": [], "type": "avg" },
-            "type": "query"
-          }
-        ],
-        "executionErrorState": "alerting",
-        "for": "5m",
-        "frequency": "1m",
-        "handler": 1,
-        "name": "High Task Failure Rate",
-        "noDataState": "no_data",
-        "notifications": []
-      }
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
-          "unit": "ops/s"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
-      "id": 6,
-      "options": {
-        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "single", "sort": "none" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
-          "expr": "sum(rate(story_generator_ai_calls_total{job=\"story-generator\"}[$Interval]))",
-          "legendFormat": "AI Calls",
-          "refId": "A"
-        }
-      ],
-      "title": "AI Call Rate",
+      "title": "Task Failure Rate by Type (tasks/sec)",
       "type": "timeseries"
     },
     {
@@ -147,111 +220,15 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
-          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null } ] },
-          "unit": "ops/s"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
-      "id": 8,
-      "options": {
-        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "single", "sort": "none" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
-          "expr": "sum(rate(story_generator_ai_errors_total{job=\"story-generator\"}[$Interval]))",
-          "legendFormat": "AI Errors",
-          "refId": "A"
-        }
-      ],
-      "title": "AI Error Rate",
-      "type": "timeseries",
-      "alert": {
-        "alertRuleTags": {},
-        "conditions": [
-          {
-            "evaluator": { "params": [5], "type": "gt" },
-            "operator": { "type": "and" },
-            "query": { "params": ["A"] },
-            "reducer": { "params": [], "type": "avg" },
-            "type": "query"
-          }
-        ],
-        "executionErrorState": "alerting",
-        "for": "5m",
-        "frequency": "1m",
-        "handler": 1,
-        "name": "High AI Error Rate",
-        "noDataState": "no_data",
-        "notifications": []
-      }
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
           "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
           "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 30 }, { "color": "red", "value": 60 } ] },
           "unit": "s"
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
-      "id": 10,
-      "options": {
-        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "single", "sort": "none" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
-          "expr": "histogram_quantile(0.99, sum(rate(story_generator_ai_call_duration_seconds_bucket{job=\"story-generator\"}[$Interval])) by (le))",
-          "legendFormat": "AI Call P99",
-          "refId": "A"
-        }
-      ],
-      "title": "AI Call Duration P99",
-      "type": "timeseries",
-      "alert": {
-        "alertRuleTags": {},
-        "conditions": [
-          {
-            "evaluator": { "params": [10], "type": "gt" },
-            "operator": { "type": "and" },
-            "query": { "params": ["A"] },
-            "reducer": { "params": [], "type": "avg" },
-            "type": "query"
-          }
-        ],
-        "executionErrorState": "alerting",
-        "for": "5m",
-        "frequency": "1m",
-        "handler": 1,
-        "name": "High AI Call Duration P99",
-        "noDataState": "no_data",
-        "notifications": []
-      }
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
-          "mappings": [],
-          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
-      "id": 12,
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
+      "id": 14,
       "options": {
         "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
         "tooltip": { "mode": "single", "sort": "none" }
@@ -260,26 +237,79 @@
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
           "expr": "histogram_quantile(0.99, sum(rate(story_generator_task_processing_duration_seconds_bucket{job=\"story-generator\"}[$Interval])) by (le))",
-          "legendFormat": "Task Processing P99",
+          "legendFormat": "P99 Processing Duration",
           "refId": "A"
         }
       ],
-      "title": "Task Processing Duration P99",
+      "title": "Task Processing Duration P99 (seconds)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+      "id": 20,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } },
+      "targets": [
+        {
+          "expr": "sum(rate(process_cpu_seconds_total{job=\"story-generator\"}[$Interval])) by (job) * 100",
+          "legendFormat": "CPU Usage",
+          "refId": "A"
+        }
+      ],
+      "title": "CPU Usage (%) - Story Generator",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
+      "id": 21,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } },
+      "targets": [
+        {
+          "expr": "sum(process_resident_memory_bytes{job=\"story-generator\"}) by (job)",
+          "legendFormat": "Memory Usage",
+          "refId": "A"
+        }
+      ],
+      "title": "Memory Usage (bytes) - Story Generator",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
+      "id": 22,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } },
+      "targets": [
+        {
+          "expr": "go_goroutines{job=\"story-generator\"}",
+          "legendFormat": "Goroutines",
+          "refId": "A"
+        }
+      ],
+      "title": "Goroutines - Story Generator",
       "type": "timeseries"
     }
   ],
   "refresh": "1m",
   "schemaVersion": 36,
   "style": "dark",
-  "tags": ["novel-server", "story-generator", "worker"],
+  "tags": ["novel-server", "story-generator", "ai"],
   "templating": {
     "list": [
        {
-        "current": {
-          "selected": true,
-          "text": "5m",
-          "value": "5m"
-        },
+        "current": { "selected": true, "text": "5m", "value": "5m" },
         "hide": 0,
         "includeAll": false,
         "label": "Interval",

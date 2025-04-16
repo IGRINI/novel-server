@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	models "novel-server/gameplay-service/internal/models"
@@ -307,4 +308,68 @@ func (r *pgStoryConfigRepository) ListByUser(ctx context.Context, userID uint64,
 
 	r.logger.Debug("User story configs listed successfully", append(logFields, zap.Int("count", len(configs)), zap.String("nextCursor", nextCursor))...)
 	return configs, nextCursor, nil
+}
+
+// FindGeneratingConfigs находит все StoryConfig со статусом 'generating'
+func (r *pgStoryConfigRepository) FindGeneratingConfigs(ctx context.Context) ([]*models.StoryConfig, error) {
+	sql := `SELECT id, user_id, title, description, user_input, config, status, created_at, updated_at
+	        FROM story_configs
+	        WHERE status = $1`
+
+	rows, err := r.db.Query(ctx, sql, models.StatusGenerating)
+	if err != nil {
+		r.logger.Error("Ошибка при запросе генерирующихся конфигов", zap.Error(err))
+		return nil, fmt.Errorf("ошибка БД при поиске generating configs: %w", err)
+	}
+	defer rows.Close()
+
+	configs := make([]*models.StoryConfig, 0)
+	for rows.Next() {
+		var cfg models.StoryConfig
+		var userInputJSON []byte
+		var configJSON []byte // Для необработанного JSON из БД
+
+		if err := rows.Scan(
+			&cfg.ID,
+			&cfg.UserID,
+			&cfg.Title,
+			&cfg.Description,
+			&userInputJSON,
+			&configJSON, // Читаем как []byte
+			&cfg.Status,
+			&cfg.CreatedAt,
+			&cfg.UpdatedAt,
+		); err != nil {
+			r.logger.Error("Ошибка при сканировании строки генерирующегося конфига", zap.Error(err))
+			return nil, fmt.Errorf("ошибка сканирования строки: %w", err)
+		}
+
+		// Десериализуем user_input
+		if err := json.Unmarshal(userInputJSON, &cfg.UserInput); err != nil {
+			r.logger.Warn("Не удалось десериализовать user_input для StoryConfig", zap.String("storyConfigID", cfg.ID.String()), zap.Error(err))
+			// Не возвращаем ошибку, просто оставляем UserInput пустым (nil)
+			cfg.UserInput = nil
+		}
+
+		// Десериализуем config (если не NULL)
+		if len(configJSON) > 0 {
+			if err := json.Unmarshal(configJSON, &cfg.Config); err != nil {
+				r.logger.Warn("Не удалось десериализовать config для StoryConfig", zap.String("storyConfigID", cfg.ID.String()), zap.Error(err))
+				// Не возвращаем ошибку, просто оставляем Config nil
+				cfg.Config = nil
+			}
+		} else {
+			cfg.Config = nil // Устанавливаем в nil, если в БД был NULL
+		}
+
+		configs = append(configs, &cfg)
+	}
+
+	if rows.Err() != nil {
+		r.logger.Error("Ошибка после итерации по строкам генерирующихся конфигов", zap.Error(rows.Err()))
+		return nil, fmt.Errorf("ошибка итерации: %w", rows.Err())
+	}
+
+	r.logger.Info("Найдено генерирующихся конфигов", zap.Int("count", len(configs)))
+	return configs, nil
 }

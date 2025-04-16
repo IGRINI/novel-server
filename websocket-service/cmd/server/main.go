@@ -71,6 +71,11 @@ func main() {
 	// Настройка и запуск HTTP-сервера для метрик Prometheus
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status": "ok"}`))
+	})
 	metricsServer := &http.Server{
 		Addr:    fmt.Sprintf(":%s", cfg.Server.MetricsPort), // Используем отдельный порт для метрик
 		Handler: metricsMux,

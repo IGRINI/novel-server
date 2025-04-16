@@ -1,17 +1,17 @@
 x-environment-defaults: &env-vars
-  ENV: ${ENV:-development}
-  LOG_LEVEL: ${LOG_LEVEL:-debug}
-  DB_HOST: ${DB_HOST:-localhost}
-  DB_PORT: ${DB_PORT:-5432}
-  DB_USER: ${DB_USER:-postgres}
-  DB_NAME: ${DB_NAME:-novel_db}
-  DB_SSL_MODE: ${DB_SSL_MODE:-disable}
-  REDIS_ADDR: ${REDIS_ADDR:-localhost:6379}
-  REDIS_DB: ${REDIS_DB:-0}
-  JWT_ACCESS_TOKEN_TTL: ${JWT_ACCESS_TOKEN_TTL:-15m}
-  JWT_REFRESH_TOKEN_TTL: ${JWT_REFRESH_TOKEN_TTL:-168h}
-  SERVICE_ID: ${SERVICE_ID:-default-service}
-  RABBITMQ_URL: ${RABBITMQ_URL:-amqp://guest:guest@rabbitmq:5672/}
+  ENV: ${ENV}
+  LOG_LEVEL: ${LOG_LEVEL}
+  DB_HOST: ${DB_HOST}
+  DB_PORT: ${DB_PORT}
+  DB_USER: ${DB_USER}
+  DB_NAME: ${DB_NAME}
+  DB_SSL_MODE: ${DB_SSL_MODE}
+  REDIS_ADDR: ${REDIS_ADDR}
+  REDIS_DB: ${REDIS_DB}
+  JWT_ACCESS_TOKEN_TTL: ${JWT_ACCESS_TOKEN_TTL}
+  JWT_REFRESH_TOKEN_TTL: ${JWT_REFRESH_TOKEN_TTL}
+  SERVICE_ID: ${SERVICE_ID}
+  RABBITMQ_URL: ${RABBITMQ_URL}
 
 services:
   # API Gateway (Traefik)
@@ -61,18 +61,18 @@ services:
     image: postgres:15-alpine
     container_name: novel_postgres
     environment:
-      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD_FILE: /run/secrets/db_password
-      POSTGRES_DB: ${DB_NAME:-novel_db}
+      POSTGRES_DB: ${DB_NAME}
     ports:
       # Порт публикуется только для локального доступа к БД, если нужно
-      - "${DB_PORT:-5432}:5432"
+      - "${DB_PORT}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     secrets:
       - db_password
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-novel_db}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -85,7 +85,7 @@ services:
     container_name: novel_redis
     ports:
       # Порт публикуется только для локального доступа к Redis, если нужно
-      - "${REDIS_PORT:-6379}:6379"
+      - "${REDIS_PORT}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -109,10 +109,10 @@ services:
     environment:
       # Передаем переменные, нужные для скрипта entrypoint.sh
       DB_HOST: postgres
-      DB_PORT: ${DB_PORT:-5432}
-      DB_USER: ${DB_USER:-postgres}
-      DB_NAME: ${DB_NAME:-novel_db}
-      DB_SSL_MODE: ${DB_SSL_MODE:-disable}
+      DB_PORT: ${DB_PORT}
+      DB_USER: ${DB_USER}
+      DB_NAME: ${DB_NAME}
+      DB_SSL_MODE: ${DB_SSL_MODE}
     secrets:
       - source: db_password
         target: /run/secrets/db_password # Скрипт будет читать отсюда
@@ -136,9 +136,9 @@ services:
       <<: *env-vars
       DB_HOST: postgres
       REDIS_ADDR: redis:6379
-      SERVER_PORT: ${AUTH_SERVER_PORT:-8081}
+      SERVER_PORT: ${AUTH_SERVER_PORT}
       SERVICE_ID: auth-service
-      INTER_SERVICE_TOKEN_TTL: ${INTER_SERVICE_TOKEN_TTL:-1h}
+      INTER_SERVICE_TOKEN_TTL: ${INTER_SERVICE_TOKEN_TTL}
     secrets:
       - source: db_password
         target: /run/secrets/db_password
@@ -148,14 +148,14 @@ services:
         target: /run/secrets/password_pepper
       - source: inter_service_secret
         target: /run/secrets/inter_service_secret
-    # healthcheck: # <<< ВРЕМЕННО ОТКЛЮЧАЕМ
-    #   test: ["CMD", "wget", "--spider", "http://localhost:8081/health"]
-    #   interval: 10s
-    #   timeout: 5s
-    #   retries: 5
-    #   start_period: 30s
+    healthcheck: # <<< ВОЗВРАЩАЕМ HEALTHCHECK
+      test: ["CMD", "wget", "--spider", "http://localhost:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s # Даем 30 секунд на старт перед первыми проверками
     ports:
-      - "${AUTH_SERVER_PORT:-8081}:8081"
+      - "${AUTH_SERVER_PORT}:8081"
     # labels: # <<< УДАЛЯЕМ LABELS ПОЛНОСТЬЮ
     networks:
       - novel_network
@@ -175,8 +175,8 @@ services:
     environment:
       <<: *env-vars # Наследуем общие переменные
       DB_HOST: postgres # Внутреннее имя хоста БД
-      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/ # URL для Docker
-      SERVER_PORT: ${GAMEPLAY_SERVER_PORT:-8082} # Внутренний порт сервиса
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/ # URL для Docker
+      SERVER_PORT: ${GAMEPLAY_SERVER_PORT} # Внутренний порт сервиса
       SERVICE_ID: gameplay-service
       AUTH_SERVICE_URL: http://auth-service:8081 # Добавляем URL для auth-service
     secrets:
@@ -212,7 +212,7 @@ services:
       - PORT=8084
       - LOG_LEVEL=debug
       - AUTH_SERVICE_URL=http://auth-service:8081 # <<< Возвращаем URL с host.docker.internal
-      - CLIENT_TIMEOUT=10s
+      - HTTP_CLIENT_TIMEOUT=${HTTP_CLIENT_TIMEOUT} # <<< Используем переменную для таймаута клиента
       - SERVICE_ID=admin-service # Идентификатор сервиса
     secrets:
       - source: inter_service_secret
@@ -223,8 +223,8 @@ services:
       - auth-service
     networks:
       - novel_network
-    healthcheck: # <<< Возвращаем Healthcheck для admin-service
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8084/metrics"] # Проверяем доступность metrics
+    healthcheck: # <<< Возвращаем правильный Healthcheck для admin-service
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8084/health"] # Проверяем доступность metrics
       interval: 10s
       timeout: 5s
       retries: 5
@@ -248,12 +248,12 @@ services:
     container_name: novel_rabbitmq
     ports:
       # Порты для доступа извне (если нужно) и для Management UI
-      - "${RABBITMQ_PORT:-5672}:5672"
-      - "${RABBITMQ_MANAGE_PORT:-15672}:15672"
+      - "${RABBITMQ_PORT}:5672"
+      - "${RABBITMQ_MANAGE_PORT}:15672"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq/
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
     healthcheck:
       test: rabbitmq-diagnostics -q ping
       interval: 10s
@@ -278,14 +278,16 @@ services:
     environment:
       <<: *env-vars
       DB_HOST: postgres
-      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/
       PROMPTS_DIR: /app/promts
       SERVICE_ID: story-generator-service
       AI_BASE_URL: ${AI_BASE_URL}
       AI_MODEL: ${AI_MODEL}
-      AI_TIMEOUT: ${AI_TIMEOUT:-500s}
-      AI_MAX_ATTEMPTS: ${AI_MAX_ATTEMPTS:-1}
-      AI_BASE_RETRY_DELAY: ${AI_BASE_RETRY_DELAY:-1s}
+      AI_TIMEOUT: ${AI_TIMEOUT}
+      AI_MAX_ATTEMPTS: ${AI_MAX_ATTEMPTS}
+      AI_BASE_RETRY_DELAY: ${AI_BASE_RETRY_DELAY}
+      INTERNAL_UPDATES_QUEUE_NAME: ${INTERNAL_UPDATES_QUEUE_NAME}
+      AI_CLIENT_TYPE: ${AI_CLIENT_TYPE}
     secrets:
       - source: db_password
         target: /run/secrets/db_password
@@ -309,16 +311,16 @@ services:
       # Зависимость от auth-service неявная (нужен для валидации токена)
     environment:
       <<: *env-vars # Наследуем общие переменные
-      PORT: ${WEBSOCKET_SERVER_PORT:-8083} # Внутренний порт сервиса
-      METRICS_PORT: ${WEBSOCKET_METRICS_PORT:-9092} # Внутренний порт для метрик
-      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/ # URL для Docker
+      PORT: ${WEBSOCKET_SERVER_PORT} # Внутренний порт сервиса
+      METRICS_PORT: ${WEBSOCKET_METRICS_PORT} # Внутренний порт для метрик
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/ # URL для Docker
       SERVICE_ID: websocket-service
       AUTH_SERVICE_URL: http://auth-service:8081 # Добавляем URL для auth-service
     secrets:
       - source: jwt_secret
         target: /run/secrets/jwt_secret
     ports: # Публикуем порт метрик для Prometheus
-      - "${WEBSOCKET_METRICS_PORT:-9092}:${WEBSOCKET_METRICS_PORT:-9092}"
+      - "${WEBSOCKET_METRICS_PORT}:${WEBSOCKET_METRICS_PORT}"
     # labels: # <<< УДАЛЯЕМ LABELS ПОЛНОСТЬЮ
       # --- ВРЕМЕННО УБИРАЕМ ВСЕ МЕТКИ --- 
       # - "traefik.enable=true"
@@ -375,7 +377,7 @@ services:
     container_name: novel_rabbitmq_exporter
     environment:
       - RABBIT_URL=http://rabbitmq:15672
-      - RABBIT_USER=${RABBITMQ_USER:-guest}
+      - RABBIT_USER=${RABBITMQ_USER}
     ports:
       - "9419:9419" # Публикуем порт для Prometheus
     networks:

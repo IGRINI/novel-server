@@ -138,6 +138,8 @@ func (h *AuthHandler) RegisterRoutes(router *gin.Engine) {
 		interServiceGroup.PUT("/users/:user_id", h.updateUser)
 		// <<< Маршрут для обновления пароля >>>
 		interServiceGroup.PUT("/users/:user_id/password", h.updatePassword)
+		// <<< Маршрут для обновления токена администратора >>>
+		interServiceGroup.POST("/token/refresh/admin", h.refreshAdminToken)
 	}
 }
 
@@ -821,4 +823,38 @@ func (h *AuthHandler) updatePassword(c *gin.Context) {
 
 	// Успех
 	c.Status(http.StatusNoContent) // Возвращаем 204 No Content
+}
+
+// --- Новый обработчик для обновления токена администратора ---
+
+// refreshAdminTokenResponse - структура для ответа
+type refreshAdminTokenResponse struct {
+	Tokens models.TokenDetails `json:"tokens"`
+	Claims models.Claims       `json:"claims"`
+}
+
+func (h *AuthHandler) refreshAdminToken(c *gin.Context) {
+	var req refreshRequest // Используем ту же структуру запроса, что и для обычного рефреша
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
+		return
+	}
+
+	// Вызываем НОВЫЙ метод сервиса
+	newTokens, newClaims, err := h.authService.RefreshAdminToken(c.Request.Context(), req.RefreshToken)
+	if err != nil {
+		// Можно добавить инкремент счетчика ошибок верификации (тип: admin-refresh?)
+		handleServiceError(c, err)
+		return
+	}
+
+	// Инкремент счетчика успешных обновлений (можно сделать отдельный для админов?)
+	refreshesTotal.Inc() // Пока используем общий счетчик
+
+	// Возвращаем структуру с токенами и клеймами
+	resp := refreshAdminTokenResponse{
+		Tokens: *newTokens,
+		Claims: *newClaims,
+	}
+	c.JSON(http.StatusOK, resp)
 }

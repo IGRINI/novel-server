@@ -27,4 +27,6 @@ type StoryConfigRepository interface {
 	// cursor - непрозрачная строка, полученная из предыдущего вызова.
 	// Возвращает список конфигов, следующий курсор (пустой, если больше нет) и ошибку.
 	ListByUser(ctx context.Context, userID uint64, limit int, cursor string) ([]models.StoryConfig, string, error)
+
+	FindGeneratingConfigs(ctx context.Context) ([]*models.StoryConfig, error)
 }

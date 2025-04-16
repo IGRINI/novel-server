@@ -7,27 +7,23 @@ ENV GOWORK=off
 
 WORKDIR /src
 
-# Копируем go.mod и go.sum из директории story-generator
-COPY story-generator/go.mod story-generator/go.sum ./story-generator/
-# Копируем go.mod и go.sum для shared (нужны из-за replace)
+# <<< Шаг 1: Копируем файлы модулей для кеширования зависимостей >>>
 COPY shared/go.mod shared/go.sum ./shared/
-# Копируем исходный код shared
+COPY story-generator/go.mod story-generator/go.sum ./story-generator/
+
+# <<< Шаг 2: Копируем ВЕСЬ исходный код для обоих модулей >>>
 COPY shared/ ./shared/
-
-# Переходим в директорию воркера и загружаем зависимости
-WORKDIR /src/story-generator
-RUN go mod download
-
-# Возвращаемся в /src и копируем остальной исходный код воркера
-WORKDIR /src
 COPY story-generator/ ./story-generator/
 
-# Переходим в директорию модуля ПЕРЕД tidy
+# <<< Шаг 3: Переходим в директорию собираемого модуля >>>
 WORKDIR /src/story-generator
-# Синхронизируем зависимости перед сборкой, отключая workspace mode
-RUN GOWORK=off go mod tidy
 
-# Собираем приложение (уже находимся в /src/story-generator)
+# <<< Шаг 4: Запускаем tidy и download ПОСЛЕ копирования всего кода >>>
+# Это позволит Go найти локальный модуль shared через replace
+RUN go mod tidy
+RUN go mod download
+
+# <<< Шаг 5: Собираем приложение >>>
 # CGO_ENABLED=0 для статичной сборки без C зависимостей
 # -ldflags="-s -w" для уменьшения размера бинарника
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/worker ./cmd/worker/main.go
@@ -40,9 +36,20 @@ WORKDIR /app
 # Копируем собранный бинарник из builder stage
 COPY --from=builder /app/worker /app/worker
 
+# --- Добавляем права на выполнение --- 
+RUN chmod +x /app/worker
+# -------------------------------------
+
+# --- ВАЖНО: Копирование директории с промптами ---
+# Если воркер читает файлы из директории promts, её нужно скопировать
+# Путь назначения должен совпадать с тем, что ожидается в конфигурации (PROMPTS_DIR)
+# Пример:
+COPY promts/ /app/promts/
+# ----------------------------------------------------
+
 # Копируем .env файл, если используется godotenv (не рекомендуется для production)
 # COPY .env .env 
 
-# Указываем команду для запуска
-# Бинарник будет читать конфигурацию из переменных окружения, переданных docker-compose
-CMD ["/app/worker"] 
+# Возвращаем запуск основного приложения
+CMD ["/app/worker"]
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD wget --spider -q http://localhost:9091/health || exit 1 

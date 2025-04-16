@@ -3,23 +3,28 @@ package config
 import (
 	"fmt"
 	"log"
+	"novel-server/shared/utils"
+	"os"
 	"strings"
 	"time"
-
-	"novel-server/shared/utils"
 
 	"github.com/kelseyhightower/envconfig"
 )
 
 // Config содержит конфигурацию для воркера генерации историй
 type Config struct {
+	// Настройки HTTP API (если сервис его предоставляет)
+	HTTPServerPort string `envconfig:"HTTP_SERVER_PORT" default:"8083"`
+
 	// Настройки RabbitMQ
-	RabbitMQURL string `envconfig:"RABBITMQ_URL" default:"amqp://guest:guest@localhost:5672/"`
+	RabbitMQURL              string `envconfig:"RABBITMQ_URL" default:"amqp://guest:guest@localhost:5672/"`
+	InternalUpdatesQueueName string `envconfig:"INTERNAL_UPDATES_QUEUE_NAME" default:"internal_updates"`
 
 	// Настройки воркера
 	PromptsDir string `envconfig:"PROMPTS_DIR" default:"../promts"` // Путь относительно корня воркера
 
-	// Настройки AI (OpenRouter)
+	// Настройки AI
+	AIClientType     string        `envconfig:"AI_CLIENT_TYPE" default:"openai"` // Тип клиента: "openai" или "ollama"
 	AIBaseURL        string        `envconfig:"AI_BASE_URL" default:"https://openrouter.ai/api/v1"`
 	AIModel          string        `envconfig:"AI_MODEL" default:"deepseek/deepseek-chat"` // Уточнил модель по умолчанию
 	AITimeout        time.Duration `envconfig:"AI_TIMEOUT" default:"120s"`                 // Увеличил таймаут
@@ -52,8 +57,17 @@ func (c *Config) GetDSN() string {
 // LoadConfig загружает конфигурацию из переменных окружения и секретов
 func LoadConfig() (*Config, error) {
 	var cfg Config
+
+	// <<< ДИАГНОСТИКА: Логируем переменные ПЕРЕД обработкой >>>
+	log.Printf("[DIAG] Перед envconfig.Process: AI_BASE_URL='%s', AI_MODEL='%s'", os.Getenv("AI_BASE_URL"), os.Getenv("AI_MODEL"))
+
 	// Загружаем НЕсекретные переменные
 	err := envconfig.Process("", &cfg)
+
+	// <<< ДИАГНОСТИКА: Логируем ошибку envconfig и значения ПОСЛЕ >>>
+	log.Printf("[DIAG] Ошибка envconfig.Process: %v", err)
+	log.Printf("[DIAG] После envconfig.Process: cfg.AIBaseURL='%s', cfg.AIModel='%s'", cfg.AIBaseURL, cfg.AIModel)
+
 	if err != nil {
 		return nil, fmt.Errorf("ошибка загрузки конфигурации: %w", err)
 	}
@@ -72,8 +86,10 @@ func LoadConfig() (*Config, error) {
 
 	// Логируем загруженную конфигурацию (кроме паролей/ключей)
 	log.Printf("Конфигурация загружена (секреты из файлов):")
+	log.Printf("  HTTP Server Port: %s", cfg.HTTPServerPort)
 	log.Printf("  RabbitMQ URL: %s", cfg.RabbitMQURL)
 	log.Printf("  Prompts Dir: %s", cfg.PromptsDir)
+	log.Printf("  AI Client Type: %s", cfg.AIClientType)
 	log.Printf("  AI Base URL: %s", cfg.AIBaseURL)
 	log.Printf("  AI Model: %s", cfg.AIModel)
 	log.Printf("  AI Timeout: %v", cfg.AITimeout)
@@ -83,6 +99,7 @@ func LoadConfig() (*Config, error) {
 	log.Printf("  DB Max Conns: %d", cfg.DBMaxConns)
 	log.Printf("  DB Idle Timeout: %v", cfg.DBIdleTimeout)
 	log.Println("  AI API Key: [ЗАГРУЖЕН]")
+	log.Printf("  Internal Updates Queue: %s", cfg.InternalUpdatesQueueName)
 
 	return &cfg, nil
 }

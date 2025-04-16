@@ -1,0 +1,97 @@
+{{define "title"}}{{.PageTitle}}{{end}}
+
+{{define "content"}}
+<div class="container">
+    <h2>{{.PageTitle}}</h2>
+    <p>Экспериментальная площадка для взаимодействия с AI генератором.</p>
+
+    <form id="ai-form">
+        <div class="grid">
+            <label for="system_prompt">
+                Системный промпт
+                <textarea id="system_prompt" name="system_prompt" rows="5" placeholder="Например: Ты полезный ассистент."></textarea>
+            </label>
+            <label for="user_prompt">
+                Пользовательский промпт
+                <textarea id="user_prompt" name="user_prompt" rows="10" required placeholder="Например: Напиши короткую историю о космосе."></textarea>
+            </label>
+        </div>
+        
+        <div class="grid"> <!-- Новый grid для настроек -->
+            <label for="temperature">
+                Temperature (0.0 - 2.0)
+                <input type="number" id="temperature" name="temperature" min="0" max="2" step="0.1" value="0.7">
+            </label>
+            <label for="max_tokens">
+                Max Tokens
+                <input type="number" id="max_tokens" name="max_tokens" min="1" step="1" value="512">
+            </label>
+            <label for="top_p">
+                Top P (0.0 - 1.0)
+                <input type="number" id="top_p" name="top_p" min="0" max="1" step="0.1" value="1.0">
+            </label>
+        </div>
+
+        <button type="submit" id="generate-btn">Сгенерировать</button>
+    </form>
+
+    <div id="result-container" style="margin-top: 1rem;">
+        <h6>Результат генерации:</h6>
+        <pre id="ai-result" style="white-space: pre-wrap; word-wrap: break-word; background-color: #f5f5f5; padding: 10px; border-radius: 4px; min-height: 50px;"></pre>
+    </div>
+</div>
+
+<script>
+    const form = document.getElementById('ai-form');
+    const systemPromptInput = document.getElementById('system_prompt');
+    const userPromptInput = document.getElementById('user_prompt');
+    const resultPre = document.getElementById('ai-result');
+    const generateBtn = document.getElementById('generate-btn');
+
+    form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        resultPre.textContent = 'Генерация...';
+        generateBtn.setAttribute('aria-busy', 'true');
+        generateBtn.disabled = true;
+
+        const formData = new FormData(form);
+
+        const params = new URLSearchParams();
+        params.append('temperature', formData.get('temperature') || '0.7');
+        params.append('max_tokens', formData.get('max_tokens') || '512');
+        params.append('top_p', formData.get('top_p') || '1.0');
+        const queryString = params.toString();
+
+        try {
+            const fetchURL = `/admin/ai-playground/generate?${queryString}`;
+            console.log('Fetch URL:', fetchURL);
+
+            const response = await fetch(fetchURL, {
+                method: 'POST',
+                body: formData,
+                headers: {
+                    'Accept': 'text/plain'
+                }
+            });
+
+            const responseText = await response.text();
+
+            if (!response.ok) {
+                console.error('Server error:', response.status, responseText);
+                resultPre.textContent = `[Ошибка сервера ${response.status}: ${responseText}]`;
+            } else {
+                resultPre.textContent = responseText;
+            }
+
+        } catch (error) {
+            console.error('Fetch failed:', error);
+            resultPre.textContent = '[Ошибка сети или соединения]';
+        } finally {
+            generateBtn.removeAttribute('aria-busy');
+            generateBtn.disabled = false;
+        }
+
+    });
+
+</script>
+{{end}} 

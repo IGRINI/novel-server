@@ -104,25 +104,28 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 			return fmt.Errorf("ошибка получения StoryConfig %s: %w", storyConfigID, err)
 		}
 
-		if config.Status != models.StatusGenerating {
-			log.Printf("[processor][TaskID: %s] StoryConfig %s уже не в статусе Generating (текущий: %s), обновление Narrator отменено.", taskID, storyConfigID, config.Status)
-			return nil
-		}
-
 		var updateErr error
 		var clientUpdate ClientStoryUpdate
 		var parseErr error
 
 		if notification.Status == sharedMessaging.NotificationStatusSuccess {
-			log.Printf("[processor][TaskID: %s] Уведомление Narrator Success для StoryConfig %s.", taskID, storyConfigID)
-			config.Config = json.RawMessage(notification.GeneratedText)
-			config.Status = models.StatusDraft
-			config.UpdatedAt = time.Now().UTC()
+			// <<< Проверяем статус ТОЛЬКО для Success сценария >>>
+			if config.Status != models.StatusGenerating {
+				log.Printf("[processor][TaskID: %s] StoryConfig %s уже не в статусе Generating (текущий: %s), обновление Narrator Success отменено.", taskID, storyConfigID, config.Status)
+				return nil // Игнорируем устаревшее успешное уведомление
+			}
+			// <<< Конец проверки статуса >>>
 
-			// ... (код извлечения Title, Description - без изменений) ...
+			log.Printf("[processor][TaskID: %s] Уведомление Narrator Success для StoryConfig %s.", taskID, storyConfigID)
+
+			// Сначала парсим JSON, и только если успешно - обновляем поля
 			var generatedConfig map[string]interface{}
-			parseErr = json.Unmarshal(config.Config, &generatedConfig)
+			configBytes := []byte(notification.GeneratedText)
+			parseErr = json.Unmarshal(configBytes, &generatedConfig)
+
 			if parseErr == nil {
+				// Парсинг успешен - обновляем Config, Title, Description
+				config.Config = json.RawMessage(configBytes) // Сохраняем валидный JSON
 				if title, ok := generatedConfig["t"].(string); ok {
 					config.Title = title
 				} else {
@@ -134,15 +137,29 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 					log.Printf("[processor][TaskID: %s] Не удалось извлечь 'sd' (description) из JSON для StoryConfig %s", taskID, storyConfigID)
 				}
 			} else {
-				log.Printf("[processor][TaskID: %s] КРИТИЧЕСКАЯ ОШИБКА: Не удалось распарсить успешно сгенерированный JSON для StoryConfig %s: %v", taskID, storyConfigID, parseErr)
+				// Парсинг НЕ удался - логируем, Config НЕ обновляем, Title/Desc НЕ обновляем
+				log.Printf("[processor][TaskID: %s] ОШИБКА ПАРСИНГА: Не удалось распарсить JSON из GeneratedText для StoryConfig %s: %v. Содержимое: '%s'. Config НЕ будет обновлен.", taskID, storyConfigID, parseErr, string(configBytes))
+				// Устанавливаем статус Error при ошибке парсинга
+				config.Status = models.StatusError
+				// config.Config = []byte("{}") // Оставляем старый конфиг
 			}
 
-		} else { // notification.Status == Error
+			// Статус и время обновляем в любом случае (успешное уведомление получено)
+			// config.Status = models.StatusDraft // Убрано, статус ставится выше
+			config.UpdatedAt = time.Now().UTC()
+
+		} else if notification.Status == sharedMessaging.NotificationStatusError { // Явное условие для Error
 			log.Printf("[processor][TaskID: %s] Уведомление Narrator Error для StoryConfig %s. Details: %s", taskID, storyConfigID, notification.ErrorDetails)
 			config.Status = models.StatusError
 			config.UpdatedAt = time.Now().UTC()
+			// Title/Description/Config не меняем при ошибке
+		} else {
+			// Обработка неизвестного статуса уведомления (на всякий случай)
+			log.Printf("[processor][TaskID: %s] Получен неизвестный статус уведомления (%s) для StoryConfig %s. Игнорируется.", taskID, notification.Status, storyConfigID)
+			return nil // Не обновляем БД и не отправляем клиенту
 		}
 
+		// Обновляем БД только если config был изменен (успех или ошибка)
 		updateErr = p.repo.Update(dbCtx, config)
 		if updateErr != nil {
 			log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось сохранить обновления StoryConfig %s (Narrator): %v", taskID, storyConfigID, updateErr)
@@ -155,12 +172,16 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 			ID:          config.ID.String(),
 			UserID:      strconv.FormatUint(config.UserID, 10),
 			Status:      string(config.Status),
-			Title:       config.Title,
-			Description: config.Description,
+			Title:       config.Title,       // Будет старый title, если парсинг JSON не удался
+			Description: config.Description, // Будет старое description, если парсинг JSON не удался
 		}
 		if config.Status == models.StatusError {
 			if notification.ErrorDetails != "" {
 				errDetails := notification.ErrorDetails
+				clientUpdate.ErrorDetails = &errDetails
+			} else if parseErr != nil {
+				// Добавляем ошибку парсинга, если она была причиной статуса Error
+				errDetails := fmt.Sprintf("JSON parsing error: %v", parseErr)
 				clientUpdate.ErrorDetails = &errDetails
 			} else {
 				clientUpdate.ErrorDetails = nil

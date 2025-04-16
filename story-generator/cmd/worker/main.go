@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"novel-server/shared/messaging"
+	"novel-server/story-generator/internal/api"
 	"novel-server/story-generator/internal/config"
 	"novel-server/story-generator/internal/repository"
 	"novel-server/story-generator/internal/service"
@@ -32,7 +33,7 @@ const (
 )
 
 func main() {
-	log.Println("Запуск воркера генерации историй...")
+	log.Println("Запуск сервиса генерации историй (воркер + API)...")
 
 	// --- Запуск HTTP-сервера для метрик Prometheus в отдельной горутине ---
 	go startMetricsServer()
@@ -41,6 +42,13 @@ func main() {
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		log.Fatalf("Ошибка загрузки конфигурации: %v", err)
+	}
+
+	// Инициализация зависимостей (выносим AIClient выше, т.к. он нужен и API)
+	log.Println("Инициализация AI клиента...")
+	aiClient, err := service.NewAIClient(cfg)
+	if err != nil {
+		log.Fatalf("Ошибка инициализации AI клиента: %v", err)
 	}
 
 	// Подключаемся к PostgreSQL
@@ -136,20 +144,24 @@ func main() {
 	}
 	log.Println("QoS (prefetch count=1) установлен")
 
-	// Инициализация зависимостей
-	log.Println("Инициализация сервисов и репозиториев...")
-	aiClient := service.NewAIClient(cfg)
+	// Инициализация зависимостей для воркера
+	log.Println("Инициализация репозитория и нотификатора...")
 	resultRepo := repository.NewPostgresResultRepository(dbPool)
-
-	// Создаем Notifier (используем тот же канал ch)
-	notifier, err := service.NewRabbitMQNotifier(ch)
+	notifier, err := service.NewRabbitMQNotifier(ch, cfg)
 	if err != nil {
-		log.Fatalf("Не удалось создать notifier: %v", err) // Ошибка здесь критична при старте
+		log.Fatalf("Не удалось создать notifier: %v", err)
 	}
 
-	taskHandler := worker.NewTaskHandler(cfg, aiClient, resultRepo, notifier) // Передаем весь cfg
+	// Создаем обработчик задач воркера
+	taskHandler := worker.NewTaskHandler(cfg, aiClient, resultRepo, notifier)
 
-	// Начинаем потреблять сообщения из очереди
+	// --- Инициализация и запуск HTTP API сервера ---
+	apiHandler := api.NewAPIHandler(aiClient)
+	httpServer := startHTTPServer(cfg, apiHandler)
+	log.Printf("HTTP API сервер запущен на порту %s", cfg.HTTPServerPort)
+	// -----------------------------------------------
+
+	// Начинаем потреблять сообщения из очереди для воркера
 	msgs, err := ch.Consume(
 		q.Name, "", false, false, false, false, nil)
 	if err != nil {
@@ -163,7 +175,7 @@ func main() {
 	// Канал для синхронизации завершения горутины обработки сообщений
 	done := make(chan struct{})
 
-	log.Println("Воркер готов к работе. Ожидание задач...")
+	log.Println(" [*] Ожидание сообщений и API запросов. Для выхода нажмите CTRL+C")
 
 	// Запускаем горутину для обработки сообщений
 	go func() {
@@ -201,26 +213,48 @@ func main() {
 		log.Println("Канал сообщений закрыт, горутина обработки завершается.")
 	}()
 
-	log.Println(" [*] Ожидание сообщений. Для выхода нажмите CTRL+C")
-
 	// Ожидаем завершения горутины обработки сообщений
 	log.Println("Ожидание завершения обработки текущих сообщений...")
 	<-done
 
-	log.Println("Получен сигнал завершения. Закрытие соединений...")
-	// При завершении приложения канал msgs закроется, горутина выше завершится.
-	// defer conn.Close() и defer ch.Close() будут вызваны.
-	log.Println("Воркер остановлен.")
+	log.Println("Получен сигнал завершения. Завершение работы...")
+
+	// --- Graceful Shutdown для HTTP сервера ---
+	log.Println("Остановка HTTP API сервера...")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second) // Даем больше времени
+	defer shutdownCancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Ошибка при остановке HTTP сервера: %v", err)
+	} else {
+		log.Println("HTTP API сервер успешно остановлен.")
+	}
+	// ----------------------------------------
+
+	// --- Закрытие соединений RabbitMQ и DB ---
+	// (defer conn.Close() и defer ch.Close() сработают)
+	log.Println("Закрытие соединения с RabbitMQ...")
+	// conn.Close() и ch.Close() вызываются через defer
+	log.Println("Закрытие соединения с PostgreSQL...")
+	// dbPool.Close() вызывается через defer
+	log.Println("Сервис генерации историй остановлен.")
 }
 
 // startMetricsServer запускает HTTP-сервер для эндпоинта /metrics
 func startMetricsServer() {
 	http.Handle("/metrics", promhttp.Handler())
-	addr := ":" + metricsPort
-	log.Printf("Запуск сервера метрик Prometheus на %s", addr)
-	if err := http.ListenAndServe(addr, nil); err != nil {
-		log.Fatalf("Не удалось запустить сервер метрик: %v", err)
-	}
+
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status": "ok"}`))
+	})
+
+	go func() {
+		log.Printf("Запуск HTTP-сервера для метрик Prometheus и health на :%s...", metricsPort)
+		if err := http.ListenAndServe(":"+metricsPort, nil); err != nil {
+			log.Fatalf("Ошибка запуска HTTP-сервера для метрик: %v", err)
+		}
+	}()
 }
 
 // setupDatabase инициализирует и возвращает пул соединений с БД
@@ -297,3 +331,41 @@ func connectRabbitMQ(url string) (*amqp.Connection, error) {
 	}
 	return nil, err // Не удалось подключиться после всех попыток
 }
+
+// --- Обновленная функция для запуска основного HTTP API сервера ---
+// Теперь принимает *config.Config
+func startHTTPServer(cfg *config.Config, apiHandler *api.APIHandler) *http.Server {
+	mux := http.NewServeMux()
+
+	// Регистрируем обработчик для стриминга
+	mux.HandleFunc("/generate/stream", apiHandler.HandleGenerateStream)
+	// <<< Регистрируем обработчик для не-стриминга >>>
+	mux.HandleFunc("/generate", apiHandler.HandleGenerate)
+
+	// Добавляем health check для основного API
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status": "ok"}`))
+	})
+
+	srv := &http.Server{
+		Addr:    ":" + cfg.HTTPServerPort, // Используем порт из cfg
+		Handler: mux,
+		// Устанавливаем таймауты на основе AITimeout из конфига
+		ReadTimeout:  15 * time.Second,               // Оставляем фиксированным
+		WriteTimeout: cfg.AITimeout + 10*time.Second, // Таймаут AI + запас
+		IdleTimeout:  cfg.AITimeout + 30*time.Second, // Таймаут AI + больший запас
+	}
+
+	go func() {
+		log.Printf("Запуск HTTP API сервера на :%s...", cfg.HTTPServerPort)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Ошибка запуска HTTP API сервера: %v", err)
+		}
+	}()
+
+	return srv // Возвращаем сервер для graceful shutdown
+}
+
+// ----------------------------------------------------------

@@ -17,6 +17,7 @@ type Config struct {
 	ServerPort           string
 	LogLevel             string
 	AuthServiceURL       string
+	StoryGeneratorURL    string
 	ClientTimeout        time.Duration
 	InterServiceTokenTTL time.Duration
 	AuthServiceTimeout   time.Duration
@@ -46,6 +47,7 @@ func LoadConfig(logger *zap.Logger) (*Config, error) {
 	}
 
 	authServiceURL := getEnv("AUTH_SERVICE_URL", "http://auth-service:8081")
+	storyGeneratorURL := getEnv("STORY_GENERATOR_URL", "http://story-generator:8083")
 
 	clientTimeoutStr := getEnv("HTTP_CLIENT_TIMEOUT", "10s")
 	clientTimeout, err := time.ParseDuration(clientTimeoutStr)
@@ -54,12 +56,15 @@ func LoadConfig(logger *zap.Logger) (*Config, error) {
 		clientTimeout = 10 * time.Second
 	}
 
+	logger.Info("Client timeout", zap.Duration("clientTimeout", clientTimeout))
+
 	cfg := &Config{
 		Env:                  getEnv("ENV", "development"),
 		ServerPort:           port,
 		LogLevel:             getEnv("LOG_LEVEL", "debug"),
 		JWTSecret:            jwtSecret,
 		AuthServiceURL:       authServiceURL,
+		StoryGeneratorURL:    storyGeneratorURL,
 		ClientTimeout:        clientTimeout,
 		InterServiceSecret:   interServiceSecret,
 		InterServiceTokenTTL: getDurationEnv("INTER_SERVICE_TOKEN_TTL", "1h"),
@@ -72,6 +77,7 @@ func LoadConfig(logger *zap.Logger) (*Config, error) {
 		zap.String("port", cfg.ServerPort),
 		zap.String("logLevel", cfg.LogLevel),
 		zap.String("authServiceURL", cfg.AuthServiceURL),
+		zap.String("storyGeneratorURL", cfg.StoryGeneratorURL),
 		zap.Duration("clientTimeout", cfg.ClientTimeout),
 		zap.Bool("jwtSecretLoaded", cfg.JWTSecret != ""),
 		zap.Bool("interServiceSecretLoaded", cfg.InterServiceSecret != ""),

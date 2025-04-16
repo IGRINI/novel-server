@@ -19,6 +19,15 @@ import (
 	"go.uber.org/zap"
 )
 
+// <<< Структура для параметров генерации >>>
+type generationParams struct {
+	Temperature float64
+	MaxTokens   int
+	TopP        float64
+}
+
+// <<< Конец >>>
+
 // <<< Определение и регистрация кастомных метрик админки >>>
 var (
 	userBansTotal = promauto.NewCounter(prometheus.CounterOpts{
@@ -46,12 +55,13 @@ type AdminHandler struct {
 	logger *zap.Logger
 	// Заменяем зависимость от cfg на конкретный клиент
 	// cfg           *config.Config
-	authClient client.AuthServiceHttpClient
+	authClient     client.AuthServiceHttpClient
+	storyGenClient client.StoryGeneratorClient
 	// Добавьте зависимости на сервисы/репозитории админки, если нужно
 }
 
 // NewAdminHandler создает новый AdminHandler.
-func NewAdminHandler(cfg *config.Config, logger *zap.Logger, authClient client.AuthServiceHttpClient) *AdminHandler {
+func NewAdminHandler(cfg *config.Config, logger *zap.Logger, authClient client.AuthServiceHttpClient, storyGenClient client.StoryGeneratorClient) *AdminHandler {
 	// Создаем верификатор токенов (ему все еще нужен JWTSecret из cfg)
 	// verifier, err := authutils.NewJWTVerifier(cfg.JWTSecret, logger) // <<< Локальный верификатор больше не нужен
 	// if err != nil {
@@ -61,7 +71,8 @@ func NewAdminHandler(cfg *config.Config, logger *zap.Logger, authClient client.A
 	return &AdminHandler{
 		logger: logger.Named("AdminHandler"),
 		// tokenVerifier: verifier, // <<< Убираем локальный верификатор
-		authClient: authClient, // <<< Клиент уже есть
+		authClient:     authClient,     // <<< Клиент уже есть
+		storyGenClient: storyGenClient, // <<< Добавлено
 	}
 }
 
@@ -91,6 +102,10 @@ func (h *AdminHandler) RegisterRoutes(e *echo.Echo) {
 	// <<< Сброс пароля пользователя >>>
 	adminApiGroup.POST("/users/:user_id/reset-password", h.handleResetPassword)
 	// Добавьте другие роуты админки здесь
+
+	// <<< Добавляем роуты для AI Playground >>>
+	adminApiGroup.GET("/ai-playground", h.handleAIPlaygroundPage)
+	adminApiGroup.POST("/ai-playground/generate", h.handleAIPlaygroundGenerate)
 }
 
 // authMiddleware - это middleware для проверки наличия валидного токена в cookie
@@ -120,17 +135,67 @@ func (h *AdminHandler) authMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		h.logger.Debug("Finished validating admin token via auth-service", zap.Duration("duration", duration), zap.Error(err)) // Логируем длительность и ошибку
 
 		if err != nil {
-			// Ошибки: ErrTokenInvalid, ErrTokenExpired, ErrUserNotFound (токен валиден, юзера нет),
-			// ошибка сети, ошибка 500 от auth-service
-			h.logger.Warn("Token validation failed via auth-service", zap.Error(err))
-			h.clearAuthCookie(c)    // Удаляем невалидную куку
-			return echo.ErrNotFound // Возвращаем 404 при любой ошибке валидации
+			// Проверяем, не истек ли токен
+			if errors.Is(err, sharedModels.ErrTokenExpired) { // <<< Предполагаем наличие этой ошибки
+				h.logger.Info("Access token expired, attempting refresh")
+				// Пытаемся получить Refresh Token из куки
+				refreshCookie, refreshErr := c.Cookie("admin_refresh_session")
+				if refreshErr != nil {
+					// Если куки рефреш токена нет, то пользователь должен залогиниться
+					h.logger.Warn("Refresh token cookie not found after access token expired")
+					h.clearAuthCookies(c)
+					return echo.ErrNotFound // Перенаправляем на логин
+				}
+
+				// Вызываем метод клиента для обновления токена
+				newTokens, newClaims, refreshCallErr := h.authClient.RefreshAdminToken(c.Request().Context(), refreshCookie.Value)
+				if refreshCallErr != nil {
+					// Если обновление не удалось (например, рефреш токен тоже истек или невалиден)
+					h.logger.Warn("Failed to refresh admin token via auth-service", zap.Error(refreshCallErr))
+					h.clearAuthCookies(c)
+					return echo.ErrNotFound // Перенаправляем на логин
+				}
+
+				// Обновление токенов успешно!
+				h.logger.Info("Admin token refreshed successfully")
+
+				// Устанавливаем новые куки
+				accessTokenCookie := new(http.Cookie)
+				accessTokenCookie.Name = "admin_session"
+				accessTokenCookie.Value = newTokens.AccessToken
+				accessTokenCookie.Expires = time.Now().Add(15 * time.Minute) // TODO: Использовать реальное время жизни
+				accessTokenCookie.Path = "/"
+				accessTokenCookie.HttpOnly = true
+				accessTokenCookie.Secure = true                   // <<< Раскомментировано: Только HTTPS
+				accessTokenCookie.SameSite = http.SameSiteLaxMode // <<< Раскомментировано: Lax для Access Token
+				c.SetCookie(accessTokenCookie)
+
+				refreshTokenCookie := new(http.Cookie)
+				refreshTokenCookie.Name = "admin_refresh_session"
+				refreshTokenCookie.Value = newTokens.RefreshToken
+				refreshTokenCookie.Expires = time.Now().Add(7 * 24 * time.Hour) // TODO: Использовать реальное время жизни
+				refreshTokenCookie.Path = "/"
+				refreshTokenCookie.HttpOnly = true
+				refreshTokenCookie.Secure = true                      // <<< Раскомментировано: Только HTTPS
+				refreshTokenCookie.SameSite = http.SameSiteStrictMode // <<< Раскомментировано: Strict для Refresh Token
+				c.SetCookie(refreshTokenCookie)
+
+				// Теперь у нас есть новые валидные клеймы, используем их
+				claims = newClaims
+				// И выходим из блока обработки ошибок, чтобы продолжить выполнение middleware
+
+			} else {
+				// Если ошибка валидации - не истечение срока, значит токен невалиден по другой причине
+				h.logger.Warn("Token validation failed via auth-service (not expired)", zap.Error(err))
+				h.clearAuthCookies(c)   // Удаляем невалидные куки
+				return echo.ErrNotFound // Возвращаем 404 при любой ошибке валидации
+			}
 		}
 
-		// Проверяем роль администратора (полученную от auth-service)
+		// Проверяем роль администратора (полученную от auth-service или после рефреша)
 		if !sharedModels.HasRole(claims.Roles, sharedModels.RoleAdmin) {
 			h.logger.Warn("User without admin role tried to access admin area", zap.Uint64("userID", claims.UserID), zap.Strings("roles", claims.Roles))
-			h.clearAuthCookie(c)
+			h.clearAuthCookies(c)
 			return echo.ErrNotFound // Возвращаем 404
 		}
 
@@ -163,7 +228,7 @@ func (h *AdminHandler) showLoginPage(c echo.Context) error {
 			return c.Redirect(http.StatusSeeOther, "/admin/dashboard")
 		}
 		// Если токен невалиден (например, просрочен), очищаем куку
-		h.clearAuthCookie(c)
+		h.clearAuthCookies(c)
 	}
 
 	// <<< Конец возвращения >>>
@@ -243,17 +308,29 @@ func (h *AdminHandler) handleLogin(c echo.Context) error {
 	// Конец проверки роли администратора
 
 	// Успешный вход АДМИНИСТРАТОРА: устанавливаем cookie
-	cookie := new(http.Cookie)
-	cookie.Name = "admin_session"
-	cookie.Value = tokenDetails.AccessToken         // Используем токен из ответа клиента
-	cookie.Expires = time.Now().Add(24 * time.Hour) // TODO: Сделать время жизни настраиваемым или брать из токена?
-	cookie.Path = "/"                               // Доступен для всех путей админки
-	cookie.HttpOnly = true                          // Недоступен из JavaScript
-	// cookie.Secure = true // TODO: Включать для HTTPS
-	// cookie.SameSite = http.SameSiteLaxMode // или SameSiteStrictMode
-	c.SetCookie(cookie)
+	// Устанавливаем куку для Access Token (короткое время жизни)
+	accessTokenCookie := new(http.Cookie)
+	accessTokenCookie.Name = "admin_session"
+	accessTokenCookie.Value = tokenDetails.AccessToken
+	accessTokenCookie.Expires = time.Now().Add(15 * time.Minute) // TODO: Использовать реальное время жизни из токена/конфига
+	accessTokenCookie.Path = "/"
+	accessTokenCookie.HttpOnly = true
+	// accessTokenCookie.Secure = true                   // <<< Раскомментировано: Только HTTPS
+	// accessTokenCookie.SameSite = http.SameSiteLaxMode // <<< Раскомментировано: Lax для Access Token
+	c.SetCookie(accessTokenCookie)
 
-	h.logger.Info("Admin login successful, setting cookie", zap.String("username", username), zap.Uint64("userID", claims.UserID))
+	// Устанавливаем куку для Refresh Token (длительное время жизни)
+	refreshTokenCookie := new(http.Cookie)
+	refreshTokenCookie.Name = "admin_refresh_session" // Другое имя для рефреш токена
+	refreshTokenCookie.Value = tokenDetails.RefreshToken
+	refreshTokenCookie.Expires = time.Now().Add(7 * 24 * time.Hour) // TODO: Использовать реальное время жизни из токена/конфига
+	refreshTokenCookie.Path = "/"                                   // Обычно рефреш токен доступен только на эндпоинте обновления, но здесь упрощаем
+	refreshTokenCookie.HttpOnly = true
+	// refreshTokenCookie.Secure = true                      // <<< Раскомментировано: Только HTTPS
+	// refreshTokenCookie.SameSite = http.SameSiteStrictMode // <<< Раскомментировано: Strict для Refresh Token
+	c.SetCookie(refreshTokenCookie)
+
+	h.logger.Info("Admin login successful, setting cookies", zap.String("username", username), zap.Uint64("userID", claims.UserID))
 
 	// Отправляем заголовок для HTMX, чтобы он сделал редирект
 	// --- ИЗМЕНЕНИЕ: Редирект на /admin/dashboard ---
@@ -263,22 +340,36 @@ func (h *AdminHandler) handleLogin(c echo.Context) error {
 
 // handleLogout обрабатывает выход пользователя (удаляет cookie).
 func (h *AdminHandler) handleLogout(c echo.Context) error {
-	h.clearAuthCookie(c)
+	h.clearAuthCookies(c)
 	h.logger.Info("User logged out")
 	// Редирект на страницу входа
 	// --- ИЗМЕНЕНИЕ: Редирект на /login ---
 	return c.Redirect(http.StatusSeeOther, "/login")
 }
 
-// clearAuthCookie удаляет сессионную куку.
-func (h *AdminHandler) clearAuthCookie(c echo.Context) {
-	cookie := new(http.Cookie)
-	cookie.Name = "admin_session"
-	cookie.Value = ""
-	cookie.Expires = time.Unix(0, 0) // Прошедшее время
-	cookie.Path = "/"
-	cookie.HttpOnly = true
-	c.SetCookie(cookie)
+// clearAuthCookies удаляет обе сессионные куки.
+func (h *AdminHandler) clearAuthCookies(c echo.Context) {
+	// Удаляем Access Token cookie
+	accessCookie := new(http.Cookie)
+	accessCookie.Name = "admin_session"
+	accessCookie.Value = ""
+	accessCookie.Expires = time.Unix(0, 0) // Прошедшее время
+	accessCookie.Path = "/"
+	accessCookie.HttpOnly = true
+	accessCookie.Secure = true                   // <<< Раскомментировано
+	accessCookie.SameSite = http.SameSiteLaxMode // <<< Раскомментировано
+	c.SetCookie(accessCookie)
+
+	// Удаляем Refresh Token cookie
+	refreshCookie := new(http.Cookie)
+	refreshCookie.Name = "admin_refresh_session"
+	refreshCookie.Value = ""
+	refreshCookie.Expires = time.Unix(0, 0) // Прошедшее время
+	refreshCookie.Path = "/"
+	refreshCookie.HttpOnly = true
+	refreshCookie.Secure = true                      // <<< Раскомментировано
+	refreshCookie.SameSite = http.SameSiteStrictMode // <<< Раскомментировано
+	c.SetCookie(refreshCookie)
 }
 
 // getDashboardData - пример обработчика для получения данных дашборда.
@@ -327,32 +418,52 @@ func (h *AdminHandler) getDashboardData(c echo.Context) error {
 // listUsers - пример обработчика для получения списка пользователей.
 func (h *AdminHandler) listUsers(c echo.Context) error {
 	userID, _ := sharedModels.GetUserIDFromContext(c.Request().Context())
-	h.logger.Info("Admin requested user list", zap.Uint64("adminUserID", userID))
+	log := h.logger.With(zap.Uint64("adminUserID", userID))
+	log.Info("Admin requested user list")
+
+	// Получаем параметры пагинации из query
+	limitStr := c.QueryParam("limit")
+	afterCursor := c.QueryParam("after")
+
+	// Устанавливаем лимит по умолчанию
+	limit := 20 // Или другое значение по умолчанию
+	var err error
+	if limitStr != "" {
+		limit, err = strconv.Atoi(limitStr)
+		if err != nil || limit <= 0 {
+			log.Warn("Invalid limit parameter, using default", zap.String("limit", limitStr))
+			limit = 20
+		}
+	}
+
+	log = log.With(zap.Int("limit", limit), zap.String("after", afterCursor))
+	log.Debug("Fetching user list with pagination")
 
 	// --- Получаем список пользователей через клиент auth-service ---
-	users, err := h.authClient.ListUsers(c.Request().Context())
+	users, nextCursor, err := h.authClient.ListUsers(c.Request().Context(), limit, afterCursor)
 	if err != nil {
-		h.logger.Error("Failed to get user list from auth-service", zap.Error(err))
-		// Если не удалось получить список, рендерим страницу с пустым списком и сообщением об ошибке?
-		users = []sharedModels.User{} // <<< ИСПРАВЛЕНИЕ: Используем sharedModels.User
-		// Можно передать ошибку в шаблон
+		log.Error("Failed to get user list from auth-service", zap.Error(err))
+		users = []sharedModels.User{} // Пустой список при ошибке
 		data := map[string]interface{}{
 			"PageTitle":  "Управление пользователями",
-			"Users":      users, // Пустой список
+			"Users":      users,
 			"Error":      "Не удалось загрузить список пользователей: " + err.Error(),
-			"IsLoggedIn": true, // <<< Устанавливаем флаг
+			"IsLoggedIn": true,
+			"NextCursor": "",    // Нет следующего курсора при ошибке
+			"Limit":      limit, // Передаем текущий лимит для ссылок
 		}
 		return c.Render(http.StatusOK, "users.html", data)
 	}
 
-	// TODO: Рендерить HTML шаблон для списка пользователей (users.html)
+	// Передаем данные в шаблон
 	data := map[string]interface{}{
 		"PageTitle":  "Управление пользователями",
-		"Users":      users, // Передаем полученных пользователей
-		"IsLoggedIn": true,  // <<< Устанавливаем флаг
+		"Users":      users,      // Передаем полученных пользователей
+		"IsLoggedIn": true,       // <<< Устанавливаем флаг
+		"NextCursor": nextCursor, // Передаем курсор для следующей страницы
+		"Limit":      limit,      // Передаем текущий лимит для ссылки "Далее"
 	}
-	// return c.JSON(http.StatusOK, users)
-	return c.Render(http.StatusOK, "users.html", data) // <<< Нужно создать users.html
+	return c.Render(http.StatusOK, "users.html", data)
 }
 
 // handleBanUser обрабатывает запрос на бан пользователя.
@@ -382,19 +493,12 @@ func (h *AdminHandler) handleBanUser(c echo.Context) error {
 	// <<< Инкремент счетчика банов >>>
 	userBansTotal.Inc()
 
-	// При успехе возвращаем обновленную строку таблицы пользователя для HTMX
-	// Получаем обновленные данные пользователя (или только статус бана?)
-	// Проще всего - просто перезапросить весь список и отрендерить его заново
-	// Это менее оптимально, но проще для начала.
-
 	// --- Перезапрашиваем и рендерим всю таблицу ---
-	users, listErr := h.authClient.ListUsers(c.Request().Context())
+	// Используем лимит по умолчанию и пустой курсор для первой страницы
+	users, _, listErr := h.authClient.ListUsers(c.Request().Context(), 20, "") // <<< Исправлен вызов
 	if listErr != nil {
 		h.logger.Error("Failed to reload user list after ban", zap.Uint64("bannedUserID", userID), zap.Error(listErr))
-		// Если не удалось перезагрузить, возможно, стоит вернуть HTTP 200 OK,
-		// чтобы HTMX не показал ошибку, но таблица не обновится.
-		// Либо вернуть специальный заголовок для полной перезагрузки страницы.
-		c.Response().Header().Set("HX-Refresh", "true") // Говорим HTMX перезагрузить всю страницу
+		c.Response().Header().Set("HX-Refresh", "true")
 		return c.NoContent(http.StatusOK)
 	}
 	// Рендерим только содержимое tbody таблицы (нужно будет создать частичный шаблон)
@@ -474,7 +578,8 @@ func (h *AdminHandler) showUserEditPage(c echo.Context) error {
 	// user, err := h.authClient.GetUserDetails(c.Request().Context(), userID)
 	// <<< ВРЕМЕННЫЙ КОД >>>
 	// Получим весь список и найдем нужного юзера (неэффективно, но пока нет GetUserDetails)
-	users, err := h.authClient.ListUsers(c.Request().Context())
+	// Используем лимит по умолчанию и пустой курсор для первой страницы
+	users, _, err := h.authClient.ListUsers(c.Request().Context(), 20, "") // <<< Исправлен вызов
 	if err != nil {
 		h.logger.Error("Failed to get user list for editing", zap.Uint64("userID", userID), zap.Error(err))
 		// Можно редиректнуть на список с ошибкой
@@ -584,7 +689,8 @@ func (h *AdminHandler) handleUserUpdate(c echo.Context) error {
 
 	// После вызова API, нужно перезагрузить данные пользователя, чтобы показать актуальное состояние
 	// <<< ВРЕМЕННЫЙ КОД (получаем список и ищем) >>>
-	users, listErr := h.authClient.ListUsers(c.Request().Context())
+	// Используем лимит по умолчанию и пустой курсор для первой страницы
+	users, _, listErr := h.authClient.ListUsers(c.Request().Context(), 20, "") // <<< Исправлен вызов
 	if listErr != nil {
 		h.logger.Error("Failed to reload user list after update attempt", zap.Uint64("userID", userID), zap.Error(listErr))
 		// Если не удалось перезагрузить, показываем старые данные с ошибкой или успехом обновления
@@ -678,6 +784,109 @@ func (h *AdminHandler) handleResetPassword(c echo.Context) error {
 		newPassword,
 	)
 	return c.HTML(http.StatusOK, responseHTML)
+}
+
+// <<< Добавляем обработчики для AI Playground >>>
+
+// handleAIPlaygroundPage рендерит страницу AI Playground.
+func (h *AdminHandler) handleAIPlaygroundPage(c echo.Context) error {
+	data := map[string]interface{}{
+		"PageTitle":  "AI Playground",
+		"IsLoggedIn": true, // Предполагаем, что middleware отработал
+	}
+	return c.Render(http.StatusOK, "ai_playground.html", data)
+}
+
+// handleAIPlaygroundGenerate обрабатывает запрос на генерацию текста и стримит ответ.
+func (h *AdminHandler) handleAIPlaygroundGenerate(c echo.Context) error {
+	systemPrompt := c.FormValue("system_prompt")
+	userPrompt := c.FormValue("user_prompt")
+
+	// <<< Читаем и парсим параметры генерации из query >>>
+	tempStr := c.QueryParam("temperature")
+	maxTokensStr := c.QueryParam("max_tokens")
+	topPStr := c.QueryParam("top_p")
+
+	params := generationParams{
+		Temperature: 0.7, // Значения по умолчанию
+		MaxTokens:   512,
+		TopP:        1.0,
+	}
+	var parseErrors []string
+
+	if tempStr != "" {
+		if t, err := strconv.ParseFloat(tempStr, 64); err == nil {
+			if t >= 0 && t <= 2.0 {
+				params.Temperature = t
+			} else {
+				parseErrors = append(parseErrors, "Temperature must be between 0.0 and 2.0")
+			}
+		} else {
+			parseErrors = append(parseErrors, "Invalid Temperature format")
+		}
+	}
+	if maxTokensStr != "" {
+		if mt, err := strconv.Atoi(maxTokensStr); err == nil {
+			if mt > 0 {
+				params.MaxTokens = mt
+			} else {
+				parseErrors = append(parseErrors, "Max Tokens must be positive")
+			}
+		} else {
+			parseErrors = append(parseErrors, "Invalid Max Tokens format")
+		}
+	}
+	if topPStr != "" {
+		if tp, err := strconv.ParseFloat(topPStr, 64); err == nil {
+			if tp >= 0 && tp <= 1.0 {
+				params.TopP = tp
+			} else {
+				parseErrors = append(parseErrors, "Top P must be between 0.0 and 1.0")
+			}
+		} else {
+			parseErrors = append(parseErrors, "Invalid Top P format")
+		}
+	}
+
+	if len(parseErrors) > 0 {
+		// TODO: Вернуть ошибку клиенту в понятном виде?
+		errMsg := "Invalid generation parameters: " + strings.Join(parseErrors, ", ")
+		h.logger.Warn(errMsg, zap.String("handler", "handleAIPlaygroundGenerate"))
+		return echo.NewHTTPError(http.StatusBadRequest, errMsg)
+	}
+	// <<< Конец парсинга >>>
+
+	log := h.logger.With(
+		zap.String("handler", "handleAIPlaygroundGenerate"),
+		zap.Int("systemPromptLen", len(systemPrompt)),
+		zap.Int("userPromptLen", len(userPrompt)),
+		zap.Float64("temperature", params.Temperature),
+		zap.Int("max_tokens", params.MaxTokens),
+		zap.Float64("top_p", params.TopP),
+	)
+
+	log.Info("Received AI generation request (non-streaming)") // <<< Обновлено сообщение
+
+	// <<< Вызываем НОВЫЙ не-стриминговый метод клиента (нужно будет его создать) >>>
+	generationResult, err := h.storyGenClient.GenerateText(c.Request().Context(), systemPrompt, userPrompt, client.GenerationParams{
+		Temperature: &params.Temperature,
+		MaxTokens:   &params.MaxTokens,
+		TopP:        &params.TopP,
+	})
+	if err != nil {
+		log.Error("Failed to call story generator text API", zap.Error(err))
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Error calling generator: %v", err))
+	}
+
+	// <<< Возвращаем полный текст как простой текст >>>
+	return c.String(http.StatusOK, generationResult)
+
+	// <<< Удаляем всю старую логику стриминга >>>
+	/*
+		defer streamBody.Close() // Важно закрыть тело ответа
+		...
+		return nil // Успешное завершение стриминга
+	*/
 }
 
 // CustomHTTPErrorHandler обрабатывает ошибки HTTP и возвращает кастомные страницы/ответы

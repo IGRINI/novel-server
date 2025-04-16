@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"novel-server/gameplay-service/internal/service"
 	sharedDatabase "novel-server/shared/database"     // Импорт для PublishedStoryRepository
 	sharedLogger "novel-server/shared/logger"         // <<< Импортируем общий логгер
+	sharedMessaging "novel-server/shared/messaging"   // <<< Добавляем импорт shared/messaging
 	sharedMiddleware "novel-server/shared/middleware" // <<< Импортируем shared/middleware
 	"os"
 	"os/signal"
@@ -24,6 +26,11 @@ import (
 	echoMiddleware "github.com/labstack/echo/v4/middleware"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap" // Импорт zap
+
+	// <<< Импорт для генерации UUID
+	"novel-server/gameplay-service/internal/models"
+
+	"github.com/google/uuid"
 )
 
 func main() {
@@ -101,6 +108,9 @@ func main() {
 	gameplayService := service.NewGameplayService(storyConfigRepo, publishedRepo, sceneRepo, playerProgressRepo, taskPublisher, dbPool, logger)
 	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret)
 
+	// <<< Перезапуск зависших задач при старте >>>
+	go requeueStuckTasks(storyConfigRepo, taskPublisher, logger)
+
 	// Инициализация консьюмера уведомлений
 	notificationConsumer, err := messaging.NewNotificationConsumer(
 		rabbitConn,
@@ -137,6 +147,11 @@ func main() {
 	// Регистрация маршрутов
 	gameplayHandler.RegisterRoutes(e)
 
+	// --- Регистрация healthcheck эндпоинта ---
+	e.GET("/health", func(c echo.Context) error {
+		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	})
+
 	log.Printf("Gameplay сервер слушает на порту %s", cfg.Port)
 
 	// Запуск HTTP сервера
@@ -163,6 +178,95 @@ func main() {
 	}
 
 	log.Println("Gameplay Service успешно остановлен")
+}
+
+// <<< Новая функция для перезапуска зависших задач >>>
+func requeueStuckTasks(repo repository.StoryConfigRepository, publisher messaging.TaskPublisher, logger *zap.Logger) {
+	// Небольшая задержка перед проверкой, чтобы дать другим сервисам время запуститься
+	time.Sleep(10 * time.Second)
+	logger.Info("Проверка зависших задач генерации...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // Таймаут на всю операцию
+	defer cancel()
+
+	stuckConfigs, err := repo.FindGeneratingConfigs(ctx)
+	if err != nil {
+		logger.Error("Не удалось получить список зависших задач", zap.Error(err))
+		return
+	}
+
+	if len(stuckConfigs) == 0 {
+		logger.Info("Зависших задач генерации не найдено.")
+		return
+	}
+
+	logger.Info("Найдено зависших задач", zap.Int("count", len(stuckConfigs)))
+
+	for _, cfg := range stuckConfigs {
+		logger.Warn("Перезапуск зависшей задачи",
+			zap.String("storyConfigID", cfg.ID.String()),
+			zap.Uint64("userID", cfg.UserID),
+			zap.String("status", string(cfg.Status)),
+		)
+
+		// Определяем тип промпта на основе текущего статуса
+		// Пока что обрабатываем только 'generating'
+		var promptType sharedMessaging.PromptType
+		var userInput string
+		var inputData map[string]interface{}
+
+		if cfg.Status == models.StatusGenerating {
+			promptType = sharedMessaging.PromptTypeNarrator
+			// UserInput для начальной генерации - это первый элемент из cfg.UserInput
+			if len(cfg.UserInput) > 0 {
+				// cfg.UserInput имеет тип json.RawMessage, нужно десериализовать в []string
+				var userInputs []string
+				if err := json.Unmarshal(cfg.UserInput, &userInputs); err == nil && len(userInputs) > 0 {
+					userInput = userInputs[0]
+				} else if err != nil {
+					logger.Error("Не удалось десериализовать UserInput для перезапуска задачи", zap.String("storyConfigID", cfg.ID.String()), zap.Error(err))
+					continue // Пропускаем эту задачу
+				} else {
+					logger.Error("UserInput пуст для перезапуска задачи", zap.String("storyConfigID", cfg.ID.String()))
+					continue // Пропускаем эту задачу
+				}
+			} else {
+				logger.Error("Не удалось извлечь UserInput для перезапуска задачи", zap.String("storyConfigID", cfg.ID.String()))
+				continue // Пропускаем эту задачу
+			}
+			// inputData для narrator обычно nil
+			inputData = nil
+		} else {
+			logger.Warn("Обнаружена зависшая задача с необрабатываемым статусом", zap.String("status", string(cfg.Status)), zap.String("storyConfigID", cfg.ID.String()))
+			continue // Пропускаем другие статусы (revising, etc.) в этой простой реализации
+		}
+
+		// Генерируем новый TaskID
+		newTaskID := uuid.New().String()
+
+		payload := sharedMessaging.GenerationTaskPayload{
+			TaskID:        newTaskID,
+			UserID:        fmt.Sprintf("%d", cfg.UserID), // Преобразуем uint64 в string
+			PromptType:    promptType,
+			UserInput:     userInput,
+			InputData:     inputData,
+			StoryConfigID: cfg.ID.String(), // Передаем ID оригинального конфига
+		}
+
+		if err := publisher.PublishGenerationTask(ctx, payload); err != nil {
+			logger.Error("Не удалось отправить перезапущенную задачу в очередь",
+				zap.String("storyConfigID", cfg.ID.String()),
+				zap.String("newTaskID", newTaskID),
+				zap.Error(err),
+			)
+		} else {
+			logger.Info("Зависшая задача успешно отправлена в очередь на повторную обработку",
+				zap.String("storyConfigID", cfg.ID.String()),
+				zap.String("newTaskID", newTaskID),
+			)
+		}
+		// Не меняем статус в БД здесь, пусть story-generator обработает и пришлет уведомление
+	}
 }
 
 // setupDatabase инициализирует и возвращает пул соединений с БД

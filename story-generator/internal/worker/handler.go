@@ -38,22 +38,7 @@ var (
 		Name: "story_generator_tasks_failed_total",
 		Help: "Total number of tasks failed during processing, labeled by error type.",
 	}, []string{"error_type"}) // Добавляем label для типа ошибки
-	// Счетчик вызовов AI API
-	aiCallsTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "story_generator_ai_calls_total",
-		Help: "Total number of AI API calls made.",
-	})
-	// Счетчик ошибок AI API
-	aiErrorsTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "story_generator_ai_errors_total",
-		Help: "Total number of errors encountered during AI API calls.",
-	})
-	// Гистограмма длительности вызовов AI API
-	aiCallDuration = promauto.NewHistogram(prometheus.HistogramOpts{
-		Name:    "story_generator_ai_call_duration_seconds",
-		Help:    "Duration of AI API calls.",
-		Buckets: prometheus.ExponentialBuckets(0.1, 2, 10), // Базовые бакеты: 0.1s, 0.2s, 0.4s ... ~8.5min
-	})
+
 	// Гистограмма общей длительности обработки задачи
 	taskProcessingDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "story_generator_task_processing_duration_seconds",
@@ -137,16 +122,10 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 		aiStartTime := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), h.aiTimeout)
 
-		// <<< Метрика: Счетчик вызовов AI >>>
-		aiCallsTotal.Inc()
-
-		aiResponse, err = h.aiClient.GenerateText(ctx, finalSystemPrompt, userInput)
+		aiResponse, err = h.aiClient.GenerateText(ctx, finalSystemPrompt, userInput, service.GenerationParams{})
 		cancel()
 
-		// <<< Метрика: Время вызова AI >>>
-		aiDuration := time.Since(aiStartTime)
-		aiCallDuration.Observe(aiDuration.Seconds())
-		processingTime = aiDuration // Обновляем время обработки последним вызовом
+		processingTime = time.Since(aiStartTime) // Обновляем время обработки последним вызовом
 
 		if err == nil {
 			log.Printf("[TaskID: %s] AI API успешно ответил (Попытка %d).", payload.TaskID, attempt)
@@ -216,6 +195,10 @@ func (h *TaskHandler) preparePrompt(payload messaging.GenerationTaskPayload) (st
 		return "", fmt.Errorf("ошибка чтения файла промта '%s': %w", promptFilePath, readErr)
 	}
 	systemPrompt := string(systemPromptBytes)
+
+	// <<< Логируем содержимое файла промта >>>
+	log.Printf("[TaskID: %s] Содержимое файла промта '%s':\n---\n%s\n---", payload.TaskID, promptFilePath, systemPrompt)
+	// <<< Конец логирования >>>
 
 	tmpl, parseErr := template.New("prompt").Parse(systemPrompt)
 	if parseErr != nil {
@@ -298,9 +281,12 @@ func (h *TaskHandler) saveAndNotifyResult(
 
 	log.Printf("[TaskID: %s] Отправка уведомления...", payload.TaskID)
 	notificationPayload := messaging.NotificationPayload{
-		TaskID:     payload.TaskID,
-		UserID:     payload.UserID,
-		PromptType: payload.PromptType,
+		TaskID:           payload.TaskID,
+		UserID:           payload.UserID,
+		PromptType:       payload.PromptType,
+		StoryConfigID:    payload.StoryConfigID,
+		PublishedStoryID: payload.PublishedStoryID,
+		StateHash:        payload.StateHash,
 	}
 	if errorMsg != "" {
 		notificationPayload.Status = messaging.NotificationStatusError
@@ -321,12 +307,19 @@ func (h *TaskHandler) saveAndNotifyResult(
 	// возвращаем исходную ошибку, чтобы инициировать Nack.
 	// Метрики для этих ошибок уже инкрементированы в Handle.
 	if processingErr != nil {
+		// Логируем сырой ответ AI при ошибке
+		log.Printf("[TaskID: %s] Ошибка обработки (processingErr), сырой ответ AI перед отправкой уведомления: '%s'", payload.TaskID, aiResponse)
 		return fmt.Errorf("задача завершилась с ошибкой подготовки/AI (сохранено, уведомление отправлено/ошибка логирована): %w", processingErr)
 	}
 	if jsonErr != nil { // Ошибка была только при сериализации JSON
+		// Логируем сырой ответ AI при ошибке JSON
+		log.Printf("[TaskID: %s] Ошибка сериализации InputData (jsonErr), сырой ответ AI перед отправкой уведомления: '%s'", payload.TaskID, aiResponse)
 		// Метрика json_marshal_error уже инкрементирована выше
 		return fmt.Errorf("задача завершилась с критической ошибкой JSON (сохранено как null, уведомление отправлено/ошибка логирована): %w", jsonErr)
 	}
+
+	// Дополнительно логируем сырой ответ перед отправкой успешного уведомления (на всякий случай)
+	log.Printf("[TaskID: %s] Сырой ответ AI перед отправкой успешного уведомления: '%s'", payload.TaskID, aiResponse)
 
 	log.Printf("[TaskID: %s] Задача успешно обработана, сохранена и уведомление отправлено за %v.", payload.TaskID, completedAt.Sub(createdAt))
 	return nil // Успешное завершение

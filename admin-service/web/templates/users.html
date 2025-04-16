@@ -72,6 +72,18 @@
         </tbody>
     </table>
 
-    <!-- TODO: Добавить пагинацию, если нужно -->
+    {{/* Пагинация */}}
+    <nav aria-label="Pagination">
+        <ul>
+            <li>
+                {{ if .NextCursor }}
+                    <a href="/admin/users?limit={{ .Limit }}&after={{ .NextCursor }}" role="button">Следующая страница →</a>
+                {{ else }}
+                    <button disabled aria-disabled="true">Следующая страница →</button>
+                {{ end }}
+            </li>
+            {{/* TODO: Добавить кнопку "Предыдущая страница", если нужна пагинация назад */}}
+        </ul>
+    </nav>
 
 {{ end }} 

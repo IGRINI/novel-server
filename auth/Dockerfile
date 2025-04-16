@@ -48,4 +48,6 @@ EXPOSE 8081
 # Используем порт по умолчанию из config.go, если не переопределен в .env
 
 # Команда для запуска сервиса
-ENTRYPOINT ["/app/auth-service"] 
+ENTRYPOINT ["/app/auth-service"]
+
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD curl -f http://localhost:8081/health || exit 1 

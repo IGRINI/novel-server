@@ -220,6 +220,107 @@
         "noDataState": "no_data",
         "notifications": []
       }
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
+      "id": 20,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } },
+      "targets": [
+        {
+          "expr": "sum(rate(process_cpu_seconds_total{job=~\".+\"}[$Interval])) by (job) * 100",
+          "legendFormat": "{{job}}",
+          "refId": "A"
+        }
+      ],
+      "title": "CPU Usage by Service (%)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
+      "id": 21,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } },
+      "targets": [
+        {
+          "expr": "sum(process_resident_memory_bytes{job=~\".+\"}) by (job)",
+          "legendFormat": "{{job}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Memory Usage by Service (bytes)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 16 },
+      "id": 22,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } },
+      "targets": [
+        {
+          "expr": "min(node_filesystem_avail_bytes{mountpoint=\"/\"}) by (instance)",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Disk Space Free (root, bytes)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+      "id": 23,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } },
+      "targets": [
+        {
+          "expr": "sum(rate(node_network_receive_bytes_total[$Interval])) by (instance)",
+          "legendFormat": "In: {{instance}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(node_network_transmit_bytes_total[$Interval])) by (instance)",
+          "legendFormat": "Out: {{instance}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Network Traffic In/Out (bytes/s)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
+      "id": 24,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } },
+      "targets": [
+        {
+          "expr": "up{job=~\".+\"}",
+          "legendFormat": "{{job}}:{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Service Uptime (up metric)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": { "defaults": { "unit": "ops/s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
+      "id": 25,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } },
+      "targets": [
+        {
+          "expr": "sum(rate(echo_requests_total{code=~\"5..\"}[$Interval])) by (job)",
+          "legendFormat": "5xx: {{job}}",
+          "refId": "A"
+        }
+      ],
+      "title": "5xx Error Rate by Service (ops/s)",
+      "type": "timeseries"
     }
   ],
   "refresh": "1m",

@@ -12,6 +12,7 @@ import (
 	"novel-server/auth/internal/domain"
 	interfaces "novel-server/shared/interfaces"
 	"novel-server/shared/models"
+	"strconv"
 	"strings"
 	"time"
 
@@ -644,4 +645,137 @@ func (s *authServiceImpl) UpdatePassword(ctx context.Context, userID uint64, new
 
 	log.Info("User password updated and tokens invalidated successfully")
 	return nil
+}
+
+// --- Новый метод для обновления токена администратора ---
+
+// RefreshAdminToken validates an admin's refresh token, checks admin role, generates new tokens, and returns them with claims.
+func (s *authServiceImpl) RefreshAdminToken(ctx context.Context, refreshTokenString string) (*models.TokenDetails, *models.Claims, error) {
+	log := s.logger.With(zap.String("method", "RefreshAdminToken"))
+	log.Info("Admin token refresh attempt") // Не логируем сам токен
+
+	// 1. Парсим и валидируем подпись Refresh токена
+	token, err := jwt.ParseWithClaims(refreshTokenString, &domain.Claims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(s.cfg.JWTSecret), nil
+	})
+
+	if err != nil {
+		if errors.Is(err, jwt.ErrTokenExpired) {
+			log.Warn("Admin refresh attempt with expired token")
+			return nil, nil, models.ErrTokenExpired
+		}
+		if errors.Is(err, jwt.ErrTokenMalformed) {
+			log.Warn("Admin refresh attempt with malformed token")
+			return nil, nil, models.ErrTokenMalformed
+		}
+		log.Error("Failed to parse admin refresh token", zap.Error(err))
+		return nil, nil, models.ErrTokenInvalid // Общая ошибка для остальных случаев
+	}
+
+	// 2. Проверяем валидность токена и извлекаем клеймы
+	claims, ok := token.Claims.(*domain.Claims)
+	if !ok || !token.Valid {
+		log.Warn("Admin refresh attempt with invalid token claims or signature")
+		return nil, nil, models.ErrTokenInvalid
+	}
+
+	refreshUUID := claims.ID
+	userID := claims.UserID
+	log = log.With(zap.Uint64("userID", userID), zap.String("refreshUUID", refreshUUID))
+	log.Debug("Admin refresh token parsed successfully")
+
+	// 3. Проверяем наличие Refresh токена в хранилище (Redis)
+	storedUserID, err := s.tokenRepo.GetUserIDByRefreshUUID(ctx, refreshUUID)
+	if err != nil {
+		if errors.Is(err, models.ErrTokenNotFound) {
+			log.Warn("Admin refresh attempt with invalid/revoked token in store")
+			return nil, nil, models.ErrTokenNotFound // Токен не найден (возможно, уже вышел)
+		}
+		log.Error("Error checking admin refresh token existence via repository", zap.Error(err))
+		return nil, nil, fmt.Errorf("error checking refresh token existence: %w", err) // Ошибка репозитория
+	}
+
+	// 4. Сверяем UserID из токена и из хранилища
+	if storedUserID != userID {
+		log.Error("Admin refresh token user ID mismatch", zap.Uint64("tokenUserID", userID), zap.Uint64("repoUserID", storedUserID))
+		// Если ID не совпадают, это серьезная проблема, возможно, попытка подмены.
+		// Удаляем токены из хранилища на всякий случай.
+		_, _ = s.tokenRepo.DeleteTokens(ctx, "", refreshUUID) // Игнорируем ошибку удаления
+		return nil, nil, models.ErrTokenInvalid
+	}
+
+	log.Debug("Admin refresh token verified against store")
+
+	// 5. Получаем данные пользователя из БД, чтобы проверить роль
+	user, err := s.userRepo.GetUserByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, models.ErrUserNotFound) {
+			log.Error("User associated with admin refresh token not found in DB", zap.Error(err))
+			// Пользователя нет, хотя токен был валиден? Очень странно.
+			// Удаляем токены на всякий случай.
+			_, _ = s.tokenRepo.DeleteTokens(ctx, "", refreshUUID)
+			return nil, nil, models.ErrUserNotFound
+		}
+		log.Error("Error fetching user details from repository for admin refresh", zap.Error(err))
+		return nil, nil, fmt.Errorf("error fetching user details: %w", err)
+	}
+
+	// 6. Проверяем, забанен ли пользователь
+	if user.IsBanned {
+		log.Warn("Admin refresh attempt for a banned user")
+		// Удаляем токены забаненного пользователя
+		_, _ = s.tokenRepo.DeleteTokens(ctx, "", refreshUUID)
+		return nil, nil, models.ErrForbidden // Используем 403 Forbidden
+	}
+
+	// 7. Проверяем наличие роли администратора
+	if !models.HasRole(user.Roles, models.RoleAdmin) {
+		log.Warn("Refresh attempt by non-admin user using admin endpoint")
+		// Пользователь не админ, но пытается использовать админский рефреш?!
+		// Удаляем его токены.
+		_, _ = s.tokenRepo.DeleteTokens(ctx, "", refreshUUID)
+		return nil, nil, models.ErrForbidden // 403 Forbidden - нет прав
+	}
+
+	log.Debug("Admin role verified for user")
+
+	// 8. Генерируем новую пару токенов
+	newTd, err := s.createTokens(ctx, userID)
+	if err != nil {
+		// Ошибка уже залогирована в createTokens
+		return nil, nil, fmt.Errorf("failed to create new tokens during admin refresh: %w", err)
+	}
+
+	// 9. Удаляем старый Refresh токен и сохраняем новые
+	// Сначала удаляем старый
+	_, delErr := s.tokenRepo.DeleteTokens(ctx, "", refreshUUID) // Удаляем только старый refresh UUID
+	if delErr != nil {
+		log.Error("Failed to delete old refresh token during admin refresh", zap.Error(delErr))
+		// Это не должно блокировать возврат новых токенов, но логируем ошибку.
+	}
+	// Затем сохраняем новые
+	err = s.tokenRepo.SetToken(ctx, userID, newTd)
+	if err != nil {
+		// Ошибка уже залогирована репозиторием
+		log.Error("Failed to save new token details via repository during admin refresh", zap.Error(err))
+		// Если не смогли сохранить новые токены, то это критично
+		return nil, nil, fmt.Errorf("failed to save new token details: %w", err)
+	}
+
+	// 10. Создаем новые Claims на основе пользователя и нового Access Token UUID
+	newClaims := &models.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   strconv.FormatUint(user.ID, 10),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(s.cfg.AccessTokenTTL)), // <<< Исправлено: Используем AccessTokenTTL
+			ID:        newTd.AccessUUID,                                         // Используем UUID нового Access токена
+		},
+		UserID: user.ID,
+		Roles:  user.Roles, // Передаем актуальные роли
+	}
+
+	log.Info("Admin token refreshed successfully")
+	return newTd, newClaims, nil
 }

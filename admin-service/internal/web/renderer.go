@@ -12,21 +12,21 @@ import (
 
 // TemplateRenderer реализует интерфейс echo.Renderer для html/template.
 type TemplateRenderer struct {
-	Templates *template.Template
-	logger    *zap.Logger
-	debug     bool // Если true, шаблоны будут перезагружаться при каждом рендере
+	Templates   *template.Template
+	logger      *zap.Logger
+	debug       bool   // Если true, шаблоны будут перезагружаться при каждом рендере
 	templateDir string // Путь к директории с шаблонами
-	funcMap   template.FuncMap
+	funcMap     template.FuncMap
 }
 
 // NewTemplateRenderer создает и инициализирует рендерер.
 func NewTemplateRenderer(templateDir string, debug bool, logger *zap.Logger, funcMap template.FuncMap) *TemplateRenderer {
 	log := logger.Named("TemplateRenderer")
 	r := &TemplateRenderer{
-		logger:    log,
-		debug:     debug,
+		logger:      log,
+		debug:       debug,
 		templateDir: templateDir,
-		funcMap:   funcMap,
+		funcMap:     funcMap,
 	}
 	r.loadTemplates() // Загружаем шаблоны при инициализации
 	return r
@@ -35,8 +35,8 @@ func NewTemplateRenderer(templateDir string, debug bool, logger *zap.Logger, fun
 // loadTemplates загружает все *.html шаблоны из директории.
 func (t *TemplateRenderer) loadTemplates() {
 	var err error
-	
-	baseTemplate := template.New("").Funcs(t.funcMap) 
+
+	baseTemplate := template.New("").Funcs(t.funcMap)
 
 	// Parse layout first
 	layoutPath := filepath.Join(t.templateDir, "layout.html")
@@ -44,7 +44,7 @@ func (t *TemplateRenderer) loadTemplates() {
 	if err != nil {
 		t.logger.Error("Failed to parse layout template", zap.String("path", layoutPath), zap.Error(err))
 		t.Templates = nil // Ensure it's nil if layout fails
-		if !t.debug { // In non-debug, this might be fatal depending on requirements
+		if !t.debug {     // In non-debug, this might be fatal depending on requirements
 			t.logger.Fatal("Layout template failed to parse in non-debug mode", zap.Error(err))
 		}
 		return // Return here, Render will handle nil t.Templates in debug
@@ -82,14 +82,15 @@ func (t *TemplateRenderer) Render(w io.Writer, name string, data interface{}, c 
 				zap.String("template", templatePath),
 				zap.Error(err),
 			)
-			return fmt.Errorf("failed to parse templates: %%w", err)
+			return fmt.Errorf("failed to parse templates: %w", err)
 		}
 
-		err = tmpl.ExecuteTemplate(w, name, data)
+		err = tmpl.ExecuteTemplate(w, "layout.html", data)
 		if err != nil {
-			t.logger.Error("Failed to execute specific template after parsing", zap.String("templateName", name), zap.Error(err))
+			t.logger.Error("Failed to execute layout template with specific data", zap.String("layout", "layout.html"), zap.String("specificTemplate", name), zap.Error(err))
+			return fmt.Errorf("template execution failed for %s: %w", name, err)
 		}
-		return err // Return the error from ExecuteTemplate
+		return nil
 
 	} else {
 		// В обычном режиме используем предзагруженные
@@ -107,13 +108,13 @@ func (t *TemplateRenderer) Render(w io.Writer, name string, data interface{}, c 
 		tmpl := t.Templates.Lookup(name)
 		if tmpl == nil {
 			t.logger.Error("Template not found in preloaded set", zap.String("templateName", name))
-			return fmt.Errorf("template %%s not found", name)
+			return fmt.Errorf("template %s not found", name)
 		}
 		t.logger.Debug("Executing preloaded template", zap.String("templateName", name))
-		err := tmpl.Execute(w, data) // Use Execute on the looked-up template
+		err := tmpl.Execute(w, data)
 		if err != nil {
 			t.logger.Error("Failed to execute preloaded template", zap.String("templateName", name), zap.Error(err))
 		}
 		return err
 	}
-} 
+}

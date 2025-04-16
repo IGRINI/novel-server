@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"novel-server/shared/messaging"
+	"novel-server/story-generator/internal/config"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -17,34 +18,32 @@ type Notifier interface {
 	Notify(ctx context.Context, payload messaging.NotificationPayload) error
 }
 
-const (
-	// Имя очереди для уведомлений пользователям
-	notificationQueueName = "user_notifications"
-)
-
 // rabbitMQNotifier реализует Notifier для отправки сообщений в RabbitMQ.
 type rabbitMQNotifier struct {
-	channel *amqp.Channel
+	channel   *amqp.Channel
+	queueName string
 }
 
 // NewRabbitMQNotifier создает новый экземпляр Notifier для RabbitMQ.
 // Важно: предполагается, что канал уже открыт и будет закрыт в другом месте (например, в main.go).
-func NewRabbitMQNotifier(ch *amqp.Channel) (Notifier, error) {
+func NewRabbitMQNotifier(ch *amqp.Channel, cfg *config.Config) (Notifier, error) {
+	queueName := cfg.InternalUpdatesQueueName
+
 	// Объявляем очередь уведомлений (делаем ее durable)
 	_, err := ch.QueueDeclare(
-		notificationQueueName, // name
-		true,                  // durable
-		false,                 // delete when unused
-		false,                 // exclusive
-		false,                 // no-wait
-		nil,                   // arguments
+		queueName,
+		true,
+		false,
+		false,
+		false,
+		nil,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("не удалось объявить очередь уведомлений '%s': %w", notificationQueueName, err)
+		return nil, fmt.Errorf("не удалось объявить очередь уведомлений '%s': %w", queueName, err)
 	}
-	log.Printf("Очередь уведомлений '%s' успешно объявлена/найдена", notificationQueueName)
+	log.Printf("Очередь уведомлений '%s' успешно объявлена/найдена", queueName)
 
-	return &rabbitMQNotifier{channel: ch}, nil
+	return &rabbitMQNotifier{channel: ch, queueName: queueName}, nil
 }
 
 // Notify публикует уведомление в очередь RabbitMQ.
@@ -56,17 +55,17 @@ func (n *rabbitMQNotifier) Notify(ctx context.Context, payload messaging.Notific
 	}
 
 	err = n.channel.PublishWithContext(ctx,
-		"",                    // exchange (используем default)
-		notificationQueueName, // routing key (имя очереди)
-		false,                 // mandatory
-		false,                 // immediate
+		"",
+		n.queueName,
+		false,
+		false,
 		amqp.Publishing{
 			ContentType:  "application/json",
-			DeliveryMode: amqp.Persistent, // Делаем сообщение persistent
+			DeliveryMode: amqp.Persistent,
 			Body:         body,
-			Timestamp:    time.Now(),                // Добавляем временную метку
-			AppId:        "story-generator",         // Идентификатор отправителя
-			MessageId:    payload.TaskID + "-notif", // Уникальный ID сообщения (опционально)
+			Timestamp:    time.Now(),
+			AppId:        "story-generator",
+			MessageId:    payload.TaskID + "-notif",
 		},
 	)
 
@@ -75,6 +74,6 @@ func (n *rabbitMQNotifier) Notify(ctx context.Context, payload messaging.Notific
 		return fmt.Errorf("ошибка публикации уведомления для TaskID %s: %w", payload.TaskID, err)
 	}
 
-	log.Printf("[TaskID: %s] Уведомление успешно отправлено в очередь '%s'. Status: %s", payload.TaskID, notificationQueueName, payload.Status)
+	log.Printf("[TaskID: %s] Уведомление успешно отправлено в очередь '%s'. Status: %s", payload.TaskID, n.queueName, payload.Status)
 	return nil
 }
