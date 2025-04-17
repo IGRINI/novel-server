@@ -7,5 +7,6 @@ var (
 	ErrStoryAlreadyGeneratingOrReady = errors.New("story generation already in progress or completed")
 	ErrCannotRevise                  = errors.New("cannot revise story config in its current status")
 	ErrUserHasActiveGeneration       = errors.New("user already has an active generation task")
+	ErrCannotRetry                   = errors.New("cannot retry generation for story in current status")
 	// Можно добавить другие специфичные ошибки
 )

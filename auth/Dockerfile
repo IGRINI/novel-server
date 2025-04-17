@@ -4,34 +4,28 @@ FROM golang:1.24-alpine AS builder
 # Игнорируем go.work внутри сборки
 ENV GOWORK=off
 
+# Устанавливаем рабочую директорию в корень модуля
 WORKDIR /app
 
-# Копируем go.mod и go.sum для auth и shared
-# COPY go.work go.work # go.work не нужен при GOWORK=off
-COPY auth/go.mod auth/go.sum ./auth/
-COPY shared/go.mod shared/go.sum ./shared/
+# Копируем ТОЛЬКО корневые go.mod и go.sum
+COPY go.mod go.sum ./
 
-# Копируем ВЕСЬ исходный код auth и shared
-COPY auth/ ./auth/
-COPY shared/ ./shared/
-
-# Переходим в директорию auth
-WORKDIR /app/auth
-
-# Загружаем зависимости (go.mod должен содержать replace ../shared)
-# Эта команда может быть опциональной, но оставим для кэширования слоев
+# Загружаем ВСЕ зависимости проекта
 RUN go mod download
 
+# Копируем ВЕСЬ исходный код проекта
+COPY . .
+
 # Собираем приложение auth
-# Используем -ldflags="-s -w" для уменьшения размера
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /auth-service ./cmd/auth/main.go
+# Команда выполняется из корня /app
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /auth-service ./auth/cmd/auth/main.go
 
 
 # Этап 2: Создание минимального образа
 FROM alpine:latest
 
-# Устанавливаем корневые сертификаты для HTTPS/TLS (если потребуются)
-RUN apk --no-cache add ca-certificates
+# Устанавливаем корневые сертификаты и wget для healthcheck
+RUN apk --no-cache add ca-certificates wget
 
 WORKDIR /app
 
@@ -43,11 +37,11 @@ COPY --from=builder /auth-service .
 # Копируем папку с миграциями (нужно для migrate сервиса, но auth может не требовать)
 # COPY shared/database/migrations ./migrations
 
-# Порт, который будет слушать сервис
-EXPOSE 8081
-# Используем порт по умолчанию из config.go, если не переопределен в .env
+# Порт, который будет слушать сервис (информационно)
+# EXPOSE 8081 - определяется переменной окружения
 
 # Команда для запуска сервиса
 ENTRYPOINT ["/app/auth-service"]
 
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD curl -f http://localhost:8081/health || exit 1 
+# Используем wget для healthcheck и переменную окружения для порта
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD wget --spider -q http://localhost:${AUTH_SERVER_PORT:-8081}/health || exit 1 

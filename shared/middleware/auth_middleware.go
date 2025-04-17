@@ -76,7 +76,7 @@ func AuthMiddleware(verifier TokenVerifier, logger *zap.Logger, requiredRoles ..
 
 				if !hasRequiredRole {
 					log.Warn("User does not have required role",
-						zap.Uint64("userID", claims.UserID),
+						zap.String("userID", claims.UserID.String()),
 						zap.Strings("userRoles", claims.Roles),
 						zap.Strings("requiredRoles", requiredRoles),
 					)
@@ -89,7 +89,7 @@ func AuthMiddleware(verifier TokenVerifier, logger *zap.Logger, requiredRoles ..
 			ctx = context.WithValue(ctx, models.UserContextKey, claims.UserID)
 			ctx = context.WithValue(ctx, models.RolesContextKey, claims.Roles)
 
-			log.Debug("User authorized", zap.Uint64("userID", claims.UserID), zap.Strings("roles", claims.Roles))
+			log.Debug("User authorized", zap.String("userID", claims.UserID.String()), zap.Strings("roles", claims.Roles))
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

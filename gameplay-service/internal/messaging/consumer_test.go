@@ -27,11 +27,12 @@ func TestNotificationProcessor_Process(t *testing.T) {
 	ctx := context.Background()
 	storyID := uuid.New()
 	taskID := "task-abc"
+	userID := uuid.New()
 
 	// Базовый конфиг - НЕ использовать напрямую в t.Run!
 	baseConfigGenerating := &sharedModels.StoryConfig{
 		ID:        storyID,
-		UserID:    123, // Важно: UserID здесь не используется напрямую
+		UserID:    userID,
 		Status:    sharedModels.StatusGenerating,
 		UserInput: []byte(`["Начало"]`),
 	}
@@ -60,7 +61,7 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		})).Return(nil).Once()
 		mockClientPub.On("PublishClientUpdate", mock.Anything, mock.MatchedBy(func(payload messaging.ClientStoryUpdate) bool {
 			// Проверяем данные для клиента
-			return payload.ID == storyID.String() && payload.Status == string(sharedModels.StatusDraft) &&
+			return payload.ID == storyID.String() && payload.UserID == userID.String() && payload.Status == string(sharedModels.StatusDraft) &&
 				payload.Title == "Новый тайтл" && payload.Description == "Новое описание"
 		})).Return(nil).Once()
 

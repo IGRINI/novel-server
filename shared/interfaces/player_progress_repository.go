@@ -21,7 +21,7 @@ type PlayerProgressRepository interface {
 
 	// GetByUserIDAndStoryID retrieves the player's progress for a specific story.
 	// Returns models.ErrNotFound if no progress exists for the given user and story.
-	GetByUserIDAndStoryID(ctx context.Context, userID uint64, publishedStoryID uuid.UUID) (*models.PlayerProgress, error)
+	GetByUserIDAndStoryID(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (*models.PlayerProgress, error)
 
 	// CreateOrUpdate creates a new player progress record or updates an existing one based on UserID and PublishedStoryID.
 	// It should update all relevant fields including stats, variables, flags, hash, and the current choice index.
@@ -29,5 +29,5 @@ type PlayerProgressRepository interface {
 
 	// Delete removes the player progress record for a specific user and story.
 	// Returns nil if the record was deleted or did not exist.
-	Delete(ctx context.Context, userID uint64, publishedStoryID uuid.UUID) error
+	Delete(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
 }

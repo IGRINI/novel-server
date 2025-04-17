@@ -69,6 +69,37 @@ func scanPublishedStories(rows pgx.Rows) ([]models.PublishedStory, error) {
 	return stories, nil
 }
 
+// scanStories сканирует несколько строк (возвращает слайс указателей)
+func scanStories(rows pgx.Rows) ([]*models.PublishedStory, error) {
+	stories := make([]*models.PublishedStory, 0)
+	var err error
+	for rows.Next() {
+		var story models.PublishedStory // Сканируем в значение
+		err = rows.Scan(
+			&story.ID,
+			&story.UserID,
+			&story.Config,
+			&story.Setup,
+			&story.Status,
+			&story.IsPublic,
+			&story.IsAdultContent,
+			&story.Title,
+			&story.Description,
+			&story.CreatedAt,
+			&story.UpdatedAt,
+			// Убедитесь, что error_details тоже сканируется, если оно есть в запросе
+		)
+		if err != nil {
+			continue
+		}
+		stories = append(stories, &story) // Добавляем указатель
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ошибка итерации по результатам published_stories: %w", err)
+	}
+	return stories, nil
+}
+
 // pgPublishedStoryRepository реализует интерфейс PublishedStoryRepository для PostgreSQL.
 type pgPublishedStoryRepository struct {
 	db     interfaces.DBTX
@@ -101,7 +132,7 @@ func (r *pgPublishedStoryRepository) Create(ctx context.Context, story *models.P
     `
 	logFields := []zap.Field{
 		zap.String("publishedStoryID", story.ID.String()),
-		zap.Uint64("userID", story.UserID),
+		zap.String("userID", story.UserID.String()),
 	}
 	r.logger.Debug("Creating published story", logFields...)
 
@@ -202,7 +233,7 @@ func (r *pgPublishedStoryRepository) UpdateStatusDetails(ctx context.Context, id
 }
 
 // SetPublic updates the is_public flag for a story.
-func (r *pgPublishedStoryRepository) SetPublic(ctx context.Context, id uuid.UUID, userID uint64, isPublic bool) error {
+func (r *pgPublishedStoryRepository) SetPublic(ctx context.Context, id uuid.UUID, userID uuid.UUID, isPublic bool) error {
 	query := `
         UPDATE published_stories
         SET is_public = $2, updated_at = NOW()
@@ -210,7 +241,7 @@ func (r *pgPublishedStoryRepository) SetPublic(ctx context.Context, id uuid.UUID
     `
 	logFields := []zap.Field{
 		zap.String("publishedStoryID", id.String()),
-		zap.Uint64("userID", userID),
+		zap.String("userID", userID.String()),
 		zap.Bool("isPublic", isPublic),
 	}
 	r.logger.Debug("Setting published story public status", logFields...)
@@ -223,8 +254,6 @@ func (r *pgPublishedStoryRepository) SetPublic(ctx context.Context, id uuid.UUID
 	}
 	if commandTag.RowsAffected() == 0 {
 		r.logger.Warn("Attempted to set public status for non-existent or unauthorized story", logFields...)
-		// We return ErrNotFound, assuming either the story doesn't exist or doesn't belong to the user.
-		// More specific checks could be done with a preliminary SELECT if needed.
 		return models.ErrNotFound
 	}
 
@@ -232,76 +261,42 @@ func (r *pgPublishedStoryRepository) SetPublic(ctx context.Context, id uuid.UUID
 	return nil
 }
 
-// scanStories сканирует несколько строк (возвращает слайс указателей)
-func scanStories(rows pgx.Rows) ([]*models.PublishedStory, error) {
-	stories := make([]*models.PublishedStory, 0)
-	var err error
-	for rows.Next() {
-		var story models.PublishedStory // Сканируем в значение
-		err = rows.Scan(
-			&story.ID,
-			&story.UserID,
-			&story.Config,
-			&story.Setup,
-			&story.Status,
-			&story.IsPublic,
-			&story.IsAdultContent,
-			&story.Title,
-			&story.Description,
-			&story.CreatedAt,
-			&story.UpdatedAt,
-			// Убедитесь, что error_details тоже сканируется, если оно есть в запросе
-		)
-		if err != nil {
-			continue
-		}
-		stories = append(stories, &story) // Добавляем указатель
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("ошибка итерации по результатам published_stories: %w", err)
-	}
-	return stories, nil
-}
-
-// ListByUser возвращает список опубликованных историй пользователя с offset/limit пагинацией.
-// Сигнатура соответствует старому интерфейсу.
-func (r *pgPublishedStoryRepository) ListByUser(ctx context.Context, userID uint64, limit, offset int) ([]*models.PublishedStory, error) {
-	if limit <= 0 {
-		limit = 10 // Default limit
-	}
-	if offset < 0 {
-		offset = 0 // Offset cannot be negative
-	}
-
+// ListByUserID retrieves a paginated list of stories created by a specific user.
+func (r *pgPublishedStoryRepository) ListByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.PublishedStory, error) {
 	query := `
-        SELECT id, user_id, config, setup, status, is_public, is_adult_content, title, description, created_at, updated_at /*, error_details */
+        SELECT
+            id, user_id, config, setup, status, is_public, is_adult_content,
+            title, description, error_details, created_at, updated_at
         FROM published_stories
         WHERE user_id = $1
-        ORDER BY updated_at DESC -- Сортировка по обновлению
+        ORDER BY created_at DESC
         LIMIT $2 OFFSET $3
     `
-	logFields := []zap.Field{zap.Uint64("userID", userID), zap.Int("limit", limit), zap.Int("offset", offset)}
-	r.logger.Debug("Listing published stories by user (offset/limit)", logFields...)
+	logFields := []zap.Field{
+		zap.String("userID", userID.String()),
+		zap.Int("limit", limit),
+		zap.Int("offset", offset),
+	}
+	r.logger.Debug("Listing published stories by user", logFields...)
 
 	rows, err := r.db.Query(ctx, query, userID, limit, offset)
 	if err != nil {
 		r.logger.Error("Failed to query published stories by user", append(logFields, zap.Error(err))...)
-		return nil, fmt.Errorf("ошибка получения списка историй пользователя %d: %w", userID, err)
+		return nil, fmt.Errorf("ошибка получения списка опубликованных историй пользователя %s: %w", userID.String(), err)
 	}
 	defer rows.Close()
 
-	stories, err := scanStories(rows) // Используем scanStories, возвращающий []*...
+	stories, err := scanStories(rows) // Используем scanStories
 	if err != nil {
-		r.logger.Error("Failed to scan published stories for user", append(logFields, zap.Error(err))...)
-		return nil, err
+		// Ошибка уже залогирована в scanStories, если rows.Err() != nil
+		return nil, err // Просто возвращаем ошибку сканирования
 	}
 
-	r.logger.Debug("Published stories for user listed successfully", append(logFields, zap.Int("count", len(stories)))...)
+	r.logger.Debug("Published stories listed successfully by user", append(logFields, zap.Int("count", len(stories)))...)
 	return stories, nil
 }
 
-// ListPublic возвращает список публичных опубликованных историй с offset/limit пагинацией.
-// Сигнатура соответствует старому интерфейсу.
+// ListPublic retrieves a paginated list of public stories.
 func (r *pgPublishedStoryRepository) ListPublic(ctx context.Context, limit, offset int) ([]*models.PublishedStory, error) {
 	if limit <= 0 {
 		limit = 10 // Default limit

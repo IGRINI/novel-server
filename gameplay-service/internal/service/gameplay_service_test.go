@@ -14,7 +14,6 @@ import (
 	repositoryMocks "novel-server/shared/interfaces/mocks" // <<< Добавляем новый импорт мока
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
-	"strconv"
 	"testing"
 
 	"github.com/google/uuid"
@@ -25,7 +24,8 @@ import (
 
 // TestGenerateInitialStory tests the GenerateInitialStory method
 func TestGenerateInitialStory(t *testing.T) {
-	userID := uint64(123)
+	// userID := uint64(123)
+	userID := uuid.New() // <<< Use UUID
 	initialPrompt := "Хочу историю про космос"
 	ctx := context.Background()
 
@@ -58,7 +58,8 @@ func TestGenerateInitialStory(t *testing.T) {
 			assert.Empty(t, payload.InputData)        // InputData должен быть пустым
 			assert.NotEmpty(t, payload.StoryConfigID) // StoryConfigID должен быть
 			assert.NotEmpty(t, payload.TaskID)
-			assert.Equal(t, strconv.FormatUint(userID, 10), payload.UserID)
+			// assert.Equal(t, strconv.FormatUint(userID, 10), payload.UserID)
+			assert.Equal(t, userID.String(), payload.UserID) // <<< Check UUID string
 			return true
 		})).Return(nil).Once()
 
@@ -190,7 +191,8 @@ func TestGenerateInitialStory(t *testing.T) {
 
 // TestReviseDraft tests the ReviseDraft method
 func TestReviseDraft(t *testing.T) {
-	baseUserID := uint64(456)
+	// baseUserID := uint64(456)
+	baseUserID := uuid.New() // <<< Use UUID
 	baseStoryID := uuid.New()
 	baseRevisionPrompt := "Сделать главного героя магом"
 	ctx := context.Background()
@@ -239,6 +241,7 @@ func TestReviseDraft(t *testing.T) {
 			assert.Contains(t, payload.InputData, "current_config") // Должен быть current_config
 			assert.Equal(t, currentConfigJSONString, payload.InputData["current_config"])
 			assert.Equal(t, storyID.String(), payload.StoryConfigID)
+			assert.Equal(t, userID.String(), payload.UserID) // <<< Check UUID string
 			return true
 		})).Return(nil).Once()
 
@@ -416,7 +419,8 @@ func TestReviseDraft(t *testing.T) {
 
 // TestGetStoryConfig tests the GetStoryConfig method
 func TestGetStoryConfig(t *testing.T) {
-	userID := uint64(789)
+	// userID := uint64(789)
+	userID := uuid.New() // <<< Use UUID
 	storyID := uuid.New()
 	ctx := context.Background()
 

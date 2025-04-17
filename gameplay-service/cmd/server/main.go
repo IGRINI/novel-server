@@ -15,7 +15,8 @@ import (
 	sharedLogger "novel-server/shared/logger"         // <<< Импортируем общий логгер
 	sharedMessaging "novel-server/shared/messaging"   // <<< Добавляем импорт shared/messaging
 	sharedMiddleware "novel-server/shared/middleware" // <<< Импортируем shared/middleware
-	sharedModels "novel-server/shared/models"         // <<< Импорт shared/models
+
+	// <<< Импорт shared/models
 	"os"
 	"os/signal"
 	"syscall"
@@ -30,6 +31,8 @@ import (
 
 	// <<< Импорт для генерации UUID
 	"github.com/google/uuid"
+	// "novel-server/shared/models" // <<< Добавляем импорт shared/models // Already added by previous edit
+	sharedModels "novel-server/shared/models" // <<< Раскомментируем и используем алиас
 )
 
 func main() {
@@ -204,7 +207,7 @@ func requeueStuckTasks(repo sharedInterfaces.StoryConfigRepository, publisher me
 	for _, cfg := range stuckConfigs {
 		logger.Warn("Перезапуск зависшей задачи",
 			zap.String("storyConfigID", cfg.ID.String()),
-			zap.Uint64("userID", cfg.UserID),
+			zap.Stringer("userID", cfg.UserID),
 			zap.String("status", string(cfg.Status)),
 		)
 

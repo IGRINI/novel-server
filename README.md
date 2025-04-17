@@ -42,50 +42,51 @@
 
 ### Аутентификация
 
-Для доступа к большинству эндпоинтов (кроме регистрации и входа) необходимо передавать JWT access токен.
+Для доступа к большинству эндпоинтов (кроме регистрации, входа и обновления токена) необходимо передавать JWT access токен, полученный при входе или обновлении.
 *   **HTTP запросы:** В заголовке `Authorization: Bearer <ваш_access_token>`.
 *   **WebSocket соединение:** Через query-параметр `?token=<ваш_access_token>` при установке соединения.
 
 ### Основные эндпоинты
 
-Ниже описаны основные эндпоинты, доступные для взаимодействия с пользователем.
+Ниже описаны основные эндпоинты, доступные для взаимодействия с пользователем и между сервисами. Маршрутизация осуществляется через API Gateway (Traefik).
 
 ---
 
-#### Сервис Аутентификации (`/api/auth`)
+#### Сервис Аутентификации (`/auth` и `/api`)
 
-*   **`POST /api/auth/register`**
+Предоставляет эндпоинты для управления пользователями и токенами.
+
+##### Публичные эндпоинты (`/auth`)
+
+*   **`POST /auth/register`**
     *   Описание: Регистрация нового пользователя.
     *   Аутентификация: **Не требуется.**
-    *   Тело запроса (JSON):
+    *   Тело запроса (`application/json`):
         ```json
         {
-          "username": "string",
+          "username": "string", // 3-30 символов, [a-zA-Z0-9_-]
           "email": "string (valid email format)",
-          "password": "string"
+          "password": "string" // 8-100 символов
         }
         ```
-    *   **Требования к полям:**
-        *   `username`: Длина от 3 до 30 символов. Допустимы только латинские буквы (a-z, A-Z), цифры (0-9), знаки подчеркивания (`_`) и дефисы (`-`).
-        *   `password`: Длина от 8 до 100 символов. Должен содержать хотя бы одну букву и хотя бы одну цифру.
     *   Ответ при успехе (`201 Created`):
         ```json
         {
-          "message": "user registered successfully",
-          "user_id": 123,
+          "id": "uuid-string", // UUID пользователя
           "username": "string",
           "email": "string"
+          // Примечание: В коде обработчика возвращается только { "message": "user registered successfully" } ? Нужно уточнить.
         }
         ```
     *   Ответ при ошибке:
-        *   `400 Bad Request` (`{"code": 40001, "message": "..."}`): Невалидные данные запроса (включая несоблюдение требований к длине/формату username и password).
-        *   `409 Conflict` (`{"code": 40901, "message": "..."}`): Пользователь или email уже существует.
-        *   `500 Internal Server Error` (`{"code": 50001, "message": "..."}`): Внутренняя ошибка сервера.
+        *   `400 Bad Request` (`{"code": 40001, "message": "..."}`): Невалидные данные (формат, длина).
+        *   `409 Conflict` (`{"code": 40901, "message": "Username is already taken | Email is already taken"}`): Пользователь/email уже существует.
+        *   `500 Internal Server Error` (`{"code": 50001, "message": "..."}`): Внутренняя ошибка.
 
-*   **`POST /api/auth/login`**
+*   **`POST /auth/login`**
     *   Описание: Вход пользователя.
     *   Аутентификация: **Не требуется.**
-    *   Тело запроса (JSON):
+    *   Тело запроса (`application/json`):
         ```json
         {
           "username": "string",
@@ -100,14 +101,14 @@
         }
         ```
     *   Ответ при ошибке:
-        *   `400 Bad Request` (`{"code": 40001, "message": "..."}`): Невалидные данные запроса.
-        *   `401 Unauthorized` (`{"code": 40101, "message": "..."}`): Неверный логин или пароль.
-        *   `500 Internal Server Error` (`{"code": 50001, "message": "..."}`): Внутренняя ошибка сервера.
+        *   `400 Bad Request` (`{"code": 40001, "message": "..."}`): Невалидные данные.
+        *   `401 Unauthorized` (`{"code": 40101, "message": "Invalid credentials or input format"}`): Неверный логин/пароль.
+        *   `500 Internal Server Error` (`{"code": 50001, "message": "..."}`): Внутренняя ошибка.
 
-*   **`POST /api/auth/refresh`**
+*   **`POST /auth/refresh`**
     *   Описание: Обновление пары access/refresh токенов.
     *   Аутентификация: **Не требуется.**
-    *   Тело запроса (JSON):
+    *   Тело запроса (`application/json`):
         ```json
         {
           "refresh_token": "string (jwt)"
@@ -123,15 +124,15 @@
     *   Ответ при ошибке:
         *   `400 Bad Request` (`{"code": 40001, "message": "..."}`): Невалидное тело запроса.
         *   `401 Unauthorized` (`{"code": 40102 | 40103 | 40104, "message": "..."}`): Невалидный, просроченный или отозванный refresh токен.
-        *   `500 Internal Server Error` (`{"code": 50001, "message": "..."}`): Внутренняя ошибка сервера.
+        *   `500 Internal Server Error` (`{"code": 50001, "message": "..."}`): Внутренняя ошибка.
 
-*   **`POST /api/auth/logout`**
-    *   Описание: Выход пользователя (отзыв токенов).
-    *   Аутентификация: **Требуется** (валидный `access_token` в заголовке `Authorization`).
-    *   Тело запроса (JSON):
+*   **`POST /auth/logout`**
+    *   Описание: Выход пользователя (отзыв refresh токена и связанных с ним access токенов).
+    *   Аутентификация: **Не требуется** (токен передается в теле).
+    *   Тело запроса (`application/json`):
         ```json
         {
-          "refresh_token": "string (jwt)" // Токен, который нужно отозвать вместе с текущим access токеном
+          "refresh_token": "string (jwt)" // Токен, который нужно отозвать
         }
         ```
     *   Ответ при успехе (`200 OK`):
@@ -142,84 +143,106 @@
         ```
     *   Ответ при ошибке:
         *   `400 Bad Request` (`{"code": 40001, "message": "..."}`): Отсутствует или невалиден refresh токен в теле.
-        *   `401 Unauthorized` (`{"code": 40102 | 40103, "message": "..."}`): Access токен невалиден или просрочен.
+        *   `401 Unauthorized` (`{"code": 40102 | 40103 | 40104, "message": "..."}`): Невалидный, просроченный или уже отозванный refresh токен.
         *   `500 Internal Server Error` (`{"code": 50001, "message": "..."}`): Внутренняя ошибка сервера.
 
----
+*   **`POST /auth/token/verify`**
+    *   Описание: Проверка валидности access токена (без проверки отзыва). Используется, например, другими сервисами для быстрой валидации без обращения к хранилищу отозванных токенов.
+    *   Аутентификация: **Не требуется.**
+    *   Тело запроса (`application/json`):
+        ```json
+        {
+          "token": "string (jwt)"
+        }
+        ```
+    *   Ответ при успехе (`200 OK`):
+        ```json
+        {
+          "valid": true,
+          "user_id": "uuid-string",
+          "access_uuid": "uuid-string" // UUID самого токена
+          // ... другие клеймы токена при необходимости
+        }
+        ```
+    *   Ответ при ошибке:
+        *   `400 Bad Request`: Невалидное тело запроса.
+        *   `401 Unauthorized`: Токен невалиден (не парсится, неверная подпись, истек срок). Возвращает `{"valid": false, "error": "reason..."}`.
+        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-#### Информация о пользователе (`/api`)
+##### Защищенные эндпоинты (`/api`)
 
 *   **`GET /api/me`**
     *   Описание: Получение информации о текущем аутентифицированном пользователе.
-    *   Аутентификация: **Требуется.**
+    *   Аутентификация: **Требуется** (`Authorization: Bearer <access_token>`).
     *   Тело запроса: Нет.
     *   Ответ при успехе (`200 OK`):
         ```json
         {
-          "id": 123,
+          "id": "uuid-string", // UUID пользователя
           "username": "string",
+          "displayName": "string", // Отображаемое имя, может совпадать с username
           "email": "string",
           "roles": ["user", "..."], // Список ролей
           "isBanned": false
         }
         ```
     *   Ответ при ошибке:
-        *   `401 Unauthorized` (`{"code": 40102 | 40103, "message": "..."}`): Access токен невалиден или просрочен.
-        *   `404 Not Found` (`{"code": 40402, "message": "..."}`): Пользователь, связанный с токеном, не найден в БД.
+        *   `401 Unauthorized` (`{"code": 40102 | 40103 | 40104, "message": "..."}`): Access токен невалиден, просрочен или отозван.
+        *   `404 Not Found` (`{"code": 40402, "message": "User not found"}`): Пользователь, связанный с токеном, не найден в БД.
         *   `500 Internal Server Error` (`{"code": 50001, "message": "..."}`): Внутренняя ошибка сервера.
 
 ---
 
-#### Сервис Геймплея: Черновики (`/api/stories`)
+#### Сервис Геймплея (`/api`)
+
+Управляет процессом создания, редактирования, публикации и прохождения историй.
+
+**Важное замечание:** Внутри `gameplay-service` и в его API идентификация пользователей (`user_id`) и сущностей (черновики, опубликованные истории) происходит с использованием **`uuid.UUID`**. Это отличается от старого числового `user_id`, который мог использоваться ранее. Эндпоинт `/api/me` из сервиса `auth` также возвращает `user_id` как UUID.
+
+##### Черновики историй (`/api/stories`)
 
 *   **`POST /api/stories/generate`**
-    *   Описание: Запуск генерации нового черновика истории на основе промпта.
+    *   Описание: Запуск генерации **нового** черновика истории на основе промпта.
     *   Аутентификация: **Требуется.**
-    *   Тело запроса (JSON):
+    *   Тело запроса (`application/json`):
         ```json
         {
           "prompt": "Текст начального запроса пользователя..."
         }
         ```
-    *   Ответ при успехе (`202 Accepted`): Объект `StoryConfig` с `status: "generating"`.
+    *   Ответ при успехе (`202 Accepted`): Возвращает созданный объект `StoryConfig` со статусом `generating`.
         ```json
         {
-          "id": "uuid-string",
-          "user_id": 123,
-          "title": "",
-          "description": "Текст начального запроса пользователя...",
-          "user_input": ["Текст начального запроса пользователя..."],
-          "config": null,
-          "status": "generating",
-          "created_at": "timestamp",
-          "updated_at": "timestamp"
+          "id": "uuid-string", // ID созданного черновика
+          // ... другие поля StoryConfig как в GET /api/stories/:id
+          "status": "generating"
         }
         ```
     *   Ответ при ошибке:
         *   `401 Unauthorized`: Невалидный токен.
         *   `409 Conflict` (`{"message": "User already has an active generation task"}`): У пользователя уже есть активная задача генерации.
-        *   `500 Internal Server Error`: Ошибка при постановке задачи в очередь (ответ будет содержать объект `StoryConfig` со `status: "error"`).
+        *   `500 Internal Server Error`: Ошибка при создании записи в БД или постановке задачи в очередь.
 
 *   **`GET /api/stories`**
-    *   Описание: Получение списка **своих** черновиков. Поддерживает курсорную пагинацию.
+    *   Описание: Получение списка **своих** черновиков (`StoryConfig`). Поддерживает курсорную пагинацию.
     *   Аутентификация: **Требуется.**
     *   Query параметры:
-        *   `limit` (int, опционально, default=10, max=100): Количество записей на странице.
-        *   `cursor` (string, опционально): Курсор из поля `next_cursor` предыдущего ответа для получения следующей страницы.
-    *   Ответ при успехе (`200 OK`):
+        *   `limit` (int, опционально, default=10, max=100): Количество записей.
+        *   `cursor` (string, опционально): Курсор для следующей страницы.
+    *   Ответ при успехе (`200 OK`): Пагинированный список `StoryConfigSummary`.
         ```json
         {
           "data": [
             {
               "id": "uuid-string",
-              "title": "string",
-              "description": "string",
+              "title": "string", // Может быть пустым, если генерация еще идет
+              "description": "string", // Может быть user_input, если генерация еще идет
               "createdAt": "timestamp",
               "status": "generating | draft | error"
             }
-            /* ... другие StoryConfigSummary ... */
+            /* ... */
           ],
-          "next_cursor": "string | null" // Курсор для следующей страницы или null
+          "next_cursor": "string | null"
         }
         ```
     *   Ответ при ошибке:
@@ -228,275 +251,191 @@
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 *   **`GET /api/stories/:id`**
-    *   Описание: Получение детальной информации о конкретном черновике истории по его UUID. Возвращаемая структура зависит от наличия сгенерированного конфига.
+    *   Описание: Получение детальной информации о **своем** черновике по его UUID. Возвращает либо базовую информацию (если генерация не завершена/ошибка), либо распарсенный конфиг.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:id` - UUID черновика (`StoryConfig`).
     *   Ответ при успехе (`200 OK`):
-        *   **Если `config` еще не сгенерирован (или ошибка генерации):**
+        *   **Статус `generating` или `error`:** `StoryConfigDetail`
             ```json
             {
               "id": "uuid-string",
               "createdAt": "timestamp",
               "status": "generating | error",
-              "config": null
+              "config": null // Или содержит сообщение об ошибке? Уточнить.
             }
             ```
-        *   **Если `config` успешно сгенерирован:** Возвращается объект с выбранными полями из распарсенного конфига:
+        *   **Статус `draft`:** `StoryConfigParsedDetail` (распарсенные поля из `config`)
             ```json
             {
               "title": "string",
               "shortDescription": "string",
-              "franchise": "string",
+              "franchise": "string | null",
               "genre": "string",
               "language": "string",
-              "isAdultContent": boolean,
+              "isAdultContent": false,
               "playerName": "string",
               "playerDescription": "string",
               "worldContext": "string",
               "storySummary": "string",
-              "coreStats": {
-                "stat_name_1": {
-                  "description": "string",
-                  "initialValue": 50,
-                  "gameOverConditions": { "min": boolean, "max": boolean }
-                },
-                "stat_name_2": { ... },
-                "stat_name_3": { ... },
-                "stat_name_4": { ... }
-              }
+              "coreStats": ["string"] // Список ключевых статов
             }
             ```
     *   Ответ при ошибке:
-        *   `400 Bad Request`: Невалидный формат UUID.
+        *   `400 Bad Request`: Невалидный UUID.
         *   `401 Unauthorized`: Невалидный токен.
-        *   `404 Not Found` (`{"message": "Resource not found or access denied"}`): Черновик не найден или принадлежит другому пользователю.
-        *   `500 Internal Server Error`: Внутренняя ошибка сервера (включая ошибку парсинга существующего `config`).
+        *   `403 Forbidden`: Попытка доступа к чужому черновику.
+        *   `404 Not Found`: Черновик не найден.
+        *   `500 Internal Server Error`: Ошибка парсинга JSON конфига или другая внутренняя ошибка.
 
 *   **`POST /api/stories/:id/revise`**
-    *   Описание: Отправка запроса на ревизию (изменение) существующего черновика.
+    *   Описание: Запуск задачи на **перегенерацию** существующего черновика на основе новой инструкции.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:id` - UUID черновика (`StoryConfig`).
-    *   Тело запроса (JSON):
+    *   Тело запроса (`application/json`):
         ```json
         {
-          "revision_prompt": "Текст правок от пользователя..."
+          "instruction": "Текст инструкции для изменения..."
         }
         ```
-    *   Ответ при успехе (`202 Accepted`): **Нет тела ответа.** Статус черновика изменится на `revising`. Обновленный черновик будет отправлен по WebSocket после завершения генерации.
+    *   Ответ при успехе (`202 Accepted`): Обновленный объект `StoryConfig` со статусом `generating`.
     *   Ответ при ошибке:
-        *   `400 Bad Request`: Невалидный формат UUID или тело запроса.
+        *   `400 Bad Request`: Невалидный UUID или тело запроса.
         *   `401 Unauthorized`: Невалидный токен.
-        *   `404 Not Found`: Черновик не найден или принадлежит другому пользователю.
-        *   `409 Conflict` (`{"message": "Cannot revise story with status: ..."}`): Черновик не находится в статусе `draft` или `error`.
-        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
+        *   `403 Forbidden`: Попытка доступа к чужому черновику.
+        *   `404 Not Found`: Черновик не найден.
+        *   `409 Conflict` (`{"message": "Story config is not in draft state" | "User already has an active generation task"}`): Черновик не готов к ревизии или у пользователя уже есть задача.
+        *   `500 Internal Server Error`: Ошибка при обновлении БД или постановке задачи.
 
 *   **`POST /api/stories/:id/publish`**
-    *   Описание: Публикация завершенного черновика. Создает опубликованную историю (`PublishedStory`), удаляет черновик (`StoryConfig`) и запускает генерацию начального игрового состояния (`Setup`).
+    *   Описание: Публикация готового черновика. Создает запись `PublishedStory` и первую сцену на основе конфига.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:id` - UUID черновика (`StoryConfig`).
     *   Тело запроса: Нет.
-    *   Ответ при успехе (`202 Accepted`):
+    *   Ответ при успехе (`201 Created`): Объект `PublishedStory` (или его ID?).
         ```json
+        // Уточнить структуру ответа. Вероятно, ID опубликованной истории.
         {
-          "published_story_id": "uuid-string" // UUID созданной опубликованной истории
+          "published_story_id": "uuid-string"
         }
         ```
     *   Ответ при ошибке:
-        *   `400 Bad Request` (`{"message": "Cannot publish story: config is missing or status is not draft/error"}`): Черновик не готов к публикации (нет `config` или статус не `draft`/`error`).
+        *   `400 Bad Request`: Невалидный UUID.
         *   `401 Unauthorized`: Невалидный токен.
-        *   `404 Not Found`: Черновик не найден или принадлежит другому пользователю.
-        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
+        *   `403 Forbidden`: Попытка доступа к чужому черновику.
+        *   `404 Not Found`: Черновик не найден.
+        *   `409 Conflict` (`{"message": "Story config is not in draft state"}`): Черновик не готов к публикации.
+        *   `500 Internal Server Error`: Ошибка при создании `PublishedStory`, сцены или обновлении статуса черновика.
 
----
+*   **`POST /api/stories/drafts/:draft_id/retry`**
+    *   Описание: Повторный запуск задачи генерации для черновика, который завершился с ошибкой (`status: "error"`).
+    *   Аутентификация: **Требуется.**
+    *   Параметр пути: `:draft_id` - UUID черновика (`StoryConfig`).
+    *   Тело запроса: Нет.
+    *   Ответ при успехе (`202 Accepted`): Обновленный объект `StoryConfig` со статусом `generating`.
+    *   Ответ при ошибке:
+        *   `400 Bad Request`: Невалидный UUID.
+        *   `401 Unauthorized`: Невалидный токен.
+        *   `403 Forbidden`: Попытка доступа к чужому черновику.
+        *   `404 Not Found`: Черновик не найден.
+        *   `409 Conflict` (`{"message": "Story config is not in error state" | "User already has an active generation task"}`): Черновик не в статусе ошибки или у пользователя уже есть задача.
+        *   `500 Internal Server Error`: Ошибка при обновлении БД или постановке задачи.
 
-#### Сервис Геймплея: Опубликованные истории (`/api/published-stories`)
+##### Опубликованные истории (`/api/published-stories`)
 
 *   **`GET /api/published-stories/me`**
-    *   Описание: Получение списка **своих** опубликованных историй (`PublishedStory`). Поддерживает offset/limit пагинацию.
+    *   Описание: Получение списка **своих** опубликованных историй. Поддерживает курсорную пагинацию.
     *   Аутентификация: **Требуется.**
-    *   Query параметры:
-        *   `limit` (int, опционально, default=20, max=100): Количество.
-        *   `offset` (int, опционально, default=0): Смещение.
-    *   Ответ при успехе (`200 OK`):
+    *   Query параметры: `limit`, `cursor` (аналогично `/api/stories`).
+    *   Ответ при успехе (`200 OK`): Пагинированный список `PublishedStorySummary` (структуру нужно уточнить, вероятно, похожа на `StoryConfigSummary`).
         ```json
         {
-          "data": [ /* массив объектов PublishedStory */ ]
-          // "next_cursor": null // В текущей реализации пагинация offset/limit, курсора нет
+          "data": [
+            {
+              "id": "uuid-string",
+              "title": "string",
+              "shortDescription": "string",
+              "createdAt": "timestamp"
+              // ... возможно, другие поля
+            }
+            /* ... */
+          ],
+          "next_cursor": "string | null"
         }
         ```
     *   Ответ при ошибке:
-        *   `400 Bad Request`: Невалидный `limit` или `offset`.
+        *   `400 Bad Request`: Невалидный курсор или `limit`.
         *   `401 Unauthorized`: Невалидный токен.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 *   **`GET /api/published-stories/public`**
-    *   Описание: Получение списка **публичных** опубликованных историй (`PublishedStory`). Поддерживает offset/limit пагинацию.
-    *   Аутентификация: **Требуется** (на данный момент).
-    *   Query параметры:
-        *   `limit` (int, опционально, default=20, max=100): Количество.
-        *   `offset` (int, опционально, default=0): Смещение.
-    *   Ответ при успехе (`200 OK`):
-        ```json
-        {
-          "data": [ /* массив объектов PublishedStory */ ]
-        }
-        ```
+    *   Описание: Получение списка **публичных** опубликованных историй (доступных всем). Поддерживает курсорную пагинацию.
+    *   Аутентификация: **Требуется** (проверяется токен, но доступ не ограничивается автором).
+    *   Query параметры: `limit`, `cursor`.
+    *   Ответ при успехе (`200 OK`): Аналогично `/api/published-stories/me`.
     *   Ответ при ошибке:
-        *   `400 Bad Request`: Невалидный `limit` или `offset`.
+        *   `400 Bad Request`: Невалидный курсор или `limit`.
         *   `401 Unauthorized`: Невалидный токен.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 *   **`GET /api/published-stories/:id/scene`**
-    *   Описание: Получение текущей игровой сцены для указанной опубликованной истории. Создает начальный прогресс, если его нет.
+    *   Описание: Получение текущей сцены для **своей** игровой сессии в опубликованной истории. Если прогресса нет, возвращает начальную сцену.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
-    *   Ответ при успехе (`200 OK`): Объект `StoryScene`.
+    *   Ответ при успехе (`200 OK`): Объект сцены (структуру нужно уточнить).
         ```json
+        // Примерная структура
         {
-          "id": "scene-uuid-string",
-          "publishedStoryId": "story-uuid-string",
-          "stateHash": "calculated-hash-string",
-          "content": { /* JSON контент сцены от story-generator */ },
-          "createdAt": "timestamp"
+          "scene_id": "uuid-string",
+          "text": "Текст текущей сцены...",
+          "image_url": "string | null",
+          "choices": [
+            { "choice_id": "uuid-string", "text": "Вариант выбора 1" },
+            { "choice_id": "uuid-string", "text": "Вариант выбора 2" }
+            // ...
+          ],
+          "player_stats": { // Текущие статы игрока
+            "stat1": 10,
+            "stat2": 5
+            // ...
+          },
+          "is_final": false // Является ли сцена финальной
         }
         ```
     *   Ответ при ошибке:
+        *   `400 Bad Request`: Невалидный UUID.
         *   `401 Unauthorized`: Невалидный токен.
-        *   `404 Not Found` (`{"message": "Resource not found or access denied"}`): История не найдена.
-        *   `409 Conflict` (`{"message": "Story setup is pending, check back later"}`): История еще не готова к игре (статус `setup_pending`).
-        *   `409 Conflict` (`{"message": "Scene generation is pending, check back later"}`): Текущая сцена для данного состояния еще не сгенерирована.
-        *   `500 Internal Server Error`: Другие ошибки сервера.
-
-*   **`POST /api/published-stories/:id/choice`**
-    *   Описание: Отправка выбора игрока в текущей сцене. Запускает процесс обновления состояния и генерации следующей сцены.
-    *   Аутентификация: **Требуется.**
-    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
-    *   Тело запроса (JSON):
-        ```json
-        {
-          "selected_option_index": 0 // Индекс выбранной опции (0 или 1)
-        }
-        ```
-    *   Ответ при успехе (`204 No Content`): **Нет тела ответа.** Клиент должен будет запросить новую сцену через `GET /api/published-stories/:id/scene` после получения WebSocket уведомления или через некоторое время.
-    *   Ответ при ошибке:
-        *   `400 Bad Request`: Невалидный индекс выбора или тело запроса.
-        *   `401 Unauthorized`: Невалидный токен.
-        *   `404 Not Found`: История, прогресс игрока или текущая сцена не найдены.
-        *   `409 Conflict`: История не в статусе 'ready'.
+        *   `404 Not Found`: История или прогресс не найдены.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`DELETE /api/published-stories/:id/progress`**
-    *   Описание: Удаление прогресса текущего пользователя для указанной опубликованной истории. Позволяет начать историю заново.
+*   **`POST /api/published-stories/:id/choice`**
+    *   Описание: Отправка выбора игрока для текущей сцены. Генерирует следующую сцену (асинхронно) и возвращает ее, либо информацию об ожидании генерации.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
-    *   Тело запроса: Нет.
-    *   Ответ при успехе (`204 No Content`): **Нет тела ответа.**
-    *   Ответ при ошибке:
-        *   `401 Unauthorized`: Невалидный токен.
-        *   `404 Not Found`: История не найдена.
-        *   `500 Internal Server Error`: Ошибка при удалении прогресса.
-
----
-
-#### WebSocket Уведомления (`/ws`)
-
-*   **URL для подключения:** `ws://<ваш_хост>:<порт_traefik_web>/ws?token=<ваш_access_token>`
-*   **Аутентификация:** Через query-параметр `token`.
-*   **Сообщения Сервер -> Клиент:**
-    *   При обновлении статуса черновика (`StoryConfig`) или опубликованной истории (`PublishedStory`) сервер отправит JSON-сообщение `ClientStoryUpdate`:
+    *   Тело запроса (`application/json`):
         ```json
-        // Пример для обновления черновика
         {
-          "id": "uuid-draft-id",        // ID обновленного StoryConfig
-          "user_id": "123",             // ID пользователя
-          "status": "draft",            // Новый статус: draft или error
-          "title": "Новое Название",    // Сгенерированное/обновленное
-          "description": "Новое Описание", // Сгенерированное/обновленное
-          "themes": ["theme1", "..."],  // Из конфига
-          "world_lore": ["lore1", "..."], // Из конфига
-          "player_description": "...",  // Из конфига
-          "error_details": null         // или "текст ошибки" если status == "error"
-        }
-
-        // Пример для уведомления о готовности опубликованной истории
-        {
-          "id": "uuid-published-id",    // ID обновленной PublishedStory
-          "user_id": "123",             // ID пользователя
-          "status": "ready",            // Новый статус
-          "isCompleted": false,
-          "title": null, // Эти поля не передаются для PublishedStory
-          "description": null,
-          "themes": null,
-          "world_lore": null,
-          "player_description": null,
-          "error_details": null,
-          "endingText": null
-        }
-
-        // Пример для уведомления о завершении игры
-        {
-           "id": "uuid-published-id",
-           "user_id": "123",
-           "status": "completed",
-           "isCompleted": true,
-           "endingText": "Текст концовки...",
-           // ... остальные поля null ...
+          "choice_id": "uuid-string" // ID сделанного выбора
         }
         ```
-    *   Клиент должен использовать `id` и `status` из этого сообщения, чтобы решить, когда запрашивать обновленные данные через соответствующие HTTP эндпоинты (например, `GET /api/stories/:id` или `GET /api/published-stories/:id/scene`).
+    *   Ответ при успехе (`200 OK` или `202 Accepted`):
+        *   Если следующая сцена уже доступна (была сгенерирована заранее?): `200 OK` с объектом новой сцены (как в `GET .../scene`).
+        *   Если запускается генерация: `202 Accepted` с информацией об ожидании (структуру уточнить).
+    *   Ответ при ошибке:
+        *   `400 Bad Request`: Невалидный UUID или `choice_id`.
+        *   `401 Unauthorized`: Невалидный токен.
+        *   `404 Not Found`: История, прогресс или выбор не найдены.
+        *   `409 Conflict`: Попытка сделать выбор не для текущей сцены или пока идет генерация.
+        *   `500 Internal Server Error`: Ошибка сохранения прогресса или постановки задачи генерации.
+
+*   **`DELETE /api/published-stories/:id/progress`**
+    *   Описание: Сброс прогресса прохождения для **своей** игровой сессии в опубликованной истории. Позволяет начать историю заново.
+    *   Аутентификация: **Требуется.**
+    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
+    *   Ответ при успехе (`204 No Content`): Прогресс успешно удален.
+    *   Ответ при ошибке:
+        *   `400 Bad Request`: Невалидный UUID.
+        *   `401 Unauthorized`: Невалидный токен.
+        *   `404 Not Found`: История или прогресс не найдены.
+        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 ---
-
-#### Внутренние API (Internal)
-
-Эти эндпоинты используются для взаимодействия между сервисами и **не доступны** через основной API Gateway.
-
-## Задачи для генерации (Story Generator)
-
-*   Сервис `gameplay-service` теперь отправляет задачи в очередь `story_generation_tasks` для:
-    *   Начальной генерации (`prompt_type: narrator`)
-    *   Ревизии (`prompt_type: narrator` с `input_data.current_config`)
-    *   Генерации начального состояния игры (`prompt_type: novel_setup`)
-    *   Генерации следующей сцены (`prompt_type: novel_creator`)
-    *   Генерации концовки (`prompt_type: novel_game_over_creator`)
-*   `story-generator` получает задачи, выполняет их и отправляет **полные** уведомления (`shared/messaging.NotificationPayload`) в очередь `internal_updates`.
-*   **Формат `InputData` для `novel_creator`:** Использует сжатые ключи (`cfg`, `stp`, `cs`, `uc`, `pss`, `pfd`, `pvis`, `sv`, `gf`), где `sv` и `gf` содержат данные только последнего выбора. См. `promts/novel_creator.md`.
-
-## Поток Уведомлений
-
-1.  `story-generator` -> `internal_updates` (полное `NotificationPayload` с результатом генерации: `narrator`, `novel_setup`, `novel_creator`, `novel_game_over_creator`)
-2.  `gameplay-service` слушает `internal_updates`:
-    *   **Для `narrator`:** Обновляет `StoryConfig` (статус `draft`, `Config`, `Title`, `Description`). Формирует `ClientStoryUpdate`. Отправляет в `client_updates`.
-    *   **Для `novel_setup`:** Обновляет `PublishedStory` (статус `first_scene_pending`, поле `Setup`). Запускает задачу генерации первой сцены (`novel_first_scene_creator`).
-    *   **Для `novel_first_scene_creator` и `novel_creator`:** Создает `StoryScene`. Обновляет статус `PublishedStory` на `ready`. Формирует `ClientStoryUpdate` (только ID, UserID, Status='ready'). Отправляет в `client_updates`.
-    *   **Для `novel_game_over_creator`:** Создает `StoryScene` (с текстом концовки). Обновляет статус `PublishedStory` на `completed`. Формирует `ClientStoryUpdate` (ID, UserID, Status='completed', IsCompleted=true, EndingText=...). Отправляет в `client_updates`.
-3.  `websocket-service` слушает `client_updates`:
-    *   Получает `ClientStoryUpdate`.
-    *   Находит WebSocket соединение для нужного `UserID`.
-    *   Пересылает `ClientStoryUpdate` клиенту по WebSocket.
-
-## Текущая реализованная логика
-
-На данный момент реализованы следующие основные возможности:
-
-*   **Аутентификация пользователей:** Регистрация, вход, выход, обновление токенов (`auth-service`).
-*   **Управление черновиками историй (`gameplay-service`):**
-    *   Начальная генерация и ревизия (`narrator`).
-    *   Получение списка и деталей черновиков.
-    *   Публикация черновика (удаляет черновик, создает `PublishedStory`, запускает генерацию `novel_setup`).
-*   **Игровой процесс (`gameplay-service`):**
-    *   Получение текущей сцены (`GET .../scene`). Учитывает статус истории и наличие сцены. Создает начальный прогресс игрока, если его нет.
-    *   Обработка выбора игрока (`POST .../choice`):
-        *   Принимает индекс одного выбора (`selected_option_index`).
-        *   Применяет последствия выбора к `CoreStats`, `StoryVariables`, `GlobalFlags`.
-        *   Рассчитывает новый хэш состояния по принципу "блокчейна": `hash(previousHash + cs + last_sv + last_gf)`.
-        *   Проверяет наличие следующей сцены по новому хэшу.
-        *   Если сцена не найдена: запускает задачу генерации `novel_creator`, передавая сводки (`pss`, `pfd`, `pvis`), статы (`cs`), выбор (`uc`) и `sv`/`gf` последнего шага.
-        *   Если сцена найдена: извлекает из нее сводки (`sssf`, `fd`, `vis`) для обновления прогресса.
-        *   **Очищает `StoryVariables` и `GlobalFlags`** в `PlayerProgress` перед сохранением.
-        *   Сохраняет `PlayerProgress` с новым хэшем, обновленными статами, очищенными `sv`/`gf` и (если сцена найдена) новыми сводками.
-        *   **Очищает `StoryVariables` и `GlobalFlags`** в `PlayerProgress` перед сохранением.
-        *   Сохраняет `PlayerProgress` с новым хэшем, обновленными статами, очищенными `sv`/`gf` и (если сцена найдена) новыми сводками.
-    *   Удаление прогресса игрока (`DELETE .../progress`).
-*   **Генерация контента (`story-generator`):** Обрабатывает задачи `narrator`, `novel_setup`, `novel_creator`, `novel_game_over_creator`. Генерирует JSON в сжатом формате с использованием сводок (`vis`).
-*   **Уведомления (`websocket-service`):** Доставляет `ClientStoryUpdate` об изменениях статуса `StoryConfig` и `PublishedStory`.

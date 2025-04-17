@@ -49,7 +49,7 @@ func (r *pgStoryConfigRepository) Create(ctx context.Context, config *sharedMode
         VALUES
             ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     `
-	logFields := []zap.Field{zap.String("storyConfigID", config.ID.String()), zap.Uint64("userID", config.UserID)}
+	logFields := []zap.Field{zap.String("storyConfigID", config.ID.String()), zap.String("userID", config.UserID.String())}
 	r.logger.Debug("Creating story config", logFields...)
 
 	_, err := r.db.Exec(ctx, query,
@@ -72,14 +72,14 @@ func (r *pgStoryConfigRepository) Create(ctx context.Context, config *sharedMode
 }
 
 // GetByID - Реализация метода GetByID
-func (r *pgStoryConfigRepository) GetByID(ctx context.Context, id uuid.UUID, userID uint64) (*sharedModels.StoryConfig, error) { // <<< Возвращаем sharedModels.StoryConfig
+func (r *pgStoryConfigRepository) GetByID(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*sharedModels.StoryConfig, error) { // <<< Возвращаем sharedModels.StoryConfig
 	query := `
         SELECT id, user_id, title, description, user_input, config, status, created_at, updated_at
         FROM story_configs
         WHERE id = $1 AND user_id = $2
     `
 	config := &sharedModels.StoryConfig{} // <<< Используем sharedModels.StoryConfig
-	logFields := []zap.Field{zap.String("storyConfigID", id.String()), zap.Uint64("userID", userID)}
+	logFields := []zap.Field{zap.String("storyConfigID", id.String()), zap.String("userID", userID.String())}
 	r.logger.Debug("Getting story config by ID", logFields...)
 
 	err := r.db.QueryRow(ctx, query, id, userID).Scan(
@@ -132,7 +132,7 @@ func (r *pgStoryConfigRepository) Update(ctx context.Context, config *sharedMode
             title = $1, description = $2, user_input = $3, config = $4, status = $5, updated_at = $6
         WHERE id = $7 AND user_id = $8
     `
-	logFields := []zap.Field{zap.String("storyConfigID", config.ID.String()), zap.Uint64("userID", config.UserID)}
+	logFields := []zap.Field{zap.String("storyConfigID", config.ID.String()), zap.String("userID", config.UserID.String())}
 	r.logger.Debug("Updating story config", logFields...)
 
 	commandTag, err := r.db.Exec(ctx, query,
@@ -151,27 +151,27 @@ func (r *pgStoryConfigRepository) Update(ctx context.Context, config *sharedMode
 }
 
 // CountActiveGenerations
-func (r *pgStoryConfigRepository) CountActiveGenerations(ctx context.Context, userID uint64) (int, error) {
+func (r *pgStoryConfigRepository) CountActiveGenerations(ctx context.Context, userID uuid.UUID) (int, error) {
 	query := `SELECT COUNT(*) FROM story_configs WHERE user_id = $1 AND status = $2` // Используем $2 для статуса
 	var count int
-	logFields := []zap.Field{zap.Uint64("userID", userID)}
+	logFields := []zap.Field{zap.String("userID", userID.String())}
 	r.logger.Debug("Counting active generations for user", logFields...)
 
-	err := r.db.QueryRow(ctx, query, userID, sharedModels.StatusGenerating).Scan(&count) // <<< Используем sharedModels.StatusGenerating
+	err := r.db.QueryRow(ctx, query, userID, "generating").Scan(&count) // <<< Используем "generating"
 	if err != nil {
 		r.logger.Error("Failed to count active generations", append(logFields, zap.Error(err))...)
-		return 0, fmt.Errorf("ошибка подсчета активных генераций для user %d: %w", userID, err)
+		return 0, fmt.Errorf("ошибка подсчета активных генераций для user %s: %w", userID.String(), err)
 	}
 	r.logger.Debug("Active generations count retrieved", append(logFields, zap.Int("count", count))...)
 	return count, nil
 }
 
 // Delete
-func (r *pgStoryConfigRepository) Delete(ctx context.Context, id uuid.UUID, userID uint64) error {
+func (r *pgStoryConfigRepository) Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
 	query := `DELETE FROM story_configs WHERE id = $1 AND user_id = $2`
 	logFields := []zap.Field{
 		zap.String("storyConfigID", id.String()),
-		zap.Uint64("userID", userID),
+		zap.String("userID", userID.String()),
 	}
 	r.logger.Debug("Deleting story config", logFields...)
 
@@ -190,18 +190,41 @@ func (r *pgStoryConfigRepository) Delete(ctx context.Context, id uuid.UUID, user
 	return nil
 }
 
-// ListByUser возвращает список черновиков пользователя с курсорной пагинацией.
-func (r *pgStoryConfigRepository) ListByUser(ctx context.Context, userID uint64, limit int, cursor string) ([]sharedModels.StoryConfig, string, error) { // <<< Возвращаем sharedModels.StoryConfig
+// DeleteTx удаляет StoryConfig по ID в рамках транзакции, проверяя принадлежность пользователю.
+func (r *pgStoryConfigRepository) DeleteTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, userID uuid.UUID) error {
+	query := `DELETE FROM story_configs WHERE id = $1 AND user_id = $2`
+	logFields := []zap.Field{
+		zap.String("storyConfigID", id.String()),
+		zap.String("userID", userID.String()),
+		zap.String("tx", "active"), // Indicate transaction context
+	}
+	r.logger.Debug("Deleting story config within transaction", logFields...)
+
+	commandTag, err := tx.Exec(ctx, query, id, userID)
+	if err != nil {
+		r.logger.Error("Failed to delete story config within transaction", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка удаления story config %s в транзакции: %w", id, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("Attempted to delete non-existent or unauthorized story config within transaction", logFields...)
+		return sharedModels.ErrNotFound
+	}
+
+	r.logger.Info("Story config deleted successfully within transaction", logFields...)
+	return nil
+}
+
+// ListByUserID возвращает список черновиков пользователя с курсорной пагинацией.
+func (r *pgStoryConfigRepository) ListByUserID(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.StoryConfig, string, error) {
 	if limit <= 0 {
 		limit = 10 // Значение по умолчанию
 	}
-	// +1 для проверки наличия следующей страницы
 	fetchLimit := limit + 1
 
-	cursorTime, cursorID, err := utils.DecodeCursor(cursor) // <<< Используем utils.DecodeCursor
+	cursorTime, cursorID, err := utils.DecodeCursor(cursor)
 	if err != nil {
-		r.logger.Warn("Failed to decode cursor", zap.Uint64("userID", userID), zap.String("cursor", cursor), zap.Error(err))
-		return nil, "", ErrInvalidCursor
+		return nil, "", fmt.Errorf("ошибка декодирования курсора: %w", err)
 	}
 
 	var queryBuilder strings.Builder
@@ -225,7 +248,7 @@ func (r *pgStoryConfigRepository) ListByUser(ctx context.Context, userID uint64,
 
 	query := queryBuilder.String()
 	logFields := []zap.Field{
-		zap.Uint64("userID", userID),
+		zap.String("userID", userID.String()),
 		zap.Int("limit", limit),
 		zap.String("cursor", cursor),
 		zap.Time("cursorTime", cursorTime),
@@ -274,14 +297,19 @@ func (r *pgStoryConfigRepository) ListByUser(ctx context.Context, userID uint64,
 
 // FindGeneratingConfigs находит все StoryConfig со статусом 'generating'
 func (r *pgStoryConfigRepository) FindGeneratingConfigs(ctx context.Context) ([]*sharedModels.StoryConfig, error) { // <<< Возвращаем sharedModels.StoryConfig
-	sql := `SELECT id, user_id, title, description, user_input, config, status, created_at, updated_at
-	        FROM story_configs
-	        WHERE status = $1`
+	query := `
+        SELECT id, user_id, title, description, user_input, config, status, created_at, updated_at
+        FROM story_configs
+        WHERE status = $1 OR status = $2
+        ORDER BY updated_at ASC
+    ` // Find generating or revising
+	logFields := []zap.Field{zap.String("status1", "generating"), zap.String("status2", "revising")}
+	r.logger.Debug("Finding story configs with generating or revising status", logFields...)
 
-	rows, err := r.db.Query(ctx, sql, sharedModels.StatusGenerating) // <<< Используем sharedModels.StatusGenerating
+	rows, err := r.db.Query(ctx, query, "generating", "revising") // Используем строки
 	if err != nil {
-		r.logger.Error("Ошибка при запросе генерирующихся конфигов", zap.Error(err))
-		return nil, fmt.Errorf("ошибка БД при поиске generating configs: %w", err)
+		r.logger.Error("Failed to query generating/revising story configs", append(logFields, zap.Error(err))...)
+		return nil, fmt.Errorf("ошибка БД при поиске generating/revising story configs: %w", err)
 	}
 	defer rows.Close()
 

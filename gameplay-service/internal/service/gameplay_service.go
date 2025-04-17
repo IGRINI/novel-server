@@ -13,7 +13,6 @@ import (
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -71,18 +70,19 @@ type sceneOption struct {
 
 // GameplayService defines the interface for gameplay business logic.
 type GameplayService interface {
-	GenerateInitialStory(ctx context.Context, userID uint64, initialPrompt string) (*sharedModels.StoryConfig, error)
-	ReviseDraft(ctx context.Context, id uuid.UUID, userID uint64, revisionPrompt string) error
-	GetStoryConfig(ctx context.Context, id uuid.UUID, userID uint64) (*sharedModels.StoryConfig, error)
-	PublishDraft(ctx context.Context, draftID uuid.UUID, userID uint64) (publishedStoryID uuid.UUID, err error)
-	ListMyDrafts(ctx context.Context, userID uint64, cursor string, limit int) ([]sharedModels.StoryConfig, string, error)
-	ListMyPublishedStories(ctx context.Context, userID uint64, limit, offset int) ([]*sharedModels.PublishedStory, error)
+	GenerateInitialStory(ctx context.Context, userID uuid.UUID, initialPrompt string) (*sharedModels.StoryConfig, error)
+	ReviseDraft(ctx context.Context, id uuid.UUID, userID uuid.UUID, revisionPrompt string) error
+	GetStoryConfig(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*sharedModels.StoryConfig, error)
+	PublishDraft(ctx context.Context, draftID uuid.UUID, userID uuid.UUID) (publishedStoryID uuid.UUID, err error)
+	ListMyDrafts(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.StoryConfig, string, error)
+	ListMyPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error)
 	ListPublicStories(ctx context.Context, limit, offset int) ([]*sharedModels.PublishedStory, error)
-	GetStoryScene(ctx context.Context, userID uint64, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error)
-	MakeChoice(ctx context.Context, userID uint64, publishedStoryID uuid.UUID, selectedOptionIndex int) error
-	DeletePlayerProgress(ctx context.Context, userID uint64, publishedStoryID uuid.UUID) error
-	ListUserDrafts(ctx context.Context, userID uint64, cursor string, limit int) ([]sharedModels.StoryConfig, string, error)
-	ListUserPublishedStories(ctx context.Context, userID uint64, limit, offset int) ([]*sharedModels.PublishedStory, error)
+	GetStoryScene(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error)
+	MakeChoice(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID, selectedOptionIndex int) error
+	DeletePlayerProgress(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
+	ListUserDrafts(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.StoryConfig, string, error)
+	ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error)
+	RetryDraftGeneration(ctx context.Context, draftID uuid.UUID, userID uuid.UUID) error
 }
 
 type gameplayServiceImpl struct {
@@ -116,25 +116,25 @@ func NewGameplayService(
 }
 
 // GenerateInitialStory creates a new StoryConfig entry and sends a generation task.
-func (s *gameplayServiceImpl) GenerateInitialStory(ctx context.Context, userID uint64, initialPrompt string) (*sharedModels.StoryConfig, error) {
+func (s *gameplayServiceImpl) GenerateInitialStory(ctx context.Context, userID uuid.UUID, initialPrompt string) (*sharedModels.StoryConfig, error) {
 	// Check the number of active generations for this userID
 	activeCount, err := s.repo.CountActiveGenerations(ctx, userID)
 	if err != nil {
 		// Error during check, return 500
-		log.Printf("[GameplayService] Error counting active generations for UserID %d: %v", userID, err)
+		log.Printf("[GameplayService] Error counting active generations for UserID %s: %v", userID.String(), err)
 		return nil, fmt.Errorf("error checking generation status: %w", err)
 	}
 	// TODO: Make the limit configurable (e.g., via config or user profile)
 	generationLimit := 1
 	if activeCount >= generationLimit {
-		log.Printf("[GameplayService] User UserID %d reached the active generation limit (%d).", userID, generationLimit)
+		log.Printf("[GameplayService] User UserID %s reached the active generation limit (%d).", userID.String(), generationLimit)
 		return nil, sharedModels.ErrUserHasActiveGeneration // Use the same error
 	}
 
 	// Create a JSON array with the initial prompt
 	userInputJSON, err := json.Marshal([]string{initialPrompt})
 	if err != nil {
-		log.Printf("[GameplayService] Error marshalling initialPrompt for UserID %d: %v", userID, err)
+		log.Printf("[GameplayService] Error marshalling initialPrompt for UserID %s: %v", userID.String(), err)
 		return nil, fmt.Errorf("error preparing data for DB: %w", err)
 	}
 
@@ -142,10 +142,10 @@ func (s *gameplayServiceImpl) GenerateInitialStory(ctx context.Context, userID u
 		ID:          uuid.New(),
 		UserID:      userID,
 		Title:       "",                            // Will be filled after generation
-		Description: initialPrompt,                 // Save the initial prompt in Description for the first request
+		Description: "",                            // <<< ИЗМЕНЕНО: Не сохраняем initialPrompt в Description >>>
 		UserInput:   userInputJSON,                 // Array of prompts
 		Config:      nil,                           // JSON config will be available after generation
-		Status:      sharedModels.StatusGenerating, // Set to generating immediately
+		Status:      sharedModels.StatusGenerating, // <<< Use constant
 		CreatedAt:   time.Now().UTC(),
 		UpdatedAt:   time.Now().UTC(),
 	}
@@ -155,13 +155,13 @@ func (s *gameplayServiceImpl) GenerateInitialStory(ctx context.Context, userID u
 	if err != nil {
 		return nil, fmt.Errorf("error saving initial draft: %w", err)
 	}
-	log.Printf("[GameplayService] Initial draft created and saved: ID=%s, UserID=%d", config.ID, config.UserID)
+	log.Printf("[GameplayService] Initial draft created and saved: ID=%s, UserID=%s", config.ID, config.UserID.String())
 
 	// 2. Form and send the generation task
 	taskID := uuid.New().String() // ID for the generation task
 	generationPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:        taskID,
-		UserID:        strconv.FormatUint(config.UserID, 10),
+		UserID:        config.UserID.String(),
 		PromptType:    sharedMessaging.PromptTypeNarrator, // Use only Narrator for now
 		InputData:     make(map[string]interface{}),       // Empty for initial generation
 		UserInput:     initialPrompt,                      // User's initial prompt
@@ -187,7 +187,7 @@ func (s *gameplayServiceImpl) GenerateInitialStory(ctx context.Context, userID u
 }
 
 // ReviseDraft updates an existing story draft
-func (s *gameplayServiceImpl) ReviseDraft(ctx context.Context, id uuid.UUID, userID uint64, revisionPrompt string) error {
+func (s *gameplayServiceImpl) ReviseDraft(ctx context.Context, id uuid.UUID, userID uuid.UUID, revisionPrompt string) error {
 	// 1. Get the current config
 	config, err := s.repo.GetByID(ctx, id, userID)
 	log.Printf("!!!!!! DEBUG [ReviseDraft]: GetByID returned -> Config: %+v, Error: %v", config, err) // <-- DEBUG LOG
@@ -197,20 +197,20 @@ func (s *gameplayServiceImpl) ReviseDraft(ctx context.Context, id uuid.UUID, use
 
 	// 2. Check status
 	if config.Status != sharedModels.StatusDraft && config.Status != sharedModels.StatusError {
-		log.Printf("[UserID: %d][StoryID: %s] Attempt to revise in invalid status: %s", userID, id, config.Status)
+		log.Printf("[UserID: %s][StoryID: %s] Attempt to revise in invalid status: %s", userID.String(), id, config.Status)
 		return sharedModels.ErrCannotRevise
 	}
 
 	// Check the number of active generations for this userID
 	activeCount, err := s.repo.CountActiveGenerations(ctx, userID)
 	if err != nil {
-		log.Printf("[GameplayService] Error counting active generations for UserID %d before revising ConfigID %s: %v", userID, id, err)
+		log.Printf("[GameplayService] Error counting active generations for UserID %s before revising ConfigID %s: %v", userID.String(), id, err)
 		return fmt.Errorf("error checking generation status: %w", err)
 	}
 	// TODO: Make the limit configurable
 	generationLimit := 1
 	if activeCount >= generationLimit {
-		log.Printf("[GameplayService] User UserID %d reached active generation limit (%d), revision for ConfigID %s rejected.", userID, generationLimit, id)
+		log.Printf("[GameplayService] User UserID %s reached active generation limit (%d), revision for ConfigID %s rejected.", userID.String(), generationLimit, id)
 		return sharedModels.ErrUserHasActiveGeneration
 	}
 
@@ -241,7 +241,7 @@ func (s *gameplayServiceImpl) ReviseDraft(ctx context.Context, id uuid.UUID, use
 	taskID := uuid.New().String()
 	generationPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:        taskID,
-		UserID:        strconv.FormatUint(config.UserID, 10),
+		UserID:        config.UserID.String(),
 		PromptType:    sharedMessaging.PromptTypeNarrator,
 		InputData:     map[string]interface{}{"current_config": string(config.Config)}, // Pass the current JSON from Config field
 		UserInput:     revisionPrompt,                                                  // Pass only the latest revision prompt
@@ -255,7 +255,7 @@ func (s *gameplayServiceImpl) ReviseDraft(ctx context.Context, id uuid.UUID, use
 		if len(userInputs) > 1 { // If this was a revision, not the first generation after an error
 			config.Status = sharedModels.StatusDraft
 		} else {
-			config.Status = sharedModels.StatusError // If the first attempt after an error failed
+			config.Status = sharedModels.StatusError
 		}
 		// Remove the last UserInput since the revision failed
 		config.UserInput, _ = json.Marshal(userInputs[:len(userInputs)-1])
@@ -271,7 +271,7 @@ func (s *gameplayServiceImpl) ReviseDraft(ctx context.Context, id uuid.UUID, use
 }
 
 // GetStoryConfig gets the story config
-func (s *gameplayServiceImpl) GetStoryConfig(ctx context.Context, id uuid.UUID, userID uint64) (*sharedModels.StoryConfig, error) {
+func (s *gameplayServiceImpl) GetStoryConfig(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*sharedModels.StoryConfig, error) {
 	config, err := s.repo.GetByID(ctx, id, userID)
 	if err != nil {
 		// Error handling (including NotFound) happens in the repository
@@ -281,7 +281,7 @@ func (s *gameplayServiceImpl) GetStoryConfig(ctx context.Context, id uuid.UUID, 
 }
 
 // PublishDraft publishes a draft, deletes it, and creates a PublishedStory.
-func (s *gameplayServiceImpl) PublishDraft(ctx context.Context, draftID uuid.UUID, userID uint64) (publishedStoryID uuid.UUID, err error) {
+func (s *gameplayServiceImpl) PublishDraft(ctx context.Context, draftID uuid.UUID, userID uuid.UUID) (publishedStoryID uuid.UUID, err error) {
 	// Begin transaction
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -367,7 +367,7 @@ func (s *gameplayServiceImpl) PublishDraft(ctx context.Context, draftID uuid.UUI
 	taskID := uuid.New().String()
 	setupPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:           taskID,
-		UserID:           strconv.FormatUint(newPublishedStory.UserID, 10),
+		UserID:           newPublishedStory.UserID.String(),
 		PromptType:       sharedMessaging.PromptTypeNovelSetup,
 		InputData:        map[string]interface{}{"config": string(newPublishedStory.Config)}, // Pass JSON config
 		PublishedStoryID: newPublishedStory.ID.String(),                                      // Link to published story
@@ -398,7 +398,7 @@ func (s *gameplayServiceImpl) PublishDraft(ctx context.Context, draftID uuid.UUI
 }
 
 // ListMyDrafts retrieves a paginated list of story configurations (drafts) for a specific user.
-func (s *gameplayServiceImpl) ListMyDrafts(ctx context.Context, userID uint64, cursor string, limit int) ([]sharedModels.StoryConfig, string, error) {
+func (s *gameplayServiceImpl) ListMyDrafts(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.StoryConfig, string, error) {
 	const defaultLimit = 10
 	const maxLimit = 50 // Prevent requesting too many items
 
@@ -409,47 +409,43 @@ func (s *gameplayServiceImpl) ListMyDrafts(ctx context.Context, userID uint64, c
 	}
 
 	// Fetch one extra record to determine if there's a next page
-	configs, _, err := s.repo.ListByUser(ctx, userID, limit+1, cursor)
+	configs, nextCursor, err := s.repo.ListByUserID(ctx, userID, cursor, limit+1)
 	if err != nil {
-		if errors.Is(err, database.ErrInvalidCursor) { // Use 'database' alias
-			s.logger.Warn("Invalid cursor provided for ListMyDrafts", zap.Uint64("userID", userID), zap.String("cursor", cursor))
-			// Return empty slice and no next cursor, indicating error
-			return []sharedModels.StoryConfig{}, "", database.ErrInvalidCursor
+		if errors.Is(err, interfaces.ErrInvalidCursor) {
+			s.logger.Warn("Invalid cursor provided for ListMyDrafts", zap.String("userID", userID.String()), zap.String("cursor", cursor))
+			return []sharedModels.StoryConfig{}, "", interfaces.ErrInvalidCursor
 		}
-		s.logger.Error("Failed to list user drafts", zap.Uint64("userID", userID), zap.Error(err))
+		s.logger.Error("Failed to list user drafts", zap.String("userID", userID.String()), zap.Error(err))
 		return nil, "", ErrInternal
 	}
 
-	var nextCursor string
 	if len(configs) > limit {
-		// There is a next page
-		nextCursor = configs[limit-1].ID.String() // Use the ID of the last item on the *current* page
-		configs = configs[:limit]                 // Trim the extra item used for pagination check
+		configs = configs[:limit]
 	}
 
 	return configs, nextCursor, nil
 }
 
 // ListMyPublishedStories returns a list of the user's published stories.
-func (s *gameplayServiceImpl) ListMyPublishedStories(ctx context.Context, userID uint64, limit, offset int) ([]*sharedModels.PublishedStory, error) {
+func (s *gameplayServiceImpl) ListMyPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error) {
 	// Validate limit and offset (could be moved to handler)
 	if limit <= 0 || limit > 100 {
-		s.logger.Warn("Invalid limit requested for ListMyPublishedStories", zap.Int("limit", limit), zap.Uint64("userID", userID))
+		s.logger.Warn("Invalid limit requested for ListMyPublishedStories", zap.Int("limit", limit), zap.String("userID", userID.String()))
 		limit = 20 // Default
 	}
 	if offset < 0 {
-		s.logger.Warn("Invalid offset requested for ListMyPublishedStories", zap.Int("offset", offset), zap.Uint64("userID", userID))
+		s.logger.Warn("Invalid offset requested for ListMyPublishedStories", zap.Int("offset", offset), zap.String("userID", userID.String()))
 		offset = 0 // Default
 	}
 
-	s.logger.Debug("Calling publishedRepo.ListByUser", zap.Uint64("userID", userID), zap.Int("limit", limit), zap.Int("offset", offset))
-	stories, err := s.publishedRepo.ListByUser(ctx, userID, limit, offset)
+	s.logger.Debug("Calling publishedRepo.ListByUserID", zap.String("userID", userID.String()), zap.Int("limit", limit), zap.Int("offset", offset))
+	stories, err := s.publishedRepo.ListByUserID(ctx, userID, limit, offset)
 	if err != nil {
-		s.logger.Error("Failed to list user published stories from repository", zap.Uint64("userID", userID), zap.Error(err))
+		s.logger.Error("Failed to list user published stories from repository", zap.String("userID", userID.String()), zap.Error(err))
 		return nil, fmt.Errorf("error getting list of user's published stories: %w", err)
 	}
 
-	s.logger.Info("User published stories listed successfully", zap.Uint64("userID", userID), zap.Int("count", len(stories)))
+	s.logger.Info("User published stories listed successfully", zap.String("userID", userID.String()), zap.Int("count", len(stories)))
 	return stories, nil
 }
 
@@ -479,8 +475,8 @@ func (s *gameplayServiceImpl) ListPublicStories(ctx context.Context, limit, offs
 // --- Gameplay Loop Methods ---
 
 // GetStoryScene gets the current scene for the player.
-func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uint64, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error) {
-	s.logger.Info("GetStoryScene called", zap.Uint64("userID", userID), zap.String("publishedStoryID", publishedStoryID.String()))
+func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error) {
+	s.logger.Info("GetStoryScene called", zap.String("userID", userID.String()), zap.String("publishedStoryID", publishedStoryID.String()))
 
 	// 1. Get the published story
 	publishedStory, err := s.publishedRepo.GetByID(ctx, publishedStoryID)
@@ -511,7 +507,7 @@ func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uint64, 
 	playerProgress, err := s.playerProgressRepo.GetByUserIDAndStoryID(ctx, userID, publishedStoryID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			s.logger.Info("Player progress not found, creating initial progress", zap.Uint64("userID", userID), zap.String("publishedStoryID", publishedStoryID.String()))
+			s.logger.Info("Player progress not found, creating initial progress", zap.String("userID", userID.String()), zap.String("publishedStoryID", publishedStoryID.String()))
 			playerProgress = &sharedModels.PlayerProgress{
 				UserID:           userID,
 				PublishedStoryID: publishedStoryID,
@@ -547,9 +543,9 @@ func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uint64, 
 }
 
 // MakeChoice handles player choice.
-func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, publishedStoryID uuid.UUID, selectedOptionIndex int) error {
+func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID, selectedOptionIndex int) error {
 	logFields := []zap.Field{
-		zap.Uint64("userID", userID),
+		zap.String("userID", userID.String()),
 		zap.String("publishedStoryID", publishedStoryID.String()),
 		zap.Int("selectedOptionIndex", selectedOptionIndex),
 	}
@@ -615,7 +611,7 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, pub
 	if selectedOptionIndex < 0 || selectedOptionIndex >= len(choiceBlock.Options) {
 		s.logger.Warn("Invalid selected option index for choice block 0",
 			append(logFields, zap.Int("optionsAvailable", len(choiceBlock.Options)))...)
-		return ErrInvalidChoice
+		return ErrInvalidChoiceIndex
 	}
 
 	// Load NovelSetup
@@ -667,7 +663,7 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, pub
 
 		gameOverPayload := sharedMessaging.GameOverTaskPayload{
 			TaskID:           taskID,
-			UserID:           strconv.FormatUint(userID, 10),
+			UserID:           userID.String(),
 			PublishedStoryID: publishedStoryID.String(),
 			LastState:        *progress,
 			Reason:           reason,
@@ -708,6 +704,7 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, pub
 			}
 
 			generationPayload, errGenPayload := createGenerationPayload(
+				userID,
 				publishedStory,
 				progress,
 				previousHash,
@@ -719,8 +716,6 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uint64, pub
 				s.logger.Error("Failed to create generation payload", append(logFields, zap.Error(errGenPayload))...)
 				return ErrInternal
 			}
-
-			generationPayload.UserID = strconv.FormatUint(userID, 10)
 
 			if errPub := s.publisher.PublishGenerationTask(ctx, generationPayload); errPub != nil {
 				s.logger.Error("Failed to publish next scene generation task", append(logFields, zap.Error(errPub))...)
@@ -904,9 +899,9 @@ func applyConsequences(progress *sharedModels.PlayerProgress, cons sharedModels.
 }
 
 // DeletePlayerProgress deletes player progress for the specified story.
-func (s *gameplayServiceImpl) DeletePlayerProgress(ctx context.Context, userID uint64, publishedStoryID uuid.UUID) error {
+func (s *gameplayServiceImpl) DeletePlayerProgress(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error {
 	s.logger.Info("Deleting player progress",
-		zap.Uint64("userID", userID),
+		zap.String("userID", userID.String()),
 		zap.String("publishedStoryID", publishedStoryID.String()))
 
 	_, err := s.publishedRepo.GetByID(ctx, publishedStoryID)
@@ -929,6 +924,7 @@ func (s *gameplayServiceImpl) DeletePlayerProgress(ctx context.Context, userID u
 // createGenerationPayload creates the payload for the next scene generation task,
 // using compressed keys and summaries from the previous step.
 func createGenerationPayload(
+	userID uuid.UUID,
 	story *sharedModels.PublishedStory,
 	progress *sharedModels.PlayerProgress,
 	previousHash string,
@@ -993,7 +989,7 @@ func createGenerationPayload(
 
 	payload := sharedMessaging.GenerationTaskPayload{
 		TaskID:           uuid.New().String(),
-		UserID:           strconv.FormatUint(progress.UserID, 10),
+		UserID:           userID.String(),
 		PublishedStoryID: story.ID.String(),
 		PromptType:       sharedMessaging.PromptTypeNovelCreator,
 		InputData:        compressedInputData,
@@ -1004,20 +1000,21 @@ func createGenerationPayload(
 }
 
 // ListUserDrafts retrieves a paginated list of StoryConfig drafts for a specific user ID.
-func (s *gameplayServiceImpl) ListUserDrafts(ctx context.Context, userID uint64, cursor string, limit int) ([]sharedModels.StoryConfig, string, error) {
+func (s *gameplayServiceImpl) ListUserDrafts(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.StoryConfig, string, error) {
 	if limit <= 0 || limit > 100 { // Apply a reasonable limit
 		limit = 20
 	}
 
 	// Fetch drafts using the repository method that takes userID as argument
-	configs, nextCursor, err := s.repo.ListByUser(ctx, userID, limit, cursor) // Используем репозиторий
+	configs, nextCursor, err := s.repo.ListByUserID(ctx, userID, cursor, limit)
 	if err != nil {
 		// Handle specific errors like invalid cursor
 		if errors.Is(err, interfaces.ErrInvalidCursor) {
+			s.logger.Warn("Invalid cursor provided for ListUserDrafts", zap.String("userID", userID.String()), zap.String("cursor", cursor))
 			return nil, "", err // Return the specific error
 		}
 		// Log other errors
-		s.logger.Error("Error listing user drafts from repository", zap.Uint64("userID", userID), zap.Error(err))
+		s.logger.Error("Error listing user drafts from repository", zap.String("userID", userID.String()), zap.Error(err))
 		return nil, "", ErrInternal // Return a generic internal error
 	}
 
@@ -1026,7 +1023,7 @@ func (s *gameplayServiceImpl) ListUserDrafts(ctx context.Context, userID uint64,
 }
 
 // ListUserPublishedStories retrieves a paginated list of PublishedStory for a specific user ID.
-func (s *gameplayServiceImpl) ListUserPublishedStories(ctx context.Context, userID uint64, limit, offset int) ([]*sharedModels.PublishedStory, error) {
+func (s *gameplayServiceImpl) ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error) {
 	if limit <= 0 || limit > 100 { // Apply a reasonable limit
 		limit = 20
 	}
@@ -1035,11 +1032,112 @@ func (s *gameplayServiceImpl) ListUserPublishedStories(ctx context.Context, user
 	}
 
 	// Fetch published stories using the repository method
-	stories, err := s.publishedRepo.ListByUser(ctx, userID, limit, offset)
+	stories, err := s.publishedRepo.ListByUserID(ctx, userID, limit, offset)
 	if err != nil {
-		s.logger.Error("Error listing user published stories from repository", zap.Uint64("userID", userID), zap.Error(err))
+		s.logger.Error("Error listing user published stories from repository", zap.String("userID", userID.String()), zap.Error(err))
 		return nil, ErrInternal // Return a generic internal error
 	}
 
 	return stories, nil
+}
+
+// RetryDraftGeneration attempts to resend a generation task for a draft in Error status.
+func (s *gameplayServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uuid.UUID, userID uuid.UUID) error {
+	log := s.logger.With(zap.String("draftID", draftID.String()), zap.String("userID", userID.String()))
+	log.Info("Attempting to retry draft generation")
+
+	// 1. Get the draft
+	config, err := s.repo.GetByID(ctx, draftID, userID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			log.Warn("Draft not found for retry")
+			return sharedModels.ErrNotFound
+		}
+		log.Error("Error getting draft for retry", zap.Error(err))
+		return fmt.Errorf("error getting draft: %w", err)
+	}
+
+	// 2. Check status
+	if config.Status != sharedModels.StatusError {
+		log.Warn("Attempt to retry generation for draft not in Error status", zap.String("status", string(config.Status)))
+		return ErrCannotRetry
+	}
+
+	// 3. Check active generation limit
+	activeCount, err := s.repo.CountActiveGenerations(ctx, userID)
+	if err != nil {
+		log.Error("Error counting active generations before retry", zap.Error(err))
+		return fmt.Errorf("error checking generation status: %w", err)
+	}
+	generationLimit := 1 // TODO: Configurable
+	if activeCount >= generationLimit {
+		log.Info("User reached active generation limit, retry rejected")
+		return sharedModels.ErrUserHasActiveGeneration
+	}
+
+	// 4. Determine the prompt type and input data for retry
+	// We assume the last entry in UserInput is the one that caused the error
+	var userInputs []string
+	var lastUserInput string
+	var promptType sharedMessaging.PromptType
+	inputData := make(map[string]interface{})
+
+	if config.UserInput != nil {
+		if err := json.Unmarshal(config.UserInput, &userInputs); err == nil && len(userInputs) > 0 {
+			lastUserInput = userInputs[len(userInputs)-1]
+			if len(userInputs) == 1 {
+				// If only one input, it was the initial generation
+				promptType = sharedMessaging.PromptTypeNarrator
+				// InputData remains empty for initial
+			} else {
+				// If more than one, it was a revision
+				promptType = sharedMessaging.PromptTypeNarrator
+				if config.Config != nil { // Config should exist if it was a revision, even if error happened later
+					inputData["current_config"] = string(config.Config)
+				} else {
+					log.Warn("Config is missing for a presumed revision retry", zap.String("draftID", draftID.String()))
+					// Proceed without config? Or return error? For now, proceed.
+				}
+			}
+		} else {
+			log.Error("Failed to unmarshal UserInput or UserInput is empty for retry", zap.Error(err))
+			return ErrInternal // Cannot determine the context for retry
+		}
+	} else {
+		log.Error("UserInput is nil for retry", zap.String("draftID", draftID.String()))
+		return ErrInternal
+	}
+
+	// 5. Update draft status to 'generating'
+	config.Status = sharedModels.StatusGenerating
+	config.UpdatedAt = time.Now().UTC()
+	if err := s.repo.Update(ctx, config); err != nil {
+		log.Error("Error updating draft status before retry task publish", zap.Error(err))
+		return ErrInternal
+	}
+
+	// 6. Publish the generation task again
+	taskID := uuid.New().String()
+	generationPayload := sharedMessaging.GenerationTaskPayload{
+		TaskID:        taskID,
+		UserID:        config.UserID.String(),
+		PromptType:    promptType,
+		InputData:     inputData,
+		UserInput:     lastUserInput,
+		StoryConfigID: config.ID.String(),
+	}
+
+	if err := s.publisher.PublishGenerationTask(ctx, generationPayload); err != nil {
+		log.Error("Error publishing retry generation task. Rolling back status...", zap.Error(err))
+		// Attempt to roll back status to Error
+		config.Status = sharedModels.StatusError
+		config.UpdatedAt = time.Now().UTC()
+		if rollbackErr := s.repo.Update(context.Background(), config); rollbackErr != nil {
+			log.Error("CRITICAL: Failed to roll back status to Error after retry publish error", zap.String("draftID", config.ID.String()), zap.Error(rollbackErr))
+		}
+		return ErrInternal // Return internal error to handler
+	}
+
+	log.Info("Retry generation task published successfully")
+	return nil
 }

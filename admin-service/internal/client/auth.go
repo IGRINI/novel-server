@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"novel-server/shared/models"
+
+	"github.com/google/uuid"
 )
 
 type AuthServiceHttpClient interface {
@@ -16,10 +18,10 @@ type AuthServiceHttpClient interface {
 	// afterCursor - это идентификатор (или другой курсор), после которого нужно начать выборку.
 	// Возвращает список пользователей, следующий курсор (nextCursor) и ошибку.
 	ListUsers(ctx context.Context, limit int, afterCursor string) ([]models.User, string, error)
-	BanUser(ctx context.Context, userID uint64) error
-	UnbanUser(ctx context.Context, userID uint64) error
-	UpdateUser(ctx context.Context, userID uint64, payload UserUpdatePayload) error
-	ResetPassword(ctx context.Context, userID uint64) (string, error)
+	BanUser(ctx context.Context, userID uuid.UUID) error
+	UnbanUser(ctx context.Context, userID uuid.UUID) error
+	UpdateUser(ctx context.Context, userID uuid.UUID, payload UserUpdatePayload) error
+	ResetPassword(ctx context.Context, userID uuid.UUID) (string, error)
 	// RefreshAdminToken обновляет Access и Refresh токены, используя предоставленный Refresh Token.
 	// Возвращает новые TokenDetails, Claims и ошибку.
 	RefreshAdminToken(ctx context.Context, refreshToken string) (*models.TokenDetails, *models.Claims, error)

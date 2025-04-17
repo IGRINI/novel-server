@@ -22,11 +22,11 @@ type PublishedStoryRepository interface {
 
 	// SetPublic updates the is_public flag for a story.
 	// Requires userID for ownership check.
-	SetPublic(ctx context.Context, id uuid.UUID, userID uint64, isPublic bool) error
+	SetPublic(ctx context.Context, id uuid.UUID, userID uuid.UUID, isPublic bool) error
 
 	// ListPublic retrieves a paginated list of public, non-adult stories.
 	ListPublic(ctx context.Context, limit, offset int) ([]*models.PublishedStory, error)
 
-	// ListByUser retrieves a paginated list of stories created by a specific user.
-	ListByUser(ctx context.Context, userID uint64, limit, offset int) ([]*models.PublishedStory, error)
+	// ListByUserID retrieves a paginated list of stories created by a specific user.
+	ListByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.PublishedStory, error)
 }

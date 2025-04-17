@@ -20,13 +20,16 @@ const (
 	StatusGameOverPending   StoryStatus = "game_over_pending"   // Ожидает генерации концовки
 	StatusError             StoryStatus = "error"               // Ошибка при генерации Setup или сцены
 	StatusCompleted         StoryStatus = "completed"           // Игра завершена (концовка сгенерирована)
+	StatusDraft             StoryStatus = "draft"               // Черновик, доступен для редактирования
+	StatusGenerating        StoryStatus = "generating"          // Идет генерация (начальная или ревизия)
+	StatusRevising          StoryStatus = "revising"            // (Возможно) Отдельный статус для ревизии, если нужно
 	// StatusAvailable         StoryStatus = "available" // Возможно, этот статус не нужен?
 )
 
 // PublishedStory представляет опубликованную историю в базе данных.
 type PublishedStory struct {
 	ID             uuid.UUID       `json:"id" db:"id"`
-	UserID         uint64          `json:"user_id" db:"user_id"`       // Или uuid.UUID, если User.ID - UUID
+	UserID         uuid.UUID       `json:"user_id" db:"user_id"`       // Или uuid.UUID, если User.ID - UUID
 	Config         json.RawMessage `json:"config" db:"config"`         // Изначальный конфиг из драфта
 	Setup          json.RawMessage `json:"setup,omitempty" db:"setup"` // Сгенерированный setup
 	Status         StoryStatus     `json:"status" db:"status"`

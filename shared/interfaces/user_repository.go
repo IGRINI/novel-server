@@ -3,6 +3,8 @@ package interfaces
 import (
 	"context"
 	"novel-server/shared/models"
+
+	"github.com/google/uuid"
 )
 
 // UserRepository defines the interface for user data persistence (e.g., PostgreSQL).
@@ -18,7 +20,7 @@ type UserRepository interface {
 
 	// GetUserByID retrieves a user by their ID.
 	// Returns models.ErrUserNotFound if the user does not exist.
-	GetUserByID(ctx context.Context, id uint64) (*models.User, error)
+	GetUserByID(ctx context.Context, id uuid.UUID) (*models.User, error)
 
 	// GetUserByEmail retrieves a user by their email address.
 	// Returns models.ErrUserNotFound if the user does not exist.
@@ -31,12 +33,12 @@ type UserRepository interface {
 	ListUsers(ctx context.Context) ([]models.User, error)
 
 	// SetUserBanStatus sets the ban status of a user.
-	SetUserBanStatus(ctx context.Context, userID uint64, isBanned bool) error
+	SetUserBanStatus(ctx context.Context, userID uuid.UUID, isBanned bool) error
 
 	// UpdateUserFields updates specific fields of a user.
 	// nil pointers mean the field should not be updated.
-	UpdateUserFields(ctx context.Context, userID uint64, email *string, roles []string, isBanned *bool) error
+	UpdateUserFields(ctx context.Context, userID uuid.UUID, email *string, roles []string, isBanned *bool) error
 
 	// UpdatePasswordHash обновляет хеш пароля пользователя.
-	UpdatePasswordHash(ctx context.Context, userID uint64, passwordHash string) error
+	UpdatePasswordHash(ctx context.Context, userID uuid.UUID, passwordHash string) error
 }

@@ -21,7 +21,7 @@ type Config struct {
 	InternalUpdatesQueueName string `envconfig:"INTERNAL_UPDATES_QUEUE_NAME" default:"internal_updates"`
 
 	// Настройки воркера
-	PromptsDir string `envconfig:"PROMPTS_DIR" default:"../promts"` // Путь относительно корня воркера
+	PromptsDir string `envconfig:"PROMPTS_DIR" default:"promts"` // Путь относительно корня воркера или WORKDIR в Docker
 
 	// Настройки AI
 	AIClientType     string        `envconfig:"AI_CLIENT_TYPE" default:"openai"` // Тип клиента: "openai" или "ollama"

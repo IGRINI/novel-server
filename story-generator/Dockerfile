@@ -1,55 +1,47 @@
-# --- Build Stage --- 
+# --- Build Stage ---
 ARG GO_VERSION=1.24 # Обновляем версию Go
 FROM golang:${GO_VERSION}-alpine AS builder
 
 # Игнорируем go.work внутри сборки
 ENV GOWORK=off
 
-WORKDIR /src
+# Устанавливаем рабочую директорию в корень модуля
+WORKDIR /app
 
-# <<< Шаг 1: Копируем файлы модулей для кеширования зависимостей >>>
-COPY shared/go.mod shared/go.sum ./shared/
-COPY story-generator/go.mod story-generator/go.sum ./story-generator/
+# Копируем ТОЛЬКО корневые go.mod и go.sum
+COPY go.mod go.sum ./
 
-# <<< Шаг 2: Копируем ВЕСЬ исходный код для обоих модулей >>>
-COPY shared/ ./shared/
-COPY story-generator/ ./story-generator/
-
-# <<< Шаг 3: Переходим в директорию собираемого модуля >>>
-WORKDIR /src/story-generator
-
-# <<< Шаг 4: Запускаем tidy и download ПОСЛЕ копирования всего кода >>>
-# Это позволит Go найти локальный модуль shared через replace
-RUN go mod tidy
+# Загружаем ВСЕ зависимости проекта
 RUN go mod download
 
-# <<< Шаг 5: Собираем приложение >>>
-# CGO_ENABLED=0 для статичной сборки без C зависимостей
-# -ldflags="-s -w" для уменьшения размера бинарника
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/worker ./cmd/worker/main.go
+# Копируем ВЕСЬ исходный код проекта
+COPY . .
 
-# --- Final Stage --- 
+# Собираем приложение story-generator (worker)
+# Команда выполняется из корня /app
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /story-worker ./story-generator/cmd/worker/main.go
+
+# --- Final Stage ---
 FROM alpine:latest
+
+# Устанавливаем корневые сертификаты (могут понадобиться для внешних API)
+RUN apk --no-cache add ca-certificates
 
 WORKDIR /app
 
 # Копируем собранный бинарник из builder stage
-COPY --from=builder /app/worker /app/worker
-
-# --- Добавляем права на выполнение --- 
-RUN chmod +x /app/worker
-# -------------------------------------
+COPY --from=builder /story-worker .
 
 # --- ВАЖНО: Копирование директории с промптами ---
-# Если воркер читает файлы из директории promts, её нужно скопировать
 # Путь назначения должен совпадать с тем, что ожидается в конфигурации (PROMPTS_DIR)
-# Пример:
-COPY promts/ /app/promts/
+# Копируем из исходников в builder stage, т.к. скопировали весь проект туда
+COPY --from=builder /app/promts/ ./promts/
 # ----------------------------------------------------
 
 # Копируем .env файл, если используется godotenv (не рекомендуется для production)
-# COPY .env .env 
+# COPY .env .env
 
-# Возвращаем запуск основного приложения
-CMD ["/app/worker"]
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD wget --spider -q http://localhost:9091/health || exit 1 
+# Команда для запуска воркера
+ENTRYPOINT ["/app/story-worker"]
+
+# HEALTHCHECK убран, т.к. воркеры обычно не имеют HTTP эндпоинта для проверки 

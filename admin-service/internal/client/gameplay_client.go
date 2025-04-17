@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -61,9 +62,9 @@ type listDraftsResponse struct {
 }
 
 // ListUserDrafts получает список черновиков пользователя.
-func (c *gameplayClient) ListUserDrafts(ctx context.Context, userID uint64, limit int, cursor string) ([]models.StoryConfig, string, error) {
-	listURL := fmt.Sprintf("%s/internal/users/%d/drafts", c.baseURL, userID)
-	log := c.logger.With(zap.String("url", listURL), zap.Uint64("userID", userID), zap.Int("limit", limit), zap.String("cursor", cursor))
+func (c *gameplayClient) ListUserDrafts(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]models.StoryConfig, string, error) {
+	listURL := fmt.Sprintf("%s/internal/users/%s/drafts", c.baseURL, userID.String())
+	log := c.logger.With(zap.String("url", listURL), zap.String("userID", userID.String()), zap.Int("limit", limit), zap.String("cursor", cursor))
 
 	u, err := url.Parse(listURL)
 	if err != nil {
@@ -132,9 +133,9 @@ type listStoriesResponse struct {
 }
 
 // ListUserPublishedStories получает список опубликованных историй пользователя.
-func (c *gameplayClient) ListUserPublishedStories(ctx context.Context, userID uint64, limit, offset int) ([]*models.PublishedStory, bool, error) {
-	listURL := fmt.Sprintf("%s/internal/users/%d/stories", c.baseURL, userID)
-	log := c.logger.With(zap.String("url", listURL), zap.Uint64("userID", userID), zap.Int("limit", limit), zap.Int("offset", offset))
+func (c *gameplayClient) ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.PublishedStory, bool, error) {
+	listURL := fmt.Sprintf("%s/internal/users/%s/stories", c.baseURL, userID.String())
+	log := c.logger.With(zap.String("url", listURL), zap.String("userID", userID.String()), zap.Int("limit", limit), zap.Int("offset", offset))
 
 	u, err := url.Parse(listURL)
 	if err != nil {

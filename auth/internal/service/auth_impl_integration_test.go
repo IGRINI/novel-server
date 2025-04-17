@@ -14,7 +14,6 @@ import (
 	"novel-server/auth/internal/service"
 	database "novel-server/shared/database"
 	interfaces "novel-server/shared/interfaces"
-	"novel-server/shared/models"
 	sharedModels "novel-server/shared/models"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -265,8 +264,10 @@ func (s *IntegrationTestSuite) TestRegisterAndLogin_Success() {
 	require.NoError(t, err, "Register should succeed")
 	require.NotNil(t, registeredUser, "Registered user should not be nil")
 	require.Equal(t, username, registeredUser.Username, "Username should match")
+	require.Equal(t, username, registeredUser.DisplayName, "DisplayName should match username on registration")
 	require.Equal(t, email, registeredUser.Email, "Email should match") // Проверяем email
 	require.NotZero(t, registeredUser.ID, "User ID should be assigned")
+	require.NotEqual(t, uuid.Nil, registeredUser.ID, "User ID should not be nil UUID")
 
 	// Попытка повторной регистрации с тем же username - должна быть ошибка
 	_, err = s.authService.Register(ctx, username, "another@example.com", "anotherpassword")
@@ -292,11 +293,11 @@ func (s *IntegrationTestSuite) TestRegisterAndLogin_Success() {
 	// Проверяем наличие токенов в Redis
 	accessUserID, err := s.tokenRepo.GetUserIDByAccessUUID(ctx, tokens.AccessUUID)
 	require.NoError(t, err, "Access token UUID should exist in Redis")
-	require.Equal(t, registeredUser.ID, accessUserID, "User ID from access token in Redis should match")
+	require.Equal(t, registeredUser.ID, accessUserID, "User ID (UUID) from access token in Redis should match")
 
 	refreshUserID, err := s.tokenRepo.GetUserIDByRefreshUUID(ctx, tokens.RefreshUUID)
 	require.NoError(t, err, "Refresh token UUID should exist in Redis")
-	require.Equal(t, registeredUser.ID, refreshUserID, "User ID from refresh token in Redis should match")
+	require.Equal(t, registeredUser.ID, refreshUserID, "User ID (UUID) from refresh token in Redis should match")
 
 	// 3. Логин с неверным паролем
 	_, err = s.authService.Login(ctx, username, "wrongpassword")
@@ -391,7 +392,7 @@ func (s *IntegrationTestSuite) TestRefresh_InvalidToken() {
 	// Точный тип ошибки зависит от реализации JWT парсера, но это не ErrTokenNotFound
 	require.False(t, errors.Is(err, sharedModels.ErrTokenNotFound), "Error should not be ErrTokenNotFound")
 	// Используем ErrTokenMalformed, так как именно его возвращает парсер для невалидной строки
-	require.True(t, errors.Is(err, models.ErrTokenMalformed), "Error should be ErrTokenMalformed")
+	require.True(t, errors.Is(err, sharedModels.ErrTokenMalformed), "Error should be ErrTokenMalformed")
 
 }
 
@@ -413,13 +414,13 @@ func (s *IntegrationTestSuite) TestRefresh_TokenNotFoundInRedis() {
 	require.NotEmpty(t, tokens.RefreshUUID)
 
 	// 2. Удаляем Refresh UUID из Redis вручную
-	err = s.tokenRepo.DeleteRefreshUUID(ctx, tokens.RefreshUUID) // Предполагаем, что такой метод есть в репозитории
-	require.NoError(t, err, "Failed to manually delete refresh UUID from Redis")
+	_, err = s.tokenRepo.DeleteTokens(ctx, "", tokens.RefreshUUID)
+	require.NoError(t, err, "Failed to manually delete refresh token from Redis")
 
 	// 3. Пытаемся обновить токен
 	_, err = s.authService.Refresh(ctx, tokens.RefreshToken)
 	require.Error(t, err, "Refresh should fail if refresh UUID is not in Redis")
-	require.True(t, errors.Is(err, models.ErrTokenNotFound), "Error should be ErrTokenNotFound")
+	require.True(t, errors.Is(err, sharedModels.ErrTokenNotFound), "Error should be ErrTokenNotFound")
 }
 
 // Тесты для Logout
@@ -451,11 +452,11 @@ func (s *IntegrationTestSuite) TestLogout_Success() {
 	// 3. Проверяем, что токены удалены из Redis
 	_, err = s.tokenRepo.GetUserIDByAccessUUID(ctx, tokens.AccessUUID)
 	require.Error(t, err, "Access token should be deleted after logout")
-	require.True(t, errors.Is(err, models.ErrTokenNotFound) || errors.Is(err, redis.Nil), "Error should be ErrTokenNotFound or redis.Nil")
+	require.True(t, errors.Is(err, sharedModels.ErrTokenNotFound) || errors.Is(err, redis.Nil), "Error should be ErrTokenNotFound or redis.Nil")
 
 	_, err = s.tokenRepo.GetUserIDByRefreshUUID(ctx, tokens.RefreshUUID)
 	require.Error(t, err, "Refresh token should be deleted after logout")
-	require.True(t, errors.Is(err, models.ErrTokenNotFound) || errors.Is(err, redis.Nil), "Error should be ErrTokenNotFound or redis.Nil")
+	require.True(t, errors.Is(err, sharedModels.ErrTokenNotFound) || errors.Is(err, redis.Nil), "Error should be ErrTokenNotFound or redis.Nil")
 }
 
 func (s *IntegrationTestSuite) TestLogout_NotFound() {
@@ -556,7 +557,7 @@ func (s *IntegrationTestSuite) TestVerifyAccessToken_Expired() {
 	// 3. Проверка токена
 	_, err = s.authService.VerifyAccessToken(ctx, tokens.AccessToken)
 	require.Error(t, err, "VerifyAccessToken should fail for expired token")
-	require.True(t, errors.Is(err, models.ErrTokenExpired), "Error should be ErrTokenExpired")
+	require.True(t, errors.Is(err, sharedModels.ErrTokenExpired), "Error should be ErrTokenExpired")
 }
 
 func (s *IntegrationTestSuite) TestVerifyAccessToken_Malformed() {
@@ -567,7 +568,7 @@ func (s *IntegrationTestSuite) TestVerifyAccessToken_Malformed() {
 	_, err := s.authService.VerifyAccessToken(ctx, malformedToken)
 	require.Error(t, err, "VerifyAccessToken should fail for malformed token")
 	// Ожидаем ErrTokenMalformed или ErrInvalidToken в зависимости от реализации парсера
-	require.True(t, errors.Is(err, models.ErrTokenMalformed) || errors.Is(err, models.ErrTokenInvalid),
+	require.True(t, errors.Is(err, sharedModels.ErrTokenMalformed) || errors.Is(err, sharedModels.ErrTokenInvalid),
 		"Error should be ErrTokenMalformed or ErrInvalidToken")
 }
 
@@ -597,7 +598,7 @@ func (s *IntegrationTestSuite) TestVerifyAccessToken_Revoked() {
 	_, err = s.authService.VerifyAccessToken(ctx, accessTokenToVerify)
 	require.Error(t, err, "VerifyAccessToken should fail for revoked token")
 	// Сервис должен вернуть ErrInvalidToken, т.к. токен удален из Redis
-	require.True(t, errors.Is(err, models.ErrTokenInvalid), "Error should be ErrInvalidToken for revoked token")
+	require.True(t, errors.Is(err, sharedModels.ErrTokenInvalid), "Error should be ErrInvalidToken for revoked token")
 }
 
 // Тесты для Inter-Service Tokens
@@ -637,7 +638,7 @@ func (s *IntegrationTestSuite) TestVerifyInterServiceToken_Expired() {
 	// 3. Проверка
 	_, err = s.authService.VerifyInterServiceToken(ctx, tokenString)
 	require.Error(t, err, "VerifyInterServiceToken should fail for expired token")
-	require.True(t, errors.Is(err, models.ErrTokenExpired), "Error should be ErrTokenExpired")
+	require.True(t, errors.Is(err, sharedModels.ErrTokenExpired), "Error should be ErrTokenExpired")
 }
 
 func (s *IntegrationTestSuite) TestVerifyInterServiceToken_InvalidSignature() {
@@ -659,7 +660,7 @@ func (s *IntegrationTestSuite) TestVerifyInterServiceToken_InvalidSignature() {
 	_, err = s.authService.VerifyInterServiceToken(ctx, tokenString)
 	require.Error(t, err, "VerifyInterServiceToken should fail for invalid signature")
 	// Ожидаем общую ошибку невалидного токена
-	require.True(t, errors.Is(err, models.ErrTokenInvalid), "Error should be ErrInvalidToken for invalid signature")
+	require.True(t, errors.Is(err, sharedModels.ErrTokenInvalid), "Error should be ErrInvalidToken for invalid signature")
 }
 
 func (s *IntegrationTestSuite) TestVerifyInterServiceToken_Malformed() {
@@ -669,7 +670,7 @@ func (s *IntegrationTestSuite) TestVerifyInterServiceToken_Malformed() {
 
 	_, err := s.authService.VerifyInterServiceToken(ctx, malformedToken)
 	require.Error(t, err, "VerifyInterServiceToken should fail for malformed token")
-	require.True(t, errors.Is(err, models.ErrTokenMalformed) || errors.Is(err, models.ErrTokenInvalid),
+	require.True(t, errors.Is(err, sharedModels.ErrTokenMalformed) || errors.Is(err, sharedModels.ErrTokenInvalid),
 		"Error should be ErrTokenMalformed or ErrInvalidToken")
 }
 

@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"novel-server/shared/interfaces"
 	"novel-server/shared/models"
-	"strconv"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap" // Добавляем zap
 )
@@ -34,14 +34,14 @@ func NewRedisTokenRepository(client *redis.Client, logger *zap.Logger) interface
 // We store two key-value pairs for each token pair:
 // 1. AccessUUID -> UserID (with AccessTokenTTL)
 // 2. RefreshUUID -> UserID (with RefreshTokenTTL)
-func (r *redisTokenRepository) SetToken(ctx context.Context, userID uint64, td *models.TokenDetails) error { // Use shared TokenDetails
+func (r *redisTokenRepository) SetToken(ctx context.Context, userID uuid.UUID, td *models.TokenDetails) error { // <<< Меняем тип userID
 	at := time.Unix(td.AtExpires, 0) // Access Token expiration time
 	rt := time.Unix(td.RtExpires, 0) // Refresh Token expiration time
 	now := time.Now()
 
 	accessKey := fmt.Sprintf("access_uuid:%s", td.AccessUUID)
 	refreshKey := fmt.Sprintf("refresh_uuid:%s", td.RefreshUUID)
-	userIDStr := strconv.FormatUint(userID, 10)
+	userIDStr := userID.String() // <<< Преобразуем UUID в строку
 
 	accessTTL := at.Sub(now)
 	refreshTTL := rt.Sub(now)
@@ -53,7 +53,7 @@ func (r *redisTokenRepository) SetToken(ctx context.Context, userID uint64, td *
 	pipe.Set(ctx, refreshKey, userIDStr, refreshTTL)
 
 	r.logger.Debug("Setting tokens in Redis",
-		zap.Uint64("userID", userID),
+		zap.String("userID", userIDStr), // <<< Логируем строку
 		zap.String("accessUUID", td.AccessUUID),
 		zap.String("refreshUUID", td.RefreshUUID),
 		zap.Duration("accessTTL", accessTTL),
@@ -62,7 +62,7 @@ func (r *redisTokenRepository) SetToken(ctx context.Context, userID uint64, td *
 
 	_, err := pipe.Exec(ctx)
 	if err != nil {
-		r.logger.Error("Failed to set token details in redis", zap.Error(err), zap.Uint64("userID", userID))
+		r.logger.Error("Failed to set token details in redis", zap.Error(err), zap.String("userID", userIDStr)) // <<< Логируем строку
 		return fmt.Errorf("failed to set token details in redis: %w", err)
 	}
 	return nil
@@ -101,55 +101,55 @@ func (r *redisTokenRepository) DeleteTokens(ctx context.Context, accessUUID, ref
 }
 
 // GetUserIDByAccessUUID retrieves the UserID associated with an AccessUUID.
-func (r *redisTokenRepository) GetUserIDByAccessUUID(ctx context.Context, accessUUID string) (uint64, error) {
+func (r *redisTokenRepository) GetUserIDByAccessUUID(ctx context.Context, accessUUID string) (uuid.UUID, error) { // <<< Меняем тип возврата
 	key := fmt.Sprintf("access_uuid:%s", accessUUID)
 	r.logger.Debug("Getting token from Redis", zap.String("key", key))
 	userIDStr, err := r.client.Get(ctx, key).Result()
 	if err != nil {
 		if err == redis.Nil {
 			r.logger.Debug("Access token not found in Redis", zap.String("accessUUID", accessUUID))
-			return 0, models.ErrTokenNotFound // Use shared error
+			return uuid.Nil, models.ErrTokenNotFound // <<< Возвращаем uuid.Nil
 		}
 		r.logger.Error("Failed to get token from redis", zap.Error(err), zap.String("key", key))
-		return 0, fmt.Errorf("failed to get token from redis: %w", err)
+		return uuid.Nil, fmt.Errorf("failed to get token from redis: %w", err) // <<< Возвращаем uuid.Nil
 	}
 
-	userID, err := strconv.ParseUint(userIDStr, 10, 64)
+	userID, err := uuid.Parse(userIDStr) // <<< Парсим строку в UUID
 	if err != nil {
 		// Эта ошибка серьезная - данные в Redis повреждены
-		r.logger.Error("Failed to parse userID from redis data for access token",
+		r.logger.Error("Failed to parse userID (UUID) from redis data for access token",
 			zap.Error(err),
 			zap.String("accessUUID", accessUUID),
 			zap.String("value", userIDStr),
 		)
-		return 0, fmt.Errorf("corrupted userID data in redis for access token %s: %w", accessUUID, err)
+		return uuid.Nil, fmt.Errorf("corrupted userID data in redis for access token %s: %w", accessUUID, err) // <<< Возвращаем uuid.Nil
 	}
 	return userID, nil
 }
 
 // GetUserIDByRefreshUUID retrieves the UserID associated with a RefreshUUID.
-func (r *redisTokenRepository) GetUserIDByRefreshUUID(ctx context.Context, refreshUUID string) (uint64, error) {
+func (r *redisTokenRepository) GetUserIDByRefreshUUID(ctx context.Context, refreshUUID string) (uuid.UUID, error) { // <<< Меняем тип возврата
 	key := fmt.Sprintf("refresh_uuid:%s", refreshUUID)
 	r.logger.Debug("Getting token from Redis", zap.String("key", key))
 	userIDStr, err := r.client.Get(ctx, key).Result()
 	if err != nil {
 		if err == redis.Nil {
 			r.logger.Debug("Refresh token not found in Redis", zap.String("refreshUUID", refreshUUID))
-			return 0, models.ErrTokenNotFound // Use shared error
+			return uuid.Nil, models.ErrTokenNotFound // <<< Возвращаем uuid.Nil
 		}
 		r.logger.Error("Failed to get token from redis", zap.Error(err), zap.String("key", key))
-		return 0, fmt.Errorf("failed to get token from redis: %w", err)
+		return uuid.Nil, fmt.Errorf("failed to get token from redis: %w", err) // <<< Возвращаем uuid.Nil
 	}
 
-	userID, err := strconv.ParseUint(userIDStr, 10, 64)
+	userID, err := uuid.Parse(userIDStr) // <<< Парсим строку в UUID
 	if err != nil {
 		// Эта ошибка серьезная - данные в Redis повреждены
-		r.logger.Error("Failed to parse userID from redis data for refresh token",
+		r.logger.Error("Failed to parse userID (UUID) from redis data for refresh token",
 			zap.Error(err),
 			zap.String("refreshUUID", refreshUUID),
 			zap.String("value", userIDStr),
 		)
-		return 0, fmt.Errorf("corrupted userID data in redis for refresh token %s: %w", refreshUUID, err)
+		return uuid.Nil, fmt.Errorf("corrupted userID data in redis for refresh token %s: %w", refreshUUID, err) // <<< Возвращаем uuid.Nil
 	}
 	return userID, nil
 }
@@ -177,11 +177,11 @@ func (r *redisTokenRepository) DeleteRefreshUUID(ctx context.Context, refreshUUI
 // DeleteTokensByUserID removes all tokens associated with a user ID.
 // WARNING: This implementation uses SCAN and might be inefficient on large Redis instances.
 // Consider alternative data structures (like sets per user) if performance becomes an issue.
-func (r *redisTokenRepository) DeleteTokensByUserID(ctx context.Context, userID uint64) (int64, error) {
-	log := r.logger.With(zap.Uint64("userID", userID))
+func (r *redisTokenRepository) DeleteTokensByUserID(ctx context.Context, userID uuid.UUID) (int64, error) { // <<< Меняем тип userID
+	log := r.logger.With(zap.String("userID", userID.String())) // <<< Используем userID.String()
 	log.Info("Attempting to delete all tokens for user")
 
-	userIDStr := strconv.FormatUint(userID, 10)
+	userIDStr := userID.String() // <<< Преобразуем UUID в строку
 	var cursor uint64
 	var keysToDelete []string
 	var totalDeleted int64

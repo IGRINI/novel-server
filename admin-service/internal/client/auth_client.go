@@ -16,6 +16,7 @@ import (
 
 	"novel-server/shared/models" // Для структуры TokenDetails и кодов ошибок
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -349,9 +350,9 @@ func (c *authClient) GenerateInterServiceToken(ctx context.Context, serviceName 
 }
 
 // BanUser sends a request to ban a user.
-func (c *authClient) BanUser(ctx context.Context, userID uint64) error {
-	banURL := fmt.Sprintf("%s/internal/auth/users/%d/ban", c.baseURL, userID)
-	log := c.logger.With(zap.String("url", banURL), zap.Uint64("userID", userID))
+func (c *authClient) BanUser(ctx context.Context, userID uuid.UUID) error {
+	banURL := fmt.Sprintf("%s/internal/auth/users/%s/ban", c.baseURL, userID.String())
+	log := c.logger.With(zap.String("url", banURL), zap.String("userID", userID.String()))
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, banURL, nil) // Используем POST
 	if err != nil {
@@ -393,9 +394,9 @@ func (c *authClient) BanUser(ctx context.Context, userID uint64) error {
 }
 
 // UnbanUser sends a request to unban a user.
-func (c *authClient) UnbanUser(ctx context.Context, userID uint64) error {
-	unbanURL := fmt.Sprintf("%s/internal/auth/users/%d/ban", c.baseURL, userID)
-	log := c.logger.With(zap.String("url", unbanURL), zap.Uint64("userID", userID))
+func (c *authClient) UnbanUser(ctx context.Context, userID uuid.UUID) error {
+	unbanURL := fmt.Sprintf("%s/internal/auth/users/%s/ban", c.baseURL, userID.String())
+	log := c.logger.With(zap.String("url", unbanURL), zap.String("userID", userID.String()))
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, unbanURL, nil) // Используем DELETE
 	if err != nil {
@@ -527,9 +528,9 @@ func (c *authClient) SetInterServiceToken(token string) {
 }
 
 // UpdateUser отправляет запрос на обновление пользователя в auth-service.
-func (c *authClient) UpdateUser(ctx context.Context, userID uint64, payload UserUpdatePayload) error {
-	updateURL := fmt.Sprintf("%s/internal/auth/users/%d", c.baseURL, userID)
-	log := c.logger.With(zap.String("url", updateURL), zap.Uint64("userID", userID))
+func (c *authClient) UpdateUser(ctx context.Context, userID uuid.UUID, payload UserUpdatePayload) error {
+	updateURL := fmt.Sprintf("%s/internal/auth/users/%s", c.baseURL, userID.String())
+	log := c.logger.With(zap.String("url", updateURL), zap.String("userID", userID.String()))
 
 	reqBody, err := json.Marshal(payload)
 	if err != nil {
@@ -627,8 +628,8 @@ type updatePasswordRequestClient struct {
 }
 
 // ResetPassword генерирует новый пароль и отправляет запрос на его установку в auth-service.
-func (c *authClient) ResetPassword(ctx context.Context, userID uint64) (string, error) {
-	log := c.logger.With(zap.Uint64("userID", userID))
+func (c *authClient) ResetPassword(ctx context.Context, userID uuid.UUID) (string, error) {
+	log := c.logger.With(zap.String("userID", userID.String()))
 
 	// 1. Генерируем новый случайный пароль
 	newPassword, err := generateRandomPassword(passwordLength)
@@ -639,7 +640,7 @@ func (c *authClient) ResetPassword(ctx context.Context, userID uint64) (string, 
 	log.Debug("Generated new random password for reset") // Не логируем сам пароль!
 
 	// 2. Отправляем запрос на обновление пароля в auth-service
-	resetURL := fmt.Sprintf("%s/internal/auth/users/%d/password", c.baseURL, userID)
+	resetURL := fmt.Sprintf("%s/internal/auth/users/%s/password", c.baseURL, userID.String())
 	log = log.With(zap.String("url", resetURL))
 
 	reqPayload := updatePasswordRequestClient{NewPassword: newPassword}
@@ -755,7 +756,7 @@ func (c *authClient) RefreshAdminToken(ctx context.Context, refreshToken string)
 			return nil, nil, fmt.Errorf("invalid success response format from auth service: %w", err)
 		}
 		// Проверяем, что токены и клеймы не пустые (минимальная валидация)
-		if resp.Tokens.AccessToken == "" || resp.Tokens.RefreshToken == "" || resp.Claims.UserID == 0 {
+		if resp.Tokens.AccessToken == "" || resp.Tokens.RefreshToken == "" || resp.Claims.UserID == uuid.Nil {
 			log.Error("Received incomplete data in successful refresh token response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
 			return nil, nil, fmt.Errorf("incomplete data received from auth service")
 		}

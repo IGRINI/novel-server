@@ -7,27 +7,15 @@ import (
 	"github.com/google/uuid"
 )
 
-// Используем тип StoryStatus, определенный в published_story.go
-
-// Дополнительные статусы, специфичные для StoryConfig, если нужны:
-const (
-	// StatusDraft - Черновик, можно редактировать (уже есть в published_story.go, но оставляем для ясности области применения)
-	StatusDraft StoryStatus = "draft"
-	// StatusGenerating - Отправлено на генерацию (уже есть в published_story.go, но оставляем для ясности области применения)
-	StatusGenerating StoryStatus = "generating"
-	// StatusError - Ошибка генерации (уже есть в published_story.go)
-	// StatusReady - Готово к прохождению (уже есть в published_story.go)
-)
-
-// StoryConfig представляет собой конфигурацию (драфт) истории пользователя.
+// StoryConfig represents a story configuration draft being worked on by a user.
 type StoryConfig struct {
-	ID          uuid.UUID       `json:"id" db:"id"`                   // Уникальный ID конфигурации
-	UserID      uint64          `json:"user_id" db:"user_id"`         // ID пользователя-владельца
-	Title       string          `json:"title" db:"title"`             // Название (извлекается из последнего сгенерированного JSON, поле "t")
-	Description string          `json:"description" db:"description"` // Краткое описание (извлекается из последнего сгенерированного JSON, поле "sd")
-	UserInput   json.RawMessage `json:"user_input" db:"user_input"`   // История текстовых запросов пользователя (JSON массив строк)
-	Config      json.RawMessage `json:"config" db:"config"`           // Актуальный JSON конфиг от Narrator (структура из narrator.md)
-	Status      StoryStatus     `json:"status" db:"status"`           // Статус конфигурации (использует тип из published_story.go)
-	CreatedAt   time.Time       `json:"created_at" db:"created_at"`   // Время создания
-	UpdatedAt   time.Time       `json:"updated_at" db:"updated_at"`   // Время последнего обновления
+	ID          uuid.UUID       `db:"id" json:"id"`
+	UserID      uuid.UUID       `db:"user_id" json:"user_id"`
+	Title       string          `db:"title" json:"title"`
+	Description string          `db:"description" json:"description"`
+	UserInput   json.RawMessage `db:"user_input" json:"user_input"`
+	Config      json.RawMessage `db:"config" json:"config"`
+	Status      StoryStatus     `db:"status" json:"status"`
+	CreatedAt   time.Time       `db:"created_at" json:"created_at"`
+	UpdatedAt   time.Time       `db:"updated_at" json:"updated_at"`
 }

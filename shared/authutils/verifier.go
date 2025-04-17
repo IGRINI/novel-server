@@ -7,6 +7,7 @@ import (
 	"novel-server/shared/models" // Используем модели из shared
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -67,13 +68,13 @@ func (v *JWTVerifier) VerifyToken(ctx context.Context, tokenString string) (*mod
 	}
 
 	// Проверка наличия обязательных полей в claims
-	if claims.UserID == 0 {
+	if claims.UserID == uuid.Nil {
 		log.Warn("Token missing UserID", zap.Any("claims", claims))
 		return nil, fmt.Errorf("%w: UserID missing", models.ErrTokenInvalid)
 	}
 	// Можно добавить проверку claims.Roles != nil, если это требуется
 
-	log.Debug("Token verified successfully", zap.Uint64("userID", claims.UserID), zap.Strings("roles", claims.Roles))
+	log.Debug("Token verified successfully", zap.String("userID", claims.UserID.String()), zap.Strings("roles", claims.Roles))
 	return claims, nil
 }
 

@@ -9,6 +9,8 @@ import (
 
 	models "novel-server/shared/models"
 
+	pgx "github.com/jackc/pgx/v5"
+
 	uuid "github.com/google/uuid"
 )
 
@@ -18,7 +20,7 @@ type StoryConfigRepository struct {
 }
 
 // CountActiveGenerations provides a mock function with given fields: ctx, userID
-func (_m *StoryConfigRepository) CountActiveGenerations(ctx context.Context, userID uint64) (int, error) {
+func (_m *StoryConfigRepository) CountActiveGenerations(ctx context.Context, userID uuid.UUID) (int, error) {
 	ret := _m.Called(ctx, userID)
 
 	if len(ret) == 0 {
@@ -27,16 +29,16 @@ func (_m *StoryConfigRepository) CountActiveGenerations(ctx context.Context, use
 
 	var r0 int
 	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, uint64) (int, error)); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID) (int, error)); ok {
 		return rf(ctx, userID)
 	}
-	if rf, ok := ret.Get(0).(func(context.Context, uint64) int); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID) int); ok {
 		r0 = rf(ctx, userID)
 	} else {
 		r0 = ret.Get(0).(int)
 	}
 
-	if rf, ok := ret.Get(1).(func(context.Context, uint64) error); ok {
+	if rf, ok := ret.Get(1).(func(context.Context, uuid.UUID) error); ok {
 		r1 = rf(ctx, userID)
 	} else {
 		r1 = ret.Error(1)
@@ -64,7 +66,7 @@ func (_m *StoryConfigRepository) Create(ctx context.Context, config *models.Stor
 }
 
 // Delete provides a mock function with given fields: ctx, id, userID
-func (_m *StoryConfigRepository) Delete(ctx context.Context, id uuid.UUID, userID uint64) error {
+func (_m *StoryConfigRepository) Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
 	ret := _m.Called(ctx, id, userID)
 
 	if len(ret) == 0 {
@@ -72,8 +74,26 @@ func (_m *StoryConfigRepository) Delete(ctx context.Context, id uuid.UUID, userI
 	}
 
 	var r0 error
-	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uint64) error); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uuid.UUID) error); ok {
 		r0 = rf(ctx, id, userID)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// DeleteTx provides a mock function with given fields: ctx, tx, id, userID
+func (_m *StoryConfigRepository) DeleteTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, userID uuid.UUID) error {
+	ret := _m.Called(ctx, tx, id, userID)
+
+	if len(ret) == 0 {
+		panic("no return value specified for DeleteTx")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, pgx.Tx, uuid.UUID, uuid.UUID) error); ok {
+		r0 = rf(ctx, tx, id, userID)
 	} else {
 		r0 = ret.Error(0)
 	}
@@ -112,7 +132,7 @@ func (_m *StoryConfigRepository) FindGeneratingConfigs(ctx context.Context) ([]*
 }
 
 // GetByID provides a mock function with given fields: ctx, id, userID
-func (_m *StoryConfigRepository) GetByID(ctx context.Context, id uuid.UUID, userID uint64) (*models.StoryConfig, error) {
+func (_m *StoryConfigRepository) GetByID(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*models.StoryConfig, error) {
 	ret := _m.Called(ctx, id, userID)
 
 	if len(ret) == 0 {
@@ -121,10 +141,10 @@ func (_m *StoryConfigRepository) GetByID(ctx context.Context, id uuid.UUID, user
 
 	var r0 *models.StoryConfig
 	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uint64) (*models.StoryConfig, error)); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uuid.UUID) (*models.StoryConfig, error)); ok {
 		return rf(ctx, id, userID)
 	}
-	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uint64) *models.StoryConfig); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uuid.UUID) *models.StoryConfig); ok {
 		r0 = rf(ctx, id, userID)
 	} else {
 		if ret.Get(0) != nil {
@@ -132,7 +152,7 @@ func (_m *StoryConfigRepository) GetByID(ctx context.Context, id uuid.UUID, user
 		}
 	}
 
-	if rf, ok := ret.Get(1).(func(context.Context, uuid.UUID, uint64) error); ok {
+	if rf, ok := ret.Get(1).(func(context.Context, uuid.UUID, uuid.UUID) error); ok {
 		r1 = rf(ctx, id, userID)
 	} else {
 		r1 = ret.Error(1)
@@ -171,36 +191,36 @@ func (_m *StoryConfigRepository) GetByIDInternal(ctx context.Context, id uuid.UU
 	return r0, r1
 }
 
-// ListByUser provides a mock function with given fields: ctx, userID, limit, cursor
-func (_m *StoryConfigRepository) ListByUser(ctx context.Context, userID uint64, limit int, cursor string) ([]models.StoryConfig, string, error) {
-	ret := _m.Called(ctx, userID, limit, cursor)
+// ListByUserID provides a mock function with given fields: ctx, userID, cursor, limit
+func (_m *StoryConfigRepository) ListByUserID(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]models.StoryConfig, string, error) {
+	ret := _m.Called(ctx, userID, cursor, limit)
 
 	if len(ret) == 0 {
-		panic("no return value specified for ListByUser")
+		panic("no return value specified for ListByUserID")
 	}
 
 	var r0 []models.StoryConfig
 	var r1 string
 	var r2 error
-	if rf, ok := ret.Get(0).(func(context.Context, uint64, int, string) ([]models.StoryConfig, string, error)); ok {
-		return rf(ctx, userID, limit, cursor)
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, string, int) ([]models.StoryConfig, string, error)); ok {
+		return rf(ctx, userID, cursor, limit)
 	}
-	if rf, ok := ret.Get(0).(func(context.Context, uint64, int, string) []models.StoryConfig); ok {
-		r0 = rf(ctx, userID, limit, cursor)
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, string, int) []models.StoryConfig); ok {
+		r0 = rf(ctx, userID, cursor, limit)
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).([]models.StoryConfig)
 		}
 	}
 
-	if rf, ok := ret.Get(1).(func(context.Context, uint64, int, string) string); ok {
-		r1 = rf(ctx, userID, limit, cursor)
+	if rf, ok := ret.Get(1).(func(context.Context, uuid.UUID, string, int) string); ok {
+		r1 = rf(ctx, userID, cursor, limit)
 	} else {
 		r1 = ret.Get(1).(string)
 	}
 
-	if rf, ok := ret.Get(2).(func(context.Context, uint64, int, string) error); ok {
-		r2 = rf(ctx, userID, limit, cursor)
+	if rf, ok := ret.Get(2).(func(context.Context, uuid.UUID, string, int) error); ok {
+		r2 = rf(ctx, userID, cursor, limit)
 	} else {
 		r2 = ret.Error(2)
 	}

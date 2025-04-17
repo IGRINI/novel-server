@@ -11,7 +11,8 @@ import (
 	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging" // Общие структуры сообщений
 	sharedModels "novel-server/shared/models"       // !!! ДОБАВЛЕНО
-	"strconv"                                       // Добавлен strconv для UserID
+
+	// Добавлен strconv для UserID
 	"time"
 
 	"github.com/google/uuid"
@@ -146,7 +147,7 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 			}
 
 			// Статус и время обновляем в любом случае (успешное уведомление получено)
-			// config.Status = sharedModels.StatusDraft // Убрано, статус ставится выше
+			config.Status = sharedModels.StatusDraft
 			config.UpdatedAt = time.Now().UTC()
 
 		} else if notification.Status == sharedMessaging.NotificationStatusError { // Явное условие для Error
@@ -171,7 +172,7 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 		// Формируем и отправляем обновление клиенту (код без изменений)
 		clientUpdate = ClientStoryUpdate{
 			ID:          config.ID.String(),
-			UserID:      strconv.FormatUint(config.UserID, 10),
+			UserID:      config.UserID.String(),
 			Status:      string(config.Status),
 			Title:       config.Title,       // Будет старый title, если парсинг JSON не удался
 			Description: config.Description, // Будет старое description, если парсинг JSON не удался
@@ -252,7 +253,7 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 
 			nextTaskPayload := sharedMessaging.GenerationTaskPayload{
 				TaskID:           uuid.New().String(),
-				UserID:           strconv.FormatUint(publishedStory.UserID, 10),
+				UserID:           publishedStory.UserID.String(),
 				PromptType:       sharedMessaging.PromptTypeNovelFirstSceneCreator,
 				PublishedStoryID: publishedStoryID.String(),
 				InputData: map[string]interface{}{
@@ -359,7 +360,7 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 			} else {
 				clientUpdate := ClientStoryUpdate{
 					ID:          publishedStoryID.String(),
-					UserID:      strconv.FormatUint(pubStory.UserID, 10),
+					UserID:      pubStory.UserID.String(),
 					Status:      string(newStatus),
 					IsCompleted: newStatus == sharedModels.StatusCompleted, // Завершено или нет
 					EndingText:  endingText,                                // Текст концовки (может быть nil)

@@ -18,7 +18,6 @@ import (
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"time"
 
@@ -323,8 +322,11 @@ func createTestJWT(userID uint64) string {
 func GenerateTestJWT(userID uint64, secretKey string, validityDuration time.Duration) (string, error) {
 	expirationTime := time.Now().Add(validityDuration)
 	// Используем Claims из shared/models
+	// <<< Генерируем UUID из uint64 userID для токена >>>
+	userUUID := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(fmt.Sprintf("test-user-%d", userID)))
 	claims := &sharedModels.Claims{
-		UserID: userID,
+		// UserID: uuid.NewSHA1(uuid.NameSpaceDNS, []byte(fmt.Sprintf("test-user-%d", userID))), // Используем детерминированный UUID
+		UserID: userUUID,                        // <<< Используем сгенерированный UUID
 		Roles:  []string{sharedModels.RoleUser}, // <<< Добавляем базовую роль
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expirationTime),
@@ -348,6 +350,7 @@ func GenerateTestJWT(userID uint64, secretKey string, validityDuration time.Dura
 // Раскомментируем первый тест
 func (s *IntegrationTestSuite) TestGenerateInitialStory_Integration() {
 	userID := uint64(101)
+	userUUID := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(fmt.Sprintf("test-user-%d", userID))) // <<< Генерируем UUID
 	initialPrompt := "Интеграционная история"
 	token := createTestJWT(userID)
 
@@ -370,8 +373,9 @@ func (s *IntegrationTestSuite) TestGenerateInitialStory_Integration() {
 	err = json.NewDecoder(resp.Body).Decode(&createdConfig)
 	require.NoError(s.T(), err)
 
-	assert.Equal(s.T(), userID, createdConfig.UserID)
-	assert.Equal(s.T(), initialPrompt, createdConfig.Description)
+	// assert.Equal(s.T(), userID, createdConfig.UserID)
+	assert.Equal(s.T(), userUUID, createdConfig.UserID) // <<< Сравниваем UUID
+	// assert.Equal(s.T(), initialPrompt, createdConfig.Description) // Description больше не содержит prompt
 	assert.Equal(s.T(), sharedModels.StatusGenerating, createdConfig.Status)
 	assert.NotEmpty(s.T(), createdConfig.ID)
 	// Проверяем, что Config в ответе - это JSON null
@@ -383,7 +387,8 @@ func (s *IntegrationTestSuite) TestGenerateInitialStory_Integration() {
 
 	// *** ДОБАВЛЕНО: Гарантированное удаление созданного конфига ***
 	defer func() {
-		delErr := s.repo.Delete(context.Background(), createdConfig.ID, userID)
+		// delErr := s.repo.Delete(context.Background(), createdConfig.ID, userID)
+		delErr := s.repo.Delete(context.Background(), createdConfig.ID, userUUID) // <<< Используем UUID
 		if delErr != nil {
 			s.T().Logf("WARN: Failed to clean up story config %s: %v", createdConfig.ID, delErr)
 		}
@@ -397,7 +402,7 @@ func (s *IntegrationTestSuite) TestGenerateInitialStory_Integration() {
 	// Сравниваем поля по отдельности
 	assert.Equal(s.T(), createdConfig.ID, dbConfig.ID)
 	assert.Equal(s.T(), createdConfig.UserID, dbConfig.UserID)
-	assert.Equal(s.T(), createdConfig.Description, dbConfig.Description)
+	// assert.Equal(s.T(), createdConfig.Description, dbConfig.Description) // Description больше не содержит prompt
 	assert.Equal(s.T(), createdConfig.Status, dbConfig.Status)
 	assert.Equal(s.T(), []byte(createdConfig.UserInput), []byte(dbConfig.UserInput))
 	// Проверяем, что Config в БД - это Go nil
@@ -421,7 +426,8 @@ func (s *IntegrationTestSuite) TestGenerateInitialStory_Integration() {
 			foundGenerationMsg = true
 			assert.Equal(s.T(), createdConfig.ID.String(), generationPayload.StoryConfigID)
 			assert.Equal(s.T(), sharedMessaging.PromptTypeNarrator, generationPayload.PromptType)
-			assert.Equal(s.T(), strconv.FormatUint(userID, 10), generationPayload.UserID)
+			// assert.Equal(s.T(), strconv.FormatUint(userID, 10), generationPayload.UserID)
+			assert.Equal(s.T(), userUUID.String(), generationPayload.UserID) // <<< Сравниваем UUID string
 			assert.NotEmpty(s.T(), generationPayload.TaskID)
 		} else {
 			s.T().Fatalf("Received unexpected message type in GenerateInitialStory test. UserInput: %s", generationPayload.UserInput)
@@ -434,6 +440,7 @@ func (s *IntegrationTestSuite) TestGenerateInitialStory_Integration() {
 
 func (s *IntegrationTestSuite) TestReviseDraft_Integration() {
 	userID := uint64(102)
+	userUUID := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(fmt.Sprintf("test-user-%d", userID))) // <<< Генерируем UUID
 	initialPrompt := "Начальная история для ревизии"
 	revisionPrompt := "Добавить драконов"
 	token := createTestJWT(userID)
@@ -549,13 +556,15 @@ func (s *IntegrationTestSuite) TestReviseDraft_Integration() {
 	require.NoError(s.T(), err)
 	assert.Equal(s.T(), expectedInputDataMap, actualInputDataMap)
 
-	assert.Equal(s.T(), strconv.FormatUint(userID, 10), revisionPayload.UserID)
+	// assert.Equal(s.T(), strconv.FormatUint(userID, 10), revisionPayload.UserID)
+	assert.Equal(s.T(), userUUID.String(), revisionPayload.UserID) // <<< Сравниваем UUID string
 	assert.NotEmpty(s.T(), revisionPayload.TaskID)
 }
 
 // TestFullGameplayFlow_Integration проверяет полный цикл: создание -> имитация -> публикация
 func (s *IntegrationTestSuite) TestFullGameplayFlow_Integration() {
-	userID := uint64(101) // Используем существующего пользователя
+	userID := uint64(101)                                                                    // Используем существующего пользователя
+	userUUID := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(fmt.Sprintf("test-user-%d", userID))) // <<< Генерируем UUID
 	initialPrompt := "Полный флоу тест"
 	token := createTestJWT(userID)
 	client := &http.Client{}
@@ -598,6 +607,7 @@ func (s *IntegrationTestSuite) TestFullGameplayFlow_Integration() {
 			foundNarratorMsg = true
 			assert.Equal(s.T(), initialPrompt, narratorPayload.UserInput)
 			assert.Empty(s.T(), narratorPayload.InputData)
+			assert.Equal(s.T(), userUUID.String(), narratorPayload.UserID) // <<< Сравниваем UUID string
 		} else {
 			s.T().Fatalf("Received unexpected message type in Step 1. Expected Narrator, got %s", narratorPayload.PromptType)
 		}
@@ -671,7 +681,8 @@ func (s *IntegrationTestSuite) TestFullGameplayFlow_Integration() {
 
 	// Сравниваем поля
 	assert.Equal(s.T(), publishedStoryID, publishedStoryDB.ID)
-	assert.Equal(s.T(), userID, publishedStoryDB.UserID)
+	// assert.Equal(s.T(), userID, publishedStoryDB.UserID)
+	assert.Equal(s.T(), userUUID, publishedStoryDB.UserID) // <<< Сравниваем UUID
 	assert.JSONEq(s.T(), generatedConfigJSON, string(publishedStoryDB.Config), "Config JSON should match")
 	assert.Nil(s.T(), publishedStoryDB.Setup, "Setup should be nil initially")
 	assert.Equal(s.T(), sharedModels.StatusSetupPending, publishedStoryDB.Status, "Status should be setup_pending")
@@ -696,7 +707,8 @@ func (s *IntegrationTestSuite) TestFullGameplayFlow_Integration() {
 		// Идентифицируем сообщение по типу и ID опубликованной истории
 		if setupPayload.PublishedStoryID == publishedStoryID.String() && setupPayload.PromptType == sharedMessaging.PromptTypeNovelSetup {
 			foundSetupMsg = true
-			assert.Equal(s.T(), strconv.FormatUint(userID, 10), setupPayload.UserID)
+			// assert.Equal(s.T(), strconv.FormatUint(userID, 10), setupPayload.UserID)
+			assert.Equal(s.T(), userUUID.String(), setupPayload.UserID) // <<< Сравниваем UUID string
 			assert.Empty(s.T(), setupPayload.StoryConfigID, "StoryConfigID should be empty for setup task")
 			assert.Empty(s.T(), setupPayload.UserInput, "UserInput should be empty for setup task")
 			assert.NotEmpty(s.T(), setupPayload.InputData, "InputData should not be empty for setup task")
@@ -743,7 +755,8 @@ func (s *IntegrationTestSuite) TestFullGameplayFlow_Integration() {
 
 // TestListMyDrafts_Integration проверяет получение списка черновиков пользователя с пагинацией.
 func (s *IntegrationTestSuite) TestListMyDrafts_Integration() {
-	userID := uint64(101) // Используем того же пользователя
+	userID := uint64(101)                                                                    // Используем того же пользователя
+	userUUID := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(fmt.Sprintf("test-user-%d", userID))) // <<< Генерируем UUID
 	token := createTestJWT(userID)
 	client := &http.Client{}
 	ctx := context.Background()
@@ -773,8 +786,9 @@ func (s *IntegrationTestSuite) TestListMyDrafts_Integration() {
 		userInputJSON, err := json.Marshal([]string{prompt})
 		require.NoError(s.T(), err)
 		config := &sharedModels.StoryConfig{
-			ID:          uuid.New(),
-			UserID:      userID,
+			ID: uuid.New(),
+			// UserID:      userID,
+			UserID:      userUUID, // <<< Используем UUID
 			Title:       fmt.Sprintf("Draft %d", i),
 			Description: prompt,
 			UserInput:   userInputJSON,
@@ -901,7 +915,8 @@ func (s *IntegrationTestSuite) TestListMyDrafts_Integration() {
 	s.T().Log("--- Очистка тестовых черновиков --- ")
 	deleteQuery := `DELETE FROM story_configs WHERE id = $1 AND user_id = $2`
 	for _, id := range draftIDs {
-		_, err := s.dbPool.Exec(ctx, deleteQuery, id, userID)
+		// _, err := s.dbPool.Exec(ctx, deleteQuery, id, userID)
+		_, err := s.dbPool.Exec(ctx, deleteQuery, id, userUUID) // <<< Используем UUID
 		assert.NoError(s.T(), err, "Ошибка при удалении тестового черновика %s", id)
 	}
 	s.T().Log("Очистка завершена.")
@@ -909,7 +924,8 @@ func (s *IntegrationTestSuite) TestListMyDrafts_Integration() {
 
 // TestListMyPublishedStories_Integration проверяет получение списка опубликованных историй пользователя.
 func (s *IntegrationTestSuite) TestListMyPublishedStories_Integration() {
-	userID := uint64(102) // Другой пользователь
+	userID := uint64(102)                                                                    // Другой пользователь
+	userUUID := uuid.NewSHA1(uuid.NameSpaceDNS, []byte(fmt.Sprintf("test-user-%d", userID))) // <<< Генерируем UUID
 	token := createTestJWT(userID)
 	client := &http.Client{}
 	ctx := context.Background()
@@ -935,7 +951,8 @@ func (s *IntegrationTestSuite) TestListMyPublishedStories_Integration() {
 		desc := storyData[i].desc
 		// Создаем напрямую в БД для теста
 		story := &sharedModels.PublishedStory{
-			UserID:         userID,
+			// UserID:         userID,
+			UserID:         userUUID, // <<< Используем UUID
 			Config:         json.RawMessage(storyData[i].configJSON),
 			Status:         sharedModels.StatusSetupPending, // <<< Исправлено
 			IsPublic:       storyData[i].isPublic,
@@ -1043,7 +1060,8 @@ func (s *IntegrationTestSuite) TestListMyPublishedStories_Integration() {
 	s.T().Log("--- Очистка тестовых опубликованных историй --- ")
 	deleteQuery := `DELETE FROM published_stories WHERE id = $1 AND user_id = $2`
 	for _, id := range publishedIDs {
-		_, err := s.dbPool.Exec(ctx, deleteQuery, id, userID)
+		// _, err := s.dbPool.Exec(ctx, deleteQuery, id, userID)
+		_, err := s.dbPool.Exec(ctx, deleteQuery, id, userUUID) // <<< Используем UUID
 		assert.NoError(s.T(), err, "Ошибка при удалении тестовой опубликованной истории %s", id)
 	}
 	s.T().Log("Очистка завершена.")

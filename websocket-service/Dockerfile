@@ -1,32 +1,34 @@
-# Этап 1: Сборка приложения
+# --- Build Stage ---
 ARG GO_VERSION=1.24
 FROM golang:${GO_VERSION}-alpine AS builder
 
-WORKDIR /app/websocket-service
+# Игнорируем go.work внутри сборки
+ENV GOWORK=off
 
-# 1. Копируем go.mod / go.sum сначала
-COPY websocket-service/go.mod websocket-service/go.sum ./
-RUN mkdir -p ../shared
-COPY shared/go.mod shared/go.sum ../shared/
+# Устанавливаем рабочую директорию в корень модуля
+WORKDIR /app
 
-# 2. Копируем ВЕСЬ исходный код СНАЧАЛА
-COPY shared/ ../shared/
-COPY websocket-service/ .
+# Копируем ТОЛЬКО корневые go.mod и go.sum
+COPY go.mod go.sum ./
 
-# 3. Теперь выполняем tidy, когда весь код на месте
-RUN GOWORK=off go mod tidy
+# Загружаем ВСЕ зависимости проекта
+RUN go mod download
 
-# 4. Собираем приложение
-RUN GOWORK=off CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/websocket-server ./cmd/server
+# Копируем ВЕСЬ исходный код проекта
+COPY . .
 
-# Этап 2: Создание минимального финального образа
+# Собираем приложение websocket-service
+# Команда выполняется из корня /app
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /websocket-server ./websocket-service/cmd/server/main.go
+
+# --- Final Stage ---
 FROM alpine:latest
 
 # Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копируем собранный бинарник
-COPY --from=builder /app/websocket-server .
+# Копируем собранный бинарник из builder stage
+COPY --from=builder /websocket-server .
 
 # Копируем возможные необходимые файлы конфигурации или статики (если они появятся)
 # COPY ./config /app/config
@@ -35,5 +37,7 @@ COPY --from=builder /app/websocket-server .
 # EXPOSE 8083 - Не обязательно, т.к. порт задается в docker-compose
 
 # Устанавливаем команду для запуска приложения
-CMD ["./websocket-server"] 
+CMD ["/app/websocket-server"]
+
+# Определяем порт для health check (должен совпадать с портом в приложении)
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD wget --spider -q http://localhost:9092/health || exit 1 

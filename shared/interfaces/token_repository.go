@@ -3,6 +3,8 @@ package interfaces
 import (
 	"context"
 	"novel-server/shared/models"
+
+	"github.com/google/uuid"
 )
 
 // TokenRepository defines the interface for token persistence (e.g., Redis).
@@ -12,7 +14,7 @@ import (
 type TokenRepository interface {
 	// SetToken stores the token details (Access & Refresh UUIDs mapped to UserID)
 	// with appropriate TTLs.
-	SetToken(ctx context.Context, userID uint64, td *models.TokenDetails) error
+	SetToken(ctx context.Context, userID uuid.UUID, td *models.TokenDetails) error
 
 	// DeleteTokens removes the specified token UUIDs from the store.
 	// Returns the number of keys deleted.
@@ -20,11 +22,11 @@ type TokenRepository interface {
 
 	// GetUserIDByAccessUUID checks if the Access UUID exists in the store and returns the associated UserID.
 	// Returns models.ErrTokenNotFound if the token is not found (or expired).
-	GetUserIDByAccessUUID(ctx context.Context, accessUUID string) (uint64, error)
+	GetUserIDByAccessUUID(ctx context.Context, accessUUID string) (uuid.UUID, error)
 
 	// GetUserIDByRefreshUUID checks if the Refresh UUID exists in the store and returns the associated UserID.
 	// Returns models.ErrTokenNotFound if the token is not found (or expired).
-	GetUserIDByRefreshUUID(ctx context.Context, refreshUUID string) (uint64, error)
+	GetUserIDByRefreshUUID(ctx context.Context, refreshUUID string) (uuid.UUID, error)
 
 	// DeleteRefreshUUID removes only the refresh token UUID from the store.
 	// Useful for testing scenarios or specific logout logic.
@@ -32,5 +34,5 @@ type TokenRepository interface {
 
 	// DeleteTokensByUserID removes all tokens (access and refresh) associated with a user ID.
 	// Returns the number of tokens deleted.
-	DeleteTokensByUserID(ctx context.Context, userID uint64) (int64, error)
+	DeleteTokensByUserID(ctx context.Context, userID uuid.UUID) (int64, error)
 }

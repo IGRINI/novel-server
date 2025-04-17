@@ -7,6 +7,7 @@ import (
 	"novel-server/shared/interfaces"
 	"novel-server/shared/models"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"go.uber.org/zap"
@@ -30,9 +31,9 @@ func NewPgUserRepository(db interfaces.DBTX, logger *zap.Logger) interfaces.User
 
 // CreateUser inserts a new user into the database.
 func (r *pgUserRepository) CreateUser(ctx context.Context, user *models.User) error {
-	query := `INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) RETURNING id`
-	r.logger.Debug("Executing query", zap.String("query", query), zap.String("username", user.Username), zap.String("email", user.Email))
-	err := r.db.QueryRow(ctx, query, user.Username, user.Email, user.PasswordHash).Scan(&user.ID)
+	query := `INSERT INTO users (username, email, password_hash, display_name) VALUES ($1, $2, $3, $4) RETURNING id`
+	r.logger.Debug("Executing query", zap.String("query", query), zap.String("username", user.Username), zap.String("email", user.Email), zap.String("displayName", user.DisplayName))
+	err := r.db.QueryRow(ctx, query, user.Username, user.Email, user.PasswordHash, user.DisplayName).Scan(&user.ID)
 
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -56,16 +57,16 @@ func (r *pgUserRepository) CreateUser(ctx context.Context, user *models.User) er
 		r.logger.Error("Failed to create user in postgres", zap.Error(err), zap.String("username", user.Username), zap.String("email", user.Email))
 		return fmt.Errorf("failed to create user in postgres: %w", err)
 	}
-	r.logger.Info("User created successfully", zap.Uint64("userID", user.ID), zap.String("username", user.Username), zap.String("email", user.Email))
+	r.logger.Info("User created successfully", zap.String("userID", user.ID.String()), zap.String("username", user.Username), zap.String("email", user.Email))
 	return nil
 }
 
 // GetUserByUsername retrieves a user by their username.
 func (r *pgUserRepository) GetUserByUsername(ctx context.Context, username string) (*models.User, error) {
-	query := `SELECT id, username, email, password_hash, roles FROM users WHERE username = $1`
+	query := `SELECT id, username, display_name, email, password_hash, roles, is_banned FROM users WHERE username = $1`
 	user := &models.User{}
 	r.logger.Debug("Executing query", zap.String("query", query), zap.String("username", username))
-	err := r.db.QueryRow(ctx, query, username).Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.Roles)
+	err := r.db.QueryRow(ctx, query, username).Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.PasswordHash, &user.Roles, &user.IsBanned)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -80,10 +81,10 @@ func (r *pgUserRepository) GetUserByUsername(ctx context.Context, username strin
 
 // GetUserByEmail retrieves a user by their email.
 func (r *pgUserRepository) GetUserByEmail(ctx context.Context, email string) (*models.User, error) {
-	query := `SELECT id, username, email, password_hash FROM users WHERE email = $1`
+	query := `SELECT id, username, display_name, email, password_hash, roles, is_banned FROM users WHERE email = $1`
 	user := &models.User{}
 	r.logger.Debug("Executing query", zap.String("query", query), zap.String("email", email))
-	err := r.db.QueryRow(ctx, query, email).Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash)
+	err := r.db.QueryRow(ctx, query, email).Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.PasswordHash, &user.Roles, &user.IsBanned)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -99,18 +100,18 @@ func (r *pgUserRepository) GetUserByEmail(ctx context.Context, email string) (*m
 }
 
 // GetUserByID retrieves a user by their ID.
-func (r *pgUserRepository) GetUserByID(ctx context.Context, id uint64) (*models.User, error) {
-	query := `SELECT id, username, email, password_hash, roles FROM users WHERE id = $1`
+func (r *pgUserRepository) GetUserByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
+	query := `SELECT id, username, display_name, email, password_hash, roles, is_banned FROM users WHERE id = $1`
 	user := &models.User{}
-	r.logger.Debug("Executing query", zap.String("query", query), zap.Uint64("id", id))
-	err := r.db.QueryRow(ctx, query, id).Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.Roles)
+	r.logger.Debug("Executing query", zap.String("query", query), zap.String("id", id.String()))
+	err := r.db.QueryRow(ctx, query, id).Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.PasswordHash, &user.Roles, &user.IsBanned)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			r.logger.Debug("User not found by ID", zap.Uint64("id", id))
+			r.logger.Debug("User not found by ID", zap.String("id", id.String()))
 			return nil, models.ErrUserNotFound
 		}
-		r.logger.Error("Failed to get user by id from postgres", zap.Error(err), zap.Uint64("id", id))
+		r.logger.Error("Failed to get user by id from postgres", zap.Error(err), zap.String("id", id.String()))
 		return nil, fmt.Errorf("failed to get user by id from postgres: %w", err)
 	}
 	return user, nil
@@ -132,7 +133,7 @@ func (r *pgUserRepository) GetUserCount(ctx context.Context) (int64, error) {
 // ListUsers retrieves a list of users.
 // TODO: Add pagination (LIMIT, OFFSET)
 func (r *pgUserRepository) ListUsers(ctx context.Context) ([]models.User, error) {
-	query := `SELECT id, username, email, roles, is_banned FROM users ORDER BY id ASC`
+	query := `SELECT id, username, display_name, email, roles, is_banned FROM users ORDER BY id ASC`
 	r.logger.Debug("Executing query", zap.String("query", query))
 	rows, err := r.db.Query(ctx, query)
 	if err != nil {
@@ -144,7 +145,7 @@ func (r *pgUserRepository) ListUsers(ctx context.Context) ([]models.User, error)
 	users := make([]models.User, 0)
 	for rows.Next() {
 		var user models.User
-		if err := rows.Scan(&user.ID, &user.Username, &user.Email, &user.Roles, &user.IsBanned); err != nil {
+		if err := rows.Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Roles, &user.IsBanned); err != nil {
 			r.logger.Error("Failed to scan user row", zap.Error(err))
 			// Продолжаем сканировать другие строки, но логируем ошибку
 			continue
@@ -161,32 +162,32 @@ func (r *pgUserRepository) ListUsers(ctx context.Context) ([]models.User, error)
 }
 
 // SetUserBanStatus updates the is_banned status for a user.
-func (r *pgUserRepository) SetUserBanStatus(ctx context.Context, userID uint64, isBanned bool) error {
+func (r *pgUserRepository) SetUserBanStatus(ctx context.Context, userID uuid.UUID, isBanned bool) error {
 	query := `UPDATE users SET is_banned = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
-	r.logger.Debug("Executing query", zap.String("query", query), zap.Uint64("userID", userID), zap.Bool("isBanned", isBanned))
-	
+	r.logger.Debug("Executing query", zap.String("query", query), zap.String("userID", userID.String()), zap.Bool("isBanned", isBanned))
+
 	cmdTag, err := r.db.Exec(ctx, query, isBanned, userID)
 	if err != nil {
-		r.logger.Error("Failed to update user ban status in postgres", zap.Error(err), zap.Uint64("userID", userID), zap.Bool("isBanned", isBanned))
+		r.logger.Error("Failed to update user ban status in postgres", zap.Error(err), zap.String("userID", userID.String()), zap.Bool("isBanned", isBanned))
 		return fmt.Errorf("failed to update user ban status: %w", err)
 	}
 
 	if cmdTag.RowsAffected() == 0 {
-		r.logger.Warn("Attempted to update ban status for non-existent user", zap.Uint64("userID", userID))
+		r.logger.Warn("Attempted to update ban status for non-existent user", zap.String("userID", userID.String()))
 		return models.ErrUserNotFound // Возвращаем ошибку, если пользователь не найден
 	}
 
-	r.logger.Info("User ban status updated successfully", zap.Uint64("userID", userID), zap.Bool("isBanned", isBanned))
+	r.logger.Info("User ban status updated successfully", zap.String("userID", userID.String()), zap.Bool("isBanned", isBanned))
 	return nil
 }
 
 // UpdateUserFields обновляет указанные поля пользователя в базе данных.
 // Принимает ID пользователя и указатели на обновляемые значения.
 // Если указатель равен nil, соответствующее поле не обновляется.
-func (r *pgUserRepository) UpdateUserFields(ctx context.Context, userID uint64, email *string, roles []string, isBanned *bool) error {
+func (r *pgUserRepository) UpdateUserFields(ctx context.Context, userID uuid.UUID, email *string, roles []string, isBanned *bool) error {
 	queryBase := "UPDATE users SET updated_at = CURRENT_TIMESTAMP"
 	args := []interface{}{} // Слайс для аргументов запроса
-	argID := 1 // Счетчик для плейсхолдеров ($1, $2, ...)
+	argID := 1              // Счетчик для плейсхолдеров ($1, $2, ...)
 
 	// Добавляем поля для обновления, если они переданы (не nil)
 	if email != nil {
@@ -204,10 +205,17 @@ func (r *pgUserRepository) UpdateUserFields(ctx context.Context, userID uint64, 
 		args = append(args, *isBanned)
 		argID++
 	}
+	/* // Пока убираем возможность обновления DisplayName через этот метод
+	if displayName != nil {
+		queryBase += fmt.Sprintf(", display_name = $%d", argID)
+		args = append(args, *displayName)
+		argID++
+	}
+	*/
 
 	// Если нечего обновлять, просто выходим
 	if len(args) == 0 {
-		r.logger.Info("UpdateUserFields called with no fields to update", zap.Uint64("userID", userID))
+		r.logger.Info("UpdateUserFields called with no fields to update", zap.String("userID", userID.String()))
 		return nil
 	}
 
@@ -215,45 +223,45 @@ func (r *pgUserRepository) UpdateUserFields(ctx context.Context, userID uint64, 
 	query := queryBase + fmt.Sprintf(" WHERE id = $%d", argID)
 	args = append(args, userID)
 
-	r.logger.Debug("Executing update user query", zap.String("query", query), zap.Uint64("userID", userID), zap.Any("args", args))
+	r.logger.Debug("Executing update user query", zap.String("query", query), zap.String("userID", userID.String()), zap.Any("args", args))
 	cmdTag, err := r.db.Exec(ctx, query, args...)
 	if err != nil {
 		// Проверяем на ошибку уникальности email
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "users_email_key" {
-			r.logger.Warn("Attempted to update user with duplicate email", zap.Uint64("userID", userID), zap.Stringp("email", email))
+			r.logger.Warn("Attempted to update user with duplicate email", zap.String("userID", userID.String()), zap.Stringp("email", email))
 			return models.ErrEmailAlreadyExists
 		}
-		r.logger.Error("Failed to update user fields in postgres", zap.Error(err), zap.Uint64("userID", userID))
+		r.logger.Error("Failed to update user fields in postgres", zap.Error(err), zap.String("userID", userID.String()))
 		return fmt.Errorf("failed to update user fields: %w", err)
 	}
 
 	if cmdTag.RowsAffected() == 0 {
-		r.logger.Warn("Attempted to update non-existent user", zap.Uint64("userID", userID))
+		r.logger.Warn("Attempted to update non-existent user", zap.String("userID", userID.String()))
 		return models.ErrUserNotFound
 	}
 
-	r.logger.Info("User fields updated successfully", zap.Uint64("userID", userID))
+	r.logger.Info("User fields updated successfully", zap.String("userID", userID.String()))
 	return nil
 }
 
 // UpdatePasswordHash обновляет хеш пароля пользователя.
-func (r *pgUserRepository) UpdatePasswordHash(ctx context.Context, userID uint64, passwordHash string) error {
+func (r *pgUserRepository) UpdatePasswordHash(ctx context.Context, userID uuid.UUID, passwordHash string) error {
 	query := `UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
-	r.logger.Debug("Executing query", zap.String("query", query), zap.Uint64("userID", userID))
-	
+	r.logger.Debug("Executing query", zap.String("query", query), zap.String("userID", userID.String()))
+
 	cmdTag, err := r.db.Exec(ctx, query, passwordHash, userID)
 	if err != nil {
-		r.logger.Error("Failed to update user password hash in postgres", zap.Error(err), zap.Uint64("userID", userID))
+		r.logger.Error("Failed to update user password hash in postgres", zap.Error(err), zap.String("userID", userID.String()))
 		return fmt.Errorf("failed to update password hash: %w", err)
 	}
 
 	if cmdTag.RowsAffected() == 0 {
-		r.logger.Warn("Attempted to update password hash for non-existent user", zap.Uint64("userID", userID))
+		r.logger.Warn("Attempted to update password hash for non-existent user", zap.String("userID", userID.String()))
 		return models.ErrUserNotFound
 	}
 
-	r.logger.Info("User password hash updated successfully", zap.Uint64("userID", userID))
+	r.logger.Info("User password hash updated successfully", zap.String("userID", userID.String()))
 	return nil
 }
 

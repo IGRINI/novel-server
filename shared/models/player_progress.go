@@ -9,7 +9,7 @@ import (
 // PlayerProgress хранит текущее состояние игрока в рамках опубликованной истории.
 type PlayerProgress struct {
 	ID               uuid.UUID              `db:"id" json:"id"`
-	UserID           uint64                 `db:"user_id" json:"userId"`
+	UserID           uuid.UUID              `db:"user_id" json:"userId"`
 	PublishedStoryID uuid.UUID              `db:"published_story_id" json:"publishedStoryId"`
 	CoreStats        map[string]int         `db:"core_stats" json:"coreStats"`
 	StoryVariables   map[string]interface{} `db:"story_variables" json:"storyVariables"`
