@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"novel-server/gameplay-service/internal/models" // Локальные модели
-	"novel-server/gameplay-service/internal/repository"
+
+	// "novel-server/gameplay-service/internal/models" // Удален
+	// "novel-server/gameplay-service/internal/repository" // Удален
 	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging" // Общие структуры сообщений
 	sharedModels "novel-server/shared/models"       // !!! ДОБАВЛЕНО
@@ -22,7 +23,7 @@ import (
 // NotificationProcessor обрабатывает логику уведомлений.
 // Вынесен в отдельную структуру для тестируемости.
 type NotificationProcessor struct {
-	repo          repository.StoryConfigRepository    // Для StoryConfig
+	repo          interfaces.StoryConfigRepository    // Используем shared интерфейс
 	publishedRepo interfaces.PublishedStoryRepository // !!! ДОБАВЛЕНО: Для PublishedStory
 	sceneRepo     interfaces.StorySceneRepository     // !!! ДОБАВЛЕНО: Для StoryScene
 	clientPub     ClientUpdatePublisher               // Для отправки обновлений клиенту
@@ -31,7 +32,7 @@ type NotificationProcessor struct {
 
 // NewNotificationProcessor создает новый экземпляр NotificationProcessor.
 func NewNotificationProcessor(
-	repo repository.StoryConfigRepository,
+	repo interfaces.StoryConfigRepository, // Используем shared интерфейс
 	publishedRepo interfaces.PublishedStoryRepository,
 	sceneRepo interfaces.StorySceneRepository, // !!! Добавлено sceneRepo
 	clientPub ClientUpdatePublisher,
@@ -110,7 +111,7 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 
 		if notification.Status == sharedMessaging.NotificationStatusSuccess {
 			// <<< Проверяем статус ТОЛЬКО для Success сценария >>>
-			if config.Status != models.StatusGenerating {
+			if config.Status != sharedModels.StatusGenerating {
 				log.Printf("[processor][TaskID: %s] StoryConfig %s уже не в статусе Generating (текущий: %s), обновление Narrator Success отменено.", taskID, storyConfigID, config.Status)
 				return nil // Игнорируем устаревшее успешное уведомление
 			}
@@ -140,17 +141,17 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 				// Парсинг НЕ удался - логируем, Config НЕ обновляем, Title/Desc НЕ обновляем
 				log.Printf("[processor][TaskID: %s] ОШИБКА ПАРСИНГА: Не удалось распарсить JSON из GeneratedText для StoryConfig %s: %v. Содержимое: '%s'. Config НЕ будет обновлен.", taskID, storyConfigID, parseErr, string(configBytes))
 				// Устанавливаем статус Error при ошибке парсинга
-				config.Status = models.StatusError
+				config.Status = sharedModels.StatusError // Используем sharedModels
 				// config.Config = []byte("{}") // Оставляем старый конфиг
 			}
 
 			// Статус и время обновляем в любом случае (успешное уведомление получено)
-			// config.Status = models.StatusDraft // Убрано, статус ставится выше
+			// config.Status = sharedModels.StatusDraft // Убрано, статус ставится выше
 			config.UpdatedAt = time.Now().UTC()
 
 		} else if notification.Status == sharedMessaging.NotificationStatusError { // Явное условие для Error
 			log.Printf("[processor][TaskID: %s] Уведомление Narrator Error для StoryConfig %s. Details: %s", taskID, storyConfigID, notification.ErrorDetails)
-			config.Status = models.StatusError
+			config.Status = sharedModels.StatusError // Используем sharedModels
 			config.UpdatedAt = time.Now().UTC()
 			// Title/Description/Config не меняем при ошибке
 		} else {
@@ -175,7 +176,7 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 			Title:       config.Title,       // Будет старый title, если парсинг JSON не удался
 			Description: config.Description, // Будет старое description, если парсинг JSON не удался
 		}
-		if config.Status == models.StatusError {
+		if config.Status == sharedModels.StatusError { // Используем sharedModels
 			if notification.ErrorDetails != "" {
 				errDetails := notification.ErrorDetails
 				clientUpdate.ErrorDetails = &errDetails
@@ -400,7 +401,7 @@ type NotificationConsumer struct {
 	queueName   string
 	stopChannel chan struct{}
 	// !!! ДОБАВЛЕНО: Зависимости для передачи в процессор
-	storyRepo     repository.StoryConfigRepository
+	storyRepo     interfaces.StoryConfigRepository // Используем shared интерфейс
 	publishedRepo interfaces.PublishedStoryRepository
 	sceneRepo     interfaces.StorySceneRepository // !!! Добавлено sceneRepo
 	clientPub     ClientUpdatePublisher
@@ -410,7 +411,7 @@ type NotificationConsumer struct {
 // NewNotificationConsumer создает нового консьюмера уведомлений.
 func NewNotificationConsumer(
 	conn *amqp.Connection,
-	repo repository.StoryConfigRepository,
+	repo interfaces.StoryConfigRepository, // Используем shared интерфейс
 	publishedRepo interfaces.PublishedStoryRepository,
 	sceneRepo interfaces.StorySceneRepository, // !!! Добавлено sceneRepo
 	clientPub ClientUpdatePublisher,

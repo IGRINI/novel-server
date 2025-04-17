@@ -7,9 +7,9 @@ import (
 	"log"
 	"novel-server/gameplay-service/internal/messaging"
 	messagingMocks "novel-server/gameplay-service/internal/messaging/mocks"
-	"novel-server/gameplay-service/internal/models"
-	repoMocks "novel-server/gameplay-service/internal/repository/mocks"
+	repoMocks "novel-server/shared/interfaces/mocks"
 	sharedMessaging "novel-server/shared/messaging"
+	sharedModels "novel-server/shared/models"
 	"strings"
 	"testing"
 
@@ -29,10 +29,10 @@ func TestNotificationProcessor_Process(t *testing.T) {
 	taskID := "task-abc"
 
 	// Базовый конфиг - НЕ использовать напрямую в t.Run!
-	baseConfigGenerating := &models.StoryConfig{
+	baseConfigGenerating := &sharedModels.StoryConfig{
 		ID:        storyID,
 		UserID:    123, // Важно: UserID здесь не используется напрямую
-		Status:    models.StatusGenerating,
+		Status:    sharedModels.StatusGenerating,
 		UserInput: []byte(`["Начало"]`),
 	}
 
@@ -53,14 +53,14 @@ func TestNotificationProcessor_Process(t *testing.T) {
 
 		// Ожидаем вызовы
 		mockRepo.On("GetByIDInternal", mock.Anything, storyID).Return(&configGenerating, nil).Once()
-		mockRepo.On("Update", mock.Anything, mock.MatchedBy(func(cfg *models.StoryConfig) bool {
+		mockRepo.On("Update", mock.Anything, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool {
 			// Проверяем обновление статуса, конфига, тайтла, описания
-			return cfg.ID == storyID && cfg.Status == models.StatusDraft &&
+			return cfg.ID == storyID && cfg.Status == sharedModels.StatusDraft &&
 				string(cfg.Config) == generatedText && cfg.Title == "Новый тайтл" && cfg.Description == "Новое описание"
 		})).Return(nil).Once()
 		mockClientPub.On("PublishClientUpdate", mock.Anything, mock.MatchedBy(func(payload messaging.ClientStoryUpdate) bool {
 			// Проверяем данные для клиента
-			return payload.ID == storyID.String() && payload.Status == string(models.StatusDraft) &&
+			return payload.ID == storyID.String() && payload.Status == string(sharedModels.StatusDraft) &&
 				payload.Title == "Новый тайтл" && payload.Description == "Новое описание"
 		})).Return(nil).Once()
 
@@ -74,7 +74,7 @@ func TestNotificationProcessor_Process(t *testing.T) {
 	t.Run("Config not generating status", func(t *testing.T) {
 		// Копируем конфиг и меняем статус
 		configNotGenerating := *baseConfigGenerating
-		configNotGenerating.Status = models.StatusDraft
+		configNotGenerating.Status = sharedModels.StatusDraft
 		mockRepo := new(repoMocks.StoryConfigRepository)
 		mockClientPub := new(messagingMocks.ClientUpdatePublisher)
 		mockTaskPub := new(messagingMocks.TaskPublisher)
@@ -142,8 +142,8 @@ func TestNotificationProcessor_Process(t *testing.T) {
 
 		// Ожидаем вызовы
 		mockRepo.On("GetByIDInternal", mock.Anything, storyID).Return(&configGenerating, nil).Once()
-		mockRepo.On("Update", mock.Anything, mock.MatchedBy(func(cfg *models.StoryConfig) bool {
-			return cfg.ID == storyID && cfg.Status == models.StatusError
+		mockRepo.On("Update", mock.Anything, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool {
+			return cfg.ID == storyID && cfg.Status == sharedModels.StatusError
 		})).Return(nil).Once()
 		mockClientPub.On("PublishClientUpdate", mock.Anything, mock.AnythingOfType("messaging.ClientStoryUpdate")).Return(nil).Once()
 
@@ -171,7 +171,7 @@ func TestNotificationProcessor_Process(t *testing.T) {
 
 		// Настраиваем ожидания
 		mockRepo.On("GetByIDInternal", mock.Anything, storyID).Return(&configGenerating, nil).Once()
-		mockRepo.On("Update", mock.Anything, mock.AnythingOfType("*models.StoryConfig")).Return(dbError).Once()
+		mockRepo.On("Update", mock.Anything, mock.AnythingOfType("*sharedmodels.StoryConfig")).Return(dbError).Once()
 
 		err := processor.Process(ctx, body, storyID)
 
@@ -209,7 +209,7 @@ func TestNotificationProcessor_Process(t *testing.T) {
 
 		// Ожидаем вызовы
 		mockRepo.On("GetByIDInternal", mock.Anything, storyID).Return(&configGenerating, nil).Once()
-		mockRepo.On("Update", mock.Anything, mock.AnythingOfType("*models.StoryConfig")).Return(nil).Once()
+		mockRepo.On("Update", mock.Anything, mock.AnythingOfType("*sharedmodels.StoryConfig")).Return(nil).Once()
 		mockClientPub.On("PublishClientUpdate", mock.Anything, mock.AnythingOfType("messaging.ClientStoryUpdate")).Return(pubError).Once()
 
 		err := processor.Process(ctx, body, storyID)
@@ -235,7 +235,7 @@ func TestNotificationProcessor_Process(t *testing.T) {
 
 		// Ожидаем вызовы
 		mockRepo.On("GetByIDInternal", mock.Anything, storyID).Return(&configGenerating, nil).Once()
-		mockRepo.On("Update", mock.Anything, mock.AnythingOfType("*models.StoryConfig")).Return(nil).Once()
+		mockRepo.On("Update", mock.Anything, mock.AnythingOfType("*sharedmodels.StoryConfig")).Return(nil).Once()
 		mockClientPub.On("PublishClientUpdate", mock.Anything, mock.AnythingOfType("messaging.ClientStoryUpdate")).Return(nil).Once()
 
 		err := processor.Process(ctx, body, storyID)

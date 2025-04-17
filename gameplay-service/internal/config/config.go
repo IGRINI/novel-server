@@ -36,6 +36,9 @@ type Config struct {
 	// Настройки JWT (для проверки токена пользователя в middleware)
 	// Секретное поле БЕЗ envconfig тега
 	JWTSecret string
+
+	// <<< Добавляем секрет для межсервисных токенов >>>
+	InterServiceSecret string
 }
 
 // GetDSN возвращает строку подключения (DSN) для PostgreSQL
@@ -66,6 +69,12 @@ func LoadConfig() (*Config, error) {
 		return nil, loadErr
 	}
 
+	// <<< Загружаем межсервисный секрет >>>
+	cfg.InterServiceSecret, loadErr = utils.ReadSecret("inter_service_secret")
+	if loadErr != nil {
+		return nil, loadErr
+	}
+
 	log.Printf("Конфигурация Gameplay Service загружена (секреты из файлов):")
 	log.Printf("  Port: %s", cfg.Port)
 	log.Printf("  LogLevel: %s", cfg.LogLevel)
@@ -77,6 +86,7 @@ func LoadConfig() (*Config, error) {
 	log.Printf("  Internal Updates Queue Name: %s", cfg.InternalUpdatesQueueName)
 	log.Printf("  Client Updates Queue Name: %s", cfg.ClientUpdatesQueueName)
 	log.Println("  JWT Secret: [ЗАГРУЖЕН]")
+	log.Println("  Inter-Service Secret: [ЗАГРУЖЕН]") // <<< Логируем загрузку
 
 	return &cfg, nil
 }

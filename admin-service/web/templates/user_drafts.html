@@ -1,0 +1,66 @@
+{{ template "layout.html" . }}
+
+{{ define "title" }}{{ .PageTitle }} - Админ-панель{{ end }}
+
+{{ define "content" }}
+    <nav aria-label="breadcrumb">
+        <ul>
+            <li><a href="/admin/dashboard">Дашборд</a></li>
+            <li><a href="/admin/users">Пользователи</a></li>
+            <li><a href="/admin/users/{{ .TargetUser.ID }}/edit">{{ .TargetUser.Username }}</a></li>
+            <li>Черновики</li>
+        </ul>
+    </nav>
+
+    <h1>{{ .PageTitle }}</h1>
+
+    {{ if .Error }}
+        <article aria-invalid="true">
+            {{ .Error }}
+        </article>
+    {{ end }}
+
+    <table>
+        <thead>
+            <tr>
+                <th>ID Черновика</th>
+                <th>Название (если есть)</th>
+                <th>Статус</th>
+                <th>Дата создания</th>
+                <th>Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{ range .Drafts }}
+                <tr>
+                    <td>{{ .ID }}</td>
+                    <td>{{ or .Title "(Нет названия)" }}</td>
+                    <td>{{ .Status }}</td>
+                    <td>{{ .CreatedAt.Format "2006-01-02 15:04" }}</td>
+                    <td>
+                        {{/* TODO: Добавить ссылки на просмотр/редактирование черновика, если нужно */}}
+                        <button disabled>Действий нет</button>
+                    </td>
+                </tr>
+            {{ else }}
+                <tr>
+                    <td colspan="5">Черновики у пользователя не найдены.</td>
+                </tr>
+            {{ end }}
+        </tbody>
+    </table>
+
+    {{/* Пагинация по курсору */}}
+    <nav aria-label="Pagination">
+        <ul>
+            <li>
+                {{ if .NextCursor }}
+                    <a href="/admin/users/{{ .TargetUser.ID }}/drafts?limit={{ .Limit }}&cursor={{ .NextCursor }}" role="button">Следующая страница →</a>
+                {{ else }}
+                    <button disabled aria-disabled="true">Следующая страница →</button>
+                {{ end }}
+            </li>
+        </ul>
+    </nav>
+
+{{ end }} 

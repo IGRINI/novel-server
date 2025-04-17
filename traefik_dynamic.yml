@@ -5,7 +5,6 @@ http:
   # ============================================
   middlewares:
     # --- Strip Prefixes ---
-    # Убирает /api перед отправкой запроса в auth-service
     auth-stripprefix:
       stripPrefix:
         prefixes:
@@ -27,82 +26,105 @@ http:
   # Routers
   # ============================================
   routers:
-    # --- Auth Service ---
+    # --- Landing Page Router (Lowest priority catch-all for non-API routes) ---
+    landing-page-router:
+      entryPoints:
+        - "web"
+      # Matches paths NOT starting with known API/service prefixes
+      rule: "!PathPrefix(`/api`, `/admin`, `/login`, `/ws`)"
+      service: "landing-page-service"
+      priority: 1 # Low priority ensures API routes match first
+
+    # --- Auth Service --- 
     auth-http-router:
       entryPoints:
-        - "web" # Точка входа для пользовательского трафика
-      rule: "PathPrefix(`/api/auth`)" # Правило для /api/auth/...
-      service: "auth-service" # На какой сервис направить
+        - "web"
+      # Matches path prefix
+      rule: "PathPrefix(`/api/auth`)"
+      service: "auth-service"
       middlewares:
-        - "auth-stripprefix" # Применяем middleware
+        - "auth-stripprefix"
+      priority: 10 # Higher priority for API routes
 
     # --- Auth Service (Get Me) ---
     auth-me-router:
       entryPoints:
         - "web"
-      rule: "Path(`/api/me`)" # Точный путь /api/me
-      service: "auth-service" # Направляем на auth-service
-      # Middleware не нужен, т.к. сервис ожидает /api/me
+      # Matches exact path
+      rule: "Path(`/api/me`)"
+      service: "auth-service"
+      priority: 11 # Higher priority for exact path
 
     # --- Gameplay Service ---
     gameplay-http-router:
       entryPoints:
         - "web"
-      rule: "PathPrefix(`/api/stories`)"
+      # Matches either path prefix
+      rule: "(PathPrefix(`/api/stories`) || PathPrefix(`/api/published-stories`))"
       service: "gameplay-service"
-      # Возвращаем middleware, который удаляет /api
       middlewares:
        - "gameplay-stripprefix"
+      priority: 10 # Higher priority for API routes
 
     # --- Admin Service (Login Page) ---
     admin-login-router:
       entryPoints:
         - "web"
-      rule: "Path(`/login`)" # Точный путь
+      # Matches exact path
+      rule: "Path(`/login`)"
       service: "admin-service"
-      # Middleware не нужен
+      priority: 11 # Higher priority for exact path
 
     # --- Admin Service (Protected Routes) ---
     admin-protected-router:
       entryPoints:
         - "web"
-      rule: "PathPrefix(`/admin`)" # Пути, начинающиеся с /admin
+      # Matches path prefix
+      rule: "PathPrefix(`/admin`)"
       service: "admin-service"
       middlewares:
-        - "admin-protected-stripprefix" # Применяем middleware
+        - "admin-protected-stripprefix"
+      priority: 10 # Higher priority for API routes
 
     # --- Websocket Service ---
     websocket-router:
       entryPoints:
         - "web"
-      rule: "Path(`/ws`)" # Точный путь для WebSocket
+      # Matches exact path
+      rule: "Path(`/ws`)"
       service: "websocket-service"
-      # Middleware не нужен
+      priority: 11 # Higher priority for exact path
 
   # ============================================
   # Services (Load Balancers)
   # ============================================
   services:
+    # --- Landing Page Service ---
+    landing-page-service:
+      loadBalancer:
+        servers:
+          - url: "http://landing-page:80" # Nginx listens on port 80
+
+    # --- Auth Service ---
     auth-service:
       loadBalancer:
         servers:
-          # Указываем внутренний адрес и порт сервиса в Docker
           - url: "http://auth-service:8081"
 
+    # --- Gameplay Service ---
     gameplay-service:
       loadBalancer:
         servers:
-          # Порт по умолчанию 8082 (или из $GAMEPLAY_SERVER_PORT)
           - url: "http://gameplay-service:8082"
 
+    # --- Admin Service ---
     admin-service:
       loadBalancer:
         servers:
-          # Порт по умолчанию 8084 (или из $ADMIN_SERVER_PORT)
           - url: "http://admin-service:8084"
 
+    # --- Websocket Service ---
     websocket-service:
       loadBalancer:
         servers:
-          # Порт по умолчанию 8083 (или из $WEBSOCKET_SERVER_PORT)
           - url: "http://websocket-service:8083"

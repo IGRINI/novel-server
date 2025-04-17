@@ -1,20 +1,21 @@
-package repository
+package database
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	models "novel-server/gameplay-service/internal/models"
+
+	// models "novel-server/gameplay-service/internal/models" // <<< Удаляем старый импорт
 
 	// service "novel-server/gameplay-service/internal/service" // <<< Убираем импорт сервиса
-	"strconv"
+
 	"strings"
 	"time"
 
-	interfaces "novel-server/shared/interfaces"
-	sharedModels "novel-server/shared/models"
+	interfaces "novel-server/shared/interfaces" // <<< Используем shared интерфейсы
+	sharedModels "novel-server/shared/models"   // <<< Используем shared модели
+	"novel-server/shared/utils"                 // <<< Добавляем импорт utils
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -22,26 +23,26 @@ import (
 )
 
 // Compile-time check
-var _ StoryConfigRepository = (*pgStoryConfigRepository)(nil)
+var _ interfaces.StoryConfigRepository = (*pgStoryConfigRepository)(nil) // <<< Проверяем реализацию shared интерфейса
 
 type pgStoryConfigRepository struct {
 	db     interfaces.DBTX
 	logger *zap.Logger
 }
 
-// Конструктор возвращает локальный интерфейс
-func NewPgStoryConfigRepository(db interfaces.DBTX, logger *zap.Logger) StoryConfigRepository {
+// Оставляем здесь, так как используется в коде ниже
+var ErrInvalidCursor = errors.New("invalid cursor format")
+
+// Конструктор возвращает ОБЩИЙ интерфейс
+func NewPgStoryConfigRepository(db interfaces.DBTX, logger *zap.Logger) interfaces.StoryConfigRepository {
 	return &pgStoryConfigRepository{
 		db:     db,
 		logger: logger.Named("PgStoryConfigRepo"),
 	}
 }
 
-// GetAll - метод для получения всех конфигов пользователя (если нужен)
-// func (r *pgStoryConfigRepository) GetAll(ctx context.Context, userID uint64) ([]models.StoryConfig, error) { ... }
-
 // Create - Реализация метода Create
-func (r *pgStoryConfigRepository) Create(ctx context.Context, config *models.StoryConfig) error {
+func (r *pgStoryConfigRepository) Create(ctx context.Context, config *sharedModels.StoryConfig) error { // <<< Используем sharedModels.StoryConfig
 	query := `
         INSERT INTO story_configs
             (id, user_id, title, description, user_input, config, status, created_at, updated_at)
@@ -71,13 +72,13 @@ func (r *pgStoryConfigRepository) Create(ctx context.Context, config *models.Sto
 }
 
 // GetByID - Реализация метода GetByID
-func (r *pgStoryConfigRepository) GetByID(ctx context.Context, id uuid.UUID, userID uint64) (*models.StoryConfig, error) {
+func (r *pgStoryConfigRepository) GetByID(ctx context.Context, id uuid.UUID, userID uint64) (*sharedModels.StoryConfig, error) { // <<< Возвращаем sharedModels.StoryConfig
 	query := `
         SELECT id, user_id, title, description, user_input, config, status, created_at, updated_at
         FROM story_configs
         WHERE id = $1 AND user_id = $2
     `
-	config := &models.StoryConfig{}
+	config := &sharedModels.StoryConfig{} // <<< Используем sharedModels.StoryConfig
 	logFields := []zap.Field{zap.String("storyConfigID", id.String()), zap.Uint64("userID", userID)}
 	r.logger.Debug("Getting story config by ID", logFields...)
 
@@ -98,13 +99,13 @@ func (r *pgStoryConfigRepository) GetByID(ctx context.Context, id uuid.UUID, use
 }
 
 // GetByIDInternal
-func (r *pgStoryConfigRepository) GetByIDInternal(ctx context.Context, id uuid.UUID) (*models.StoryConfig, error) {
+func (r *pgStoryConfigRepository) GetByIDInternal(ctx context.Context, id uuid.UUID) (*sharedModels.StoryConfig, error) { // <<< Возвращаем sharedModels.StoryConfig
 	query := `
         SELECT id, user_id, title, description, user_input, config, status, created_at, updated_at
         FROM story_configs
         WHERE id = $1
     `
-	config := &models.StoryConfig{}
+	config := &sharedModels.StoryConfig{} // <<< Используем sharedModels.StoryConfig
 	logFields := []zap.Field{zap.String("storyConfigID", id.String())}
 	r.logger.Debug("Getting story config by ID (internal)", logFields...)
 
@@ -125,7 +126,7 @@ func (r *pgStoryConfigRepository) GetByIDInternal(ctx context.Context, id uuid.U
 }
 
 // Update
-func (r *pgStoryConfigRepository) Update(ctx context.Context, config *models.StoryConfig) error {
+func (r *pgStoryConfigRepository) Update(ctx context.Context, config *sharedModels.StoryConfig) error { // <<< Используем sharedModels.StoryConfig
 	query := `
         UPDATE story_configs SET
             title = $1, description = $2, user_input = $3, config = $4, status = $5, updated_at = $6
@@ -151,12 +152,12 @@ func (r *pgStoryConfigRepository) Update(ctx context.Context, config *models.Sto
 
 // CountActiveGenerations
 func (r *pgStoryConfigRepository) CountActiveGenerations(ctx context.Context, userID uint64) (int, error) {
-	query := `SELECT COUNT(*) FROM story_configs WHERE user_id = $1 AND status = 'generating'`
+	query := `SELECT COUNT(*) FROM story_configs WHERE user_id = $1 AND status = $2` // Используем $2 для статуса
 	var count int
 	logFields := []zap.Field{zap.Uint64("userID", userID)}
 	r.logger.Debug("Counting active generations for user", logFields...)
 
-	err := r.db.QueryRow(ctx, query, userID).Scan(&count)
+	err := r.db.QueryRow(ctx, query, userID, sharedModels.StatusGenerating).Scan(&count) // <<< Используем sharedModels.StatusGenerating
 	if err != nil {
 		r.logger.Error("Failed to count active generations", append(logFields, zap.Error(err))...)
 		return 0, fmt.Errorf("ошибка подсчета активных генераций для user %d: %w", userID, err)
@@ -189,54 +190,15 @@ func (r *pgStoryConfigRepository) Delete(ctx context.Context, id uuid.UUID, user
 	return nil
 }
 
-// --- Пагинация --- //
-
-const cursorSeparator = "_"
-
-// encodeCursor создает строку курсора из времени и UUID.
-func encodeCursor(t time.Time, id uuid.UUID) string {
-	key := fmt.Sprintf("%d%s%s", t.UnixNano(), cursorSeparator, id.String())
-	return base64.URLEncoding.EncodeToString([]byte(key))
-}
-
-// decodeCursor разбирает строку курсора на время и UUID.
-func decodeCursor(cursor string) (time.Time, uuid.UUID, error) {
-	if cursor == "" {
-		return time.Time{}, uuid.Nil, nil // Нет курсора - нет ошибки
-	}
-	decodedBytes, err := base64.URLEncoding.DecodeString(cursor)
-	if err != nil {
-		return time.Time{}, uuid.Nil, fmt.Errorf("некорректный формат курсора (base64 decode): %w", err)
-	}
-	key := string(decodedBytes)
-	parts := strings.SplitN(key, cursorSeparator, 2)
-	if len(parts) != 2 {
-		return time.Time{}, uuid.Nil, fmt.Errorf("некорректный формат курсора (separator)")
-	}
-
-	timestampNano, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
-		return time.Time{}, uuid.Nil, fmt.Errorf("некорректный формат курсора (timestamp): %w", err)
-	}
-	t := time.Unix(0, timestampNano).UTC() // Важно использовать UTC
-
-	id, err := uuid.Parse(parts[1])
-	if err != nil {
-		return time.Time{}, uuid.Nil, fmt.Errorf("некорректный формат курсора (uuid): %w", err)
-	}
-
-	return t, id, nil
-}
-
 // ListByUser возвращает список черновиков пользователя с курсорной пагинацией.
-func (r *pgStoryConfigRepository) ListByUser(ctx context.Context, userID uint64, limit int, cursor string) ([]models.StoryConfig, string, error) {
+func (r *pgStoryConfigRepository) ListByUser(ctx context.Context, userID uint64, limit int, cursor string) ([]sharedModels.StoryConfig, string, error) { // <<< Возвращаем sharedModels.StoryConfig
 	if limit <= 0 {
 		limit = 10 // Значение по умолчанию
 	}
 	// +1 для проверки наличия следующей страницы
 	fetchLimit := limit + 1
 
-	cursorTime, cursorID, err := decodeCursor(cursor)
+	cursorTime, cursorID, err := utils.DecodeCursor(cursor) // <<< Используем utils.DecodeCursor
 	if err != nil {
 		r.logger.Warn("Failed to decode cursor", zap.Uint64("userID", userID), zap.String("cursor", cursor), zap.Error(err))
 		return nil, "", ErrInvalidCursor
@@ -278,9 +240,9 @@ func (r *pgStoryConfigRepository) ListByUser(ctx context.Context, userID uint64,
 	}
 	defer rows.Close()
 
-	configs := make([]models.StoryConfig, 0, limit)
+	configs := make([]sharedModels.StoryConfig, 0, limit) // <<< Используем sharedModels.StoryConfig
 	for rows.Next() {
-		var config models.StoryConfig
+		var config sharedModels.StoryConfig // <<< Используем sharedModels.StoryConfig
 		err := rows.Scan(
 			&config.ID, &config.UserID, &config.Title, &config.Description,
 			&config.UserInput, &config.Config, &config.Status, &config.CreatedAt, &config.UpdatedAt,
@@ -301,7 +263,7 @@ func (r *pgStoryConfigRepository) ListByUser(ctx context.Context, userID uint64,
 	if len(configs) > limit {
 		// Есть следующая страница, формируем курсор из последнего *возвращаемого* элемента
 		lastConfig := configs[limit-1]
-		nextCursor = encodeCursor(lastConfig.CreatedAt, lastConfig.ID)
+		nextCursor = utils.EncodeCursor(lastConfig.CreatedAt, lastConfig.ID) // <<< Используем utils.EncodeCursor
 		// Обрезаем результат до запрошенного лимита
 		configs = configs[:limit]
 	}
@@ -311,21 +273,21 @@ func (r *pgStoryConfigRepository) ListByUser(ctx context.Context, userID uint64,
 }
 
 // FindGeneratingConfigs находит все StoryConfig со статусом 'generating'
-func (r *pgStoryConfigRepository) FindGeneratingConfigs(ctx context.Context) ([]*models.StoryConfig, error) {
+func (r *pgStoryConfigRepository) FindGeneratingConfigs(ctx context.Context) ([]*sharedModels.StoryConfig, error) { // <<< Возвращаем sharedModels.StoryConfig
 	sql := `SELECT id, user_id, title, description, user_input, config, status, created_at, updated_at
 	        FROM story_configs
 	        WHERE status = $1`
 
-	rows, err := r.db.Query(ctx, sql, models.StatusGenerating)
+	rows, err := r.db.Query(ctx, sql, sharedModels.StatusGenerating) // <<< Используем sharedModels.StatusGenerating
 	if err != nil {
 		r.logger.Error("Ошибка при запросе генерирующихся конфигов", zap.Error(err))
 		return nil, fmt.Errorf("ошибка БД при поиске generating configs: %w", err)
 	}
 	defer rows.Close()
 
-	configs := make([]*models.StoryConfig, 0)
+	configs := make([]*sharedModels.StoryConfig, 0) // <<< Используем sharedModels.StoryConfig
 	for rows.Next() {
-		var cfg models.StoryConfig
+		var cfg sharedModels.StoryConfig // <<< Используем sharedModels.StoryConfig
 		var userInputJSON []byte
 		var configJSON []byte // Для необработанного JSON из БД
 

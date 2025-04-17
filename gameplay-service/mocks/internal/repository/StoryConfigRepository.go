@@ -4,7 +4,7 @@ package mocks
 
 import (
 	context "context"
-	models "novel-server/gameplay-service/internal/models"
+	sharedmodels "novel-server/shared/models"
 
 	mock "github.com/stretchr/testify/mock"
 
@@ -45,7 +45,7 @@ func (_m *StoryConfigRepository) CountActiveGenerations(ctx context.Context, use
 }
 
 // Create provides a mock function with given fields: ctx, config
-func (_m *StoryConfigRepository) Create(ctx context.Context, config *models.StoryConfig) error {
+func (_m *StoryConfigRepository) Create(ctx context.Context, config *sharedmodels.StoryConfig) error {
 	ret := _m.Called(ctx, config)
 
 	if len(ret) == 0 {
@@ -53,7 +53,7 @@ func (_m *StoryConfigRepository) Create(ctx context.Context, config *models.Stor
 	}
 
 	var r0 error
-	if rf, ok := ret.Get(0).(func(context.Context, *models.StoryConfig) error); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, *sharedmodels.StoryConfig) error); ok {
 		r0 = rf(ctx, config)
 	} else {
 		r0 = ret.Error(0)
@@ -80,24 +80,54 @@ func (_m *StoryConfigRepository) Delete(ctx context.Context, id uuid.UUID, userI
 	return r0
 }
 
+// FindGeneratingConfigs provides a mock function with given fields: ctx
+func (_m *StoryConfigRepository) FindGeneratingConfigs(ctx context.Context) ([]*sharedmodels.StoryConfig, error) {
+	ret := _m.Called(ctx)
+
+	if len(ret) == 0 {
+		panic("no return value specified for FindGeneratingConfigs")
+	}
+
+	var r0 []*sharedmodels.StoryConfig
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context) ([]*sharedmodels.StoryConfig, error)); ok {
+		return rf(ctx)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context) []*sharedmodels.StoryConfig); ok {
+		r0 = rf(ctx)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]*sharedmodels.StoryConfig)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context) error); ok {
+		r1 = rf(ctx)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetByID provides a mock function with given fields: ctx, id, userID
-func (_m *StoryConfigRepository) GetByID(ctx context.Context, id uuid.UUID, userID uint64) (*models.StoryConfig, error) {
+func (_m *StoryConfigRepository) GetByID(ctx context.Context, id uuid.UUID, userID uint64) (*sharedmodels.StoryConfig, error) {
 	ret := _m.Called(ctx, id, userID)
 
 	if len(ret) == 0 {
 		panic("no return value specified for GetByID")
 	}
 
-	var r0 *models.StoryConfig
+	var r0 *sharedmodels.StoryConfig
 	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uint64) (*models.StoryConfig, error)); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uint64) (*sharedmodels.StoryConfig, error)); ok {
 		return rf(ctx, id, userID)
 	}
-	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uint64) *models.StoryConfig); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uint64) *sharedmodels.StoryConfig); ok {
 		r0 = rf(ctx, id, userID)
 	} else {
 		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*models.StoryConfig)
+			r0 = ret.Get(0).(*sharedmodels.StoryConfig)
 		}
 	}
 
@@ -111,23 +141,23 @@ func (_m *StoryConfigRepository) GetByID(ctx context.Context, id uuid.UUID, user
 }
 
 // GetByIDInternal provides a mock function with given fields: ctx, id
-func (_m *StoryConfigRepository) GetByIDInternal(ctx context.Context, id uuid.UUID) (*models.StoryConfig, error) {
+func (_m *StoryConfigRepository) GetByIDInternal(ctx context.Context, id uuid.UUID) (*sharedmodels.StoryConfig, error) {
 	ret := _m.Called(ctx, id)
 
 	if len(ret) == 0 {
 		panic("no return value specified for GetByIDInternal")
 	}
 
-	var r0 *models.StoryConfig
+	var r0 *sharedmodels.StoryConfig
 	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID) (*models.StoryConfig, error)); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID) (*sharedmodels.StoryConfig, error)); ok {
 		return rf(ctx, id)
 	}
-	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID) *models.StoryConfig); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID) *sharedmodels.StoryConfig); ok {
 		r0 = rf(ctx, id)
 	} else {
 		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*models.StoryConfig)
+			r0 = ret.Get(0).(*sharedmodels.StoryConfig)
 		}
 	}
 
@@ -141,24 +171,24 @@ func (_m *StoryConfigRepository) GetByIDInternal(ctx context.Context, id uuid.UU
 }
 
 // ListByUser provides a mock function with given fields: ctx, userID, limit, cursor
-func (_m *StoryConfigRepository) ListByUser(ctx context.Context, userID uint64, limit int, cursor string) ([]models.StoryConfig, string, error) {
+func (_m *StoryConfigRepository) ListByUser(ctx context.Context, userID uint64, limit int, cursor string) ([]sharedmodels.StoryConfig, string, error) {
 	ret := _m.Called(ctx, userID, limit, cursor)
 
 	if len(ret) == 0 {
 		panic("no return value specified for ListByUser")
 	}
 
-	var r0 []models.StoryConfig
+	var r0 []sharedmodels.StoryConfig
 	var r1 string
 	var r2 error
-	if rf, ok := ret.Get(0).(func(context.Context, uint64, int, string) ([]models.StoryConfig, string, error)); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uint64, int, string) ([]sharedmodels.StoryConfig, string, error)); ok {
 		return rf(ctx, userID, limit, cursor)
 	}
-	if rf, ok := ret.Get(0).(func(context.Context, uint64, int, string) []models.StoryConfig); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uint64, int, string) []sharedmodels.StoryConfig); ok {
 		r0 = rf(ctx, userID, limit, cursor)
 	} else {
 		if ret.Get(0) != nil {
-			r0 = ret.Get(0).([]models.StoryConfig)
+			r0 = ret.Get(0).([]sharedmodels.StoryConfig)
 		}
 	}
 
@@ -178,7 +208,7 @@ func (_m *StoryConfigRepository) ListByUser(ctx context.Context, userID uint64, 
 }
 
 // Update provides a mock function with given fields: ctx, config
-func (_m *StoryConfigRepository) Update(ctx context.Context, config *models.StoryConfig) error {
+func (_m *StoryConfigRepository) Update(ctx context.Context, config *sharedmodels.StoryConfig) error {
 	ret := _m.Called(ctx, config)
 
 	if len(ret) == 0 {
@@ -186,7 +216,7 @@ func (_m *StoryConfigRepository) Update(ctx context.Context, config *models.Stor
 	}
 
 	var r0 error
-	if rf, ok := ret.Get(0).(func(context.Context, *models.StoryConfig) error); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, *sharedmodels.StoryConfig) error); ok {
 		r0 = rf(ctx, config)
 	} else {
 		r0 = ret.Error(0)

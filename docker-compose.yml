@@ -208,12 +208,18 @@ services:
     ports:
       - "8084:8084" # Порт admin-service
     environment:
-      - APP_ENV=development
-      - PORT=8084
-      - LOG_LEVEL=debug
-      - AUTH_SERVICE_URL=http://auth-service:8081 # <<< Возвращаем URL с host.docker.internal
-      - HTTP_CLIENT_TIMEOUT=${HTTP_CLIENT_TIMEOUT} # <<< Используем переменную для таймаута клиента
-      - SERVICE_ID=admin-service # Идентификатор сервиса
+      # <<: *env-vars # <<< Убираем наследование, т.к. имена переменных не совпадают
+      # Явно определяем все переменные, ожидаемые admin-service/internal/config/config.go
+      ENV: ${ENV:-development}
+      ADMIN_SERVER_PORT: 8084 # Внутренний порт сервиса
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      AUTH_SERVICE_URL: http://auth-service:8081 # Внутренний Docker URL
+      STORY_GENERATOR_URL: http://story-generator:8083 # Внутренний Docker URL
+      HTTP_CLIENT_TIMEOUT: ${HTTP_CLIENT_TIMEOUT:-10s}
+      INTER_SERVICE_TOKEN_TTL: ${INTER_SERVICE_TOKEN_TTL:-1h}
+      AUTH_SERVICE_TIMEOUT: ${AUTH_SERVICE_TIMEOUT:-5s}
+      SERVICE_ID: admin-service
+      GAMEPLAY_SERVICE_URL: ${GAMEPLAY_SERVICE_URL} # <<< Добавляем URL для Gameplay Service
     secrets:
       - source: inter_service_secret
         target: /run/secrets/inter_service_secret
@@ -384,6 +390,19 @@ services:
       - novel_network
     depends_on:
       - rabbitmq
+
+# Сервис для раздачи статического лендинга
+  landing-page:
+    image: nginx:alpine # Используем легкий образ Nginx
+    container_name: novel_landing_page # Имя контейнера (опционально)
+    volumes:
+      # Подключаем папку с лендингом в директорию веб-сервера Nginx
+      - ./landing-page:/usr/share/nginx/html:ro # Read-only, т.к. Nginx только читает
+    networks:
+      - novel_network # Подключаем к той же сети, что и Traefik
+    deploy: # Политика перезапуска (можно настроить по желанию)
+      restart_policy:
+        condition: any
 
 volumes:
   postgres_data:

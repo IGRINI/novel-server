@@ -12,10 +12,9 @@ import (
 	"novel-server/gameplay-service/internal/config"
 	"novel-server/gameplay-service/internal/handler"
 	"novel-server/gameplay-service/internal/messaging"
-	"novel-server/gameplay-service/internal/models"
-	"novel-server/gameplay-service/internal/repository"
 	"novel-server/gameplay-service/internal/service"
 	sharedDatabase "novel-server/shared/database"
+	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
 	"path/filepath"
@@ -63,7 +62,7 @@ type IntegrationTestSuite struct {
 	rabbitConn    *amqp.Connection
 	serviceURL    string
 	app           *echo.Echo
-	repo          repository.StoryConfigRepository
+	repo          interfaces.StoryConfigRepository
 	taskMessages  chan amqp.Delivery // Канал для полученных сообщений из очереди задач
 	stopConsumer  chan struct{}      // Канал для остановки тестового консьюмера
 	consumerReady chan struct{}      // Канал для сигнала о готовности консьюмера
@@ -111,7 +110,7 @@ func (s *IntegrationTestSuite) SetupSuite() {
 	dbPool, err := pgxpool.New(ctx, pgConnStr)
 	require.NoError(s.T(), err)
 	s.dbPool = dbPool
-	s.repo = repository.NewPgStoryConfigRepository(dbPool, zap.NewNop())
+	s.repo = sharedDatabase.NewPgStoryConfigRepository(dbPool, zap.NewNop())
 
 	// Применение миграций
 	// Абсолютный путь не обязателен, ToSlash нужен для Windows
@@ -209,7 +208,9 @@ func (s *IntegrationTestSuite) SetupSuite() {
 
 	// Передаем все 7 аргументов
 	gameplayService := service.NewGameplayService(s.repo, publishedRepo, sceneRepo, playerProgressRepo, taskPublisher, s.dbPool, nopLogger)
-	gameplayHandler := handler.NewGameplayHandler(gameplayService, nopLogger, jwtTestSecret)
+	// <<< Добавляем тестовый межсервисный секрет >>>
+	interServiceTestSecret := "test-inter-service-secret-for-integration"
+	gameplayHandler := handler.NewGameplayHandler(gameplayService, nopLogger, jwtTestSecret, interServiceTestSecret)
 
 	app := echo.New()
 	gameplayHandler.RegisterRoutes(app)
@@ -365,13 +366,13 @@ func (s *IntegrationTestSuite) TestGenerateInitialStory_Integration() {
 	assert.Equal(s.T(), http.StatusAccepted, resp.StatusCode)
 
 	// Проверяем тело ответа
-	var createdConfig models.StoryConfig
+	var createdConfig sharedModels.StoryConfig
 	err = json.NewDecoder(resp.Body).Decode(&createdConfig)
 	require.NoError(s.T(), err)
 
 	assert.Equal(s.T(), userID, createdConfig.UserID)
 	assert.Equal(s.T(), initialPrompt, createdConfig.Description)
-	assert.Equal(s.T(), models.StatusGenerating, createdConfig.Status)
+	assert.Equal(s.T(), sharedModels.StatusGenerating, createdConfig.Status)
 	assert.NotEmpty(s.T(), createdConfig.ID)
 	// Проверяем, что Config в ответе - это JSON null
 	assert.Equal(s.T(), json.RawMessage("null"), createdConfig.Config)
@@ -446,7 +447,7 @@ func (s *IntegrationTestSuite) TestReviseDraft_Integration() {
 	respGen, err := client.Do(reqGen)
 	require.NoError(s.T(), err)
 	require.Equal(s.T(), http.StatusAccepted, respGen.StatusCode)
-	var initialConfig models.StoryConfig
+	var initialConfig sharedModels.StoryConfig
 	err = json.NewDecoder(respGen.Body).Decode(&initialConfig)
 	require.NoError(s.T(), err)
 	respGen.Body.Close()
@@ -456,7 +457,7 @@ func (s *IntegrationTestSuite) TestReviseDraft_Integration() {
 	generatedJSON := `{"t":"История с драконами","sd":"Кратко","p_desc":"Герой"}`
 	updateQuery := `UPDATE story_configs SET status = $1, config = $2, title = $3, description = $4 WHERE id = $5`
 	_, err = s.dbPool.Exec(context.Background(), updateQuery,
-		models.StatusDraft, // Ставим статус Draft
+		sharedModels.StatusDraft, // Ставим статус Draft
 		[]byte(generatedJSON),
 		"История с драконами", // Заполняем Title
 		"Кратко",              // Заполняем Description
@@ -482,7 +483,7 @@ func (s *IntegrationTestSuite) TestReviseDraft_Integration() {
 	dbConfig, err := s.repo.GetByIDInternal(context.Background(), storyID)
 	require.NoError(s.T(), err)
 	assert.NotNil(s.T(), dbConfig)
-	assert.Equal(s.T(), models.StatusGenerating, dbConfig.Status) // Статус должен стать generating
+	assert.Equal(s.T(), sharedModels.StatusGenerating, dbConfig.Status) // Статус должен стать generating
 	// Сравниваем JSON после десериализации
 	var expectedConfigMap map[string]interface{}
 	var actualConfigMap map[string]interface{}
@@ -572,7 +573,7 @@ func (s *IntegrationTestSuite) TestFullGameplayFlow_Integration() {
 	defer respGen.Body.Close()
 	require.Equal(s.T(), http.StatusAccepted, respGen.StatusCode, "Generate request failed")
 
-	var initialConfig models.StoryConfig
+	var initialConfig sharedModels.StoryConfig
 	err = json.NewDecoder(respGen.Body).Decode(&initialConfig)
 	require.NoError(s.T(), err)
 	draftID := initialConfig.ID // Сохраняем ID черновика
@@ -581,7 +582,7 @@ func (s *IntegrationTestSuite) TestFullGameplayFlow_Integration() {
 	// Проверка состояния БД после генерации
 	dbDraftGen, err := s.repo.GetByIDInternal(context.Background(), draftID)
 	require.NoError(s.T(), err, "Draft not found in DB after generation")
-	assert.Equal(s.T(), models.StatusGenerating, dbDraftGen.Status)
+	assert.Equal(s.T(), sharedModels.StatusGenerating, dbDraftGen.Status)
 	assert.Nil(s.T(), dbDraftGen.Config)
 
 	// Проверка сообщения для Narrator в RabbitMQ
@@ -611,7 +612,7 @@ func (s *IntegrationTestSuite) TestFullGameplayFlow_Integration() {
 	generatedConfigJSON := `{"t":"Заголовок из теста","sd":"Описание","ac":true,"some_data":"value"}`
 	updateQuery := `UPDATE story_configs SET status = $1, config = $2, title = $3, description = $4 WHERE id = $5`
 	_, err = s.dbPool.Exec(context.Background(), updateQuery,
-		models.StatusDraft, // Ставим статус Draft
+		sharedModels.StatusDraft, // Ставим статус Draft
 		[]byte(generatedConfigJSON),
 		"Заголовок из теста", // Заполняем Title
 		"Описание",           // Заполняем Description
@@ -771,14 +772,14 @@ func (s *IntegrationTestSuite) TestListMyDrafts_Integration() {
 		prompt := fmt.Sprintf("Тестовый черновик %d", i)
 		userInputJSON, err := json.Marshal([]string{prompt})
 		require.NoError(s.T(), err)
-		config := &models.StoryConfig{
+		config := &sharedModels.StoryConfig{
 			ID:          uuid.New(),
 			UserID:      userID,
 			Title:       fmt.Sprintf("Draft %d", i),
 			Description: prompt,
 			UserInput:   userInputJSON,
 			Config:      json.RawMessage(`{"t":"Draft Title"}`), // Добавляем минимальный Config
-			Status:      models.StatusDraft,                     // <<< Ставим статус Draft
+			Status:      sharedModels.StatusDraft,               // <<< Используем sharedModels
 			CreatedAt:   time.Now().UTC(),
 			UpdatedAt:   time.Now().UTC(),
 		}
@@ -813,7 +814,7 @@ func (s *IntegrationTestSuite) TestListMyDrafts_Integration() {
 	// Проверяем данные первой страницы
 	require.NotNil(s.T(), page1Resp.Data)
 	dataBytes, _ := json.Marshal(page1Resp.Data)
-	var draftsPage1 []models.StoryConfig
+	var draftsPage1 []handler.StoryConfigSummary // <<< Используем DTO из handler
 	err = json.Unmarshal(dataBytes, &draftsPage1)
 	require.NoError(s.T(), err)
 
@@ -843,7 +844,7 @@ func (s *IntegrationTestSuite) TestListMyDrafts_Integration() {
 	// Проверяем данные второй страницы
 	require.NotNil(s.T(), page2Resp.Data)
 	dataBytes2, _ := json.Marshal(page2Resp.Data)
-	var draftsPage2 []models.StoryConfig
+	var draftsPage2 []handler.StoryConfigSummary // <<< Используем DTO из handler
 	err = json.Unmarshal(dataBytes2, &draftsPage2)
 	require.NoError(s.T(), err)
 
@@ -873,7 +874,7 @@ func (s *IntegrationTestSuite) TestListMyDrafts_Integration() {
 	// Проверяем данные третьей страницы
 	require.NotNil(s.T(), page3Resp.Data)
 	dataBytes3, _ := json.Marshal(page3Resp.Data)
-	var draftsPage3 []models.StoryConfig
+	var draftsPage3 []handler.StoryConfigSummary // <<< Используем DTO из handler
 	err = json.Unmarshal(dataBytes3, &draftsPage3)
 	require.NoError(s.T(), err)
 

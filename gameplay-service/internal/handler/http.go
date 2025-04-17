@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http" // Импорт для StoryConfig
-	"novel-server/gameplay-service/internal/models"
-	"novel-server/gameplay-service/internal/repository" // <<< Добавляем импорт репозитория
+
+	// <<< Добавляем импорт репозитория
 	"novel-server/gameplay-service/internal/service"
-	"novel-server/shared/authutils" // <<< Добавляем импорт общего верификатора
+	"novel-server/shared/authutils"                   // <<< Добавляем импорт общего верификатора
+	sharedInterfaces "novel-server/shared/interfaces" // <<< Добавляем импорт для ErrInvalidCursor
 	sharedMiddleware "novel-server/shared/middleware"
 	sharedModels "novel-server/shared/models"
 	"strconv" // Для парсинга limit
@@ -72,55 +73,70 @@ type APIError struct {
 
 // GameplayHandler обрабатывает HTTP запросы для gameplay сервиса.
 type GameplayHandler struct {
-	service       service.GameplayService
-	logger        *zap.Logger            // Добавляем логгер
-	tokenVerifier *authutils.JWTVerifier // <<< Добавляем верификатор
+	service                   service.GameplayService
+	logger                    *zap.Logger
+	userTokenVerifier         *authutils.JWTVerifier // Верификатор для токенов пользователей
+	interServiceTokenVerifier *authutils.JWTVerifier // <<< Верификатор для межсервисных токенов
 }
 
 // NewGameplayHandler создает новый GameplayHandler.
-func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret string) *GameplayHandler {
-	// Создаем верификатор токенов
-	verifier, err := authutils.NewJWTVerifier(jwtSecret, logger)
+// <<< Добавляем interServiceSecret в аргументы >>>
+func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret, interServiceSecret string) *GameplayHandler {
+	// Создаем верификатор токенов пользователей
+	userVerifier, err := authutils.NewJWTVerifier(jwtSecret, logger)
 	if err != nil {
-		// Критическая ошибка, если секрет пуст или что-то не так
-		logger.Fatal("Failed to create JWT Verifier", zap.Error(err))
+		logger.Fatal("Failed to create User JWT Verifier", zap.Error(err))
 	}
+
+	// <<< Создаем верификатор межсервисных токенов >>>
+	interServiceVerifier, err := authutils.NewJWTVerifier(interServiceSecret, logger)
+	if err != nil {
+		logger.Fatal("Failed to create Inter-Service JWT Verifier", zap.Error(err))
+	}
+
 	return &GameplayHandler{
-		service:       s,
-		logger:        logger.Named("GameplayHandler"), // Инициализируем логгер
-		tokenVerifier: verifier,                        // <<< Сохраняем верификатор
+		service:                   s,
+		logger:                    logger.Named("GameplayHandler"),
+		userTokenVerifier:         userVerifier,         // <<< Сохраняем верификатор пользователя
+		interServiceTokenVerifier: interServiceVerifier, // <<< Сохраняем межсервисный верификатор
 	}
 }
 
 // RegisterRoutes регистрирует маршруты для gameplay сервиса.
 func (h *GameplayHandler) RegisterRoutes(e *echo.Echo) {
-	// Применяем Auth Middleware ко всем роутам ниже
-	// Middleware применяется ко всем маршрутам, зарегистрированным *после* него на 'e'
-	authMiddleware := echo.WrapMiddleware(sharedMiddleware.AuthMiddleware(h.tokenVerifier.VerifyToken, h.logger))
+	// Middleware для проверки токена пользователя
+	authMiddleware := echo.WrapMiddleware(sharedMiddleware.AuthMiddleware(h.userTokenVerifier.VerifyToken, h.logger))
 
-	// --- Маршруты для черновиков историй (/api/stories) ---
-	// Префикс /api УДАЛЯЕТСЯ Traefik middleware gameplay-stripprefix
-	// Сервис получает пути вида /stories, /stories/:id и т.д.
-	// Регистрируем маршруты напрямую на 'e', но с префиксом /stories
-	storiesGroup := e.Group("/stories", authMiddleware) // Группа для /stories, сразу применяем auth
+	// Middleware для проверки межсервисного токена
+	// Используем созданный нами InterServiceAuthMiddleware
+	// Передаем сам верификатор, а не конкретный метод
+	interServiceAuthMiddleware := sharedMiddleware.InterServiceAuthMiddleware(h.interServiceTokenVerifier, h.logger)
+
+	// --- Маршруты для черновиков историй (API для пользователей) ---
+	storiesGroup := e.Group("/stories", authMiddleware)
 	{
-		storiesGroup.POST("/generate", h.generateInitialStory) // POST /stories/generate
-		storiesGroup.GET("", h.listStoryConfigs)               // GET /stories
-		storiesGroup.GET("/:id", h.getStoryConfig)             // GET /stories/:id
-		storiesGroup.POST("/:id/revise", h.reviseStoryConfig)  // POST /stories/:id/revise
-		storiesGroup.POST("/:id/publish", h.publishStoryDraft) // POST /stories/:id/publish
+		storiesGroup.POST("/generate", h.generateInitialStory)
+		storiesGroup.GET("", h.listStoryConfigs)
+		storiesGroup.GET("/:id", h.getStoryConfig)
+		storiesGroup.POST("/:id/revise", h.reviseStoryConfig)
+		storiesGroup.POST("/:id/publish", h.publishStoryDraft)
 	}
 
-	// --- Маршруты для опубликованных историй (/api/published-stories) ---
-	// Префикс /api/published-stories НЕ УДАЛЯЕТСЯ Traefik
-	// Поэтому здесь регистрируем полную группу /api/published-stories
-	publishedGroup := e.Group("/published-stories", authMiddleware) // Группа для /api/published-stories, применяем auth
+	// --- Маршруты для опубликованных историй (API для пользователей) ---
+	publishedGroup := e.Group("/published-stories", authMiddleware)
 	{
-		publishedGroup.GET("/me", h.listMyPublishedStories)            // GET /api/published-stories/me
-		publishedGroup.GET("/public", h.listPublicPublishedStories)    // GET /api/published-stories/public
-		publishedGroup.GET("/:id/scene", h.getPublishedStoryScene)     // GET /api/published-stories/:id/scene
-		publishedGroup.POST("/:id/choice", h.makeChoice)               // POST /api/published-stories/:id/choice
-		publishedGroup.DELETE("/:id/progress", h.deletePlayerProgress) // DELETE /api/published-stories/:id/progress
+		publishedGroup.GET("/me", h.listMyPublishedStories)
+		publishedGroup.GET("/public", h.listPublicPublishedStories)
+		publishedGroup.GET("/:id/scene", h.getPublishedStoryScene)
+		publishedGroup.POST("/:id/choice", h.makeChoice)
+		publishedGroup.DELETE("/:id/progress", h.deletePlayerProgress)
+	}
+
+	// <<< Новая группа для внутренних маршрутов >>>
+	internalGroup := e.Group("/internal", interServiceAuthMiddleware) // <<< Защищаем межсервисным токеном
+	{
+		internalGroup.GET("/users/:user_id/drafts", h.listUserDraftsInternal)   // <<< Новый роут
+		internalGroup.GET("/users/:user_id/stories", h.listUserStoriesInternal) // <<< Новый роут
 	}
 }
 
@@ -300,7 +316,7 @@ func (h *GameplayHandler) getStoryConfig(c echo.Context) error {
 		detail := StoryConfigDetail{
 			ID:        config.ID.String(),
 			CreatedAt: config.CreatedAt,
-			Status:    string(models.StatusError), // Указываем на ошибку парсинга
+			Status:    string(sharedModels.StatusError), // <<< Используем sharedModels
 			Config:    nil,
 		}
 		return c.JSON(http.StatusInternalServerError, detail) // Ошибка сервера, т.к. данные некорректны
@@ -463,10 +479,10 @@ func (h *GameplayHandler) listStoryConfigs(c echo.Context) error {
 	)
 
 	// Вызываем метод сервиса
-	drafts, nextCursor, err := h.service.ListMyDrafts(c.Request().Context(), userID, limit, cursor)
+	drafts, nextCursor, err := h.service.ListMyDrafts(c.Request().Context(), userID, cursor, limit) // <<< Меняем порядок cursor и limit
 	if err != nil {
 		// Логируем только если это не стандартная ошибка курсора
-		if !errors.Is(err, repository.ErrInvalidCursor) {
+		if !errors.Is(err, sharedInterfaces.ErrInvalidCursor) { // <<< Используем sharedInterfaces
 			h.logger.Error("Error listing story drafts", zap.Uint64("userID", userID), zap.Error(err))
 		}
 		// Обрабатываем ошибку через стандартный хелпер
@@ -760,4 +776,108 @@ func (h *GameplayHandler) deletePlayerProgress(c echo.Context) error {
 	)
 
 	return c.NoContent(http.StatusNoContent)
+}
+
+// --- Новые обработчики для внутренних API --- //
+
+// listUserDraftsInternal возвращает список черновиков для указанного пользователя (для админки).
+func (h *GameplayHandler) listUserDraftsInternal(c echo.Context) error {
+	log := h.logger.With(zap.String("handler", "listUserDraftsInternal"))
+
+	userIDStr := c.Param("user_id")
+	userID, err := strconv.ParseUint(userIDStr, 10, 64)
+	if err != nil {
+		log.Warn("Invalid user ID format", zap.String("user_id", userIDStr), zap.Error(err))
+		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid user ID format"})
+	}
+
+	limitStr := c.QueryParam("limit")
+	cursor := c.QueryParam("cursor")
+	limit := 20 // Значение по умолчанию
+	if limitStr != "" {
+		if l, parseErr := strconv.Atoi(limitStr); parseErr == nil && l > 0 {
+			limit = l
+		} else {
+			log.Warn("Invalid limit parameter received, using default", zap.String("limit", limitStr), zap.Error(parseErr))
+		}
+	}
+
+	log = log.With(zap.Uint64("userID", userID), zap.Int("limit", limit), zap.String("cursor", cursor))
+	log.Info("Internal request for user drafts")
+
+	drafts, nextCursor, err := h.service.ListUserDrafts(c.Request().Context(), userID, cursor, limit)
+	if err != nil {
+		if errors.Is(err, sharedInterfaces.ErrInvalidCursor) {
+			log.Warn("Invalid cursor provided", zap.Error(err))
+			return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid cursor format"})
+		}
+		log.Error("Failed to list user drafts internally", zap.Error(err))
+		// Не используем handleServiceError, так как это внутренний API, возвращаем 500
+		return c.JSON(http.StatusInternalServerError, APIError{Message: "Failed to retrieve drafts"})
+	}
+
+	// Используем ту же DTO PaginatedResponse, что и для публичного API
+	response := PaginatedResponse{
+		Data:       drafts, // Сервис уже возвращает []*StoryConfigSummary
+		NextCursor: nextCursor,
+	}
+	return c.JSON(http.StatusOK, response)
+}
+
+// listUserStoriesInternal возвращает список опубликованных историй пользователя (для админки).
+func (h *GameplayHandler) listUserStoriesInternal(c echo.Context) error {
+	log := h.logger.With(zap.String("handler", "listUserStoriesInternal"))
+
+	userIDStr := c.Param("user_id")
+	userID, err := strconv.ParseUint(userIDStr, 10, 64)
+	if err != nil {
+		log.Warn("Invalid user ID format", zap.String("user_id", userIDStr), zap.Error(err))
+		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid user ID format"})
+	}
+
+	limitStr := c.QueryParam("limit")
+	offsetStr := c.QueryParam("offset")
+
+	limit := 20 // Значение по умолчанию
+	if limitStr != "" {
+		if l, parseErr := strconv.Atoi(limitStr); parseErr == nil && l > 0 {
+			limit = l
+		} else {
+			log.Warn("Invalid limit parameter received, using default", zap.String("limit", limitStr), zap.Error(parseErr))
+		}
+	}
+	offset := 0
+	if offsetStr != "" {
+		if o, parseErr := strconv.Atoi(offsetStr); parseErr == nil && o >= 0 {
+			offset = o
+		} else {
+			log.Warn("Invalid offset parameter received, using default", zap.String("offset", offsetStr), zap.Error(parseErr))
+		}
+	}
+
+	log = log.With(zap.Uint64("userID", userID), zap.Int("limit", limit), zap.Int("offset", offset))
+	log.Info("Internal request for user published stories")
+
+	stories, err := h.service.ListUserPublishedStories(c.Request().Context(), userID, limit, offset)
+	if err != nil {
+		log.Error("Failed to list user published stories internally", zap.Error(err))
+		return c.JSON(http.StatusInternalServerError, APIError{Message: "Failed to retrieve published stories"})
+	}
+
+	// Для offset пагинации нам нужно определить 'hasMore'
+	hasMore := len(stories) == limit
+
+	// Отдаем только данные, без курсора. Клиент должен сам определить пагинацию.
+	// Можно было бы создать отдельную DTO для этого ответа.
+	type InternalListResponse struct {
+		Data    interface{} `json:"data"`
+		HasMore bool        `json:"has_more"`
+	}
+
+	response := InternalListResponse{
+		Data:    stories, // Сервис возвращает []*PublishedStory
+		HasMore: hasMore,
+	}
+
+	return c.JSON(http.StatusOK, response)
 }

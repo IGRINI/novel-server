@@ -4,7 +4,7 @@ package mocks
 
 import (
 	context "context"
-	models "novel-server/gameplay-service/internal/models"
+	// models "novel-server/gameplay-service/internal/models" // <<< Удаляем старый импорт
 
 	mock "github.com/stretchr/testify/mock"
 
@@ -19,23 +19,23 @@ type GameplayService struct {
 }
 
 // GenerateInitialStory provides a mock function with given fields: ctx, userID, initialPrompt
-func (_m *GameplayService) GenerateInitialStory(ctx context.Context, userID uint64, initialPrompt string) (*models.StoryConfig, error) {
+func (_m *GameplayService) GenerateInitialStory(ctx context.Context, userID uint64, initialPrompt string) (*sharedmodels.StoryConfig, error) { // <<< Используем sharedmodels
 	ret := _m.Called(ctx, userID, initialPrompt)
 
 	if len(ret) == 0 {
 		panic("no return value specified for GenerateInitialStory")
 	}
 
-	var r0 *models.StoryConfig
+	var r0 *sharedmodels.StoryConfig // <<< Используем sharedmodels
 	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, uint64, string) (*models.StoryConfig, error)); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uint64, string) (*sharedmodels.StoryConfig, error)); ok { // <<< Используем sharedmodels
 		return rf(ctx, userID, initialPrompt)
 	}
-	if rf, ok := ret.Get(0).(func(context.Context, uint64, string) *models.StoryConfig); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uint64, string) *sharedmodels.StoryConfig); ok { // <<< Используем sharedmodels
 		r0 = rf(ctx, userID, initialPrompt)
 	} else {
 		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*models.StoryConfig)
+			r0 = ret.Get(0).(*sharedmodels.StoryConfig) // <<< Используем sharedmodels
 		}
 	}
 
@@ -49,23 +49,23 @@ func (_m *GameplayService) GenerateInitialStory(ctx context.Context, userID uint
 }
 
 // GetStoryConfig provides a mock function with given fields: ctx, id, userID
-func (_m *GameplayService) GetStoryConfig(ctx context.Context, id uuid.UUID, userID uint64) (*models.StoryConfig, error) {
+func (_m *GameplayService) GetStoryConfig(ctx context.Context, id uuid.UUID, userID uint64) (*sharedmodels.StoryConfig, error) { // <<< Используем sharedmodels
 	ret := _m.Called(ctx, id, userID)
 
 	if len(ret) == 0 {
 		panic("no return value specified for GetStoryConfig")
 	}
 
-	var r0 *models.StoryConfig
+	var r0 *sharedmodels.StoryConfig // <<< Используем sharedmodels
 	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uint64) (*models.StoryConfig, error)); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uint64) (*sharedmodels.StoryConfig, error)); ok { // <<< Используем sharedmodels
 		return rf(ctx, id, userID)
 	}
-	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uint64) *models.StoryConfig); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uint64) *sharedmodels.StoryConfig); ok { // <<< Используем sharedmodels
 		r0 = rf(ctx, id, userID)
 	} else {
 		if ret.Get(0) != nil {
-			r0 = ret.Get(0).(*models.StoryConfig)
+			r0 = ret.Get(0).(*sharedmodels.StoryConfig) // <<< Используем sharedmodels
 		}
 	}
 
@@ -79,24 +79,24 @@ func (_m *GameplayService) GetStoryConfig(ctx context.Context, id uuid.UUID, use
 }
 
 // ListMyDrafts provides a mock function with given fields: ctx, userID, limit, cursor
-func (_m *GameplayService) ListMyDrafts(ctx context.Context, userID uint64, limit int, cursor string) ([]models.StoryConfig, string, error) {
+func (_m *GameplayService) ListMyDrafts(ctx context.Context, userID uint64, limit int, cursor string) ([]sharedmodels.StoryConfig, string, error) { // <<< Используем sharedmodels
 	ret := _m.Called(ctx, userID, limit, cursor)
 
 	if len(ret) == 0 {
 		panic("no return value specified for ListMyDrafts")
 	}
 
-	var r0 []models.StoryConfig
+	var r0 []sharedmodels.StoryConfig // <<< Используем sharedmodels
 	var r1 string
 	var r2 error
-	if rf, ok := ret.Get(0).(func(context.Context, uint64, int, string) ([]models.StoryConfig, string, error)); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uint64, int, string) ([]sharedmodels.StoryConfig, string, error)); ok { // <<< Используем sharedmodels
 		return rf(ctx, userID, limit, cursor)
 	}
-	if rf, ok := ret.Get(0).(func(context.Context, uint64, int, string) []models.StoryConfig); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uint64, int, string) []sharedmodels.StoryConfig); ok { // <<< Используем sharedmodels
 		r0 = rf(ctx, userID, limit, cursor)
 	} else {
 		if ret.Get(0) != nil {
-			r0 = ret.Get(0).([]models.StoryConfig)
+			r0 = ret.Get(0).([]sharedmodels.StoryConfig) // <<< Используем sharedmodels
 		}
 	}
 

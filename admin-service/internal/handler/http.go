@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.uber.org/zap"
+	// interfaces "novel-server/shared/interfaces" // <<< Убираем импорт
 )
 
 // <<< Структура для параметров генерации >>>
@@ -53,26 +54,26 @@ var (
 // AdminHandler обрабатывает HTTP запросы для admin-service.
 type AdminHandler struct {
 	logger *zap.Logger
-	// Заменяем зависимость от cfg на конкретный клиент
-	// cfg           *config.Config
+	// Заменяем зависимости от репозиториев на клиенты
 	authClient     client.AuthServiceHttpClient
 	storyGenClient client.StoryGeneratorClient
-	// Добавьте зависимости на сервисы/репозитории админки, если нужно
+	gameplayClient client.GameplayServiceClient // <<< Добавляем GameplayServiceClient
 }
 
 // NewAdminHandler создает новый AdminHandler.
-func NewAdminHandler(cfg *config.Config, logger *zap.Logger, authClient client.AuthServiceHttpClient, storyGenClient client.StoryGeneratorClient) *AdminHandler {
-	// Создаем верификатор токенов (ему все еще нужен JWTSecret из cfg)
-	// verifier, err := authutils.NewJWTVerifier(cfg.JWTSecret, logger) // <<< Локальный верификатор больше не нужен
-	// if err != nil {
-	// 	logger.Fatal("Failed to create JWT Verifier", zap.Error(err))
-	// }
-
+// <<< Обновляем сигнатуру, принимаем GameplayServiceClient >>>
+func NewAdminHandler(
+	cfg *config.Config,
+	logger *zap.Logger,
+	authClient client.AuthServiceHttpClient,
+	storyGenClient client.StoryGeneratorClient,
+	gameplayClient client.GameplayServiceClient, // <<< Добавлено
+) *AdminHandler {
 	return &AdminHandler{
-		logger: logger.Named("AdminHandler"),
-		// tokenVerifier: verifier, // <<< Убираем локальный верификатор
-		authClient:     authClient,     // <<< Клиент уже есть
-		storyGenClient: storyGenClient, // <<< Добавлено
+		logger:         logger.Named("AdminHandler"),
+		authClient:     authClient,
+		storyGenClient: storyGenClient,
+		gameplayClient: gameplayClient, // <<< Сохраняем клиент
 	}
 }
 
@@ -102,6 +103,10 @@ func (h *AdminHandler) RegisterRoutes(e *echo.Echo) {
 	// <<< Сброс пароля пользователя >>>
 	adminApiGroup.POST("/users/:user_id/reset-password", h.handleResetPassword)
 	// Добавьте другие роуты админки здесь
+
+	// <<< Роуты для просмотра контента пользователя >>>
+	adminApiGroup.GET("/users/:user_id/drafts", h.listUserDrafts)
+	adminApiGroup.GET("/users/:user_id/stories", h.listUserStories)
 
 	// <<< Добавляем роуты для AI Playground >>>
 	adminApiGroup.GET("/ai-playground", h.handleAIPlaygroundPage)
@@ -887,6 +892,174 @@ func (h *AdminHandler) handleAIPlaygroundGenerate(c echo.Context) error {
 		...
 		return nil // Успешное завершение стриминга
 	*/
+}
+
+// --- Новые обработчики для историй пользователя (ОБНОВЛЕНО) ---
+
+const (
+	defaultLimit = 20
+)
+
+// listUserDrafts отображает страницу со списком черновиков пользователя.
+func (h *AdminHandler) listUserDrafts(c echo.Context) error {
+	ctx := c.Request().Context()
+	log := h.logger.With(zap.String("handler", "listUserDrafts"))
+
+	// <<< Получаем ID целевого пользователя >>>
+	targetUserIDStr := c.Param("user_id")
+	targetUserID, err := strconv.ParseUint(targetUserIDStr, 10, 64)
+	if err != nil {
+		log.Error("Invalid target user ID format", zap.String("user_id", targetUserIDStr), zap.Error(err))
+		return echo.NewHTTPError(http.StatusBadRequest, "Неверный формат ID пользователя")
+	}
+	log = log.With(zap.Uint64("targetUserID", targetUserID))
+
+	// <<< Получаем параметры пагинации >>>
+	limitStr := c.QueryParam("limit")
+	limit, _ := strconv.Atoi(limitStr)
+	if limit <= 0 || limit > defaultLimit {
+		limit = defaultLimit
+	}
+	cursor := c.QueryParam("cursor")
+
+	// <<< Получаем данные пользователя (как и раньше) >>>
+	var targetUser *sharedModels.User
+	var userErr error
+	// Используем существующий способ получения юзера (пока нет GetUserDetails)
+	users, _, listUsersErr := h.authClient.ListUsers(ctx, 1, fmt.Sprintf("id:%d", targetUserID))
+	if listUsersErr != nil {
+		userErr = fmt.Errorf("failed to list users to find target: %w", listUsersErr)
+		log.Error("Failed to get target user details via ListUsers", zap.Error(userErr))
+	} else if len(users) == 0 {
+		userErr = sharedModels.ErrUserNotFound
+	} else {
+		targetUser = &users[0]
+	}
+
+	// <<< Получаем список черновиков через КЛИЕНТ GameplayService >>>
+	var drafts []sharedModels.StoryConfig
+	var nextCursor string
+	var listErr error
+	if userErr == nil { // Получаем черновики только если пользователь найден
+		drafts, nextCursor, listErr = h.gameplayClient.ListUserDrafts(ctx, targetUserID, limit, cursor)
+		if listErr != nil {
+			log.Error("Failed to get user drafts from gameplay service", zap.Error(listErr))
+			// Обработаем ниже
+		}
+	}
+
+	// <<< Подготовка данных для шаблона (без изменений) >>>
+	pageTitle := "Черновики пользователя"
+	if targetUser != nil {
+		pageTitle = fmt.Sprintf("Черновики пользователя %s (%d)", targetUser.Username, targetUserID)
+	} else if userErr != nil {
+		pageTitle = fmt.Sprintf("Черновики пользователя (ID: %d)", targetUserID)
+	}
+
+	data := map[string]interface{}{
+		"PageTitle":  pageTitle,
+		"TargetUser": targetUser,
+		"Drafts":     drafts,
+		"Limit":      limit,
+		"NextCursor": nextCursor,
+		"IsLoggedIn": true,
+	}
+
+	// <<< Обработка ошибок для шаблона (без изменений) >>>
+	if userErr != nil {
+		if errors.Is(userErr, sharedModels.ErrUserNotFound) {
+			data["Error"] = "Пользователь не найден."
+		} else {
+			data["Error"] = "Не удалось загрузить данные пользователя: " + userErr.Error()
+		}
+		data["Drafts"] = []sharedModels.StoryConfig{}
+	} else if listErr != nil {
+		// TODO: Уточнить обработку ошибок клиента (например, ErrInvalidCursor)
+		data["Error"] = "Не удалось загрузить черновики: " + listErr.Error()
+	}
+
+	return c.Render(http.StatusOK, "user_drafts.html", data)
+}
+
+// listUserStories отображает страницу со списком опубликованных историй пользователя.
+func (h *AdminHandler) listUserStories(c echo.Context) error {
+	ctx := c.Request().Context()
+	log := h.logger.With(zap.String("handler", "listUserStories"))
+
+	// <<< Получаем ID целевого пользователя >>>
+	targetUserIDStr := c.Param("user_id")
+	targetUserID, err := strconv.ParseUint(targetUserIDStr, 10, 64)
+	if err != nil {
+		log.Error("Invalid target user ID format", zap.String("user_id", targetUserIDStr), zap.Error(err))
+		return echo.NewHTTPError(http.StatusBadRequest, "Неверный формат ID пользователя")
+	}
+	log = log.With(zap.Uint64("targetUserID", targetUserID))
+
+	// <<< Получаем параметры пагинации >>>
+	limitStr := c.QueryParam("limit")
+	limit, _ := strconv.Atoi(limitStr)
+	if limit <= 0 || limit > defaultLimit {
+		limit = defaultLimit
+	}
+
+	offsetStr := c.QueryParam("offset")
+	offset, _ := strconv.Atoi(offsetStr)
+	if offset < 0 {
+		offset = 0
+	}
+
+	// <<< Получаем данные пользователя (как и раньше) >>>
+	var targetUser *sharedModels.User
+	var userErr error
+	// Используем существующий способ получения юзера
+	users, _, listUsersErr := h.authClient.ListUsers(ctx, 1, fmt.Sprintf("id:%d", targetUserID))
+	if listUsersErr != nil {
+		userErr = fmt.Errorf("failed to list users: %w", listUsersErr)
+		log.Error("Failed to get target user details via ListUsers", zap.Error(userErr))
+	} else if len(users) == 0 {
+		userErr = sharedModels.ErrUserNotFound
+	} else {
+		targetUser = &users[0]
+	}
+
+	// <<< Получаем список опубликованных историй через КЛИЕНТ GameplayService >>>
+	var stories []*sharedModels.PublishedStory
+	var hasMore bool
+	var listErr error
+	if userErr == nil { // Получаем истории только если пользователь найден
+		stories, hasMore, listErr = h.gameplayClient.ListUserPublishedStories(ctx, targetUserID, limit, offset)
+		if listErr != nil {
+			log.Error("Failed to get user published stories from gameplay service", zap.Error(listErr))
+			// Обработаем ниже
+		}
+	}
+
+	// <<< Подготавливаем данные для шаблона (без изменений) >>>
+	data := map[string]interface{}{
+		"TargetUser": targetUser,
+		"Stories":    stories,
+		"Limit":      limit,
+		"Offset":     offset,
+		"HasMore":    hasMore,
+		"PageTitle":  "Опубликованные истории пользователя",
+		"IsLoggedIn": true,
+		"Error":      "",
+	}
+
+	if targetUser != nil {
+		data["PageTitle"] = fmt.Sprintf("Истории пользователя %s (%d)", targetUser.Username, targetUserID)
+	} else {
+		data["PageTitle"] = fmt.Sprintf("Истории пользователя (ID: %d)", targetUserID)
+	}
+
+	// <<< Обработка ошибок для шаблона (без изменений) >>>
+	if userErr != nil {
+		data["Error"] = "Не удалось загрузить данные пользователя: " + userErr.Error()
+	} else if listErr != nil {
+		data["Error"] = "Не удалось загрузить истории: " + listErr.Error()
+	}
+
+	return c.Render(http.StatusOK, "user_stories.html", data)
 }
 
 // CustomHTTPErrorHandler обрабатывает ошибки HTTP и возвращает кастомные страницы/ответы

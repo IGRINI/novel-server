@@ -10,6 +10,8 @@ const (
 	UserContextKey contextKey = "userID"
 	// RolesContextKey используется как ключ для хранения []string ролей пользователя в контексте запроса.
 	RolesContextKey contextKey = "userRoles"
+	// SourceServiceContextKey используется как ключ для хранения ID сервиса-источника в контексте запроса.
+	SourceServiceContextKey contextKey = "sourceServiceID"
 )
 
 // GetUserIDFromContext извлекает UserID из контекста.

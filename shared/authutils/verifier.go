@@ -77,6 +77,44 @@ func (v *JWTVerifier) VerifyToken(ctx context.Context, tokenString string) (*mod
 	return claims, nil
 }
 
+// VerifyInterServiceToken проверяет межсервисный токен (без проверки UserID).
+func (v *JWTVerifier) VerifyInterServiceToken(ctx context.Context, tokenString string) (*models.Claims, error) {
+	log := v.logger.With(zap.String("tokenSnippet", tokenSnippet(tokenString)))
+	claims := &models.Claims{}
+
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			log.Warn("Unexpected signing method", zap.Any("alg", token.Header["alg"]))
+			return nil, fmt.Errorf("%w: unexpected signing method: %v", models.ErrTokenInvalid, token.Header["alg"])
+		}
+		// Ключ должен соответствовать тому, который используется для подписи в auth-service
+		return []byte(v.jwtSecret), nil
+	})
+
+	if err != nil {
+		if errors.Is(err, jwt.ErrTokenExpired) {
+			log.Warn("Token expired")
+			return nil, fmt.Errorf("%w: %w", models.ErrTokenInvalid, jwt.ErrTokenExpired)
+		}
+		log.Error("Failed to parse token", zap.Error(err))
+		return nil, fmt.Errorf("%w: %w", models.ErrTokenInvalid, err)
+	}
+
+	if !token.Valid {
+		log.Warn("Token is invalid")
+		return nil, models.ErrTokenInvalid
+	}
+
+	// Проверяем обязательные поля для межсервисного токена
+	if claims.Subject == "" {
+		log.Warn("Token subject (sub) is missing")
+		return nil, fmt.Errorf("%w: subject missing", models.ErrTokenInvalid)
+	}
+
+	log.Debug("Inter-service token verified successfully", zap.String("subject", claims.Subject))
+	return claims, nil
+}
+
 // tokenSnippet возвращает безопасную для логгирования часть токена.
 func tokenSnippet(tokenString string) string {
 	limit := 15
@@ -84,4 +122,4 @@ func tokenSnippet(tokenString string) string {
 		return tokenString[:limit] + "..."
 	}
 	return tokenString
-} 
+}

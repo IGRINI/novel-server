@@ -1,0 +1,883 @@
+/* --- Font Definitions --- */
+@font-face {
+  font-family: 'Manrope';
+  src: url('assets/fonts/Manrope-Regular.ttf') format('truetype'); 
+  font-weight: 400; /* Regular weight */
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Manrope';
+  src: url('assets/fonts/Manrope-Medium.ttf') format('truetype'); 
+  font-weight: 500; /* Medium weight */
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Manrope';
+  src: url('assets/fonts/Manrope-SemiBold.ttf') format('truetype'); 
+  font-weight: 600; /* SemiBold weight */
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Manrope';
+  src: url('assets/fonts/Manrope-Bold.ttf') format('truetype'); 
+  font-weight: 700; /* Bold weight */
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Manrope';
+  src: url('assets/fonts/Manrope-ExtraBold.ttf') format('truetype'); 
+  font-weight: 800; /* ExtraBold weight */
+  font-style: normal;
+  font-display: swap;
+}
+
+/* --- Variables --- */
+:root {
+    --background-color: #0a0a1a; 
+    --primary-color: #00ffff; 
+    --secondary-color: #4d00ff; 
+    --text-color: #e0e0ff; 
+    --text-color-muted: #a0a0cc; 
+    --card-background: rgba(10, 10, 30, 0.7); 
+    --glow-effect: 0 0 5px var(--primary-color), 0 0 10px var(--primary-color);
+
+    --font-primary: 'Manrope', sans-serif; /* Use Manrope */
+    --font-heading: 'Manrope', sans-serif; /* Use Manrope */
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html {
+    scroll-behavior: smooth;
+}
+
+body {
+    background-color: var(--background-color);
+    color: var(--text-color);
+    font-family: var(--font-primary);
+    font-weight: 400; /* Default to regular */
+    line-height: 1.6;
+    overflow-x: hidden; 
+}
+
+.container {
+    width: 90%;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0 15px;
+}
+
+h1, h2, h3 {
+    font-family: var(--font-heading);
+    font-weight: 700; /* Default heading weight (Bold) */
+    color: var(--primary-color);
+    text-shadow: var(--glow-effect);
+    margin-bottom: 0.8em;
+    line-height: 1.2;
+}
+
+h1 {
+    font-size: 2.8rem;
+    font-weight: 800; /* ExtraBold for main title */
+}
+
+h2 {
+    font-size: 2rem;
+    text-align: center;
+    margin-bottom: 1.5em;
+    font-weight: 700; /* Bold for section titles */
+}
+
+h3 {
+    font-size: 1.4rem;
+    color: var(--text-color); 
+    text-shadow: none;
+    font-weight: 600; /* SemiBold for card titles */
+}
+
+a {
+    color: var(--primary-color);
+    text-decoration: none;
+    transition: color 0.3s ease, text-shadow 0.3s ease;
+}
+
+a:hover,
+a:focus {
+    color: #fff;
+    text-shadow: 0 0 5px var(--primary-color);
+}
+
+ul {
+    list-style: none;
+}
+
+/* --- Header --- */
+.header {
+    background-color: rgba(10, 10, 30, 0.8);
+    backdrop-filter: blur(5px);
+    padding: 1rem 0;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    border-bottom: 1px solid rgba(0, 255, 255, 0.2);
+}
+
+.header__container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.logo {
+    font-size: 1.5rem;
+    font-weight: 800; /* ExtraBold logo */
+    text-shadow: var(--glow-effect);
+}
+
+.nav__list {
+    display: flex;
+    align-items: center;
+}
+
+.nav__item {
+    margin-left: 1.5rem;
+}
+
+.nav__link {
+    font-size: 1rem;
+    font-weight: 500; /* Medium weight for nav links */
+}
+
+.nav__link--button {
+    background-color: var(--primary-color);
+    color: var(--background-color);
+    padding: 0.5em 1em;
+    border-radius: 5px;
+    font-weight: 600; /* SemiBold button text */
+    text-shadow: none;
+    transition: background-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.nav__link--button:hover,
+.nav__link--button:focus {
+    background-color: #fff;
+    box-shadow: var(--glow-effect);
+    color: var(--background-color);
+}
+
+.burger {
+    display: none; 
+    background: none;
+    border: none;
+    cursor: pointer;
+    
+}
+
+/* --- Hero Section --- */
+.hero {
+    min-height: 80vh;
+    display: flex;
+    align-items: center;
+    text-align: center;
+    padding: 4rem 0;
+    
+    background: radial-gradient(circle, rgba(10, 10, 30, 0.9) 0%, var(--background-color) 70%);
+}
+
+.hero__container {
+    max-width: 800px;
+}
+
+.hero__title {
+    margin-bottom: 0.5em;
+}
+
+.hero__tagline {
+    font-size: 1.2rem;
+    color: var(--text-color-muted);
+    margin-bottom: 1em;
+}
+
+.hero__description {
+    font-size: 1rem;
+    margin-bottom: 2em;
+    max-width: 600px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.hero__cta {
+    margin-top: 1.5rem;
+}
+
+.cta-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    vertical-align: middle;
+
+    padding: 0.8em 1.8em;
+    margin: 0.5em;
+    border-radius: 5px;
+    font-weight: 600;
+    font-size: 1rem;
+    transition: transform 0.2s ease, box-shadow 0.3s ease, background-color 0.3s ease, color 0.3s ease;
+    text-shadow: none;
+    cursor: pointer;
+    text-align: center;
+    border: 1px solid transparent;
+    background-color: var(--primary-color);
+    color: var(--background-color);
+}
+
+.cta-button--primary {
+    background-color: var(--primary-color);
+    color: var(--background-color);
+    border-color: var(--primary-color);
+}
+
+.cta-button--primary:hover,
+.cta-button--primary:focus {
+    transform: translateY(-3px);
+    box-shadow: var(--glow-effect);
+    background-color: #fff;
+    color: var(--background-color);
+    border-color: #fff;
+}
+
+.cta-button--secondary {
+    background-color: transparent;
+    color: var(--primary-color);
+    border-color: var(--primary-color);
+}
+
+.cta-button--secondary:hover,
+.cta-button--secondary:focus {
+    transform: translateY(-3px);
+    background-color: rgba(0, 255, 255, 0.1);
+    box-shadow: 0 0 8px rgba(0, 255, 255, 0.5);
+}
+
+/* --- Store Icon Styles --- */
+/* Remove padding/border/bg only for buttons containing store icons */
+.cta-button:has(.store-icon) {
+    padding: 0;
+    border: none;
+    background: none;
+    line-height: 0; /* Keep line-height 0 for icon-only buttons */
+    margin: 0.5em 0.8em; /* Re-apply margin specifically for icon buttons */
+}
+
+.store-icon {
+    height: 40px; /* Задаем фиксированную высоту */
+    width: auto; /* Ширина автоматическая для сохранения пропорций */
+    /* margin-right: 0.6em; */ /* Убираем отступ справа */
+    /* vertical-align: middle; */ /* Больше не нужно */
+    display: block; /* Чтобы избежать лишних отступов под картинкой */
+}
+
+.cta-button:has(.store-icon):hover .store-icon,
+.cta-button:has(.store-icon):focus .store-icon {
+    transform: translateY(-3px);
+    filter: drop-shadow(0 0 8px var(--primary-color)); 
+}
+
+/* Remove focus outline from icon buttons specifically */
+.cta-button:has(.store-icon):focus {
+    outline: none; 
+    box-shadow: none; 
+}
+
+/* --- Sections --- */
+.section {
+    padding: 4rem 0;
+}
+
+.section__title {
+    margin-bottom: 2em;
+}
+
+.section__description {
+    max-width: 700px;
+    margin: 0 auto 2em auto;
+    text-align: center;
+    color: var(--text-color-muted);
+}
+
+/* --- How It Works --- */
+.section--how-it-works {
+    background-color: rgba(15, 15, 35, 0.5);
+}
+
+.how-it-works__steps {
+    display: flex;
+    justify-content: space-around; /* Distribute space */
+    align-items: flex-start; /* Align items top */
+    flex-wrap: wrap; /* Allow wrapping on smaller screens */
+    gap: 1rem; /* Space between items if they wrap */
+    margin-top: 3rem;
+}
+
+.step {
+    flex: 1; /* Allow steps to grow, but base on content */
+    min-width: 150px; /* Minimum width before wrapping */
+    max-width: 200px; /* Maximum width */
+    text-align: center;
+    padding: 1rem;
+    background: var(--card-background);
+    border: 1px solid rgba(0, 255, 255, 0.15);
+    border-radius: 8px;
+}
+
+.step__icon {
+    font-size: 2rem; /* Adjust size as needed */
+    color: var(--primary-color);
+    margin-bottom: 0.8rem;
+    /* Replace placeholder with actual icon styles later */
+}
+
+.step__title {
+    font-size: 1.1rem;
+    font-weight: 600; /* SemiBold */
+    color: var(--text-color);
+    text-shadow: none;
+    margin-bottom: 0.5rem;
+}
+
+.step__text {
+    font-size: 0.9rem;
+    color: var(--text-color-muted);
+    line-height: 1.4;
+}
+
+.step__arrow {
+    display: none; /* Hide arrows by default */
+    align-self: center; /* Center arrow vertically */
+    font-size: 2rem;
+    color: var(--primary-color);
+    padding: 0 1rem; /* Space around arrow */
+}
+
+/* Show arrows on larger screens where flex layout is likely horizontal */
+@media (min-width: 992px) {
+    .how-it-works__steps {
+        flex-wrap: nowrap; /* Prevent wrapping on large screens */
+    }
+    .step__arrow {
+        display: block; /* Show arrows */
+    }
+    .step {
+         flex-basis: 0; /* Allow flex-grow to distribute space evenly */
+    }
+}
+
+/* --- Features --- */
+.features__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 2rem;
+}
+
+.feature-card {
+    background-color: var(--card-background);
+    border: 1px solid rgba(0, 255, 255, 0.2);
+    padding: 2rem;
+    border-radius: 10px;
+    text-align: center;
+    transition: transform 0.3s ease, box-shadow 0.3s ease, background-color 0.3s ease;
+}
+
+.feature-card:hover {
+    transform: translateY(-8px);
+    box-shadow: 0 8px 25px rgba(0, 255, 255, 0.15);
+    background-color: rgba(30, 30, 60, 0.8);
+}
+
+.feature-card__icon {
+    font-size: 2.5rem;
+    margin-bottom: 1rem;
+    color: var(--primary-color);
+    text-shadow: var(--glow-effect);
+}
+
+.feature-card__title {
+    margin-bottom: 0.8rem;
+}
+
+.feature-card__text {
+    color: var(--text-color-muted);
+    font-size: 0.95rem;
+}
+
+/* --- Testimonials --- */
+.section--testimonials {
+    background-color: rgba(15, 15, 35, 0.5); /* Similar to how-it-works */
+}
+
+.testimonials__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 2rem;
+}
+
+.testimonial-card {
+    background-color: var(--card-background);
+    border: 1px solid rgba(0, 255, 255, 0.1);
+    padding: 1.8rem;
+    border-radius: 10px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+
+.testimonial-card::before {
+    content: '“'; /* Opening quote */
+    position: absolute;
+    top: 0.5rem;
+    left: 1rem;
+    font-size: 3.5rem;
+    color: rgba(0, 255, 255, 0.2);
+    line-height: 1;
+    font-family: serif; /* Use a serif font for quotes */
+    z-index: 0;
+}
+
+.testimonial-quote {
+    font-style: italic;
+    margin-bottom: 1.5rem;
+    color: var(--text-color);
+    position: relative; /* To stay above pseudo-element */
+    z-index: 1;
+    flex-grow: 1;
+}
+
+.testimonial-author {
+    font-weight: 600; /* SemiBold */
+    color: var(--primary-color);
+    text-align: right;
+    margin-top: auto; /* Pushes author to the bottom */
+    position: relative;
+    z-index: 1;
+}
+
+/* --- Target Audience --- */
+.section--target-audience {
+    /* Optional: Add a subtle background pattern or gradient */
+}
+
+.audience__description {
+    font-size: 1.1rem; /* Slightly larger description */
+    line-height: 1.7;
+}
+
+.audience__list {
+    margin-top: 2.5rem;
+    padding-left: 1rem; /* Indent list */
+    columns: 2; /* Try 2 columns */
+    column-gap: 2rem;
+    max-width: 800px; /* Limit width */
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.audience__list li {
+    margin-bottom: 0.8rem;
+    padding-left: 1.5rem; /* Space for pseudo-element */
+    position: relative;
+    color: var(--text-color);
+    font-weight: 500; /* Medium weight */
+    break-inside: avoid-column; /* Prevent items breaking across columns */
+}
+
+.audience__list li::before {
+    content: '✨'; /* Default marker */
+    /* Or use content: '\2728'; */
+    position: absolute;
+    left: 0;
+    top: 1px;
+    color: var(--primary-color);
+    font-size: 0.9rem;
+    /* Optional: Replace with SVG background-image for custom marker */
+}
+
+/* Single column on smaller screens */
+@media (max-width: 600px) {
+    .audience__list {
+        columns: 1;
+        padding-left: 0.5rem; /* Reduce indent */
+    }
+    .audience__list li {
+        padding-left: 1.2rem; /* Adjust padding for marker */
+    }
+}
+
+/* --- Gallery --- */
+.section--gallery {
+    background-color: rgba(10, 10, 30, 0.8);
+}
+
+.gallery__placeholder {
+    text-align: center;
+    color: var(--text-color-muted);
+    
+}
+
+/* --- Final CTA --- */
+.section--cta {
+    text-align: center;
+    background: linear-gradient(rgba(10, 10, 30, 0.8), var(--background-color));
+}
+
+/* --- Footer --- */
+.footer {
+    background-color: #050510;
+    padding: 2rem 0;
+    margin-top: 3rem;
+    border-top: 1px solid rgba(0, 255, 255, 0.1);
+    color: var(--text-color-muted);
+}
+
+.footer__container {
+    display: flex;
+    justify-content: space-between; /* Space out info and socials */
+    align-items: center;
+    flex-wrap: wrap; /* Allow wrapping */
+    gap: 1rem; /* Space between items when wrapped */
+}
+
+.footer__info {
+     text-align: center; /* Center info text on small screens */
+}
+
+.footer__links {
+    display: flex;
+    justify-content: center; /* Center links on small screens */
+    flex-wrap: wrap;
+    gap: 0 1.5rem; /* Horizontal gap */
+    margin-top: 0.5rem;
+}
+
+.footer__links li {
+    margin: 0; /* Remove default margin */
+}
+
+.footer__links a {
+    color: var(--text-color-muted);
+    font-size: 0.9rem;
+}
+
+.footer__links a:hover {
+    color: var(--primary-color);
+}
+
+.footer__socials {
+    display: flex;
+    align-items: center;
+    gap: 1rem; /* Space between icons */
+}
+
+.social-link {
+    color: var(--text-color-muted);
+    transition: color 0.3s ease, transform 0.3s ease;
+}
+
+.social-link:hover,
+.social-link:focus {
+    color: var(--primary-color);
+    transform: scale(1.1);
+}
+
+.social-icon {
+    width: 28px; /* Adjust icon size */
+    height: 28px;
+}
+
+/* --- Responsive --- */
+@media (max-width: 768px) {
+    /* Adjust footer layout for small screens */
+    .footer__container {
+        flex-direction: column;
+        gap: 1.5rem; 
+    }
+    .footer__info {
+        order: 2; /* Move info below socials */
+    }
+    .footer__socials {
+        order: 1; /* Move socials to top */
+    }
+
+    /* Other responsive styles remain the same */
+    h1 { font-size: 2.2rem; }
+    h2 { font-size: 1.8rem; }
+
+    .nav {
+        display: flex; 
+        flex-direction: column; 
+        align-items: center; 
+        position: absolute;
+        top: 100%; 
+        left: 0;
+        width: 100%;
+        background-color: var(--background-color); 
+        padding: 1rem 0;
+        border-top: 1px solid rgba(0, 255, 255, 0.2); 
+        transform: translateY(-200%); 
+        opacity: 0;
+        visibility: hidden;
+        transition: transform 0.4s ease-in-out, opacity 0.4s ease-in-out, visibility 0.4s;
+        z-index: 99; 
+    }
+
+    .nav--active {
+        transform: translateY(0); 
+        opacity: 1;
+        visibility: visible;
+    }
+
+    .nav__list {
+        flex-direction: column;
+        align-items: center;
+        width: 100%; 
+    }
+
+    .nav__item {
+        margin: 0.8rem 0; 
+        margin-left: 0; 
+        width: 100%; 
+        text-align: center; 
+    }
+
+    .nav__link--button {
+        display: inline-block; 
+        width: auto; 
+        padding: 0.6em 1.5em;
+    }
+
+    .burger {
+        display: block; 
+        width: 30px;
+        height: 22px; 
+        position: relative;
+        z-index: 110; 
+        cursor: pointer; 
+    }
+
+    .burger span,
+    .burger::before,
+    .burger::after {
+        content: '';
+        position: absolute;
+        left: 0;
+        width: 100%;
+        height: 3px; 
+        background-color: var(--primary-color);
+        border-radius: 2px;
+        transition: transform 0.3s ease, top 0.3s ease, opacity 0.3s ease;
+    }
+
+    .burger::before { top: 0; }
+    .burger span { top: 50%; transform: translateY(-50%); }
+    .burger::after { top: 100%; transform: translateY(-100%); }
+
+    
+    .burger--active::before {
+         top: 50%;
+         transform: translateY(-50%) rotate(45deg);
+    }
+    .burger--active span {
+         opacity: 0; 
+    }
+    .burger--active::after {
+         top: 50%; 
+         transform: translateY(-50%) rotate(-45deg);
+    }
+
+    .header__container {
+        position: relative; 
+    }
+
+    .hero {
+        min-height: 60vh;
+        padding: 3rem 0;
+    }
+
+    .features__grid,
+    .testimonials__grid { /* Apply single column layout to testimonials too */
+        grid-template-columns: 1fr;
+    }
+
+    .lang-switcher {
+        
+        order: -1; 
+        margin-left: 0;
+        margin-right: 1rem; 
+    }
+}
+
+/* --- Language Switcher Styles --- */
+.lang-switcher {
+    display: flex;
+    align-items: center;
+    margin-left: 1rem; 
+}
+
+.lang-button {
+    background: none;
+    border: none;
+    color: var(--text-color-muted);
+    cursor: pointer;
+    padding: 0.3em 0.6em;
+    font-size: 0.9rem;
+    margin: 0 0.2em;
+    border-radius: 3px;
+    transition: color 0.3s ease, background-color 0.3s ease;
+}
+
+.lang-button:hover {
+    color: var(--primary-color);
+}
+
+.lang-button.active {
+    color: var(--background-color);
+    background-color: var(--primary-color);
+    font-weight: bold;
+    text-shadow: none;
+    box-shadow: 0 0 5px rgba(0, 255, 255, 0.5);
+}
+
+/* --- Animations --- */
+@keyframes fadeInDown {
+    from {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Apply animation to Hero title */
+.hero__title {
+    animation: fadeInDown 0.8s ease-out forwards;
+}
+
+/* Apply animation to Hero tagline and description with delay */
+.hero__tagline {
+    animation: fadeInUp 0.8s 0.2s ease-out forwards; /* 0.2s delay */
+    opacity: 0; /* Start hidden */
+}
+.hero__description {
+    animation: fadeInUp 0.8s 0.4s ease-out forwards; /* 0.4s delay */
+    opacity: 0; /* Start hidden */
+}
+.hero__cta {
+     animation: fadeInUp 0.8s 0.6s ease-out forwards; /* 0.6s delay */
+     opacity: 0; /* Start hidden */
+}
+
+/* --- Cookie Notice Banner --- */
+.cookie-notice {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    background-color: rgba(10, 10, 30, 0.95);
+    backdrop-filter: blur(5px);
+    color: var(--text-color-muted);
+    padding: 1rem 1.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+    z-index: 1001;
+    border-top: 1px solid rgba(0, 255, 255, 0.2);
+    transform: translateY(100%);
+    opacity: 0;
+    visibility: hidden;
+    transition: transform 0.5s ease-out, opacity 0.5s ease-out, visibility 0s linear 0.5s;
+    pointer-events: none;
+}
+
+.cookie-notice.show {
+    transform: translateY(0);
+    opacity: 1;
+    visibility: visible;
+    transition: transform 0.5s ease-out, opacity 0.5s ease-out, visibility 0s linear 0s;
+    pointer-events: auto;
+}
+
+.cookie-notice p {
+    margin: 0;
+    flex-grow: 1;
+}
+
+.cookie-notice a {
+    color: var(--primary-color);
+    text-decoration: underline;
+}
+
+.cookie-notice a:hover {
+    text-decoration: none;
+}
+
+/* Ensure .cta-button styles apply to .cta-button--small */
+.cta-button--small {
+    /* Re-apply necessary base styles if they were lost */
+    display: inline-block;
+    padding: 0.4em 1em; 
+    font-size: 0.9rem;
+    font-weight: 600; /* Match .nav__link--button */
+    border-radius: 5px;
+    cursor: pointer;
+    text-align: center;
+    min-width: 80px; 
+    flex-shrink: 0; 
+    background-color: var(--primary-color);
+    color: var(--background-color);
+    border: 1px solid var(--primary-color);
+    text-shadow: none;
+    transition: transform 0.2s ease, box-shadow 0.3s ease, background-color 0.3s ease, color 0.3s ease;
+}
+
+.cta-button--small:hover,
+.cta-button--small:focus {
+    background-color: #fff;
+    color: var(--background-color);
+    border-color: #fff;
+    box-shadow: var(--glow-effect);
+    transform: translateY(-2px); 
+}
+
+/* Ensure the glow effect isn't too harsh on hover for this button */
+.cta-button--small:hover,
+.cta-button--small:focus {
+     box-shadow: 0 0 6px var(--primary-color); /* Slightly reduced glow */
+} 

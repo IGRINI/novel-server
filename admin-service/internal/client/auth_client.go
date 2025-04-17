@@ -255,19 +255,21 @@ func (c *authClient) ListUsers(ctx context.Context, limit int, afterCursor strin
 		return nil, "", fmt.Errorf("received unexpected status %d from auth service for user list", httpResp.StatusCode)
 	}
 
-	// Ожидаем ответ типа: {"users": [...], "next_cursor": "..."}
-	type listUsersResponse struct {
-		Users      []models.User `json:"users"`
-		NextCursor string        `json:"next_cursor"` // Может быть пустой, если это последняя страница
-	}
-	var resp listUsersResponse
-	if err := json.Unmarshal(respBodyBytes, &resp); err != nil {
+	// <<< ИЗМЕНЕНИЕ: Ожидаем ответ типа []models.User >>>
+	// type listUsersResponse struct {
+	// 	Users      []models.User `json:"users"`
+	// 	NextCursor string        `json:"next_cursor"`
+	// }
+	// var resp listUsersResponse
+	var users []models.User // <<< Анмаршалим напрямую в слайс пользователей
+	if err := json.Unmarshal(respBodyBytes, &users); err != nil {
 		log.Error("Failed to unmarshal user list response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes), zap.Error(err))
 		return nil, "", fmt.Errorf("invalid user list response format from auth service: %w", err)
 	}
 
-	log.Info("User list retrieved successfully", zap.Int("userCount", len(resp.Users)), zap.String("nextCursor", resp.NextCursor))
-	return resp.Users, resp.NextCursor, nil
+	// <<< Возвращаем пустой курсор, так как его нет в ответе >>>
+	log.Info("User list retrieved successfully", zap.Int("userCount", len(users)))
+	return users, "", nil
 }
 
 // --- Новый метод ---

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"novel-server/shared/utils"
@@ -18,6 +19,7 @@ type Config struct {
 	LogLevel             string
 	AuthServiceURL       string
 	StoryGeneratorURL    string
+	GameplayServiceURL   string
 	ClientTimeout        time.Duration
 	InterServiceTokenTTL time.Duration
 	AuthServiceTimeout   time.Duration
@@ -29,7 +31,7 @@ type Config struct {
 
 // LoadConfig загружает конфигурацию из переменных окружения и секретов
 func LoadConfig(logger *zap.Logger) (*Config, error) {
-	_ = godotenv.Load() // Загружаем .env, игнорируем ошибку
+	_ = godotenv.Load()
 
 	port := getEnv("ADMIN_SERVER_PORT", "8084")
 
@@ -48,6 +50,7 @@ func LoadConfig(logger *zap.Logger) (*Config, error) {
 
 	authServiceURL := getEnv("AUTH_SERVICE_URL", "http://auth-service:8081")
 	storyGeneratorURL := getEnv("STORY_GENERATOR_URL", "http://story-generator:8083")
+	gameplayServiceURL := getEnv("GAMEPLAY_SERVICE_URL", "http://gameplay-service:8082")
 
 	clientTimeoutStr := getEnv("HTTP_CLIENT_TIMEOUT", "10s")
 	clientTimeout, err := time.ParseDuration(clientTimeoutStr)
@@ -55,7 +58,6 @@ func LoadConfig(logger *zap.Logger) (*Config, error) {
 		logger.Warn("Invalid HTTP_CLIENT_TIMEOUT format, using default 10s", zap.String("value", clientTimeoutStr), zap.Error(err))
 		clientTimeout = 10 * time.Second
 	}
-
 	logger.Info("Client timeout", zap.Duration("clientTimeout", clientTimeout))
 
 	cfg := &Config{
@@ -65,6 +67,7 @@ func LoadConfig(logger *zap.Logger) (*Config, error) {
 		JWTSecret:            jwtSecret,
 		AuthServiceURL:       authServiceURL,
 		StoryGeneratorURL:    storyGeneratorURL,
+		GameplayServiceURL:   gameplayServiceURL,
 		ClientTimeout:        clientTimeout,
 		InterServiceSecret:   interServiceSecret,
 		InterServiceTokenTTL: getDurationEnv("INTER_SERVICE_TOKEN_TTL", "1h"),
@@ -78,6 +81,7 @@ func LoadConfig(logger *zap.Logger) (*Config, error) {
 		zap.String("logLevel", cfg.LogLevel),
 		zap.String("authServiceURL", cfg.AuthServiceURL),
 		zap.String("storyGeneratorURL", cfg.StoryGeneratorURL),
+		zap.String("gameplayServiceURL", cfg.GameplayServiceURL),
 		zap.Duration("clientTimeout", cfg.ClientTimeout),
 		zap.Bool("jwtSecretLoaded", cfg.JWTSecret != ""),
 		zap.Bool("interServiceSecretLoaded", cfg.InterServiceSecret != ""),
@@ -99,14 +103,30 @@ func getDurationEnv(key string, fallback string) time.Duration {
 		duration, err := time.ParseDuration(value)
 		if err != nil {
 			fmt.Printf("Invalid %s format, using default %s\n", key, fallback)
-			return time.Duration(0)
+			// Возвращаем fallback duration, если он парсится
+			if fallbackDur, fbErr := time.ParseDuration(fallback); fbErr == nil {
+				return fallbackDur
+			}
+			return time.Duration(0) // Или возвращаем 0, если fallback тоже некорректен
 		}
 		return duration
 	}
+	// Возвращаем fallback duration, если переменная не найдена
 	duration, err := time.ParseDuration(fallback)
 	if err != nil {
 		fmt.Printf("Invalid fallback format for %s, using default 0s\n", fallback)
 		return time.Duration(0)
 	}
 	return duration
+}
+
+// <<< (НОВОЕ) Вспомогательная функция для получения int из env >>>
+func getIntEnv(key string, fallback int) int {
+	if valueStr, ok := os.LookupEnv(key); ok {
+		if valueInt, err := strconv.Atoi(valueStr); err == nil {
+			return valueInt
+		}
+		fmt.Printf("Invalid integer format for %s, using fallback %d\n", key, fallback)
+	}
+	return fallback
 }

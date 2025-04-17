@@ -9,12 +9,13 @@ import (
 	"novel-server/gameplay-service/internal/config"
 	"novel-server/gameplay-service/internal/handler"
 	"novel-server/gameplay-service/internal/messaging"
-	"novel-server/gameplay-service/internal/repository"
 	"novel-server/gameplay-service/internal/service"
 	sharedDatabase "novel-server/shared/database"     // Импорт для PublishedStoryRepository
+	sharedInterfaces "novel-server/shared/interfaces" // <<< Добавляем импорт shared/interfaces
 	sharedLogger "novel-server/shared/logger"         // <<< Импортируем общий логгер
 	sharedMessaging "novel-server/shared/messaging"   // <<< Добавляем импорт shared/messaging
 	sharedMiddleware "novel-server/shared/middleware" // <<< Импортируем shared/middleware
+	sharedModels "novel-server/shared/models"         // <<< Импорт shared/models
 	"os"
 	"os/signal"
 	"syscall"
@@ -28,8 +29,6 @@ import (
 	"go.uber.org/zap" // Импорт zap
 
 	// <<< Импорт для генерации UUID
-	"novel-server/gameplay-service/internal/models"
-
 	"github.com/google/uuid"
 )
 
@@ -92,7 +91,7 @@ func main() {
 
 	// Инициализация зависимостей
 	// Передаем logger, он будет использован внутри через .Named()
-	storyConfigRepo := repository.NewPgStoryConfigRepository(dbPool, logger)
+	storyConfigRepo := sharedDatabase.NewPgStoryConfigRepository(dbPool, logger)
 	publishedRepo := sharedDatabase.NewPgPublishedStoryRepository(dbPool, logger)
 	sceneRepo := sharedDatabase.NewPgStorySceneRepository(dbPool, logger)
 	playerProgressRepo := sharedDatabase.NewPgPlayerProgressRepository(dbPool, logger)
@@ -106,7 +105,7 @@ func main() {
 		logger.Fatal("Не удалось создать ClientUpdatePublisher", zap.Error(err))
 	}
 	gameplayService := service.NewGameplayService(storyConfigRepo, publishedRepo, sceneRepo, playerProgressRepo, taskPublisher, dbPool, logger)
-	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret)
+	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret)
 
 	// <<< Перезапуск зависших задач при старте >>>
 	go requeueStuckTasks(storyConfigRepo, taskPublisher, logger)
@@ -181,7 +180,7 @@ func main() {
 }
 
 // <<< Новая функция для перезапуска зависших задач >>>
-func requeueStuckTasks(repo repository.StoryConfigRepository, publisher messaging.TaskPublisher, logger *zap.Logger) {
+func requeueStuckTasks(repo sharedInterfaces.StoryConfigRepository, publisher messaging.TaskPublisher, logger *zap.Logger) {
 	// Небольшая задержка перед проверкой, чтобы дать другим сервисам время запуститься
 	time.Sleep(10 * time.Second)
 	logger.Info("Проверка зависших задач генерации...")
@@ -215,7 +214,7 @@ func requeueStuckTasks(repo repository.StoryConfigRepository, publisher messagin
 		var userInput string
 		var inputData map[string]interface{}
 
-		if cfg.Status == models.StatusGenerating {
+		if cfg.Status == sharedModels.StatusGenerating {
 			promptType = sharedMessaging.PromptTypeNarrator
 			// UserInput для начальной генерации - это первый элемент из cfg.UserInput
 			if len(cfg.UserInput) > 0 {

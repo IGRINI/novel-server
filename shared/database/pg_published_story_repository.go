@@ -2,14 +2,11 @@ package database
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"novel-server/shared/interfaces"
 	"novel-server/shared/models"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,45 +16,6 @@ import (
 
 // Compile-time check
 var _ interfaces.PublishedStoryRepository = (*pgPublishedStoryRepository)(nil)
-
-// --- Вспомогательные функции пагинации --- //
-
-const cursorSeparator = "_" // Можно вынести в общую утилиту
-
-// encodeCursor создает строку курсора из времени и UUID.
-func encodeCursor(t time.Time, id uuid.UUID) string {
-	key := fmt.Sprintf("%d%s%s", t.UnixNano(), cursorSeparator, id.String())
-	return base64.URLEncoding.EncodeToString([]byte(key))
-}
-
-// decodeCursor разбирает строку курсора на время и UUID.
-func decodeCursor(cursor string) (time.Time, uuid.UUID, error) {
-	if cursor == "" {
-		return time.Time{}, uuid.Nil, nil
-	}
-	decodedBytes, err := base64.URLEncoding.DecodeString(cursor)
-	if err != nil {
-		return time.Time{}, uuid.Nil, fmt.Errorf("некорректный формат курсора (base64 decode): %w", err)
-	}
-	key := string(decodedBytes)
-	parts := strings.SplitN(key, cursorSeparator, 2)
-	if len(parts) != 2 {
-		return time.Time{}, uuid.Nil, fmt.Errorf("некорректный формат курсора (separator)")
-	}
-
-	timestampNano, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil {
-		return time.Time{}, uuid.Nil, fmt.Errorf("некорректный формат курсора (timestamp): %w", err)
-	}
-	t := time.Unix(0, timestampNano).UTC()
-
-	id, err := uuid.Parse(parts[1])
-	if err != nil {
-		return time.Time{}, uuid.Nil, fmt.Errorf("некорректный формат курсора (uuid): %w", err)
-	}
-
-	return t, id, nil
-}
 
 // scanPublishedStory сканирует строку в структуру PublishedStory
 func scanPublishedStory(row pgx.Row) (*models.PublishedStory, error) {
@@ -110,8 +68,6 @@ func scanPublishedStories(rows pgx.Rows) ([]models.PublishedStory, error) {
 	}
 	return stories, nil
 }
-
-// --- Конец вспомогательных функций пагинации --- //
 
 // pgPublishedStoryRepository реализует интерфейс PublishedStoryRepository для PostgreSQL.
 type pgPublishedStoryRepository struct {

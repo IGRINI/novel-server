@@ -8,9 +8,10 @@ import (
 
 	// "novel-server/gameplay-service/internal/messaging"
 	messagingMocks "novel-server/gameplay-service/internal/messaging/mocks"
-	"novel-server/gameplay-service/internal/models"
-	repositoryMocks "novel-server/gameplay-service/internal/repository/mocks"
+	// "novel-server/gameplay-service/internal/models" // <<< Удаляем старый импорт
+	// repositoryMocks "novel-server/gameplay-service/internal/repository/mocks" // <<< Удаляем старый импорт мока
 	"novel-server/gameplay-service/internal/service"
+	repositoryMocks "novel-server/shared/interfaces/mocks" // <<< Добавляем новый импорт мока
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
 	"strconv"
@@ -29,7 +30,7 @@ func TestGenerateInitialStory(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("Successful initial generation", func(t *testing.T) {
-		mockRepo := new(repositoryMocks.StoryConfigRepository) // Используем мок из пакета
+		mockRepo := new(repositoryMocks.StoryConfigRepository) // Используем мок из shared/interfaces/mocks
 		mockPublisher := new(messagingMocks.TaskPublisher)     // Используем мок из пакета
 		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, mockPublisher, nil, zap.NewNop())
 
@@ -37,11 +38,11 @@ func TestGenerateInitialStory(t *testing.T) {
 		mockRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
 
 		// Ожидаем вызов Create
-		mockRepo.On("Create", ctx, mock.MatchedBy(func(cfg *models.StoryConfig) bool {
+		mockRepo.On("Create", ctx, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { // <<< Используем sharedModels
 			// Проверяем основные поля создаваемого конфига
 			assert.Equal(t, userID, cfg.UserID)
-			assert.Equal(t, models.StatusGenerating, cfg.Status)
-			assert.Nil(t, cfg.Config) // Config должен быть nil
+			assert.Equal(t, sharedModels.StatusGenerating, cfg.Status) // <<< Используем sharedModels
+			assert.Nil(t, cfg.Config)                                  // Config должен быть nil
 			// Проверяем, что UserInput - это JSON массив с одним элементом
 			var userInputs []string
 			err := json.Unmarshal(cfg.UserInput, &userInputs)
@@ -68,7 +69,7 @@ func TestGenerateInitialStory(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotNil(t, createdConfig)
 		assert.Equal(t, userID, createdConfig.UserID)
-		assert.Equal(t, models.StatusGenerating, createdConfig.Status) // Статус должен быть generating
+		assert.Equal(t, sharedModels.StatusGenerating, createdConfig.Status) // <<< Используем sharedModels
 		assert.NotEmpty(t, createdConfig.ID)
 
 		// Убеждаемся, что все ожидаемые вызовы были сделаны
@@ -130,7 +131,7 @@ func TestGenerateInitialStory(t *testing.T) {
 		mockRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
 
 		// Ожидаем вызов Create, возвращаем ошибку
-		mockRepo.On("Create", ctx, mock.AnythingOfType("*models.StoryConfig")).Return(createError).Once()
+		mockRepo.On("Create", ctx, mock.AnythingOfType("*sharedmodels.StoryConfig")).Return(createError).Once() // <<< Используем sharedModels
 
 		// Вызываем тестируемый метод
 		createdConfig, err := gameplayService.GenerateInitialStory(ctx, userID, initialPrompt)
@@ -156,18 +157,18 @@ func TestGenerateInitialStory(t *testing.T) {
 		mockRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
 
 		// Ожидаем успешный вызов Create
-		var capturedConfig *models.StoryConfig
-		mockRepo.On("Create", ctx, mock.MatchedBy(func(cfg *models.StoryConfig) bool {
+		var capturedConfig *sharedModels.StoryConfig                                         // <<< Используем sharedModels
+		mockRepo.On("Create", ctx, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { // <<< Используем sharedModels
 			capturedConfig = cfg // Захватываем созданный конфиг
 			return true
 		})).Return(nil).Once()
 
 		// Ожидаем вызов PublishGenerationTask, возвращаем ошибку
-		mockPublisher.On("PublishGenerationTask", ctx, mock.AnythingOfType("messaging.GenerationTaskPayload")).Return(publishError).Once()
+		mockPublisher.On("PublishGenerationTask", ctx, mock.AnythingOfType("sharedMessaging.GenerationTaskPayload")).Return(publishError).Once() // <<< Используем sharedMessaging
 
 		// Ожидаем вызов Update для отката статуса на Error
-		mockRepo.On("Update", mock.Anything, mock.MatchedBy(func(cfg *models.StoryConfig) bool {
-			return cfg.ID == capturedConfig.ID && cfg.Status == models.StatusError
+		mockRepo.On("Update", mock.Anything, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { // <<< Используем sharedModels
+			return cfg.ID == capturedConfig.ID && cfg.Status == sharedModels.StatusError // <<< Используем sharedModels
 		})).Return(nil).Once()
 
 		// Вызываем тестируемый метод
@@ -177,7 +178,7 @@ func TestGenerateInitialStory(t *testing.T) {
 		assert.Error(t, err)
 		assert.NotNil(t, returnedConfig)
 		assert.Equal(t, capturedConfig.ID, returnedConfig.ID)
-		assert.Equal(t, models.StatusError, returnedConfig.Status)
+		assert.Equal(t, sharedModels.StatusError, returnedConfig.Status) // <<< Используем sharedModels
 		assert.Contains(t, err.Error(), "ошибка отправки задачи на генерацию")
 		assert.True(t, errors.Is(err, publishError) || strings.Contains(err.Error(), publishError.Error()))
 
@@ -203,12 +204,12 @@ func TestReviseDraft(t *testing.T) {
 		userID := baseUserID
 		storyID := baseStoryID
 		revisionPrompt := baseRevisionPrompt
-		existingConfig := &models.StoryConfig{
+		existingConfig := &sharedModels.StoryConfig{ // <<< Используем sharedModels
 			ID:        storyID,
 			UserID:    userID,
 			UserInput: baseInitialUserInputJSON,
 			Config:    baseCurrentConfigJSON,
-			Status:    models.StatusDraft,
+			Status:    sharedModels.StatusDraft, // <<< Используем sharedModels
 		}
 		currentConfigJSONString := string(baseCurrentConfigJSON)
 
@@ -221,9 +222,9 @@ func TestReviseDraft(t *testing.T) {
 		// Ожидаем CountActiveGenerations, возвращаем 0
 		mockRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
 		// Ожидаем Update (статус generating, UserInput обновлен)
-		mockRepo.On("Update", ctx, mock.MatchedBy(func(cfg *models.StoryConfig) bool {
+		mockRepo.On("Update", ctx, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { // <<< Используем sharedModels
 			assert.Equal(t, storyID, cfg.ID)
-			assert.Equal(t, models.StatusGenerating, cfg.Status)
+			assert.Equal(t, sharedModels.StatusGenerating, cfg.Status) // <<< Используем sharedModels
 			var userInputs []string
 			err := json.Unmarshal(cfg.UserInput, &userInputs)
 			assert.NoError(t, err)
@@ -231,7 +232,7 @@ func TestReviseDraft(t *testing.T) {
 			return true
 		})).Return(nil).Once()
 		// Ожидаем PublishGenerationTask
-		mockPublisher.On("PublishGenerationTask", ctx, mock.MatchedBy(func(payload sharedMessaging.GenerationTaskPayload) bool {
+		mockPublisher.On("PublishGenerationTask", ctx, mock.MatchedBy(func(payload sharedMessaging.GenerationTaskPayload) bool { // <<< Используем sharedMessaging
 			assert.Equal(t, revisionPrompt, payload.UserInput)
 			assert.Equal(t, sharedMessaging.PromptTypeNarrator, payload.PromptType)
 			assert.NotEmpty(t, payload.InputData)
@@ -255,12 +256,12 @@ func TestReviseDraft(t *testing.T) {
 		storyID := baseStoryID
 		revisionPrompt := baseRevisionPrompt
 		// Создаем конфиг с невалидным статусом внутри теста
-		invalidStatusConfig := &models.StoryConfig{
+		invalidStatusConfig := &sharedModels.StoryConfig{ // <<< Используем sharedModels
 			ID:        storyID,
 			UserID:    userID,
 			UserInput: baseInitialUserInputJSON,
 			Config:    baseCurrentConfigJSON,
-			Status:    models.StatusGenerating, // Невалидный статус
+			Status:    sharedModels.StatusGenerating, // Невалидный статус <<< Используем sharedModels
 		}
 
 		mockRepo := new(repositoryMocks.StoryConfigRepository)
@@ -284,12 +285,12 @@ func TestReviseDraft(t *testing.T) {
 		userID := baseUserID
 		storyID := baseStoryID
 		revisionPrompt := baseRevisionPrompt
-		existingConfig := &models.StoryConfig{
+		existingConfig := &sharedModels.StoryConfig{ // <<< Используем sharedModels
 			ID:        storyID,
 			UserID:    userID,
 			UserInput: baseInitialUserInputJSON,
 			Config:    baseCurrentConfigJSON,
-			Status:    models.StatusDraft, // Валидный статус
+			Status:    sharedModels.StatusDraft, // Валидный статус <<< Используем sharedModels
 		}
 
 		mockRepo := new(repositoryMocks.StoryConfigRepository)
@@ -338,12 +339,12 @@ func TestReviseDraft(t *testing.T) {
 		userID := baseUserID
 		storyID := baseStoryID
 		revisionPrompt := baseRevisionPrompt
-		existingConfig := &models.StoryConfig{
+		existingConfig := &sharedModels.StoryConfig{ // <<< Используем sharedModels
 			ID:        storyID,
 			UserID:    userID,
 			UserInput: baseInitialUserInputJSON,
 			Config:    baseCurrentConfigJSON,
-			Status:    models.StatusDraft,
+			Status:    sharedModels.StatusDraft, // <<< Используем sharedModels
 		}
 		updateError := errors.New("update failed")
 
@@ -356,7 +357,7 @@ func TestReviseDraft(t *testing.T) {
 		// Ожидаем CountActiveGenerations (успешно, < лимита)
 		mockRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
 		// Ожидаем Update, возвращаем ошибку
-		mockRepo.On("Update", ctx, mock.AnythingOfType("*models.StoryConfig")).Return(updateError).Once()
+		mockRepo.On("Update", ctx, mock.AnythingOfType("*sharedmodels.StoryConfig")).Return(updateError).Once() // <<< Используем sharedModels
 
 		// Вызываем метод
 		err := gameplayService.ReviseDraft(ctx, storyID, userID, revisionPrompt)
@@ -375,12 +376,12 @@ func TestReviseDraft(t *testing.T) {
 		publishError := errors.New("publish failed")
 
 		// Создаем копию внутри теста!
-		configToRevise := &models.StoryConfig{
+		configToRevise := &sharedModels.StoryConfig{ // <<< Используем sharedModels
 			ID:        storyID,
 			UserID:    userID,
 			UserInput: baseInitialUserInputJSON,
 			Config:    baseCurrentConfigJSON,
-			Status:    models.StatusDraft,
+			Status:    sharedModels.StatusDraft, // <<< Используем sharedModels
 		}
 
 		mockRepo := new(repositoryMocks.StoryConfigRepository)
@@ -392,14 +393,14 @@ func TestReviseDraft(t *testing.T) {
 		// Ожидаем CountActiveGenerations, возвращаем 0
 		mockRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
 		// Ожидаем первый успешный Update
-		mockRepo.On("Update", ctx, mock.MatchedBy(func(cfg *models.StoryConfig) bool { return cfg.Status == models.StatusGenerating })).Return(nil).Once()
+		mockRepo.On("Update", ctx, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { return cfg.Status == sharedModels.StatusGenerating })).Return(nil).Once() // <<< Используем sharedModels
 		// Ожидаем PublishGenerationTask, возвращаем ошибку
-		mockPublisher.On("PublishGenerationTask", ctx, mock.AnythingOfType("messaging.GenerationTaskPayload")).Return(publishError).Once()
+		mockPublisher.On("PublishGenerationTask", ctx, mock.AnythingOfType("sharedMessaging.GenerationTaskPayload")).Return(publishError).Once() // <<< Используем sharedMessaging
 		// Ожидаем второй Update (откат)
-		mockRepo.On("Update", ctx, mock.MatchedBy(func(cfg *models.StoryConfig) bool {
+		mockRepo.On("Update", ctx, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { // <<< Используем sharedModels
 			var userInputs []string
 			err := json.Unmarshal(cfg.UserInput, &userInputs)
-			return cfg.Status == models.StatusDraft && err == nil && len(userInputs) == 1 && userInputs[0] == "Начальный промпт"
+			return cfg.Status == sharedModels.StatusDraft && err == nil && len(userInputs) == 1 && userInputs[0] == "Начальный промпт" // <<< Используем sharedModels
 		})).Return(nil).Once()
 
 		// Вызываем метод
@@ -419,11 +420,11 @@ func TestGetStoryConfig(t *testing.T) {
 	storyID := uuid.New()
 	ctx := context.Background()
 
-	existingConfig := &models.StoryConfig{
+	existingConfig := &sharedModels.StoryConfig{ // <<< Используем sharedModels
 		ID:     storyID,
 		UserID: userID,
 		Title:  "Test Title",
-		Status: models.StatusDraft,
+		Status: sharedModels.StatusDraft, // <<< Используем sharedModels
 	}
 
 	t.Run("Successful get", func(t *testing.T) {
@@ -464,5 +465,5 @@ func TestGetStoryConfig(t *testing.T) {
 	})
 }
 
-// TODO: Добавить тесты для ReviseDraft
-// TODO: Добавить тесты для GetStoryConfig
+// TODO: Добавить тесты для ReviseDraft // Эти TODO уже неактуальны?
+// TODO: Добавить тесты для GetStoryConfig // Эти TODO уже неактуальны?

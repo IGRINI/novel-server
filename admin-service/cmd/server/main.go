@@ -13,6 +13,8 @@ import (
 
 	"novel-server/admin-service/internal/client"
 	"novel-server/admin-service/internal/web"
+
+	// <<< Убираем импорт интерфейсов, если он больше не нужен напрямую здесь >>>
 	"novel-server/shared/logger"
 	sharedMiddleware "novel-server/shared/middleware"
 	sharedModels "novel-server/shared/models"
@@ -50,40 +52,39 @@ func main() {
 	}
 	appLogger.Info("Configuration loaded")
 
-	// --- Инициализация клиента auth-service ---
+	// --- Инициализация клиентов ---
 	authClientInstance, err := client.NewAuthServiceClient(cfg.AuthServiceURL, cfg.ClientTimeout, appLogger, cfg.InterServiceSecret)
 	if err != nil {
 		appLogger.Fatal("Failed to create initial Auth Service client", zap.Error(err))
 	}
-
-	// --- Инициализация клиента story-generator ---
 	storyGenClientInstance, err := client.NewStoryGeneratorClient(cfg.StoryGeneratorURL, cfg.ClientTimeout, appLogger)
 	if err != nil {
 		appLogger.Fatal("Failed to create Story Generator client", zap.Error(err))
 	}
-	// TODO: Если story-generator требует токен, установить его:
-	// storyGenClientInstance.SetInterServiceToken(receivedToken)
-	// --- Конец инициализации клиента story-generator ---
+	gameplayClientInstance, err := client.NewGameplayServiceClient(cfg.GameplayServiceURL, cfg.ClientTimeout, appLogger)
+	if err != nil {
+		appLogger.Fatal("Failed to create Gameplay Service client", zap.Error(err))
+	}
 
 	// --- Получаем первоначальный межсервисный JWT токен С ПОВТОРАМИ ---
 	var receivedToken string
 	maxRetries := 50
-	retryDelay := 5 * time.Second // Увеличим задержку, т.к. auth-service может стартовать дольше
+	retryDelay := 5 * time.Second
 	var lastTokenErr error
 
 	appLogger.Info("Attempting to obtain initial inter-service token from auth-service...")
 	for i := 0; i < maxRetries; i++ {
-		tokenCtx, tokenCancel := context.WithTimeout(context.Background(), cfg.ClientTimeout) // Используем таймаут из конфига
+		tokenCtx, tokenCancel := context.WithTimeout(context.Background(), cfg.ClientTimeout)
 		receivedToken, err = authClientInstance.GenerateInterServiceToken(tokenCtx, cfg.ServiceID)
 		tokenCancel()
 
 		if err == nil {
 			appLogger.Info("Successfully obtained initial inter-service token", zap.Int("attempt", i+1))
-			lastTokenErr = nil // Сбрасываем ошибку при успехе
-			break              // Выходим из цикла
+			lastTokenErr = nil
+			break
 		}
 
-		lastTokenErr = err // Сохраняем последнюю ошибку
+		lastTokenErr = err
 		appLogger.Warn("Failed to obtain inter-service token, retrying...",
 			zap.Int("attempt", i+1),
 			zap.Int("max_retries", maxRetries),
@@ -94,15 +95,15 @@ func main() {
 		}
 	}
 
-	// Если после всех попыток токен не получен
 	if lastTokenErr != nil {
 		appLogger.Fatal("Failed to obtain initial inter-service token after multiple retries",
 			zap.Int("attempts", maxRetries),
 			zap.Error(lastTokenErr))
 	}
 
-	// <<< Устанавливаем токен в ОБА клиента >>>
+	// <<< Устанавливаем токен во ВСЕ клиенты >>>
 	authClientInstance.SetInterServiceToken(receivedToken)
+	gameplayClientInstance.SetInterServiceToken(receivedToken) // <<< Добавлено
 	// TODO: Раскомментировать, если нужно
 	// storyGenClientInstance.SetInterServiceToken(receivedToken)
 	appLogger.Info("Inter-service token set for clients")
@@ -112,7 +113,8 @@ func main() {
 	defer stop()
 
 	// --- Запускаем горутину для обновления токена ---
-	go startTokenRenewer(appCtx, authClientInstance, storyGenClientInstance, cfg.InterServiceTokenTTL, cfg.ServiceID, appLogger)
+	// <<< Передаем gameplayClient в renewer >>>
+	go startTokenRenewer(appCtx, authClientInstance, storyGenClientInstance, gameplayClientInstance, cfg.InterServiceTokenTTL, cfg.ServiceID, appLogger)
 	appLogger.Info("Token renewer goroutine started")
 
 	// 3. Инициализация рендерера шаблонов
@@ -134,7 +136,8 @@ func main() {
 	p.Use(e)
 
 	// 5. Инициализация обработчика (Handler)
-	adminHandler := handler.NewAdminHandler(cfg, appLogger, authClientInstance, storyGenClientInstance)
+	// <<< Передаем КЛИЕНТЫ в хендлер >>>
+	adminHandler := handler.NewAdminHandler(cfg, appLogger, authClientInstance, storyGenClientInstance, gameplayClientInstance)
 
 	// 6. Регистрация маршрутов (роутов)
 	adminHandler.RegisterRoutes(e)
@@ -174,10 +177,11 @@ func main() {
 }
 
 // <<< Добавляем функцию startTokenRenewer >>>
-// startTokenRenewer - горутина для периодического обновления межсервисного JWT токена.
+// <<< Обновляем сигнатуру, добавляем gameplayClient >>>
 func startTokenRenewer(ctx context.Context,
 	authClient client.AuthServiceHttpClient,
-	storyGenClient client.StoryGeneratorClient,
+	storyGenClient client.StoryGeneratorClient, // Оставляем на всякий случай
+	gameplayClient client.GameplayServiceClient, // <<< Добавлено
 	tokenTTL time.Duration,
 	serviceID string,
 	logger *zap.Logger) {
@@ -218,9 +222,10 @@ func startTokenRenewer(ctx context.Context,
 			}
 
 			authClient.SetInterServiceToken(newToken)
+			gameplayClient.SetInterServiceToken(newToken) // <<< Устанавливаем токен
 			// TODO: Раскомментировать, если нужно
 			// storyGenClient.SetInterServiceToken(newToken)
-			log.Info("Inter-service token renewed successfully")
+			log.Info("Inter-service token renewed successfully for all clients")
 
 		case <-ctx.Done():
 			log.Info("Shutdown signal received, stopping token renewal.")
@@ -228,3 +233,10 @@ func startTokenRenewer(ctx context.Context,
 		}
 	}
 }
+
+// <<< Удаляем функцию setupDatabase >>>
+/*
+func setupDatabase(cfg *config.Config, logger *zap.Logger) (*pgxpool.Pool, error) {
+	// ... (код подключения к БД) ...
+}
+*/

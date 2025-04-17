@@ -7,14 +7,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// StoryStatus определяет статус конфигурации истории
-type StoryStatus string
+// Используем тип StoryStatus, определенный в published_story.go
 
+// Дополнительные статусы, специфичные для StoryConfig, если нужны:
 const (
-	StatusDraft      StoryStatus = "draft"      // Черновик, можно редактировать
-	StatusGenerating StoryStatus = "generating" // Отправлено на генерацию
-	StatusReady      StoryStatus = "ready"      // Готово к прохождению (пока не используется в этом сервисе)
-	StatusError      StoryStatus = "error"      // Ошибка генерации
+	// StatusDraft - Черновик, можно редактировать (уже есть в published_story.go, но оставляем для ясности области применения)
+	StatusDraft StoryStatus = "draft"
+	// StatusGenerating - Отправлено на генерацию (уже есть в published_story.go, но оставляем для ясности области применения)
+	StatusGenerating StoryStatus = "generating"
+	// StatusError - Ошибка генерации (уже есть в published_story.go)
+	// StatusReady - Готово к прохождению (уже есть в published_story.go)
 )
 
 // StoryConfig представляет собой конфигурацию (драфт) истории пользователя.
@@ -25,9 +27,7 @@ type StoryConfig struct {
 	Description string          `json:"description" db:"description"` // Краткое описание (извлекается из последнего сгенерированного JSON, поле "sd")
 	UserInput   json.RawMessage `json:"user_input" db:"user_input"`   // История текстовых запросов пользователя (JSON массив строк)
 	Config      json.RawMessage `json:"config" db:"config"`           // Актуальный JSON конфиг от Narrator (структура из narrator.md)
-	Status      StoryStatus     `json:"status" db:"status"`           // Статус конфигурации
+	Status      StoryStatus     `json:"status" db:"status"`           // Статус конфигурации (использует тип из published_story.go)
 	CreatedAt   time.Time       `json:"created_at" db:"created_at"`   // Время создания
 	UpdatedAt   time.Time       `json:"updated_at" db:"updated_at"`   // Время последнего обновления
-	// Возможно, добавить поле для ссылки на результат генерации, если нужно
-	// GenerationResultID string `json:"generation_result_id,omitempty" db:"generation_result_id"`
 }

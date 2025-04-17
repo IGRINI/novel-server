@@ -4,9 +4,10 @@ package mocks
 
 import (
 	context "context"
-	models "novel-server/gameplay-service/internal/models"
 
 	mock "github.com/stretchr/testify/mock"
+
+	models "novel-server/shared/models"
 
 	uuid "github.com/google/uuid"
 )
