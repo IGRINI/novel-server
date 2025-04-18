@@ -7,24 +7,24 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
 
-func (h *AdminHandler) handleAIPlaygroundPage(c echo.Context) error {
-	data := map[string]interface{}{
+func (h *AdminHandler) handleAIPlaygroundPage(c *gin.Context) {
+	data := gin.H{
 		"PageTitle":  "AI Playground",
 		"IsLoggedIn": true,
 	}
-	return c.Render(http.StatusOK, "ai_playground.html", data)
+	c.HTML(http.StatusOK, "ai_playground.html", data)
 }
 
-func (h *AdminHandler) handleAIPlaygroundGenerate(c echo.Context) error {
-	systemPrompt := c.FormValue("system_prompt")
-	userPrompt := c.FormValue("user_prompt")
-	tempStr := c.QueryParam("temperature")
-	maxTokensStr := c.QueryParam("max_tokens")
-	topPStr := c.QueryParam("top_p")
+func (h *AdminHandler) handleAIPlaygroundGenerate(c *gin.Context) {
+	systemPrompt := c.PostForm("system_prompt")
+	userPrompt := c.PostForm("user_prompt")
+	tempStr := c.Query("temperature")
+	maxTokensStr := c.Query("max_tokens")
+	topPStr := c.Query("top_p")
 	params := generationParams{
 		Temperature: 0.7,
 		MaxTokens:   512,
@@ -67,7 +67,8 @@ func (h *AdminHandler) handleAIPlaygroundGenerate(c echo.Context) error {
 	if len(parseErrors) > 0 {
 		errMsg := "Invalid generation parameters: " + strings.Join(parseErrors, ", ")
 		h.logger.Warn(errMsg, zap.String("handler", "handleAIPlaygroundGenerate"))
-		return echo.NewHTTPError(http.StatusBadRequest, errMsg)
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": errMsg})
+		return
 	}
 	log := h.logger.With(
 		zap.String("handler", "handleAIPlaygroundGenerate"),
@@ -78,14 +79,16 @@ func (h *AdminHandler) handleAIPlaygroundGenerate(c echo.Context) error {
 		zap.Float64("top_p", params.TopP),
 	)
 	log.Info("Received AI generation request (non-streaming)")
-	generationResult, err := h.storyGenClient.GenerateText(c.Request().Context(), systemPrompt, userPrompt, client.GenerationParams{
+	generationResult, err := h.storyGenClient.GenerateText(c.Request.Context(), systemPrompt, userPrompt, client.GenerationParams{
 		Temperature: &params.Temperature,
 		MaxTokens:   &params.MaxTokens,
 		TopP:        &params.TopP,
 	})
 	if err != nil {
 		log.Error("Failed to call story generator text API", zap.Error(err))
-		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Error calling generator: %v", err))
+		errMsg := fmt.Sprintf("Error calling generator: %v", err)
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": errMsg})
+		return
 	}
-	return c.String(http.StatusOK, generationResult)
+	c.String(http.StatusOK, generationResult)
 }

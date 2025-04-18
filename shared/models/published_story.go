@@ -43,6 +43,7 @@ type PublishedStory struct {
 	LikesCount     int64           `json:"likes_count" db:"likes_count"`               // Добавляем счетчик лайков
 	CreatedAt      time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at" db:"updated_at"`
+	IsLiked        bool            `json:"is_liked" db:"-"`
 }
 
 // NovelSetupContent defines the expected structure of the JSON stored in PublishedStory.Setup.

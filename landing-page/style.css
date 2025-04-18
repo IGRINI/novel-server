@@ -269,7 +269,7 @@ ul {
 .cta-button--secondary:focus {
     transform: translateY(-3px);
     background-color: rgba(0, 255, 255, 0.1);
-    box-shadow: 0 0 8px rgba(0, 255, 255, 0.5);
+    box-shadow: 0 0 12px rgba(0, 255, 255, 0.7);
 }
 
 /* --- Store Icon Styles --- */
@@ -309,6 +309,14 @@ ul {
 
 .section__title {
     margin-bottom: 2em;
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 0.6s ease-out, transform 0.6s ease-out;
+}
+
+.is-visible .section__title {
+    opacity: 1;
+    transform: translateY(0);
 }
 
 .section__description {
@@ -399,6 +407,9 @@ ul {
     border-radius: 10px;
     text-align: center;
     transition: transform 0.3s ease, box-shadow 0.3s ease, background-color 0.3s ease;
+    position: relative;
+    overflow: hidden;
+    z-index: 1;
 }
 
 .feature-card:hover {
@@ -421,6 +432,39 @@ ul {
 .feature-card__text {
     color: var(--text-color-muted);
     font-size: 0.95rem;
+}
+
+/* Анимированная градиентная рамка при наведении */
+.feature-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border-radius: 10px;
+    padding: 2px; /* Толщина рамки */
+    background: linear-gradient(120deg, var(--primary-color), var(--secondary-color), var(--primary-color));
+    background-size: 300% 300%;
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: destination-out;
+    mask-composite: exclude;
+    opacity: 0;
+    transition: opacity 0.4s ease-in-out;
+    animation: gradient-spin 4s linear infinite paused; /* Анимация остановлена по умолчанию */
+    z-index: -1;
+}
+
+.feature-card:hover::before {
+    opacity: 1;
+    animation-play-state: running; /* Запускаем анимацию при наведении */
+}
+
+@keyframes gradient-spin {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
 }
 
 /* --- Testimonials --- */
@@ -544,6 +588,482 @@ ul {
 }
 
 /* --- Footer --- */
+.footer {
+    background-color: #050510;
+    padding: 2rem 0;
+    margin-top: 3rem;
+    border-top: 1px solid rgba(0, 255, 255, 0.1);
+    color: var(--text-color-muted);
+}
+
+.footer__container {
+    display: flex;
+    justify-content: space-between; /* Space out info and socials */
+    align-items: center;
+    flex-wrap: wrap; /* Allow wrapping */
+    gap: 1rem; /* Space between items when wrapped */
+}
+
+.footer__info {
+     text-align: center; /* Center info text on small screens */
+}
+
+.footer__links {
+    display: flex;
+    justify-content: center; /* Center links on small screens */
+    flex-wrap: wrap;
+    gap: 0 1.5rem; /* Horizontal gap */
+    margin-top: 0.5rem;
+}
+
+.footer__links li {
+    margin: 0; /* Remove default margin */
+}
+
+.footer__links a {
+    color: var(--text-color-muted);
+    font-size: 0.9rem;
+}
+
+.footer__links a:hover {
+    color: var(--primary-color);
+}
+
+.footer__socials {
+    display: flex;
+    align-items: center;
+    gap: 1rem; /* Space between icons */
+}
+
+.social-link {
+    color: var(--text-color-muted);
+    transition: color 0.3s ease, transform 0.3s ease;
+}
+
+.social-link:hover,
+.social-link:focus {
+    color: var(--primary-color);
+    transform: scale(1.1);
+}
+
+.social-icon {
+    width: 28px; /* Adjust icon size */
+    height: 28px;
+}
+
+/* --- Responsive --- */
+@media (max-width: 768px) {
+    /* Adjust footer layout for small screens */
+    .footer__container {
+        flex-direction: column;
+        gap: 1.5rem; 
+    }
+    .footer__info {
+        order: 2; /* Move info below socials */
+    }
+    .footer__socials {
+        order: 1; /* Move socials to top */
+    }
+
+    /* Other responsive styles remain the same */
+    h1 { font-size: 2.2rem; }
+    h2 { font-size: 1.8rem; }
+
+    .nav {
+        display: flex; 
+        flex-direction: column; 
+        align-items: center; 
+        position: absolute;
+        top: 100%; 
+        left: 0;
+        width: 100%;
+        background-color: var(--background-color); 
+        padding: 1rem 0;
+        border-top: 1px solid rgba(0, 255, 255, 0.2); 
+        transform: translateY(-200%); 
+        opacity: 0;
+        visibility: hidden;
+        transition: transform 0.4s ease-in-out, opacity 0.4s ease-in-out, visibility 0.4s;
+        z-index: 99; 
+    }
+
+    .nav--active {
+        transform: translateY(0); 
+        opacity: 1;
+        visibility: visible;
+    }
+
+    .nav__list {
+        flex-direction: column;
+        align-items: center;
+        width: 100%; 
+    }
+
+    .nav__item {
+        margin: 0.8rem 0; 
+        margin-left: 0; 
+        width: 100%; 
+        text-align: center; 
+    }
+
+    .nav__link--button {
+        display: inline-block; 
+        width: auto; 
+        padding: 0.6em 1.5em;
+    }
+
+    .burger {
+        display: block; 
+        width: 30px;
+        height: 22px; 
+        position: relative;
+        z-index: 110; 
+        cursor: pointer; 
+    }
+
+    .burger span,
+    .burger::before,
+    .burger::after {
+        content: '';
+        position: absolute;
+        left: 0;
+        width: 100%;
+        height: 3px; 
+        background-color: var(--primary-color);
+        border-radius: 2px;
+        transition: transform 0.3s ease, top 0.3s ease, opacity 0.3s ease;
+    }
+
+    .burger::before { top: 0; }
+    .burger span { top: 50%; transform: translateY(-50%); }
+    .burger::after { top: 100%; transform: translateY(-100%); }
+
+    
+    .burger--active::before {
+         top: 50%;
+         transform: translateY(-50%) rotate(45deg);
+    }
+    .burger--active span {
+         opacity: 0; 
+    }
+    .burger--active::after {
+         top: 50%; 
+         transform: translateY(-50%) rotate(-45deg);
+    }
+
+    .header__container {
+        position: relative; 
+    }
+
+    .hero {
+        min-height: 60vh;
+        padding: 3rem 0;
+    }
+
+    .features__grid,
+    .testimonials__grid { /* Apply single column layout to testimonials too */
+        grid-template-columns: 1fr;
+    }
+
+    .lang-switcher {
+        
+        order: -1; 
+        margin-left: 0;
+        margin-right: 1rem; 
+    }
+}
+
+/* --- Language Switcher Styles --- */
+.lang-switcher {
+    display: flex;
+    align-items: center;
+    margin-left: 1rem; 
+}
+
+.lang-button {
+    background: none;
+    border: none;
+    color: var(--text-color-muted);
+    cursor: pointer;
+    padding: 0.3em 0.6em;
+    font-size: 0.9rem;
+    margin: 0 0.2em;
+    border-radius: 3px;
+    transition: color 0.3s ease, background-color 0.3s ease;
+}
+
+.lang-button:hover {
+    color: var(--primary-color);
+}
+
+.lang-button.active {
+    color: var(--background-color);
+    background-color: var(--primary-color);
+    font-weight: bold;
+    text-shadow: none;
+    box-shadow: 0 0 5px rgba(0, 255, 255, 0.5);
+}
+
+/* --- Animations --- */
+@keyframes fadeInDown {
+    from {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Apply animation to Hero title */
+.hero__title {
+    animation: fadeInDown 0.8s ease-out forwards;
+}
+
+/* Apply animation to Hero tagline and description with delay */
+.hero__tagline {
+    animation: fadeInUp 0.8s 0.2s ease-out forwards; /* 0.2s delay */
+    opacity: 0; /* Start hidden */
+}
+.hero__description {
+    animation: fadeInUp 0.8s 0.4s ease-out forwards; /* 0.4s delay */
+    opacity: 0; /* Start hidden */
+}
+.hero__cta {
+     animation: fadeInUp 0.8s 0.6s ease-out forwards; /* 0.6s delay */
+     opacity: 0; /* Start hidden */
+}
+
+/* --- Cookie Notice Banner --- */
+.cookie-notice {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    background-color: rgba(10, 10, 30, 0.95);
+    backdrop-filter: blur(5px);
+    color: var(--text-color-muted);
+    padding: 1rem 1.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+    z-index: 1001;
+    border-top: 1px solid rgba(0, 255, 255, 0.2);
+    transform: translateY(100%);
+    opacity: 0;
+    visibility: hidden;
+    transition: transform 0.5s ease-out, opacity 0.5s ease-out, visibility 0s linear 0.5s;
+    pointer-events: none;
+}
+
+.cookie-notice.show {
+    transform: translateY(0);
+    opacity: 1;
+    visibility: visible;
+    transition: transform 0.5s ease-out, opacity 0.5s ease-out, visibility 0s linear 0s;
+    pointer-events: auto;
+}
+
+.cookie-notice p {
+    margin: 0;
+    flex-grow: 1;
+}
+
+.cookie-notice a {
+    color: var(--primary-color);
+    text-decoration: underline;
+}
+
+.cookie-notice a:hover {
+    text-decoration: none;
+}
+
+/* Ensure .cta-button styles apply to .cta-button--small */
+.cta-button--small {
+    /* Re-apply necessary base styles if they were lost */
+    display: inline-block;
+    padding: 0.4em 1em; 
+    font-size: 0.9rem;
+    font-weight: 600; /* Match .nav__link--button */
+    border-radius: 5px;
+    cursor: pointer;
+    text-align: center;
+    min-width: 80px; 
+    flex-shrink: 0; 
+    background-color: var(--primary-color);
+    color: var(--background-color);
+    border: 1px solid var(--primary-color);
+    text-shadow: none;
+    transition: transform 0.2s ease, box-shadow 0.3s ease, background-color 0.3s ease, color 0.3s ease;
+}
+
+.cta-button--small:hover,
+.cta-button--small:focus {
+    background-color: #fff;
+    color: var(--background-color);
+    border-color: #fff;
+    box-shadow: var(--glow-effect);
+    transform: translateY(-2px); 
+}
+
+/* Ensure the glow effect isn't too harsh on hover for this button */
+.cta-button--small:hover,
+.cta-button--small:focus {
+     box-shadow: 0 0 6px var(--primary-color); /* Slightly reduced glow */
+}
+
+/* --------- AI Prompt Section Styles --------- */
+.ai-prompt-section {
+    padding: 80px 0;
+    background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%); /* Светлый градиент */
+    text-align: center;
+    position: relative;
+    overflow: hidden; /* Для возможных фоновых эффектов */
+}
+
+.ai-prompt-section h2 {
+    font-size: 2.8rem;
+    color: #333;
+    margin-bottom: 20px;
+}
+
+.ai-prompt-section p {
+    font-size: 1.1rem;
+    color: #555;
+    margin-bottom: 40px;
+    max-width: 600px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.prompt-input-wrapper {
+    position: relative;
+    max-width: 700px;
+    margin: 0 auto 30px auto;
+}
+
+#ai-prompt-input {
+    width: 100%;
+    padding: 18px 25px;
+    font-size: 1.1rem;
+    border: 2px solid #ccc;
+    border-radius: 50px; /* Более скругленные углы */
+    background-color: #fff;
+    color: #333;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+#ai-prompt-input:focus {
+    outline: none;
+    border-color: #007bff;
+    box-shadow: 0 0 0 4px rgba(0, 123, 255, 0.2);
+}
+
+#ai-prompt-input::placeholder {
+    color: #888; /* Цвет стандартного плейсхолдера, если JS не сработает */
+    transition: opacity 0.3s ease;
+}
+
+/* Стиль для анимированного плейсхолдера (JS будет менять placeholder) */
+#ai-prompt-input[placeholder]:not(:focus)::placeholder {
+    /* Дополнительные стили если нужны, например, opacity */
+    opacity: 0.8;
+}
+
+/* Стиль для неактивного (readonly) поля */
+#ai-prompt-input[readonly] {
+    cursor: default; /* Стандартный курсор */
+    background-color: #f8f9fa; /* Немного другой фон */
+}
+#ai-prompt-input[readonly]:focus {
+    /* Убираем стандартное выделение фокуса для readonly поля */
+    box-shadow: none;
+    border-color: #ccc;
+}
+
+/* --------- How It Works Section Styles --------- */
+.how-it-works-section {
+    margin: 5px;
+    padding: 5px 10px;
+}
+
+/* --------- Animations --------- */
+.animate-on-scroll {
+    opacity: 0;
+    transform: translateY(30px);
+    transition: opacity 0.8s ease-out, transform 0.8s ease-out;
+}
+
+.animate-on-scroll.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* Добавим эффект для карточек фич */
+.feature-card {
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.feature-card:hover {
+    transform: translateY(-10px);
+    box-shadow: 0 15px 30px rgba(0, 0, 0, 0.15);
+}
+
+/* Микровзаимодействие для кнопок */
+.button:active, .cta-button:active {
+    transform: translateY(1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+/* Добавим легкую анимацию для секции героя */
+.hero-section::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle, rgba(255, 255, 255, 0.1) 10%, transparent 70%);
+    animation: pulse 10s infinite ease-in-out;
+    pointer-events: none; /* Чтобы не мешало кликам */
+}
+
+@keyframes pulse {
+    0% { transform: scale(0.8); opacity: 0.5; }
+    50% { transform: scale(1.2); opacity: 0.8; }
+    100% { transform: scale(0.8); opacity: 0.5; }
+}
+
+/* Анимация для логотипа или заголовка (если есть) */
+.navbar .logo {
+    transition: transform 0.3s ease;
+}
+
+.navbar .logo:hover {
+    transform: scale(1.1);
+}
+
+/* Добавим плавный скролл */
+html {
+    scroll-behavior: smooth;
+}
+
+/* Footer Styles */
 .footer {
     background-color: #050510;
     padding: 2rem 0;

@@ -4,26 +4,34 @@ import (
 	"errors"
 	"net/http"
 	sharedInterfaces "novel-server/shared/interfaces"
+	sharedModels "novel-server/shared/models"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 )
 
+// APIError используется для ответа об ошибках в этом внутреннем хендлере
+// (Возможно, стоит перенести в shared/models, если будет переиспользоваться)
+// type APIError struct {
+//  Message string `json:"message"`
+// }
+
 // listUserDraftsInternal возвращает список черновиков для указанного пользователя (для админки).
-func (h *GameplayHandler) listUserDraftsInternal(c echo.Context) error {
+func (h *GameplayHandler) listUserDraftsInternal(c *gin.Context) {
 	log := h.logger.With(zap.String("handler", "listUserDraftsInternal"))
 
 	userIDStr := c.Param("user_id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		log.Warn("Invalid user ID format", zap.String("user_id", userIDStr), zap.Error(err))
-		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid user ID format"})
+		c.JSON(http.StatusBadRequest, sharedModels.ErrorResponse{Message: "Invalid user ID format"})
+		return
 	}
 
-	limitStr := c.QueryParam("limit")
-	cursor := c.QueryParam("cursor")
+	limitStr := c.Query("limit")
+	cursor := c.Query("cursor")
 	limit := 20 // Значение по умолчанию
 	if limitStr != "" {
 		if l, parseErr := strconv.Atoi(limitStr); parseErr == nil && l > 0 {
@@ -36,15 +44,16 @@ func (h *GameplayHandler) listUserDraftsInternal(c echo.Context) error {
 	log = log.With(zap.Stringer("userID", userID), zap.Int("limit", limit), zap.String("cursor", cursor))
 	log.Info("Internal request for user drafts")
 
-	drafts, nextCursor, err := h.service.ListUserDrafts(c.Request().Context(), userID, cursor, limit)
+	drafts, nextCursor, err := h.service.ListUserDrafts(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
 		if errors.Is(err, sharedInterfaces.ErrInvalidCursor) {
 			log.Warn("Invalid cursor provided", zap.Error(err))
-			return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid cursor format"})
+			c.JSON(http.StatusBadRequest, sharedModels.ErrorResponse{Message: "Invalid cursor format"})
+			return
 		}
 		log.Error("Failed to list user drafts internally", zap.Error(err))
-		// Не используем handleServiceError, так как это внутренний API, возвращаем 500
-		return c.JSON(http.StatusInternalServerError, APIError{Message: "Failed to retrieve drafts"})
+		c.JSON(http.StatusInternalServerError, sharedModels.ErrorResponse{Message: "Failed to retrieve drafts"})
+		return
 	}
 
 	// Используем ту же DTO PaginatedResponse, что и для публичного API
@@ -52,22 +61,23 @@ func (h *GameplayHandler) listUserDraftsInternal(c echo.Context) error {
 		Data:       drafts, // Сервис уже возвращает []*StoryConfigSummary
 		NextCursor: nextCursor,
 	}
-	return c.JSON(http.StatusOK, response)
+	c.JSON(http.StatusOK, response)
 }
 
 // listUserStoriesInternal возвращает список опубликованных историй пользователя (для админки).
-func (h *GameplayHandler) listUserStoriesInternal(c echo.Context) error {
+func (h *GameplayHandler) listUserStoriesInternal(c *gin.Context) {
 	log := h.logger.With(zap.String("handler", "listUserStoriesInternal"))
 
 	userIDStr := c.Param("user_id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		log.Warn("Invalid user ID format", zap.String("user_id", userIDStr), zap.Error(err))
-		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid user ID format"})
+		c.JSON(http.StatusBadRequest, sharedModels.ErrorResponse{Message: "Invalid user ID format"})
+		return
 	}
 
-	limitStr := c.QueryParam("limit")
-	offsetStr := c.QueryParam("offset")
+	limitStr := c.Query("limit")
+	offsetStr := c.Query("offset")
 
 	limit := 20 // Значение по умолчанию
 	if limitStr != "" {
@@ -89,10 +99,11 @@ func (h *GameplayHandler) listUserStoriesInternal(c echo.Context) error {
 	log = log.With(zap.Stringer("userID", userID), zap.Int("limit", limit), zap.Int("offset", offset))
 	log.Info("Internal request for user published stories")
 
-	stories, err := h.service.ListUserPublishedStories(c.Request().Context(), userID, limit, offset)
+	stories, err := h.service.ListUserPublishedStories(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		log.Error("Failed to list user published stories internally", zap.Error(err))
-		return c.JSON(http.StatusInternalServerError, APIError{Message: "Failed to retrieve published stories"})
+		c.JSON(http.StatusInternalServerError, sharedModels.ErrorResponse{Message: "Failed to retrieve published stories"})
+		return
 	}
 
 	// Для offset пагинации нам нужно определить 'hasMore'
@@ -110,5 +121,5 @@ func (h *GameplayHandler) listUserStoriesInternal(c echo.Context) error {
 		HasMore: hasMore,
 	}
 
-	return c.JSON(http.StatusOK, response)
+	c.JSON(http.StatusOK, response)
 }

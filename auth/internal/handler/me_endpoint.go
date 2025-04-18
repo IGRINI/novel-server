@@ -6,28 +6,12 @@ import (
 	"novel-server/shared/models"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
 func (h *AuthHandler) getMe(c *gin.Context) {
-	userIDStr := c.GetString("user_id")
-	if userIDStr == "" {
-		zap.L().Error("User ID missing in context for /me endpoint")
-		c.AbortWithStatusJSON(http.StatusInternalServerError, ErrorResponse{
-			Code:    ErrCodeInternalError,
-			Message: "Internal server error: User context missing",
-		})
-		return
-	}
-
-	userID, err := uuid.Parse(userIDStr)
+	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		zap.L().Error("Invalid User ID (UUID) format in context for /me endpoint", zap.String("userIDStr", userIDStr), zap.Error(err))
-		c.AbortWithStatusJSON(http.StatusInternalServerError, ErrorResponse{
-			Code:    ErrCodeInternalError,
-			Message: "Internal server error: Invalid user ID format",
-		})
 		return
 	}
 
@@ -37,10 +21,7 @@ func (h *AuthHandler) getMe(c *gin.Context) {
 	if err != nil {
 		if errors.Is(err, models.ErrUserNotFound) {
 			zap.L().Warn("User not found for ID from token during /me request", zap.String("userID", userID.String()))
-			c.AbortWithStatusJSON(http.StatusNotFound, ErrorResponse{
-				Code:    ErrCodeUserNotFound,
-				Message: "User associated with token not found",
-			})
+			handleServiceError(c, models.ErrUserNotFound)
 			return
 		}
 		zap.L().Error("Error fetching user details for /me from repository", zap.String("userID", userID.String()), zap.Error(err))

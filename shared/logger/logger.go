@@ -1,72 +1,69 @@
 package logger
 
 import (
-	// "net/http" // <<< Больше не нужен здесь
-	// "os" // Не использовался
+	"fmt"
+	"os"
 	"strings"
-	// "time" // <<< Больше не нужен здесь
 
-	// "github.com/labstack/echo/v4" // <<< Удаляем зависимость от Echo
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
-// Config хранит настройки логгера.
+// Config содержит настройки для логгера.
 type Config struct {
-	Level      string // Уровни: debug, info, warn, error, dpanic, panic, fatal
-	Encoding   string // json или console
-	OutputPath string // Путь к файлу логов (или stdout/stderr)
+	Level      string // Уровень логирования (debug, info, warn, error)
+	Encoding   string // Формат вывода (json или console)
+	OutputPath string // Путь к файлу лога (если пусто, используется stdout)
 }
 
 // New создает новый экземпляр zap.Logger на основе конфигурации.
 func New(cfg Config) (*zap.Logger, error) {
-	var zapConfig zap.Config
-
-	// Уровень логгирования
-	logLevel := zap.NewAtomicLevel()
-	if err := logLevel.UnmarshalText([]byte(strings.ToLower(cfg.Level))); err != nil {
-		logLevel.SetLevel(zap.InfoLevel) // По умолчанию info
+	// Устанавливаем уровень логирования
+	level := zap.NewAtomicLevel()
+	logLevel := strings.ToLower(cfg.Level)
+	if logLevel == "" {
+		logLevel = "info" // Уровень по умолчанию
+	}
+	if err := level.UnmarshalText([]byte(logLevel)); err != nil {
+		// Логируем ошибку в stderr, так как логгер еще не создан
+		fmt.Fprintf(os.Stderr, "Invalid log level '%s', using 'info'. Error: %v\n", cfg.Level, err)
+		level.SetLevel(zap.InfoLevel)
 	}
 
-	// Конфиг по умолчанию для разработки (консоль, цвет, debug уровень)
-	zapConfig = zap.NewDevelopmentConfig()
-	zapConfig.Level = logLevel // Устанавливаем выбранный уровень
-	zapConfig.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder // Цветной вывод уровня
+	// Настройка кодировщика
+	encoderCfg := zap.NewProductionEncoderConfig()
+	encoderCfg.TimeKey = "timestamp"
+	encoderCfg.EncodeTime = zapcore.ISO8601TimeEncoder
+	encoderCfg.EncodeLevel = zapcore.CapitalLevelEncoder // Уровни будут выглядеть как INFO, WARN
 
-	// Если указан формат json, используем конфиг для продакшена
-	if strings.ToLower(cfg.Encoding) == "json" {
-		zapConfig = zap.NewProductionConfig()
-		zapConfig.Level = logLevel
+	encoding := strings.ToLower(cfg.Encoding)
+	if encoding != "console" && encoding != "json" {
+		encoding = "json" // По умолчанию json
 	}
 
-	// Настройка вывода логов
-	if cfg.OutputPath != "" && cfg.OutputPath != "stdout" && cfg.OutputPath != "stderr" {
-		// Проверяем, что директория существует или создаем ее
-		// dir := filepath.Dir(cfg.OutputPath)
-		// if _, err := os.Stat(dir); os.IsNotExist(err) {
-		// 	if err := os.MkdirAll(dir, 0755); err != nil {
-		// 		return nil, fmt.Errorf("cannot create log directory: %w", err)
-		// 	}
-		// }
-		zapConfig.OutputPaths = []string{cfg.OutputPath}
-		zapConfig.ErrorOutputPaths = []string{cfg.OutputPath, "stderr"} // Ошибки также в stderr
-	} else {
-		zapConfig.OutputPaths = []string{"stdout"}
-		zapConfig.ErrorOutputPaths = []string{"stderr"}
+	// Настройка вывода
+	outputPath := cfg.OutputPath
+	if outputPath == "" {
+		outputPath = "stdout"
 	}
 
-	// Собираем логгер
+	// Создание конфигурации Zap
+	zapConfig := zap.Config{
+		Level:             level,
+		Development:       false,
+		DisableCaller:     true,     // Отключаем информацию о вызывающем для производительности
+		DisableStacktrace: true,     // Отключаем стектрейсы по умолчанию
+		Encoding:          encoding, // Используем строку encoding
+		EncoderConfig:     encoderCfg,
+		OutputPaths:       []string{outputPath}, // Куда писать основные логи
+		ErrorOutputPaths:  []string{"stderr"},   // Куда писать ошибки самого логгера
+	}
+
+	// Сборка логгера
 	logger, err := zapConfig.Build()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to build logger: %w", err)
 	}
 
 	return logger, nil
 }
-
-/* <<< Удаляем всю функцию EchoZapLogger
-// EchoZapLogger возвращает middleware для Echo, которое логирует запросы с помощью zap.
-func EchoZapLogger(log *zap.Logger) echo.MiddlewareFunc {
-	// ... (весь код удален)
-}
-*/ 

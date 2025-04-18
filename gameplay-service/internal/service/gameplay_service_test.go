@@ -64,7 +64,7 @@ func TestGenerateInitialStory(t *testing.T) {
 		})).Return(nil).Once()
 
 		// Вызываем тестируемый метод
-		createdConfig, err := gameplayService.GenerateInitialStory(ctx, userID, initialPrompt)
+		createdConfig, err := gameplayService.GenerateInitialStory(ctx, userID, initialPrompt, "en")
 
 		// Проверяем результат
 		assert.NoError(t, err)
@@ -87,7 +87,7 @@ func TestGenerateInitialStory(t *testing.T) {
 		mockRepo.On("CountActiveGenerations", ctx, userID).Return(1, nil).Once()
 
 		// Вызываем тестируемый метод
-		createdConfig, err := gameplayService.GenerateInitialStory(ctx, userID, initialPrompt)
+		createdConfig, err := gameplayService.GenerateInitialStory(ctx, userID, initialPrompt, "en")
 
 		// Проверяем результат
 		assert.Error(t, err)
@@ -109,7 +109,7 @@ func TestGenerateInitialStory(t *testing.T) {
 		mockRepo.On("CountActiveGenerations", ctx, userID).Return(0, dbError).Once()
 
 		// Вызываем тестируемый метод
-		createdConfig, err := gameplayService.GenerateInitialStory(ctx, userID, initialPrompt)
+		createdConfig, err := gameplayService.GenerateInitialStory(ctx, userID, initialPrompt, "en")
 
 		// Проверяем результат
 		assert.Error(t, err)
@@ -135,7 +135,7 @@ func TestGenerateInitialStory(t *testing.T) {
 		mockRepo.On("Create", ctx, mock.AnythingOfType("*sharedmodels.StoryConfig")).Return(createError).Once() // <<< Используем sharedModels
 
 		// Вызываем тестируемый метод
-		createdConfig, err := gameplayService.GenerateInitialStory(ctx, userID, initialPrompt)
+		createdConfig, err := gameplayService.GenerateInitialStory(ctx, userID, initialPrompt, "en")
 
 		// Проверяем результат
 		assert.Error(t, err)
@@ -173,7 +173,7 @@ func TestGenerateInitialStory(t *testing.T) {
 		})).Return(nil).Once()
 
 		// Вызываем тестируемый метод
-		returnedConfig, err := gameplayService.GenerateInitialStory(ctx, userID, initialPrompt)
+		returnedConfig, err := gameplayService.GenerateInitialStory(ctx, userID, initialPrompt, "en")
 
 		// Проверяем результат
 		assert.Error(t, err)

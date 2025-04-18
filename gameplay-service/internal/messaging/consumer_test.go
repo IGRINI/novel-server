@@ -43,7 +43,18 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		mockRepo := new(repoMocks.StoryConfigRepository)
 		mockClientPub := new(messagingMocks.ClientUpdatePublisher)
 		mockTaskPub := new(messagingMocks.TaskPublisher)
-		processor := messaging.NewNotificationProcessor(mockRepo, nil, nil, mockClientPub, mockTaskPub)
+		mockPublishedRepo := new(repoMocks.PublishedStoryRepository)
+		mockSceneRepo := new(repoMocks.StorySceneRepository)
+		mockPushPub := new(messagingMocks.PushNotificationPublisher)
+
+		processor := messaging.NewNotificationProcessor(
+			mockRepo,
+			mockPublishedRepo,
+			mockSceneRepo,
+			mockClientPub,
+			mockTaskPub,
+			mockPushPub,
+		)
 		generatedText := `{"t":"Новый тайтл","sd":"Новое описание"}`
 		notification := sharedMessaging.NotificationPayload{
 			TaskID: taskID, StoryConfigID: storyID.String(),
@@ -64,12 +75,14 @@ func TestNotificationProcessor_Process(t *testing.T) {
 			return payload.ID == storyID.String() && payload.UserID == userID.String() && payload.Status == string(sharedModels.StatusDraft) &&
 				payload.Title == "Новый тайтл" && payload.Description == "Новое описание"
 		})).Return(nil).Once()
+		mockPushPub.On("PublishPushNotification", mock.Anything, mock.AnythingOfType("messaging.PushNotificationPayload")).Return(nil).Once()
 
 		err := processor.Process(ctx, body, storyID)
 
 		assert.NoError(t, err)
 		mockRepo.AssertExpectations(t)
 		mockClientPub.AssertExpectations(t)
+		mockPushPub.AssertExpectations(t)
 	})
 
 	t.Run("Config not generating status", func(t *testing.T) {
@@ -79,7 +92,18 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		mockRepo := new(repoMocks.StoryConfigRepository)
 		mockClientPub := new(messagingMocks.ClientUpdatePublisher)
 		mockTaskPub := new(messagingMocks.TaskPublisher)
-		processor := messaging.NewNotificationProcessor(mockRepo, nil, nil, mockClientPub, mockTaskPub)
+		mockPublishedRepo := new(repoMocks.PublishedStoryRepository)
+		mockSceneRepo := new(repoMocks.StorySceneRepository)
+		mockPushPub := new(messagingMocks.PushNotificationPublisher)
+
+		processor := messaging.NewNotificationProcessor(
+			mockRepo,
+			mockPublishedRepo,
+			mockSceneRepo,
+			mockClientPub,
+			mockTaskPub,
+			mockPushPub,
+		)
 		notification := sharedMessaging.NotificationPayload{
 			StoryConfigID: storyID.String(),
 			PromptType:    sharedMessaging.PromptTypeNarrator,
@@ -94,15 +118,25 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		assert.NoError(t, err) // Ошибки нет, просто выход
 		mockRepo.AssertExpectations(t)
 		mockClientPub.AssertNotCalled(t, "PublishClientUpdate", mock.Anything, mock.Anything)
+		mockPushPub.AssertNotCalled(t, "PublishPushNotification", mock.Anything, mock.Anything)
 	})
 
 	t.Run("GetByIDInternal returns error", func(t *testing.T) {
-		// Копируем конфиг - Не нужен здесь
-		// configGenerating := *baseConfigGenerating
 		mockRepo := new(repoMocks.StoryConfigRepository)
 		mockClientPub := new(messagingMocks.ClientUpdatePublisher)
 		mockTaskPub := new(messagingMocks.TaskPublisher)
-		processor := messaging.NewNotificationProcessor(mockRepo, nil, nil, mockClientPub, mockTaskPub)
+		mockPublishedRepo := new(repoMocks.PublishedStoryRepository)
+		mockSceneRepo := new(repoMocks.StorySceneRepository)
+		mockPushPub := new(messagingMocks.PushNotificationPublisher)
+
+		processor := messaging.NewNotificationProcessor(
+			mockRepo,
+			mockPublishedRepo,
+			mockSceneRepo,
+			mockClientPub,
+			mockTaskPub,
+			mockPushPub,
+		)
 		dbError := errors.New("db error")
 		notification := sharedMessaging.NotificationPayload{
 			StoryConfigID: storyID.String(),
@@ -123,6 +157,7 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		}
 		mockRepo.AssertExpectations(t)
 		mockClientPub.AssertNotCalled(t, "PublishClientUpdate", mock.Anything, mock.Anything)
+		mockPushPub.AssertNotCalled(t, "PublishPushNotification", mock.Anything, mock.Anything)
 	})
 
 	t.Run("Error notification processing", func(t *testing.T) {
@@ -131,12 +166,21 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		mockRepo := new(repoMocks.StoryConfigRepository)
 		mockClientPub := new(messagingMocks.ClientUpdatePublisher)
 		mockTaskPub := new(messagingMocks.TaskPublisher)
-		processor := messaging.NewNotificationProcessor(mockRepo, nil, nil, mockClientPub, mockTaskPub)
-		// errorDetails не используется в проверках
-		// errorDetails := "AI model failed"
+		mockPublishedRepo := new(repoMocks.PublishedStoryRepository)
+		mockSceneRepo := new(repoMocks.StorySceneRepository)
+		mockPushPub := new(messagingMocks.PushNotificationPublisher)
+
+		processor := messaging.NewNotificationProcessor(
+			mockRepo,
+			mockPublishedRepo,
+			mockSceneRepo,
+			mockClientPub,
+			mockTaskPub,
+			mockPushPub,
+		)
 		notification := sharedMessaging.NotificationPayload{
 			TaskID: taskID, StoryConfigID: storyID.String(),
-			Status: sharedMessaging.NotificationStatusError, ErrorDetails: "AI model failed", // Укажем здесь
+			Status: sharedMessaging.NotificationStatusError, ErrorDetails: "AI model failed",
 			PromptType: sharedMessaging.PromptTypeNarrator,
 		}
 		body, _ := json.Marshal(notification)
@@ -147,12 +191,14 @@ func TestNotificationProcessor_Process(t *testing.T) {
 			return cfg.ID == storyID && cfg.Status == sharedModels.StatusError
 		})).Return(nil).Once()
 		mockClientPub.On("PublishClientUpdate", mock.Anything, mock.AnythingOfType("messaging.ClientStoryUpdate")).Return(nil).Once()
+		mockPushPub.On("PublishPushNotification", mock.Anything, mock.AnythingOfType("messaging.PushNotificationPayload")).Return(nil).Once()
 
 		err := processor.Process(ctx, body, storyID)
 
 		assert.NoError(t, err)
 		mockRepo.AssertExpectations(t)
 		mockClientPub.AssertExpectations(t)
+		mockPushPub.AssertExpectations(t)
 	})
 
 	t.Run("Update returns error", func(t *testing.T) {
@@ -161,11 +207,22 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		mockRepo := new(repoMocks.StoryConfigRepository)
 		mockClientPub := new(messagingMocks.ClientUpdatePublisher)
 		mockTaskPub := new(messagingMocks.TaskPublisher)
-		processor := messaging.NewNotificationProcessor(mockRepo, nil, nil, mockClientPub, mockTaskPub)
+		mockPublishedRepo := new(repoMocks.PublishedStoryRepository)
+		mockSceneRepo := new(repoMocks.StorySceneRepository)
+		mockPushPub := new(messagingMocks.PushNotificationPublisher)
+
+		processor := messaging.NewNotificationProcessor(
+			mockRepo,
+			mockPublishedRepo,
+			mockSceneRepo,
+			mockClientPub,
+			mockTaskPub,
+			mockPushPub,
+		)
 		dbError := errors.New("update failed")
 		notification := sharedMessaging.NotificationPayload{
 			TaskID: taskID, StoryConfigID: storyID.String(),
-			Status: sharedMessaging.NotificationStatusSuccess, GeneratedText: `{"t":"T"}`,
+			Status: sharedMessaging.NotificationStatusSuccess, GeneratedText: `{"t":"T","sd":"D"}`,
 			PromptType: sharedMessaging.PromptTypeNarrator,
 		}
 		body, _ := json.Marshal(notification)
@@ -179,6 +236,7 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		// СНАЧАЛА проверяем ожидания моков
 		mockRepo.AssertExpectations(t)
 		mockClientPub.AssertNotCalled(t, "PublishClientUpdate", mock.Anything, mock.Anything)
+		mockPushPub.AssertNotCalled(t, "PublishPushNotification", mock.Anything, mock.Anything)
 
 		// ПОТОМ проверяем ошибку
 		if err == nil {
@@ -198,12 +256,23 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		mockRepo := new(repoMocks.StoryConfigRepository)
 		mockClientPub := new(messagingMocks.ClientUpdatePublisher)
 		mockTaskPub := new(messagingMocks.TaskPublisher)
-		processor := messaging.NewNotificationProcessor(mockRepo, nil, nil, mockClientPub, mockTaskPub)
+		mockPublishedRepo := new(repoMocks.PublishedStoryRepository)
+		mockSceneRepo := new(repoMocks.StorySceneRepository)
+		mockPushPub := new(messagingMocks.PushNotificationPublisher)
+
+		processor := messaging.NewNotificationProcessor(
+			mockRepo,
+			mockPublishedRepo,
+			mockSceneRepo,
+			mockClientPub,
+			mockTaskPub,
+			mockPushPub,
+		)
 		pubError := errors.New("publish failed")
 		notification := sharedMessaging.NotificationPayload{
 			StoryConfigID: storyID.String(),
 			Status:        sharedMessaging.NotificationStatusSuccess,
-			GeneratedText: `{"t":"Some Title"}`,
+			GeneratedText: `{"t":"Some Title", "sd":"Some Desc"}`,
 			PromptType:    sharedMessaging.PromptTypeNarrator,
 		}
 		body, _ := json.Marshal(notification)
@@ -212,12 +281,14 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		mockRepo.On("GetByIDInternal", mock.Anything, storyID).Return(&configGenerating, nil).Once()
 		mockRepo.On("Update", mock.Anything, mock.AnythingOfType("*sharedmodels.StoryConfig")).Return(nil).Once()
 		mockClientPub.On("PublishClientUpdate", mock.Anything, mock.AnythingOfType("messaging.ClientStoryUpdate")).Return(pubError).Once()
+		mockPushPub.On("PublishPushNotification", mock.Anything, mock.AnythingOfType("messaging.PushNotificationPayload")).Return(nil).Once()
 
 		err := processor.Process(ctx, body, storyID)
 
 		assert.NoError(t, err) // Process логирует, но не возвращает ошибку паблишера
 		mockRepo.AssertExpectations(t)
 		mockClientPub.AssertExpectations(t)
+		mockPushPub.AssertExpectations(t)
 	})
 
 	t.Run("Error parsing generated JSON for Title/Desc", func(t *testing.T) {
@@ -226,7 +297,18 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		mockRepo := new(repoMocks.StoryConfigRepository)
 		mockClientPub := new(messagingMocks.ClientUpdatePublisher)
 		mockTaskPub := new(messagingMocks.TaskPublisher)
-		processor := messaging.NewNotificationProcessor(mockRepo, nil, nil, mockClientPub, mockTaskPub)
+		mockPublishedRepo := new(repoMocks.PublishedStoryRepository)
+		mockSceneRepo := new(repoMocks.StorySceneRepository)
+		mockPushPub := new(messagingMocks.PushNotificationPublisher)
+
+		processor := messaging.NewNotificationProcessor(
+			mockRepo,
+			mockPublishedRepo,
+			mockSceneRepo,
+			mockClientPub,
+			mockTaskPub,
+			mockPushPub,
+		)
 		notification := sharedMessaging.NotificationPayload{
 			TaskID: taskID, StoryConfigID: storyID.String(),
 			Status: sharedMessaging.NotificationStatusSuccess, GeneratedText: "невалидный json",
@@ -236,13 +318,21 @@ func TestNotificationProcessor_Process(t *testing.T) {
 
 		// Ожидаем вызовы
 		mockRepo.On("GetByIDInternal", mock.Anything, storyID).Return(&configGenerating, nil).Once()
-		mockRepo.On("Update", mock.Anything, mock.AnythingOfType("*sharedmodels.StoryConfig")).Return(nil).Once()
-		mockClientPub.On("PublishClientUpdate", mock.Anything, mock.AnythingOfType("messaging.ClientStoryUpdate")).Return(nil).Once()
+		mockRepo.On("Update", mock.Anything, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool {
+			return cfg.ID == storyID && cfg.Status == sharedModels.StatusError
+		})).Return(nil).Once()
+		mockClientPub.On("PublishClientUpdate", mock.Anything, mock.MatchedBy(func(payload messaging.ClientStoryUpdate) bool {
+			return payload.ID == storyID.String() && payload.Status == string(sharedModels.StatusError) && payload.ErrorDetails != nil
+		})).Return(nil).Once()
+		mockPushPub.On("PublishPushNotification", mock.Anything, mock.MatchedBy(func(payload messaging.PushNotificationPayload) bool {
+			return payload.UserID == userID && payload.Data["status"] == string(sharedModels.StatusError) && payload.Data["entity_id"] == storyID.String()
+		})).Return(nil).Once()
 
 		err := processor.Process(ctx, body, storyID)
 
 		assert.NoError(t, err)
 		mockRepo.AssertExpectations(t)
 		mockClientPub.AssertExpectations(t)
+		mockPushPub.AssertExpectations(t)
 	})
 }

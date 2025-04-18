@@ -72,15 +72,42 @@ type sceneOption struct {
 	Consequences sharedModels.Consequences `json:"cons"` // Используем общую структуру
 }
 
+// <<< ДОБАВЛЕНО: DTO для GetPublishedStoryDetails (может быть уточнено позже) >>>
+// Используем структуру из handler, т.к. она хорошо подходит
+type PublishedStoryDetailDTO struct {
+	ID                uuid.UUID
+	Title             string
+	ShortDescription  string
+	AuthorID          uuid.UUID
+	AuthorName        string
+	PublishedAt       time.Time
+	Genre             string
+	Language          string
+	IsAdultContent    bool
+	PlayerName        string
+	PlayerDescription string
+	WorldContext      string
+	StorySummary      string
+	CoreStats         map[string]CoreStatDetailDTO // Нужно определить CoreStatDetailDTO или использовать shared
+	LastPlayedAt      *time.Time
+	IsAuthor          bool
+}
+
+type CoreStatDetailDTO struct {
+	Description        string
+	InitialValue       int
+	GameOverConditions []sharedModels.StatDefinition // <<< Исправляем StatRule на StatDefinition
+}
+
 // GameplayService defines the interface for gameplay business logic.
 type GameplayService interface {
-	GenerateInitialStory(ctx context.Context, userID uuid.UUID, initialPrompt string) (*sharedModels.StoryConfig, error)
+	GenerateInitialStory(ctx context.Context, userID uuid.UUID, initialPrompt string, language string) (*sharedModels.StoryConfig, error)
 	ReviseDraft(ctx context.Context, id uuid.UUID, userID uuid.UUID, revisionPrompt string) error
 	GetStoryConfig(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*sharedModels.StoryConfig, error)
 	PublishDraft(ctx context.Context, draftID uuid.UUID, userID uuid.UUID) (publishedStoryID uuid.UUID, err error)
 	ListMyDrafts(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.StoryConfig, string, error)
-	ListMyPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error)
-	ListPublicStories(ctx context.Context, limit, offset int) ([]*sharedModels.PublishedStory, error)
+	ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error)
+	ListPublicStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error)
 	GetStoryScene(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error)
 	MakeChoice(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID, selectedOptionIndex int) error
 	DeletePlayerProgress(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
@@ -89,6 +116,8 @@ type GameplayService interface {
 	RetryDraftGeneration(ctx context.Context, draftID uuid.UUID, userID uuid.UUID) error
 	LikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
 	UnlikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
+	GetPublishedStoryDetails(ctx context.Context, storyID, userID uuid.UUID) (*PublishedStoryDetailDTO, error)
+	ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error)
 }
 
 type gameplayServiceImpl struct {
@@ -97,9 +126,10 @@ type gameplayServiceImpl struct {
 	sceneRepo          interfaces.StorySceneRepository
 	playerProgressRepo interfaces.PlayerProgressRepository // Использует uuid.UUID UserID
 	likeRepo           interfaces.LikeRepository           // <<< Добавляем репозиторий лайков
-	publisher          messaging.TaskPublisher
-	pool               *pgxpool.Pool
-	logger             *zap.Logger
+	// userRepo           interfaces.UserRepository           // <<< Убираем userRepo
+	publisher messaging.TaskPublisher
+	pool      *pgxpool.Pool
+	logger    *zap.Logger
 }
 
 func NewGameplayService(
@@ -108,6 +138,7 @@ func NewGameplayService(
 	sceneRepo interfaces.StorySceneRepository,
 	playerProgressRepo interfaces.PlayerProgressRepository, // Использует uuid.UUID UserID
 	likeRepo interfaces.LikeRepository, // <<< Инжектируем репозиторий лайков
+	// userRepo interfaces.UserRepository, // <<< Убираем userRepo
 	publisher messaging.TaskPublisher,
 	pool *pgxpool.Pool,
 	logger *zap.Logger,
@@ -118,14 +149,15 @@ func NewGameplayService(
 		sceneRepo:          sceneRepo,
 		playerProgressRepo: playerProgressRepo,
 		likeRepo:           likeRepo, // <<< Сохраняем репозиторий лайков
-		publisher:          publisher,
-		pool:               pool,
-		logger:             logger.Named("GameplayService"),
+		// userRepo:           userRepo, // <<< Убираем userRepo
+		publisher: publisher,
+		pool:      pool,
+		logger:    logger.Named("GameplayService"),
 	}
 }
 
 // GenerateInitialStory creates a new StoryConfig entry and sends a generation task.
-func (s *gameplayServiceImpl) GenerateInitialStory(ctx context.Context, userID uuid.UUID, initialPrompt string) (*sharedModels.StoryConfig, error) {
+func (s *gameplayServiceImpl) GenerateInitialStory(ctx context.Context, userID uuid.UUID, initialPrompt string, language string) (*sharedModels.StoryConfig, error) {
 	// Check the number of active generations for this userID
 	activeCount, err := s.repo.CountActiveGenerations(ctx, userID)
 	if err != nil {
@@ -157,6 +189,7 @@ func (s *gameplayServiceImpl) GenerateInitialStory(ctx context.Context, userID u
 		Status:      sharedModels.StatusGenerating, // <<< Use constant
 		CreatedAt:   time.Now().UTC(),
 		UpdatedAt:   time.Now().UTC(),
+		Language:    language, // <<< Присваиваем язык
 	}
 
 	// 1. Save the draft to the DB with status 'generating'
@@ -436,49 +469,33 @@ func (s *gameplayServiceImpl) ListMyDrafts(ctx context.Context, userID uuid.UUID
 }
 
 // ListMyPublishedStories returns a list of the user's published stories.
-func (s *gameplayServiceImpl) ListMyPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error) {
-	// Validate limit and offset (could be moved to handler)
-	if limit <= 0 || limit > 100 {
-		s.logger.Warn("Invalid limit requested for ListMyPublishedStories", zap.Int("limit", limit), zap.String("userID", userID.String()))
-		limit = 20 // Default
-	}
-	if offset < 0 {
-		s.logger.Warn("Invalid offset requested for ListMyPublishedStories", zap.Int("offset", offset), zap.String("userID", userID.String()))
-		offset = 0 // Default
-	}
-
-	s.logger.Debug("Calling publishedRepo.ListByUserID", zap.String("userID", userID.String()), zap.Int("limit", limit), zap.Int("offset", offset))
-	stories, err := s.publishedRepo.ListByUserID(ctx, userID, limit, offset)
+func (s *gameplayServiceImpl) ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error) {
+	// TODO: Implement actual cursor-based logic
+	s.logger.Warn("ListMyPublishedStories (cursor pagination) is not implemented yet, using temporary offset impl", zap.String("userID", userID.String()))
+	// Temporary implementation using offset to avoid breaking tests immediately
+	offset := 0                                                              // Need a way to derive offset from cursor or remove offset tests
+	stories, err := s.publishedRepo.ListByUserID(ctx, userID, limit, offset) // Assuming this method exists
 	if err != nil {
-		s.logger.Error("Failed to list user published stories from repository", zap.String("userID", userID.String()), zap.Error(err))
-		return nil, fmt.Errorf("error getting list of user's published stories: %w", err)
+		return nil, "", fmt.Errorf("failed to list user published stories (temp impl): %w", err)
 	}
-
-	s.logger.Info("User published stories listed successfully", zap.String("userID", userID.String()), zap.Int("count", len(stories)))
-	return stories, nil
+	// Need to generate next cursor based on the results
+	nextCursor := "" // Placeholder
+	return stories, nextCursor, nil
 }
 
 // ListPublicStories returns a list of public published stories.
-func (s *gameplayServiceImpl) ListPublicStories(ctx context.Context, limit, offset int) ([]*sharedModels.PublishedStory, error) {
-	// Validate limit and offset
-	if limit <= 0 || limit > 100 {
-		s.logger.Warn("Invalid limit requested for ListPublicStories", zap.Int("limit", limit))
-		limit = 20
-	}
-	if offset < 0 {
-		s.logger.Warn("Invalid offset requested for ListPublicStories", zap.Int("offset", offset))
-		offset = 0
-	}
-
-	s.logger.Debug("Calling publishedRepo.ListPublic", zap.Int("limit", limit), zap.Int("offset", offset))
-	stories, err := s.publishedRepo.ListPublic(ctx, limit, offset)
+func (s *gameplayServiceImpl) ListPublicStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error) {
+	// TODO: Implement actual cursor-based logic
+	s.logger.Warn("ListPublicStories (cursor pagination) is not implemented yet, using temporary offset impl")
+	// Temporary implementation using offset
+	offset := 0                                                    // Need a way to derive offset from cursor or remove offset tests
+	stories, err := s.publishedRepo.ListPublic(ctx, limit, offset) // Assuming this method exists
 	if err != nil {
-		s.logger.Error("Failed to list public stories from repository", zap.Error(err))
-		return nil, fmt.Errorf("error getting list of public stories: %w", err)
+		return nil, "", fmt.Errorf("failed to list public stories (temp impl): %w", err)
 	}
-
-	s.logger.Info("Public stories listed successfully", zap.Int("count", len(stories)))
-	return stories, nil
+	// Need to generate next cursor based on the results
+	nextCursor := "" // Placeholder
+	return stories, nextCursor, nil
 }
 
 // --- Gameplay Loop Methods ---
@@ -963,6 +980,7 @@ func createGenerationPayload(
 
 	compressedInputData := make(map[string]interface{})
 
+	compressedInputData["_ph"] = previousHash
 	compressedInputData["cfg"] = configMap
 	compressedInputData["stp"] = setupMap
 
@@ -1237,4 +1255,19 @@ func (s *gameplayServiceImpl) UnlikeStory(ctx context.Context, userID uuid.UUID,
 
 	s.logger.Info("Story unliked successfully", logFields...)
 	return nil
+}
+
+// GetPublishedStoryDetails retrieves the details of a published story.
+func (s *gameplayServiceImpl) GetPublishedStoryDetails(ctx context.Context, storyID, userID uuid.UUID) (*PublishedStoryDetailDTO, error) {
+	// TODO: Implement actual logic to fetch and aggregate details
+	s.logger.Warn("GetPublishedStoryDetails is not implemented yet", zap.String("storyID", storyID.String()))
+	// Возвращаем nil и ошибку, так как DTO не создано
+	return nil, fmt.Errorf("GetPublishedStoryDetails not implemented")
+}
+
+// ListLikedStories retrieves a list of stories liked by a user.
+func (s *gameplayServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error) {
+	// TODO: Implement actual cursor-based logic using likeRepo
+	s.logger.Warn("ListLikedStories is not implemented yet", zap.String("userID", userID.String()))
+	return []*sharedModels.PublishedStory{}, "", fmt.Errorf("ListLikedStories not implemented") // Возвращаем пустой срез и ошибку
 }

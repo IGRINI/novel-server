@@ -5,240 +5,181 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"novel-server/admin-service/internal/client"
 	"novel-server/admin-service/internal/config"
 	"novel-server/admin-service/internal/handler"
+	"novel-server/admin-service/internal/messaging"
+	sharedLogger "novel-server/shared/logger"
+	sharedMiddleware "novel-server/shared/middleware"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"novel-server/admin-service/internal/client"
-	"novel-server/admin-service/internal/web"
-
-	// <<< Убираем импорт интерфейсов, если он больше не нужен напрямую здесь >>>
-	"novel-server/shared/logger"
-	sharedMiddleware "novel-server/shared/middleware"
-	sharedModels "novel-server/shared/models"
-	"text/template"
-
-	"github.com/labstack/echo/v4"
-	echoMiddleware "github.com/labstack/echo/v4/middleware"
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
-
-	// Импорт для метрик Prometheus
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	// <<< Возвращаем импорт Echo Prometheus middleware >>>
-	echoPrometheus "github.com/labstack/echo-contrib/prometheus"
-)
-
-var (
-// interServiceToken string // Глобальная переменная больше не нужна
 )
 
 func main() {
-	// 1. Инициализация логгера
-	appLogger, err := logger.New(logger.Config{
-		Level: "debug", // TODO: Взять из конфига/переменных окружения
+	// Используем стандартный log для самых ранних ошибок, до инициализации zap
+	log.Println("Запуск Admin Service...")
+
+	// --- Загрузка конфигурации ---
+	// Передаем nil логгер, так как он еще не создан.
+	// LoadConfig должен уметь работать с nil логгером или использовать стандартный log.
+	// TODO: Проверить реализацию config.LoadConfig
+	cfg, err := config.LoadConfig(nil)
+	if err != nil {
+		log.Fatalf("Ошибка загрузки конфигурации: %v", err)
+	}
+	log.Println("Конфигурация загружена")
+
+	// --- Инициализация логгера (Используем shared/logger) ---
+	logger, err := sharedLogger.New(sharedLogger.Config{
+		Level:      cfg.LogLevel,
+		Encoding:   "json", // Или cfg.LogEncoding, если есть в конфиге
+		OutputPath: "",     // stdout по умолчанию, или cfg.LogOutputPath
 	})
 	if err != nil {
-		log.Fatalf("Failed to initialize logger: %v", err)
+		log.Fatalf("Не удалось инициализировать логгер: %v", err)
 	}
-	defer appLogger.Sync() // Очистка буфера логгера при выходе
-	appLogger.Info("Logger initialized")
+	defer logger.Sync()
+	sugar := logger.Sugar()
+	sugar.Info("Логгер инициализирован", zap.String("logLevel", cfg.LogLevel))
 
-	// 2. Загрузка конфигурации
-	cfg, err := config.LoadConfig(appLogger) // Передаем логгер в функцию загрузки конфига
+	// Если LoadConfig требовал логгер, можно передать его сюда повторно,
+	// но лучше чтобы LoadConfig не требовал логгер.
+	// cfg, err = config.LoadConfig(logger) // Пример, если LoadConfig надо обновить
+	// if err != nil {
+	// 	sugar.Fatalf("Ошибка повторной загрузки конфигурации с логгером: %v", err)
+	// }
+
+	// --- Подключение к RabbitMQ ---
+	rabbitConn, err := connectRabbitMQ(cfg.RabbitMQ.URL, logger) // Передаем созданный логгер
 	if err != nil {
-		appLogger.Fatal("Failed to load configuration", zap.Error(err))
+		sugar.Fatalf("Не удалось подключиться к RabbitMQ: %v", err)
 	}
-	appLogger.Info("Configuration loaded")
+	defer rabbitConn.Close()
+	sugar.Info("Успешно подключено к RabbitMQ")
 
-	// --- Инициализация клиентов ---
-	authClientInstance, err := client.NewAuthServiceClient(cfg.AuthServiceURL, cfg.ClientTimeout, appLogger, cfg.InterServiceSecret)
+	// --- Создание Push Notification Publisher ---
+	pushPublisher, err := messaging.NewRabbitMQPushPublisher(rabbitConn, cfg.RabbitMQ.PushQueueName, logger)
 	if err != nil {
-		appLogger.Fatal("Failed to create initial Auth Service client", zap.Error(err))
+		sugar.Fatalf("Не удалось создать PushNotificationPublisher: %v", err)
 	}
-	storyGenClientInstance, err := client.NewStoryGeneratorClient(cfg.StoryGeneratorURL, cfg.ClientTimeout, appLogger)
-	if err != nil {
-		appLogger.Fatal("Failed to create Story Generator client", zap.Error(err))
-	}
-	gameplayClientInstance, err := client.NewGameplayServiceClient(cfg.GameplayServiceURL, cfg.ClientTimeout, appLogger)
-	if err != nil {
-		appLogger.Fatal("Failed to create Gameplay Service client", zap.Error(err))
-	}
-
-	// --- Получаем первоначальный межсервисный JWT токен С ПОВТОРАМИ ---
-	var receivedToken string
-	maxRetries := 50
-	retryDelay := 5 * time.Second
-	var lastTokenErr error
-
-	appLogger.Info("Attempting to obtain initial inter-service token from auth-service...")
-	for i := 0; i < maxRetries; i++ {
-		tokenCtx, tokenCancel := context.WithTimeout(context.Background(), cfg.ClientTimeout)
-		receivedToken, err = authClientInstance.GenerateInterServiceToken(tokenCtx, cfg.ServiceID)
-		tokenCancel()
-
-		if err == nil {
-			appLogger.Info("Successfully obtained initial inter-service token", zap.Int("attempt", i+1))
-			lastTokenErr = nil
-			break
-		}
-
-		lastTokenErr = err
-		appLogger.Warn("Failed to obtain inter-service token, retrying...",
-			zap.Int("attempt", i+1),
-			zap.Int("max_retries", maxRetries),
-			zap.Error(err))
-
-		if i < maxRetries-1 {
-			time.Sleep(retryDelay)
-		}
-	}
-
-	if lastTokenErr != nil {
-		appLogger.Fatal("Failed to obtain initial inter-service token after multiple retries",
-			zap.Int("attempts", maxRetries),
-			zap.Error(lastTokenErr))
-	}
-
-	// <<< Устанавливаем токен во ВСЕ клиенты >>>
-	authClientInstance.SetInterServiceToken(receivedToken)
-	gameplayClientInstance.SetInterServiceToken(receivedToken) // <<< Добавлено
-	// TODO: Раскомментировать, если нужно
-	// storyGenClientInstance.SetInterServiceToken(receivedToken)
-	appLogger.Info("Inter-service token set for clients")
-
-	// --- Контекст для Graceful Shutdown и запуска горутин ---
-	appCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	// --- Запускаем горутину для обновления токена ---
-	// <<< Передаем gameplayClient в renewer >>>
-	go startTokenRenewer(appCtx, authClientInstance, storyGenClientInstance, gameplayClientInstance, cfg.InterServiceTokenTTL, cfg.ServiceID, appLogger)
-	appLogger.Info("Token renewer goroutine started")
-
-	// 3. Инициализация рендерера шаблонов
-	debugMode := cfg.Env == "development"
-	funcMap := template.FuncMap{
-		"hasRole": sharedModels.HasRole,
-	}
-	templateRenderer := web.NewTemplateRenderer("web/templates", debugMode, appLogger, funcMap)
-
-	// 4. Инициализация Echo
-	e := echo.New()
-	e.Renderer = templateRenderer
-	e.HTTPErrorHandler = handler.CustomHTTPErrorHandler
-
-	// Базовые middleware для Echo
-	e.Use(echoMiddleware.Recover())
-	e.Use(sharedMiddleware.EchoZapLogger(appLogger))
-	p := echoPrometheus.NewPrometheus("echo", nil)
-	p.Use(e)
-
-	// 5. Инициализация обработчика (Handler)
-	// <<< Передаем КЛИЕНТЫ в хендлер >>>
-	adminHandler := handler.NewAdminHandler(cfg, appLogger, authClientInstance, storyGenClientInstance, gameplayClientInstance)
-
-	// 6. Регистрация маршрутов (роутов)
-	adminHandler.RegisterRoutes(e)
-	appLogger.Info("Routes registered")
-
-	// --- Регистрация эндпоинта для метрик Prometheus ---
-	appLogger.Info("Registering Prometheus metrics endpoint")
-	e.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
-
-	// --- Регистрация healthcheck эндпоинта ---
-	healthHandler := func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
-	}
-	e.GET("/health", healthHandler)
-	e.HEAD("/health", healthHandler) // <<< Добавляем обработку HEAD
-
-	// 7. Запуск сервера
-	serverAddr := fmt.Sprintf(":%s", cfg.ServerPort)
-	appLogger.Info("Starting admin server", zap.String("address", serverAddr))
-
-	go func() {
-		if err := e.Start(serverAddr); err != nil && err != http.ErrServerClosed {
-			appLogger.Fatal("shutting down the server", zap.Error(err))
+	defer func() {
+		if err := pushPublisher.Close(); err != nil {
+			sugar.Errorf("Ошибка при закрытии канала PushNotificationPublisher: %v", err)
 		}
 	}()
 
-	// 8. Ожидание сигнала для graceful shutdown
-	<-appCtx.Done() // Блокируемся до получения сигнала
-	appLogger.Info("Shutting down server...")
-
-	// --- Graceful Shutdown для Echo ---
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-	if err := e.Shutdown(shutdownCtx); err != nil {
-		appLogger.Error("Error during server shutdown", zap.Error(err))
+	// --- Инициализация клиентов сервисов ---
+	authClient, err := client.NewAuthServiceClient(cfg.AuthServiceURL, cfg.ClientTimeout, logger, cfg.InterServiceSecret)
+	if err != nil {
+		sugar.Fatalf("Не удалось создать AuthServiceClient: %v", err)
+	}
+	storyGenClient, err := client.NewStoryGeneratorClient(cfg.StoryGeneratorURL, cfg.ClientTimeout, logger)
+	if err != nil {
+		sugar.Fatalf("Не удалось создать StoryGeneratorClient: %v", err)
+	}
+	gameplayClient, err := client.NewGameplayServiceClient(cfg.GameplayServiceURL, cfg.ClientTimeout, logger)
+	if err != nil {
+		sugar.Fatalf("Не удалось создать GameplayServiceClient: %v", err)
 	}
 
-	appLogger.Info("Server gracefully stopped")
-}
+	// --- Создание обработчика HTTP ---
+	h := handler.NewAdminHandler(cfg, logger, authClient, storyGenClient, gameplayClient, pushPublisher)
 
-// <<< Добавляем функцию startTokenRenewer >>>
-// <<< Обновляем сигнатуру, добавляем gameplayClient >>>
-func startTokenRenewer(ctx context.Context,
-	authClient client.AuthServiceHttpClient,
-	storyGenClient client.StoryGeneratorClient, // Оставляем на всякий случай
-	gameplayClient client.GameplayServiceClient, // <<< Добавлено
-	tokenTTL time.Duration,
-	serviceID string,
-	logger *zap.Logger) {
-	log := logger.Named("TokenRenewer")
-	// Рассчитываем интервал обновления (например, 90% от TTL)
-	renewInterval := time.Duration(float64(tokenTTL) * 0.9)
-	// Добавляем минимальный интервал, если TTL слишком короткий
-	if renewInterval <= 10*time.Second { // Минимальный интервал - 10 секунд
-		log.Warn("Inter-service token TTL is very short, setting renew interval to 10s", zap.Duration("tokenTTL", tokenTTL))
-		renewInterval = 10 * time.Second
-	} else {
-		log.Info("Token renew interval set", zap.Duration("interval", renewInterval), zap.Duration("tokenTTL", tokenTTL))
+	// --- Настройка Gin ---
+	router := gin.New()
+
+	router.Use(gin.Recovery())
+	router.Use(sharedMiddleware.GinZapLogger(logger))
+
+	custom404Path := "./admin-service/web/static/404.html"
+	router.Use(handler.CustomErrorMiddleware(logger, custom404Path))
+
+	// CORS Middleware
+	corsConfig := cors.DefaultConfig()
+	corsConfig.AllowAllOrigins = true
+	corsConfig.AllowMethods = []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}
+	corsConfig.AllowHeaders = []string{"Origin", "Content-Type", "Accept", "Authorization", "HX-Request", "HX-Target", "HX-Current-URL"}
+	corsConfig.AllowCredentials = true
+	router.Use(cors.New(corsConfig))
+
+	// Загрузка HTML шаблонов
+	router.LoadHTMLGlob("./admin-service/web/templates/**/*")
+
+	// Настройка маршрутов
+	h.RegisterRoutes(router)
+
+	// --- Запуск HTTP сервера ---
+	serverAddr := ":" + cfg.ServerPort
+	srv := &http.Server{
+		Addr:    serverAddr,
+		Handler: router,
 	}
 
-	ticker := time.NewTicker(renewInterval)
-	defer ticker.Stop()
-
-	log.Info("Ticker created successfully")
-	log.Info("Starting token renewal loop")
-	for {
-		select {
-		case <-ticker.C:
-			log.Info("Attempting to renew inter-service token...")
-			renewCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second) // Таймаут для запроса
-			newToken, err := authClient.GenerateInterServiceToken(renewCtx, serviceID)
-			cancel()
-
-			if err != nil {
-				log.Error("Failed to renew inter-service token", zap.Error(err))
-				// Ждем некоторое время перед следующей попыткой при ошибке
-				select {
-				case <-time.After(1 * time.Minute):
-					continue
-				case <-ctx.Done():
-					log.Info("Shutdown signal received while waiting after error.")
-					return
-				}
-			}
-
-			authClient.SetInterServiceToken(newToken)
-			gameplayClient.SetInterServiceToken(newToken) // <<< Устанавливаем токен
-			// TODO: Раскомментировать, если нужно
-			// storyGenClient.SetInterServiceToken(newToken)
-			log.Info("Inter-service token renewed successfully for all clients")
-
-		case <-ctx.Done():
-			log.Info("Shutdown signal received, stopping token renewal.")
-			return // Завершаем горутину
+	go func() {
+		sugar.Infof("Admin сервер запускается на порту %s", cfg.ServerPort)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			sugar.Fatalf("Ошибка запуска HTTP сервера: %v", err)
 		}
+	}()
+
+	// --- Graceful shutdown ---
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	sugar.Info("Получен сигнал завершения, начинаем остановку сервера...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		sugar.Fatalf("Ошибка при остановке сервера: %v", err)
 	}
+
+	sugar.Info("Сервер успешно остановлен")
 }
 
-// <<< Удаляем функцию setupDatabase >>>
-/*
-func setupDatabase(cfg *config.Config, logger *zap.Logger) (*pgxpool.Pool, error) {
-	// ... (код подключения к БД) ...
+// connectRabbitMQ остается без изменений, но теперь получает корректный логгер
+func connectRabbitMQ(uri string, logger *zap.Logger) (*amqp.Connection, error) {
+	var connection *amqp.Connection
+	var err error
+	maxRetries := 5
+	retryDelay := 5 * time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		connection, err = amqp.Dial(uri)
+		if err == nil {
+			logger.Info("Подключение к RabbitMQ успешно установлено")
+			go func() {
+				notifyClose := make(chan *amqp.Error)
+				connection.NotifyClose(notifyClose)
+				closeErr := <-notifyClose
+				if closeErr != nil {
+					logger.Error("Соединение с RabbitMQ разорвано", zap.Error(closeErr))
+				}
+			}()
+			return connection, nil
+		}
+		logger.Warn("Не удалось подключиться к RabbitMQ, попытка переподключения...",
+			zap.Error(err),
+			zap.Int("retry", i+1),
+			zap.Duration("delay", retryDelay),
+		)
+		time.Sleep(retryDelay)
+	}
+	return nil, fmt.Errorf("не удалось подключиться к RabbitMQ после %d попыток: %w", maxRetries, err)
 }
-*/
+
+// getEnv остается без изменений
+func getEnv(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok {
+		return value
+	}
+	return fallback
+}

@@ -35,6 +35,24 @@ func (_m *PublishedStoryRepository) Create(ctx context.Context, story *models.Pu
 	return r0
 }
 
+// DecrementLikesCount provides a mock function with given fields: ctx, id
+func (_m *PublishedStoryRepository) DecrementLikesCount(ctx context.Context, id uuid.UUID) error {
+	ret := _m.Called(ctx, id)
+
+	if len(ret) == 0 {
+		panic("no return value specified for DecrementLikesCount")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID) error); ok {
+		r0 = rf(ctx, id)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // GetByID provides a mock function with given fields: ctx, id
 func (_m *PublishedStoryRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.PublishedStory, error) {
 	ret := _m.Called(ctx, id)
@@ -63,6 +81,24 @@ func (_m *PublishedStoryRepository) GetByID(ctx context.Context, id uuid.UUID) (
 	}
 
 	return r0, r1
+}
+
+// IncrementLikesCount provides a mock function with given fields: ctx, id
+func (_m *PublishedStoryRepository) IncrementLikesCount(ctx context.Context, id uuid.UUID) error {
+	ret := _m.Called(ctx, id)
+
+	if len(ret) == 0 {
+		panic("no return value specified for IncrementLikesCount")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID) error); ok {
+		r0 = rf(ctx, id)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
 }
 
 // ListByUserID provides a mock function with given fields: ctx, userID, limit, offset

@@ -15,24 +15,24 @@ import (
 func (h *AuthHandler) register(c *gin.Context) {
 	var req registerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		errResp := ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid request data: " + err.Error()}
+		errResp := models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid request data: " + err.Error()}
 		c.AbortWithStatusJSON(http.StatusBadRequest, errResp)
 		return
 	}
 
 	if len(req.Username) < minUsernameLength || len(req.Username) > maxUsernameLength {
-		errResp := ErrorResponse{Code: ErrCodeBadRequest, Message: fmt.Sprintf("Username length must be between %d and %d characters", minUsernameLength, maxUsernameLength)}
+		errResp := models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: fmt.Sprintf("Username length must be between %d and %d characters", minUsernameLength, maxUsernameLength)}
 		c.AbortWithStatusJSON(http.StatusBadRequest, errResp)
 		return
 	}
 	if !usernameRegex.MatchString(req.Username) {
-		errResp := ErrorResponse{Code: ErrCodeBadRequest, Message: "Username can only contain letters, numbers, underscores, and hyphens"}
+		errResp := models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Username can only contain letters, numbers, underscores, and hyphens"}
 		c.AbortWithStatusJSON(http.StatusBadRequest, errResp)
 		return
 	}
 
 	if len(req.Password) < minPasswordLength || len(req.Password) > maxPasswordLength {
-		errResp := ErrorResponse{Code: ErrCodeBadRequest, Message: fmt.Sprintf("Password length must be between %d and %d characters", minPasswordLength, maxPasswordLength)}
+		errResp := models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: fmt.Sprintf("Password length must be between %d and %d characters", minPasswordLength, maxPasswordLength)}
 		c.AbortWithStatusJSON(http.StatusBadRequest, errResp)
 		return
 	}
@@ -52,7 +52,7 @@ func (h *AuthHandler) register(c *gin.Context) {
 		}
 	}
 	if !hasLetter || !hasDigit {
-		errResp := ErrorResponse{Code: ErrCodeBadRequest, Message: "Password must contain at least one letter and one digit"}
+		errResp := models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Password must contain at least one letter and one digit"}
 		c.AbortWithStatusJSON(http.StatusBadRequest, errResp)
 		return
 	}
@@ -71,7 +71,7 @@ func (h *AuthHandler) register(c *gin.Context) {
 func (h *AuthHandler) login(c *gin.Context) {
 	var req loginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
 		return
 	}
 
@@ -85,16 +85,22 @@ func (h *AuthHandler) login(c *gin.Context) {
 }
 
 func (h *AuthHandler) logout(c *gin.Context) {
-	accessUUID := c.GetString("access_uuid")
-	if accessUUID == "" {
+	accessUUIDRaw, exists := c.Get("access_uuid")
+	if !exists {
 		zap.L().Error("Access UUID missing in context during logout")
 		handleServiceError(c, errors.New("internal server error: context missing access uuid"))
+		return
+	}
+	accessUUID, ok := accessUUIDRaw.(string)
+	if !ok || accessUUID == "" {
+		zap.L().Error("Invalid or empty Access UUID in context during logout", zap.Any("uuid_raw", accessUUIDRaw))
+		handleServiceError(c, errors.New("internal server error: invalid access uuid in context"))
 		return
 	}
 
 	var req logoutRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Missing or invalid refresh_token in request body: " + err.Error()})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Missing or invalid refresh_token in request body: " + err.Error()})
 		return
 	}
 
@@ -127,7 +133,7 @@ func (h *AuthHandler) logout(c *gin.Context) {
 		type internalError interface {
 			IsInternal() bool
 		}
-		if ierr, ok := err.(internalError); ok && ierr.IsInternal() {
+		if ierr, ok := err.(internalError); !ok || !ierr.IsInternal() {
 			handleServiceError(c, err)
 			return
 		}
@@ -139,7 +145,7 @@ func (h *AuthHandler) logout(c *gin.Context) {
 func (h *AuthHandler) refresh(c *gin.Context) {
 	var req refreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
 		return
 	}
 
@@ -161,7 +167,7 @@ func (h *AuthHandler) refresh(c *gin.Context) {
 func (h *AuthHandler) verify(c *gin.Context) {
 	var req tokenVerifyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
 		return
 	}
 
@@ -179,7 +185,7 @@ func (h *AuthHandler) verify(c *gin.Context) {
 func (h *AuthHandler) generateInterServiceToken(c *gin.Context) {
 	var req generateInterServiceTokenRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
 		return
 	}
 
@@ -195,7 +201,7 @@ func (h *AuthHandler) generateInterServiceToken(c *gin.Context) {
 func (h *AuthHandler) verifyInterServiceToken(c *gin.Context) {
 	var req tokenVerifyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
 		return
 	}
 

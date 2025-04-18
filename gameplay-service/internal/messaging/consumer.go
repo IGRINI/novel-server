@@ -46,6 +46,7 @@ type NotificationProcessor struct {
 	sceneRepo     interfaces.StorySceneRepository     // !!! ДОБАВЛЕНО: Для StoryScene
 	clientPub     ClientUpdatePublisher               // Для отправки обновлений клиенту
 	taskPub       TaskPublisher                       // !!! ДОБАВЛЕНО: Для отправки новых задач генерации
+	pushPub       PushNotificationPublisher           // <<< Добавляем издателя push-уведомлений
 }
 
 // NewNotificationProcessor создает новый экземпляр NotificationProcessor.
@@ -54,13 +55,15 @@ func NewNotificationProcessor(
 	publishedRepo interfaces.PublishedStoryRepository,
 	sceneRepo interfaces.StorySceneRepository, // !!! Добавлено sceneRepo
 	clientPub ClientUpdatePublisher,
-	taskPub TaskPublisher) *NotificationProcessor {
+	taskPub TaskPublisher,
+	pushPub PushNotificationPublisher) *NotificationProcessor {
 	return &NotificationProcessor{
 		repo:          repo,
 		publishedRepo: publishedRepo,
 		sceneRepo:     sceneRepo,
 		clientPub:     clientPub,
 		taskPub:       taskPub,
+		pushPub:       pushPub, // <<< Сохраняем pushPub
 	}
 }
 
@@ -217,6 +220,44 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 			return fmt.Errorf("ошибка сохранения StoryConfig %s: %w", storyConfigID, updateErr)
 		}
 		log.Printf("[processor][TaskID: %s] StoryConfig %s (Narrator) успешно обновлен в БД до статуса %s.", taskID, storyConfigID, config.Status)
+
+		// <<< Отправляем PUSH-уведомление (если статус изменился на Draft или Error) >>>
+		if config.Status == sharedModels.StatusDraft || config.Status == sharedModels.StatusError {
+			pushPayload := PushNotificationPayload{
+				UserID:       config.UserID,
+				Notification: PushNotification{},
+				Data: map[string]string{
+					"type":      UpdateTypeDraft,
+					"entity_id": config.ID.String(),
+					"status":    string(config.Status),
+				},
+			}
+			if config.Status == sharedModels.StatusDraft {
+				pushPayload.Notification.Title = "Черновик готов!"
+				if config.Title != "" {
+					pushPayload.Notification.Body = fmt.Sprintf("Черновик '%s' готов к публикации.", config.Title)
+				} else {
+					pushPayload.Notification.Body = "Ваш черновик готов к публикации."
+				}
+			} else { // StatusError
+				pushPayload.Notification.Title = "Ошибка генерации черновика"
+				if notification.ErrorDetails != "" {
+					pushPayload.Notification.Body = fmt.Sprintf("Произошла ошибка: %s", notification.ErrorDetails)
+				} else if parseErr != nil {
+					pushPayload.Notification.Body = fmt.Sprintf("Произошла ошибка парсинга JSON: %v", parseErr)
+				} else {
+					pushPayload.Notification.Body = "При генерации черновика произошла неизвестная ошибка."
+				}
+			}
+			pushCtx, pushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if errPush := p.pushPub.PublishPushNotification(pushCtx, pushPayload); errPush != nil {
+				log.Printf("[processor][TaskID: %s] ОШИБКА отправки Push-уведомления (Narrator) для StoryID %s: %v", taskID, config.ID.String(), errPush)
+			} else {
+				log.Printf("[processor][TaskID: %s] Push-уведомление (Narrator) для StoryID %s успешно отправлено.", taskID, config.ID.String())
+			}
+			pushCancel()
+		}
+		// <<< Конец отправки PUSH-уведомления >>>
 
 		// Формируем и отправляем обновление клиенту
 		clientUpdate = ClientStoryUpdate{
@@ -404,6 +445,59 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 			}
 			log.Printf("[processor][TaskID: %s] PublishedStory %s успешно обновлен статус -> %s.", taskID, publishedStoryID, newStatus)
 
+			// <<< Отправляем PUSH-уведомление (если статус Ready или Completed) >>>
+			if newStatus == sharedModels.StatusReady || newStatus == sharedModels.StatusCompleted || newStatus == sharedModels.StatusError {
+				// Сначала получаем UserID, он нужен для push
+				var pubStory *sharedModels.PublishedStory
+				var getErr error
+				pubStory, getErr = p.publishedRepo.GetByID(dbCtx, publishedStoryID)
+				if getErr != nil {
+					log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось получить PublishedStory %s для отправки Push-уведомления: %v", taskID, publishedStoryID, getErr)
+				} else {
+					// Успешно получили, продолжаем
+				}
+
+				if pubStory != nil { // Если UserID есть
+					pushPayload := PushNotificationPayload{
+						UserID:       pubStory.UserID,
+						Notification: PushNotification{},
+						Data: map[string]string{
+							"type":      UpdateTypeStory,
+							"entity_id": publishedStoryID.String(),
+							"status":    string(newStatus),
+						},
+					}
+					storyTitle := "История"
+					if pubStory.Title != nil && *pubStory.Title != "" {
+						storyTitle = *pubStory.Title
+					}
+
+					if newStatus == sharedModels.StatusReady {
+						pushPayload.Notification.Title = "История готова!"
+						pushPayload.Notification.Body = fmt.Sprintf("История '%s' готова к прохождению.", storyTitle)
+					} else if newStatus == sharedModels.StatusCompleted {
+						pushPayload.Notification.Title = "История завершена!"
+						pushPayload.Notification.Body = fmt.Sprintf("Прохождение истории '%s' завершено.", storyTitle)
+					} else { // StatusError
+						pushPayload.Notification.Title = "Ошибка генерации истории"
+						if notification.ErrorDetails != "" {
+							pushPayload.Notification.Body = fmt.Sprintf("Произошла ошибка при генерации '%s': %s", storyTitle, notification.ErrorDetails)
+						} else {
+							pushPayload.Notification.Body = fmt.Sprintf("При генерации истории '%s' произошла неизвестная ошибка.", storyTitle)
+						}
+					}
+
+					pushCtx, pushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					if errPush := p.pushPub.PublishPushNotification(pushCtx, pushPayload); errPush != nil {
+						log.Printf("[processor][TaskID: %s] ОШИБКА отправки Push-уведомления (%s) для PublishedStory %s: %v", taskID, notification.PromptType, publishedStoryID, errPush)
+					} else {
+						log.Printf("[processor][TaskID: %s] Push-уведомление (%s) для PublishedStory %s успешно отправлено.", taskID, notification.PromptType, publishedStoryID)
+					}
+					pushCancel()
+				}
+			}
+			// <<< Конец отправки PUSH-уведомления >>>
+
 			// Отправляем WebSocket уведомление клиенту
 			// Сначала получаем UserID
 			pubStory, getErr := p.publishedRepo.GetByID(dbCtx, publishedStoryID)
@@ -414,10 +508,10 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 				clientUpdate := ClientStoryUpdate{
 					ID:          publishedStoryID.String(),
 					UserID:      pubStory.UserID.String(),
-					UpdateType:  UpdateTypeStory, // <<< Используем константу
+					UpdateType:  UpdateTypeStory,
 					Status:      string(newStatus),
-					IsCompleted: newStatus == sharedModels.StatusCompleted, // Завершено или нет
-					EndingText:  endingText,                                // Текст концовки (может быть nil)
+					IsCompleted: newStatus == sharedModels.StatusCompleted,
+					EndingText:  endingText,
 				}
 				// <<< Устанавливаем тип обновления для истории >>>
 				// clientUpdate.UpdateType = "story_update" // <<< Эта строка теперь не нужна
@@ -471,6 +565,7 @@ type NotificationConsumer struct {
 	sceneRepo     interfaces.StorySceneRepository // !!! Добавлено sceneRepo
 	clientPub     ClientUpdatePublisher
 	taskPub       TaskPublisher
+	pushPub       PushNotificationPublisher // <<< Добавляем издателя push-уведомлений
 }
 
 // NewNotificationConsumer создает нового консьюмера уведомлений.
@@ -481,9 +576,10 @@ func NewNotificationConsumer(
 	sceneRepo interfaces.StorySceneRepository, // !!! Добавлено sceneRepo
 	clientPub ClientUpdatePublisher,
 	taskPub TaskPublisher,
+	pushPub PushNotificationPublisher, // <<< Добавляем pushPub
 	queueName string) (*NotificationConsumer, error) {
 	// Создаем процессор с новыми зависимостями
-	processor := NewNotificationProcessor(repo, publishedRepo, sceneRepo, clientPub, taskPub)
+	processor := NewNotificationProcessor(repo, publishedRepo, sceneRepo, clientPub, taskPub, pushPub) // <<< Передаем pushPub
 	// Создаем контекст, который можно будет отменить
 	// ctx, cancel := context.WithCancel(context.Background()) // <<< Делаем это в StartConsuming
 
@@ -499,6 +595,7 @@ func NewNotificationConsumer(
 		sceneRepo:     sceneRepo,
 		clientPub:     clientPub,
 		taskPub:       taskPub,
+		pushPub:       pushPub, // <<< Сохраняем для возможного использования вне процессора (хотя вряд ли)
 	}, nil
 }
 

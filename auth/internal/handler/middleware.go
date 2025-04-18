@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"net/http"
 	"novel-server/shared/models"
 	"strings"
 
@@ -36,7 +37,7 @@ func (h *AuthHandler) AuthMiddleware() gin.HandlerFunc {
 		}
 
 		tokenVerificationsTotal.WithLabelValues("access", "success").Inc()
-		c.Set("user_id", claims.UserID.String())
+		c.Set("user_id", claims.UserID)
 		c.Set("access_uuid", claims.ID)
 		zap.L().Debug("Access token verified successfully", zap.String("userID", claims.UserID.String()), zap.String("accessUUID", claims.ID))
 		c.Next()
@@ -53,8 +54,8 @@ func (h *AuthHandler) InternalAuthMiddleware() gin.HandlerFunc {
 		tokenString := c.GetHeader("X-Internal-Service-Token")
 		if tokenString == "" {
 			tokenVerificationsTotal.WithLabelValues("inter-service", "failure").Inc()
-			c.AbortWithStatusJSON(401, ErrorResponse{
-				Code:    ErrCodeInvalidToken,
+			c.AbortWithStatusJSON(http.StatusUnauthorized, models.ErrorResponse{
+				Code:    models.ErrCodeTokenInvalid,
 				Message: "Missing internal service token",
 			})
 			return
@@ -71,10 +72,7 @@ func (h *AuthHandler) InternalAuthMiddleware() gin.HandlerFunc {
 			if err != nil {
 				zap.L().Warn("Internal service JWT token verification failed (or it was an invalid static secret)", zap.Error(err))
 				tokenVerificationsTotal.WithLabelValues("inter-service", "failure").Inc()
-				c.AbortWithStatusJSON(401, ErrorResponse{
-					Code:    ErrCodeInvalidToken,
-					Message: "Invalid internal service token",
-				})
+				handleServiceError(c, models.ErrTokenInvalid)
 				return
 			}
 			tokenVerificationsTotal.WithLabelValues("inter-service", "success").Inc()

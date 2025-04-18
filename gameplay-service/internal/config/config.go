@@ -3,10 +3,13 @@ package config
 import (
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"time"
 
 	"novel-server/shared/utils"
 
+	"github.com/joho/godotenv"
 	"github.com/kelseyhightower/envconfig"
 )
 
@@ -14,6 +17,7 @@ import (
 type Config struct {
 	// Настройки сервера
 	Port     string `envconfig:"GAMEPLAY_SERVER_PORT" default:"8082"`
+	Env      string `envconfig:"ENV" default:"development"`
 	LogLevel string `envconfig:"LOG_LEVEL" default:"info"`
 
 	// Настройки PostgreSQL
@@ -28,10 +32,11 @@ type Config struct {
 	DBPassword string
 
 	// Настройки RabbitMQ
-	RabbitMQURL              string `envconfig:"RABBITMQ_URL" required:"true"`
-	GenerationTaskQueue      string `envconfig:"GENERATION_TASK_QUEUE" default:"story_generation_tasks"`
-	InternalUpdatesQueueName string `envconfig:"INTERNAL_UPDATES_QUEUE_NAME" default:"internal_updates"`
-	ClientUpdatesQueueName   string `envconfig:"CLIENT_UPDATES_QUEUE_NAME" default:"client_updates"`
+	RabbitMQURL               string `envconfig:"RABBITMQ_URL" required:"true"`
+	GenerationTaskQueue       string `envconfig:"GENERATION_TASK_QUEUE" default:"story_generation_tasks"`
+	InternalUpdatesQueueName  string `envconfig:"INTERNAL_UPDATES_QUEUE_NAME" default:"internal_updates"`
+	ClientUpdatesQueueName    string `envconfig:"CLIENT_UPDATES_QUEUE_NAME" default:"client_updates"`
+	PushNotificationQueueName string `envconfig:"PUSH_NOTIFICATION_QUEUE_NAME" default:"push_notifications"`
 
 	// Настройки JWT (для проверки токена пользователя в middleware)
 	// Секретное поле БЕЗ envconfig тега
@@ -50,9 +55,23 @@ func (c *Config) GetDSN() string {
 
 // LoadConfig загружает конфигурацию из переменных окружения и секретов
 func LoadConfig() (*Config, error) {
+	_ = godotenv.Load() // Загружаем .env файл, если он есть
+
+	maxConnsStr := getEnv("DB_MAX_CONNS", "10")
+	maxConns, err := strconv.Atoi(maxConnsStr)
+	if err != nil {
+		return nil, fmt.Errorf("невалидное значение DB_MAX_CONNS: %w", err)
+	}
+
+	idleTimeoutStr := getEnv("DB_IDLE_TIMEOUT_SECONDS", "300") // 5 минут по умолчанию
+	idleTimeoutSec, err := strconv.Atoi(idleTimeoutStr)
+	if err != nil {
+		return nil, fmt.Errorf("невалидное значение DB_IDLE_TIMEOUT_SECONDS: %w", err)
+	}
+
 	var cfg Config
 	// Загружаем НЕсекретные переменные
-	err := envconfig.Process("", &cfg)
+	err = envconfig.Process("", &cfg)
 	if err != nil {
 		return nil, fmt.Errorf("ошибка загрузки конфигурации gameplay-service: %w", err)
 	}
@@ -85,8 +104,20 @@ func LoadConfig() (*Config, error) {
 	log.Printf("  Generation Task Queue: %s", cfg.GenerationTaskQueue)
 	log.Printf("  Internal Updates Queue Name: %s", cfg.InternalUpdatesQueueName)
 	log.Printf("  Client Updates Queue Name: %s", cfg.ClientUpdatesQueueName)
+	log.Printf("  Push Notification Queue Name: %s", cfg.PushNotificationQueueName)
 	log.Println("  JWT Secret: [ЗАГРУЖЕН]")
 	log.Println("  Inter-Service Secret: [ЗАГРУЖЕН]") // <<< Логируем загрузку
 
+	cfg.DBMaxConns = maxConns
+	cfg.DBIdleTimeout = time.Duration(idleTimeoutSec) * time.Second
+
 	return &cfg, nil
+}
+
+// getEnv получает значение переменной окружения или возвращает значение по умолчанию.
+func getEnv(key, fallback string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return fallback
 }

@@ -3,8 +3,9 @@ package handler
 import (
 	"novel-server/admin-service/internal/client"
 	"novel-server/admin-service/internal/config"
+	"novel-server/shared/interfaces"
 
-	"github.com/labstack/echo/v4"
+	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
 
@@ -13,6 +14,7 @@ type AdminHandler struct {
 	authClient     client.AuthServiceHttpClient
 	storyGenClient client.StoryGeneratorClient
 	gameplayClient client.GameplayServiceClient
+	pushPublisher  interfaces.PushEventPublisher
 }
 
 func NewAdminHandler(
@@ -21,30 +23,43 @@ func NewAdminHandler(
 	authClient client.AuthServiceHttpClient,
 	storyGenClient client.StoryGeneratorClient,
 	gameplayClient client.GameplayServiceClient,
+	pushPublisher interfaces.PushEventPublisher,
 ) *AdminHandler {
 	return &AdminHandler{
 		logger:         logger.Named("AdminHandler"),
 		authClient:     authClient,
 		storyGenClient: storyGenClient,
 		gameplayClient: gameplayClient,
+		pushPublisher:  pushPublisher,
 	}
 }
 
-func (h *AdminHandler) RegisterRoutes(e *echo.Echo) {
-	e.GET("/login", h.showLoginPage)
-	e.POST("/login", h.handleLogin)
+func (h *AdminHandler) RegisterRoutes(router *gin.Engine) {
+	router.GET("/login", h.showLoginPage)
+	router.POST("/login", h.handleLogin)
 
-	adminApiGroup := e.Group("", h.authMiddleware)
-	adminApiGroup.GET("/dashboard", h.getDashboardData)
-	adminApiGroup.GET("/users", h.listUsers)
-	adminApiGroup.GET("/logout", h.handleLogout)
-	adminApiGroup.POST("/users/:user_id/ban", h.handleBanUser)
-	adminApiGroup.DELETE("/users/:user_id/ban", h.handleUnbanUser)
-	adminApiGroup.GET("/users/:user_id/edit", h.showUserEditPage)
-	adminApiGroup.POST("/users/:user_id", h.handleUserUpdate)
-	adminApiGroup.POST("/users/:user_id/reset-password", h.handleResetPassword)
-	adminApiGroup.GET("/users/:user_id/drafts", h.listUserDrafts)
-	adminApiGroup.GET("/users/:user_id/stories", h.listUserStories)
-	adminApiGroup.GET("/ai-playground", h.handleAIPlaygroundPage)
-	adminApiGroup.POST("/ai-playground/generate", h.handleAIPlaygroundGenerate)
+	adminApiGroup := router.Group("/", h.authMiddleware)
+	{
+		adminApiGroup.GET("/dashboard", h.getDashboardData)
+		adminApiGroup.GET("/users", h.listUsers)
+		adminApiGroup.GET("/logout", h.handleLogout)
+
+		userGroup := adminApiGroup.Group("/users/:user_id")
+		{
+			userGroup.POST("/ban", h.handleBanUser)
+			userGroup.DELETE("/ban", h.handleUnbanUser)
+			userGroup.GET("/edit", h.showUserEditPage)
+			userGroup.POST("/", h.handleUserUpdate)
+			userGroup.POST("/reset-password", h.handleResetPassword)
+			userGroup.GET("/drafts", h.listUserDrafts)
+			userGroup.GET("/stories", h.listUserStories)
+			userGroup.POST("/send-notification", h.handleSendUserNotification)
+		}
+
+		aiGroup := adminApiGroup.Group("/ai-playground")
+		{
+			aiGroup.GET("/", h.handleAIPlaygroundPage)
+			aiGroup.POST("/generate", h.handleAIPlaygroundGenerate)
+		}
+	}
 }

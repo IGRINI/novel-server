@@ -4,46 +4,51 @@ import (
 	"errors"
 	"net/http"
 	"novel-server/shared/models"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
 
-type ErrorResponse struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
 func handleServiceError(c *gin.Context, err error) {
 	var statusCode int
-	var errResp ErrorResponse
+	var errResp models.ErrorResponse
 
 	switch {
 	case errors.Is(err, models.ErrInvalidCredentials):
 		statusCode = http.StatusUnauthorized
-		errResp = ErrorResponse{Code: ErrCodeInvalidCredentials, Message: "Invalid credentials or input format"}
+		errResp = models.ErrorResponse{Code: models.ErrCodeWrongCredentials, Message: "Invalid username or password"}
 	case errors.Is(err, models.ErrUserAlreadyExists):
 		statusCode = http.StatusConflict
-		errResp = ErrorResponse{Code: ErrCodeUserAlreadyExists, Message: "Username is already taken"}
+		errResp = models.ErrorResponse{Code: models.ErrCodeDuplicateUser, Message: "Username already exists"}
 	case errors.Is(err, models.ErrEmailAlreadyExists):
 		statusCode = http.StatusConflict
-		errResp = ErrorResponse{Code: ErrCodeUserAlreadyExists, Message: "Email is already taken"}
+		errResp = models.ErrorResponse{Code: models.ErrCodeDuplicateEmail, Message: "Email already exists"}
 	case errors.Is(err, models.ErrUserNotFound):
 		statusCode = http.StatusNotFound
-		errResp = ErrorResponse{Code: ErrCodeUserNotFound, Message: "User not found"}
+		errResp = models.ErrorResponse{Code: models.ErrCodeUserNotFound, Message: "User not found"}
 	case errors.Is(err, models.ErrTokenInvalid), errors.Is(err, models.ErrTokenMalformed):
 		statusCode = http.StatusUnauthorized
-		errResp = ErrorResponse{Code: ErrCodeInvalidToken, Message: "Provided token is invalid or malformed"}
+		errResp = models.ErrorResponse{Code: models.ErrCodeTokenInvalid, Message: "Token is invalid or malformed"}
 	case errors.Is(err, models.ErrTokenExpired):
 		statusCode = http.StatusUnauthorized
-		errResp = ErrorResponse{Code: ErrCodeExpiredToken, Message: "Provided token has expired"}
+		errResp = models.ErrorResponse{Code: models.ErrCodeTokenExpired, Message: "Token has expired"}
 	case errors.Is(err, models.ErrTokenNotFound):
 		statusCode = http.StatusUnauthorized
-		errResp = ErrorResponse{Code: ErrCodeRevokedToken, Message: "Provided token is invalid (possibly revoked or expired)"}
+		errResp = models.ErrorResponse{Code: models.ErrCodeTokenInvalid, Message: "Provided token is invalid (possibly revoked or expired)"}
+	case errors.Is(err, models.ErrUserBanned):
+		statusCode = http.StatusForbidden
+		errResp = models.ErrorResponse{Code: models.ErrCodeUserBanned, Message: "User is banned"}
+	case strings.Contains(err.Error(), "validation error"):
+		statusCode = http.StatusBadRequest
+		errResp = models.ErrorResponse{Code: models.ErrCodeValidation, Message: err.Error()}
+	case strings.Contains(err.Error(), "invalid input data"):
+		statusCode = http.StatusBadRequest
+		errResp = models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: err.Error()}
 	default:
-		zap.L().Error("Unhandled internal error", zap.Error(err))
+		zap.L().Error("Unhandled internal error in handleServiceError", zap.Error(err))
 		statusCode = http.StatusInternalServerError
-		errResp = ErrorResponse{Code: ErrCodeInternalError, Message: "An unexpected internal error occurred"}
+		errResp = models.ErrorResponse{Code: models.ErrCodeInternal, Message: "An unexpected internal error occurred"}
 	}
 
 	c.AbortWithStatusJSON(statusCode, errResp)

@@ -21,10 +21,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
-	"github.com/labstack/echo/v4"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,8 +42,8 @@ import (
 
 	// Добавляем импорт для bcrypt
 	"github.com/golang-jwt/jwt/v5"
-	"go.uber.org/zap"            // Добавляем импорт zap
-	"golang.org/x/crypto/bcrypt" // Правильный импорт
+	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -60,7 +60,7 @@ type IntegrationTestSuite struct {
 	dbPool        *pgxpool.Pool
 	rabbitConn    *amqp.Connection
 	serviceURL    string
-	app           *echo.Echo
+	app           *gin.Engine
 	repo          interfaces.StoryConfigRepository
 	taskMessages  chan amqp.Delivery // Канал для полученных сообщений из очереди задач
 	stopConsumer  chan struct{}      // Канал для остановки тестового консьюмера
@@ -169,7 +169,7 @@ func (s *IntegrationTestSuite) SetupSuite() {
 	require.NoError(s.T(), err)
 	s.rabbitConn = rabbitConn
 
-	// --- Настройка и запуск Echo приложения для тестов ---
+	// --- Настройка и запуск Gin приложения для тестов ---
 	cfg := &config.Config{ // Используем тестовые строки подключения
 		Port:                     "0",
 		RabbitMQURL:              rmqConnStr,
@@ -212,7 +212,8 @@ func (s *IntegrationTestSuite) SetupSuite() {
 	interServiceTestSecret := "test-inter-service-secret-for-integration"
 	gameplayHandler := handler.NewGameplayHandler(gameplayService, nopLogger, jwtTestSecret, interServiceTestSecret)
 
-	app := echo.New()
+	gin.SetMode(gin.TestMode)
+	app := gin.New()
 	gameplayHandler.RegisterRoutes(app)
 	s.app = app
 

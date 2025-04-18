@@ -2,98 +2,107 @@ package handler
 
 import (
 	"encoding/json"
-	"errors"
+	"fmt"
 	"net/http"
-	sharedInterfaces "novel-server/shared/interfaces"
 	sharedModels "novel-server/shared/models"
 	"strconv"
 
-	"novel-server/gameplay-service/internal/service" // Добавляем импорт сервиса
+	// Добавляем импорт сервиса
 
+	"github.com/gin-gonic/gin" // <<< Используем Gin
 	"github.com/google/uuid"
-	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 )
 
 // Новый запрос для начальной генерации
 type generateInitialStoryRequest struct {
-	Prompt string `json:"prompt" binding:"required"`
+	Prompt   string `json:"prompt" binding:"required"`   // <<< Используем binding для Gin
+	Language string `json:"language" binding:"required"` // <<< Добавляем язык
 }
 
 // Новый обработчик для начальной генерации
-func (h *GameplayHandler) generateInitialStory(c echo.Context) error {
+func (h *GameplayHandler) generateInitialStory(c *gin.Context) { // <<< *gin.Context
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		return c.JSON(http.StatusUnauthorized, APIError{Message: err.Error()})
+		// getUserIDFromContext уже вызвал Abort
+		return
 	}
 
 	var req generateInitialStoryRequest
-	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid request body: " + err.Error()})
+	// Используем ShouldBindJSON для Gin
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// Используем handleServiceError (который вызовет Abort)
+		h.logger.Warn("Invalid request body for generateInitialStory", zap.Stringer("userID", userID), zap.Error(err))
+		handleServiceError(c, sharedModels.ErrBadRequest, h.logger) // Передаем базовую ошибку
+		return
 	}
 
+	// <<< Добавляем валидацию языка >>>
+	allowedLanguages := map[string]struct{}{
+		"en": {}, "fr": {}, "de": {}, "es": {}, "it": {}, "pt": {}, "ru": {}, "zh": {}, "ja": {},
+	}
+	if _, ok := allowedLanguages[req.Language]; !ok {
+		// Язык не найден в списке разрешенных
+		h.logger.Warn("Unsupported language provided for generateInitialStory", zap.Stringer("userID", userID), zap.String("language", req.Language))
+		// Возвращаем ошибку Bad Request
+		handleServiceError(c, fmt.Errorf("%w: unsupported language '%s'", sharedModels.ErrBadRequest, req.Language), h.logger)
+		return
+	}
+	// <<< Конец валидации языка >>>
+
 	// Вызываем новый метод сервиса
-	config, err := h.service.GenerateInitialStory(c.Request().Context(), userID, req.Prompt)
+	config, err := h.service.GenerateInitialStory(c.Request.Context(), userID, req.Prompt, req.Language)
 	if err != nil {
 		// GenerateInitialStory может вернуть ошибку И конфиг (если ошибка была при отправке задачи)
 		if config != nil {
-			// Если ошибка отправки, статус конфига уже Error
-			// Возвращаем 500 и сам конфиг (с ID и статусом Error)
-			// чтобы клиент знал, что что-то пошло не так, но запись создана.
-			// Используем логгер хендлера
 			h.logger.Error("Error publishing initial generation task", zap.String("userID", userID.String()), zap.Error(err))
-			// Вернуть 500 можно, но не через handleServiceError, так как это специфичный случай
-			return c.JSON(http.StatusInternalServerError, config) // Возвращаем конфиг со статусом Error
+			// Возвращаем 500 и сам конфиг (с ID и статусом Error)
+			c.JSON(http.StatusInternalServerError, config)
+			return // Завершаем обработку
 		}
 		// Если ошибка была до отправки (например, проверка конкуренции), обрабатываем стандартно
-		// Логируем только если это НЕ стандартная ошибка
-		if !errors.Is(err, sharedModels.ErrNotFound) &&
-			!errors.Is(err, service.ErrCannotRevise) && // << Используем service.ErrCannotRevise
-			!errors.Is(err, sharedModels.ErrUserHasActiveGeneration) &&
-			!errors.Is(err, service.ErrInvalidOperation) {
-			h.logger.Error("Error generating initial story (unhandled)", zap.String("userID", userID.String()), zap.Error(err))
-		}
-		return handleServiceError(c, err)
+		h.logger.Error("Error generating initial story", zap.String("userID", userID.String()), zap.Error(err))
+		handleServiceError(c, err, h.logger) // Используем обновленный handleServiceError
+		return
 	}
 
 	// Возвращаем 202 Accepted и созданный конфиг (со статусом generating)
-	return c.JSON(http.StatusAccepted, config)
+	c.JSON(http.StatusAccepted, config)
 }
 
-func (h *GameplayHandler) getStoryConfig(c echo.Context) error {
+func (h *GameplayHandler) getStoryConfig(c *gin.Context) { // <<< *gin.Context
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		return c.JSON(http.StatusUnauthorized, APIError{Message: err.Error()})
+		return // getUserIDFromContext уже вызвал Abort
 	}
 
 	idStr := c.Param("id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
 		h.logger.Warn("Invalid story ID format in getStoryConfig", zap.String("id", idStr), zap.Error(err))
-		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid story ID format"})
+		// Используем handleServiceError
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		return
 	}
 
-	config, err := h.service.GetStoryConfig(c.Request().Context(), id, userID)
+	config, err := h.service.GetStoryConfig(c.Request.Context(), id, userID)
 	if err != nil {
-		// Логируем только если это НЕ NotFound
-		if !errors.Is(err, sharedModels.ErrNotFound) {
-			h.logger.Error("Error getting story config", zap.String("userID", userID.String()), zap.String("storyID", id.String()), zap.Error(err))
-		}
-		return handleServiceError(c, err)
+		h.logger.Error("Error getting story config", zap.String("userID", userID.String()), zap.String("storyID", id.String()), zap.Error(err))
+		handleServiceError(c, err, h.logger)
+		return
 	}
 
 	// Проверяем, есть ли сам конфиг
 	if config.Config == nil || len(config.Config) == 0 {
-		// Если конфига нет (например, статус generating или error),
-		// возвращаем базовую информацию о черновике.
 		detail := StoryConfigDetail{
 			ID:        config.ID.String(),
 			CreatedAt: config.CreatedAt,
 			Status:    string(config.Status),
-			Config:    nil, // Явно указываем, что конфига нет
+			Config:    nil,
 		}
 		h.logger.Warn("Story config JSON is nil, returning basic details", zap.String("storyID", id.String()), zap.String("status", string(config.Status)))
-		return c.JSON(http.StatusOK, detail)
+		c.JSON(http.StatusOK, detail)
+		return
 	}
 
 	// Определяем внутреннюю структуру для анмаршалинга JSON из config.Config
@@ -118,20 +127,15 @@ func (h *GameplayHandler) getStoryConfig(c echo.Context) error {
 		Wc    string                      `json:"wc"`
 		Ss    string                      `json:"ss"`
 		Cs    map[string]internalCoreStat `json:"cs"`
-		// Остальные поля (pg, s_so_far, fd, pp, sc) нам не нужны для DTO, пропускаем
 	}
 
 	var parsedInternal internalConfig
 	if err := json.Unmarshal(config.Config, &parsedInternal); err != nil {
 		h.logger.Error("Failed to unmarshal story config JSON", zap.String("storyID", id.String()), zap.Error(err))
-		// Возвращаем базовую информацию + статус error, т.к. не смогли распарсить конфиг
-		detail := StoryConfigDetail{
-			ID:        config.ID.String(),
-			CreatedAt: config.CreatedAt,
-			Status:    string(sharedModels.StatusError), // <<< Используем sharedModels
-			Config:    nil,
-		}
-		return c.JSON(http.StatusInternalServerError, detail) // Ошибка сервера, т.к. данные некорректны
+		// Создаем ошибку для handleServiceError
+		parsingErr := fmt.Errorf("failed to parse internal story config for story %s", id.String())
+		handleServiceError(c, parsingErr, h.logger) // Это приведет к 500 Internal Error
+		return
 	}
 
 	// Преобразуем внутреннюю структуру в публичный DTO
@@ -161,46 +165,45 @@ func (h *GameplayHandler) getStoryConfig(c echo.Context) error {
 		}
 	}
 
-	return c.JSON(http.StatusOK, publicDetail) // <<< Возвращаем распарсенный DTO
+	c.JSON(http.StatusOK, publicDetail)
 }
 
 // Обновляем reviseStoryRequest и reviseStoryConfig
 type reviseStoryRequest struct {
-	RevisionPrompt string `json:"revision_prompt" binding:"required"`
+	RevisionPrompt string `json:"revision_prompt" binding:"required"` // <<< Используем binding
 }
 
-func (h *GameplayHandler) reviseStoryConfig(c echo.Context) error {
+func (h *GameplayHandler) reviseStoryConfig(c *gin.Context) { // <<< *gin.Context
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		return c.JSON(http.StatusUnauthorized, APIError{Message: err.Error()})
+		return
 	}
 
 	idStr := c.Param("id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid story ID format"})
+		h.logger.Warn("Invalid story ID format in reviseStoryConfig", zap.String("id", idStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		return
 	}
 
 	var req reviseStoryRequest
-	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid request body: " + err.Error()})
+	// Используем ShouldBindJSON
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Invalid request body for reviseStoryConfig", zap.Stringer("userID", userID), zap.String("storyID", id.String()), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: %s", sharedModels.ErrBadRequest, err.Error()), h.logger)
+		return
 	}
 
-	// Вызываем обновленный метод сервиса
-	err = h.service.ReviseDraft(c.Request().Context(), id, userID, req.RevisionPrompt)
+	err = h.service.ReviseDraft(c.Request.Context(), id, userID, req.RevisionPrompt)
 	if err != nil {
-		// Логируем только если это НЕ стандартная ошибка
-		if !errors.Is(err, sharedModels.ErrNotFound) &&
-			!errors.Is(err, service.ErrCannotRevise) && // << Используем service.ErrCannotRevise
-			!errors.Is(err, sharedModels.ErrUserHasActiveGeneration) &&
-			!errors.Is(err, service.ErrInvalidOperation) {
-			h.logger.Error("Error revising draft (unhandled)", zap.String("userID", userID.String()), zap.String("storyID", id.String()), zap.Error(err))
-		}
-		return handleServiceError(c, err)
+		h.logger.Error("Error revising draft", zap.String("userID", userID.String()), zap.String("storyID", id.String()), zap.Error(err))
+		handleServiceError(c, err, h.logger)
+		return
 	}
 
-	// Возвращаем 202 Accepted (без тела, т.к. результат придет по WebSocket)
-	return c.NoContent(http.StatusAccepted)
+	// Возвращаем 202 Accepted
+	c.Status(http.StatusAccepted) // <<< Используем c.Status для No Content
 }
 
 // PublishStoryResponse определяет тело ответа при публикации истории.
@@ -209,61 +212,54 @@ type PublishStoryResponse struct {
 }
 
 // publishStoryDraft обрабатывает запрос на публикацию черновика.
-func (h *GameplayHandler) publishStoryDraft(c echo.Context) error {
+func (h *GameplayHandler) publishStoryDraft(c *gin.Context) { // <<< *gin.Context
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		return c.JSON(http.StatusUnauthorized, APIError{Message: err.Error()})
+		return
 	}
 
 	idStr := c.Param("id")
 	draftID, err := uuid.Parse(idStr)
 	if err != nil {
 		h.logger.Warn("Invalid draft ID format received", zap.String("id", idStr), zap.Error(err))
-		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid story ID format"})
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		return
 	}
 
 	h.logger.Info("Received request to publish draft", zap.String("userID", userID.String()), zap.String("draftID", draftID.String()))
 
-	// Вызываем метод сервиса для публикации
-	publishedID, err := h.service.PublishDraft(c.Request().Context(), draftID, userID)
+	publishedID, err := h.service.PublishDraft(c.Request.Context(), draftID, userID)
 	if err != nil {
-		// Логируем только если это НЕ стандартная ошибка
-		if !errors.Is(err, sharedModels.ErrNotFound) &&
-			!errors.Is(err, service.ErrInvalidOperation) {
-			h.logger.Error("Error publishing draft (unhandled)", zap.String("userID", userID.String()), zap.String("draftID", draftID.String()), zap.Error(err))
-		}
-		// Ошибка уже залогирована внутри PublishDraft при неудачной попытке
-		return handleServiceError(c, err) // Используем общий обработчик ошибок
+		h.logger.Error("Error publishing draft", zap.String("userID", userID.String()), zap.String("draftID", draftID.String()), zap.Error(err))
+		handleServiceError(c, err, h.logger)
+		return
 	}
 
 	h.logger.Info("Draft published successfully", zap.String("userID", userID.String()), zap.String("draftID", draftID.String()), zap.String("publishedID", publishedID.String()))
 
-	// Возвращаем 202 Accepted и ID опубликованной истории
-	// Используем экспортированный тип
 	resp := PublishStoryResponse{PublishedStoryID: publishedID.String()}
-	return c.JSON(http.StatusAccepted, resp)
+	c.JSON(http.StatusAccepted, resp)
 }
 
 // listStoryConfigs получает список черновиков пользователя с пагинацией.
-func (h *GameplayHandler) listStoryConfigs(c echo.Context) error {
+func (h *GameplayHandler) listStoryConfigs(c *gin.Context) { // <<< *gin.Context
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		return c.JSON(http.StatusUnauthorized, APIError{Message: err.Error()})
+		return
 	}
 
-	// Получаем параметры пагинации из query
-	limitStr := c.QueryParam("limit")
-	cursor := c.QueryParam("cursor") // Курсор может быть пустым
+	// Используем c.Query для Gin
+	limitStr := c.Query("limit")
+	cursor := c.Query("cursor")
 
-	// Устанавливаем лимит по умолчанию
-	limit := 10 // Можете изменить значение по умолчанию
+	limit := 10
 	if limitStr != "" {
 		parsedLimit, err := strconv.Atoi(limitStr)
 		if err != nil || parsedLimit <= 0 {
 			h.logger.Warn("Invalid limit parameter received", zap.String("limit", limitStr), zap.Error(err))
-			return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid 'limit' parameter"})
+			handleServiceError(c, fmt.Errorf("%w: invalid 'limit' parameter", sharedModels.ErrBadRequest), h.logger)
+			return
 		}
-		// Ограничим максимальный лимит, чтобы избежать чрезмерной нагрузки
 		if parsedLimit > 100 {
 			parsedLimit = 100
 		}
@@ -276,18 +272,13 @@ func (h *GameplayHandler) listStoryConfigs(c echo.Context) error {
 		zap.String("cursor", cursor),
 	)
 
-	// Вызываем метод сервиса
-	drafts, nextCursor, err := h.service.ListMyDrafts(c.Request().Context(), userID, cursor, limit) // <<< Меняем порядок cursor и limit
+	drafts, nextCursor, err := h.service.ListMyDrafts(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
-		// Логируем только если это не стандартная ошибка курсора
-		if !errors.Is(err, sharedInterfaces.ErrInvalidCursor) { // <<< Используем sharedInterfaces
-			h.logger.Error("Error listing story drafts", zap.String("userID", userID.String()), zap.Error(err))
-		}
-		// Обрабатываем ошибку через стандартный хелпер
-		return handleServiceError(c, err)
+		h.logger.Error("Error listing story drafts", zap.String("userID", userID.String()), zap.Error(err))
+		handleServiceError(c, err, h.logger)
+		return
 	}
 
-	// Преобразуем полные модели в DTO для ответа
 	draftSummaries := make([]StoryConfigSummary, len(drafts))
 	for i, draft := range drafts {
 		draftSummaries[i] = StoryConfigSummary{
@@ -299,53 +290,46 @@ func (h *GameplayHandler) listStoryConfigs(c echo.Context) error {
 		}
 	}
 
-	// Формируем ответ
 	resp := PaginatedResponse{
-		Data:       draftSummaries, // <<< Возвращаем DTO
+		Data:       draftSummaries,
 		NextCursor: nextCursor,
 	}
 
 	h.logger.Debug("Successfully fetched story drafts",
 		zap.String("userID", userID.String()),
-		zap.Int("count", len(draftSummaries)), // <<< Используем длину среза DTO
+		zap.Int("count", len(draftSummaries)),
 		zap.Bool("hasNext", nextCursor != ""),
 	)
 
-	return c.JSON(http.StatusOK, resp)
+	c.JSON(http.StatusOK, resp)
 }
 
 // <<< ДОБАВЛЕНО: Обработчик для повторной генерации >>>
-func (h *GameplayHandler) retryDraftGeneration(c echo.Context) error {
+func (h *GameplayHandler) retryDraftGeneration(c *gin.Context) { // <<< *gin.Context
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		return c.JSON(http.StatusUnauthorized, APIError{Message: err.Error()})
+		return
 	}
 
 	draftIDStr := c.Param("draft_id")
 	draftID, err := uuid.Parse(draftIDStr)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid draft ID format: " + err.Error()})
+		h.logger.Warn("Invalid draft ID format in retryDraftGeneration", zap.String("id", draftIDStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid draft ID format", sharedModels.ErrBadRequest), h.logger)
+		return
 	}
 
 	log := h.logger.With(zap.String("userID", userID.String()), zap.String("draftID", draftID.String()))
 	log.Info("Handling retry draft generation request")
 
-	err = h.service.RetryDraftGeneration(c.Request().Context(), draftID, userID)
+	err = h.service.RetryDraftGeneration(c.Request.Context(), draftID, userID)
 	if err != nil {
 		log.Error("Error retrying draft generation", zap.Error(err))
-		// Handle specific errors returned by the service
-		if errors.Is(err, sharedModels.ErrNotFound) {
-			return c.JSON(http.StatusNotFound, APIError{Message: "Draft not found or access denied"})
-		} else if errors.Is(err, service.ErrCannotRetry) { // << Используем service.ErrCannotRetry
-			return c.JSON(http.StatusConflict, APIError{Message: err.Error()})
-		} else if errors.Is(err, sharedModels.ErrUserHasActiveGeneration) {
-			return c.JSON(http.StatusConflict, APIError{Message: err.Error()})
-		}
-		// Default to internal server error
-		return c.JSON(http.StatusInternalServerError, APIError{Message: "Internal server error while retrying generation"})
+		// Используем handleServiceError для стандартизации
+		handleServiceError(c, err, h.logger)
+		return
 	}
 
-	// Return 202 Accepted on success
 	log.Info("Draft retry request accepted")
-	return c.NoContent(http.StatusAccepted)
+	c.Status(http.StatusAccepted)
 }

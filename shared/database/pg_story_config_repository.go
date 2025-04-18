@@ -45,9 +45,9 @@ func NewPgStoryConfigRepository(db interfaces.DBTX, logger *zap.Logger) interfac
 func (r *pgStoryConfigRepository) Create(ctx context.Context, config *sharedModels.StoryConfig) error { // <<< Используем sharedModels.StoryConfig
 	query := `
         INSERT INTO story_configs
-            (id, user_id, title, description, user_input, config, status, created_at, updated_at)
+            (id, user_id, title, description, user_input, config, status, language, created_at, updated_at)
         VALUES
-            ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     `
 	logFields := []zap.Field{zap.String("storyConfigID", config.ID.String()), zap.String("userID", config.UserID.String())}
 	r.logger.Debug("Creating story config", logFields...)
@@ -60,6 +60,7 @@ func (r *pgStoryConfigRepository) Create(ctx context.Context, config *sharedMode
 		config.UserInput,
 		config.Config,
 		config.Status,
+		config.Language,
 		config.CreatedAt,
 		config.UpdatedAt,
 	)

@@ -223,21 +223,273 @@ document.addEventListener('DOMContentLoaded', () => {
     const nav = document.querySelector('.nav');
     if (burger && nav) {
         burger.addEventListener('click', () => {
-            // Toggle active class on nav menu to show/hide it
+            burger.classList.toggle('burger--active');
             nav.classList.toggle('nav--active'); 
-            // Toggle active class on burger for styling (e.g., transform to 'X')
-            burger.classList.toggle('burger--active'); 
+            // Блокировка/разблокировка скролла страницы при открытом/закрытом меню
+            document.body.style.overflow = nav.classList.contains('nav--active') ? 'hidden' : '';
         });
 
-        // Optional: Close menu when a nav link is clicked
-        const navLinks = nav.querySelectorAll('.nav__link');
-        navLinks.forEach(link => {
+        // Закрытие меню при клике на ссылку (для одностраничников)
+        nav.querySelectorAll('.nav__link').forEach(link => {
             link.addEventListener('click', () => {
                 if (nav.classList.contains('nav--active')) {
-                    nav.classList.remove('nav--active');
                     burger.classList.remove('burger--active');
+                    nav.classList.remove('nav--active');
+                    document.body.style.overflow = '';
                 }
             });
         });
+
+        // Закрытие меню при клике вне его области
+        document.addEventListener('click', (event) => {
+            if (!nav.contains(event.target) && !burger.contains(event.target) && nav.classList.contains('nav--active')) {
+                 burger.classList.remove('burger--active');
+                 nav.classList.remove('nav--active');
+                 document.body.style.overflow = '';
+            }
+        });
     }
+
+    // --- Smooth Scroll for anchors --- (если нужно)
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+        anchor.addEventListener('click', function (e) {
+            // Проверяем, не является ли ссылка просто заглушкой или ссылкой на другую страницу
+            const hrefAttribute = this.getAttribute('href');
+            if (hrefAttribute && hrefAttribute !== '#' && hrefAttribute.startsWith('#')) {
+                const targetElement = document.querySelector(hrefAttribute);
+                if (targetElement) {
+                     e.preventDefault();
+                     targetElement.scrollIntoView({ behavior: 'smooth' });
+                     // Закрываем бургер-меню, если оно открыто и ссылка из него
+                     if (nav && nav.classList.contains('nav--active') && nav.contains(this)) {
+                         burger.classList.remove('burger--active');
+                         nav.classList.remove('nav--active');
+                         document.body.style.overflow = '';
+                     }
+                 }
+            }
+        });
+    });
+
+    // --- Animate On Scroll --- //
+    const animatedElements = document.querySelectorAll('.animate-on-scroll');
+
+    if ("IntersectionObserver" in window) {
+        const observer = new IntersectionObserver((entries, observerInstance) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('is-visible');
+                    observerInstance.unobserve(entry.target); // Отключаем наблюдение после анимации
+                }
+            });
+        }, { threshold: 0.1 }); // Анимация начнется, когда 10% элемента видно
+
+        animatedElements.forEach(el => observer.observe(el));
+    } else {
+        // Fallback для старых браузеров (просто показать элементы)
+        animatedElements.forEach(el => el.classList.add('is-visible'));
+    }
+
+    // --- AI Prompt Placeholder Animation --- //
+    const promptInput = document.getElementById('ai-prompt-input');
+    if (promptInput) {
+        const hints = [
+            "Главный герой - эльф, ищущий древний артефакт...",
+            "Добавьте неожиданный поворот: ...оказывается, его лучший друг - предатель.",
+            "Уточните детали мира: ...в этом городе магия запрещена.",
+            "Опишите внешность злодея: ...у него механическая рука и шрам на лице.",
+            "Главный герой — эльф, ищущий древний артефакт, чтобы спасти погибающее королевство.",
+            "Ведьма сбежала из башни ордена и хочет узнать, кто она на самом деле.",
+            "Кибердетектив расследует исчезновение ИИ, который мог изменить всё человечество.",
+            "Призрак мага возвращается в мир живых, чтобы завершить начатое тысячу лет назад.",
+            "Изгой с проклятым амулетом ищет способ изменить прошлое, не разрушив настоящее.",
+            "Город умирает от холода, и только один человек знает, где спрятано солнце.",
+            "Воин-перевертыш скрывает свою сущность, пока древнее зло не пробудилось вновь.",
+            "Одинокий шут оказался последним свидетелем великого заговора.",
+            "Наёмник заключил сделку с богом, но теперь за ним охотятся все живые.",
+            "Юная хранительница портала теряет контроль, и грани миров начинают рушиться.",
+            "Писатель просыпается в мире собственной книги и не помнит, что было дальше.",
+            "Арестованный демон предлагает сделку следователю: правда в обмен на свободу.",
+            "Герой живёт одну и ту же неделю снова и снова — и каждый раз мир рушится иначе.",
+            "Машина, считающая себя человеком, должна убедить остальных, что у неё есть душа.",
+            "Мир рушится по кругу, и только ты помнишь, что уже был здесь."
+        ];
+
+        let currentHintIndex = -1; // Начнем со случайного выбора
+        let currentCharIndex = 0;
+        let currentPhase = 'idle'; // idle, typing, pausingAfterTyping, deleting, pausingAfterDeleting
+        let typingTimer, deletingTimer, pauseTimer, cursorTimer;
+        let cursorVisible = true;
+        const cursorChar = '█'; // Символ курсора
+
+        const typingSpeed = 80; // ms
+        const deletingSpeed = 30; // ms
+        const pauseAfterTypingDuration = 2000; // ms
+        const pauseAfterDeletingDuration = 1000; // ms
+        const cursorBlinkSpeed = 500; // ms
+
+        function clearTimers() {
+            clearTimeout(typingTimer);
+            clearTimeout(deletingTimer);
+            clearTimeout(pauseTimer);
+            clearInterval(cursorTimer);
+            cursorTimer = null;
+        }
+
+        function updatePlaceholder(text, showCursor = false) {
+            promptInput.placeholder = text + (showCursor && cursorVisible ? cursorChar : '');
+        }
+
+        function startCursorBlink() {
+            if (cursorTimer) clearInterval(cursorTimer);
+            cursorVisible = true;
+            cursorTimer = setInterval(() => {
+                cursorVisible = !cursorVisible;
+                // Перерисовываем плейсхолдер с текущим текстом и новым состоянием курсора
+                const currentText = promptInput.placeholder.endsWith(cursorChar)
+                                   ? promptInput.placeholder.slice(0, -1)
+                                   : promptInput.placeholder;
+                updatePlaceholder(currentText, true);
+            }, cursorBlinkSpeed);
+        }
+
+        function stopCursorBlink(showFinalCursor = false) {
+            clearInterval(cursorTimer);
+            cursorTimer = null;
+            cursorVisible = showFinalCursor;
+            const currentText = promptInput.placeholder.endsWith(cursorChar)
+                               ? promptInput.placeholder.slice(0, -1)
+                               : promptInput.placeholder;
+            updatePlaceholder(currentText, showFinalCursor);
+        }
+
+        function typeChar() {
+            const fullHint = hints[currentHintIndex];
+            if (currentCharIndex < fullHint.length) {
+                const textToShow = fullHint.substring(0, currentCharIndex + 1);
+                updatePlaceholder(textToShow, true); // Показываем курсор при печати
+                currentCharIndex++;
+                typingTimer = setTimeout(typeChar, typingSpeed);
+            } else {
+                // Закончили печатать
+                currentPhase = 'pausingAfterTyping';
+                stopCursorBlink(true); // Оставляем курсор видимым
+                startCursorBlink();    // Начинаем моргать
+                pauseTimer = setTimeout(() => {
+                    stopCursorBlink(true); // Останавливаем моргание, курсор виден
+                    currentPhase = 'deleting';
+                    deleteChar();
+                }, pauseAfterTypingDuration);
+            }
+        }
+
+        function deleteChar() {
+            const currentPlaceholder = promptInput.placeholder.endsWith(cursorChar)
+                                       ? promptInput.placeholder.slice(0, -1)
+                                       : promptInput.placeholder;
+
+            if (currentPlaceholder.length > 0) {
+                const textToShow = currentPlaceholder.substring(0, currentPlaceholder.length - 1);
+                updatePlaceholder(textToShow, true); // Показываем курсор при стирании
+                currentCharIndex--; // Хотя индекс символа здесь не так важен, синхронизируем
+                deletingTimer = setTimeout(deleteChar, deletingSpeed);
+            } else {
+                // Закончили стирать
+                currentPhase = 'pausingAfterDeleting';
+                stopCursorBlink(true); // Оставляем курсор видимым
+                startCursorBlink();    // Начинаем моргать
+                pauseTimer = setTimeout(() => {
+                    stopCursorBlink(false); // Скрываем курсор перед началом печати нового
+                    startNextHint();
+                }, pauseAfterDeletingDuration);
+            }
+        }
+
+        function startNextHint() {
+            currentHintIndex = (currentHintIndex + 1) % hints.length;
+            currentCharIndex = 0;
+            updatePlaceholder('', false);
+            currentPhase = 'typing';
+            stopCursorBlink(true); // Показываем курсор перед началом печати
+            typeChar();
+        }
+
+        // Начать анимацию, если поле не в фокусе и пустое
+        function initPlaceholderAnimation() {
+             if (document.activeElement !== promptInput && promptInput.value === '') {
+                clearTimers();
+                 if (currentHintIndex === -1) {
+                     // Первый запуск - выбираем случайный
+                     currentHintIndex = Math.floor(Math.random() * hints.length);
+                 } else {
+                     // Последующие запуски - берем следующий
+                     currentHintIndex = (currentHintIndex + 1) % hints.length;
+                 }
+                 currentCharIndex = 0;
+                 updatePlaceholder('', false); // Очищаем на всякий случай
+                 currentPhase = 'typing';
+                 stopCursorBlink(true); // Показать курсор перед началом печати
+                 typeChar();
+             }
+        }
+
+        // Остановить анимацию
+        function stopPlaceholderAnimation() {
+             clearTimers();
+             stopCursorBlink(false);
+             // Не сбрасываем currentHintIndex, чтобы продолжить с него
+             if (currentPhase !== 'idle') {
+                 // Если была активна анимация, очистим плейсхолдер
+                 // Если пользователь что-то ввел, он увидит свой текст, а не плейсхолдер
+                 if (promptInput.value === '') {
+                     promptInput.placeholder = '';
+                 }
+             }
+             currentPhase = 'idle';
+        }
+
+        // Запускаем при загрузке
+        initPlaceholderAnimation();
+    }
+
+    // --- Scroll to Download button --- //
+    const scrollToDownloadButton = document.getElementById('scroll-to-download-btn');
+    const downloadSection = document.getElementById('download');
+
+    if (scrollToDownloadButton && downloadSection) {
+        scrollToDownloadButton.addEventListener('click', (e) => {
+            e.preventDefault(); // На всякий случай, если кнопка внутри формы
+            downloadSection.scrollIntoView({ behavior: 'smooth' });
+        });
+    }
+
+    // --- Cookie Notice --- (УЖЕ объявлено выше, используем существующие)
+    // const cookieNotice = document.getElementById('cookie-notice');
+    // const acceptCookiesButton = document.getElementById('accept-cookies');
+    // const COOKIE_NAME = 'user_accepted_cookies'; // Используем cookieConsentKey объявленный выше
+
+    // Логика показа/скрытия и установки cookie уже есть выше (строки ~183-218)
+    // Поэтому этот блок ниже, добавленный ранее, не нужен и будет удален.
+    /*
+    if (cookieNotice && acceptCookiesButton) {
+        // ... (логика проверки и добавления листенера была здесь)
+    }
+    */
+
+    // --- Language Switcher --- (УЖЕ объявлено выше, используем существующие)
+    // const langButtons = document.querySelectorAll('.lang-button');
+    // const currentLang = localStorage.getItem('preferredLang') || 'ru'; // Используем initialLang и localStorage.getItem('taleshift_lang')
+
+    // Логика установки активной кнопки и добавления листенеров уже есть выше (строки ~112-180)
+    // Поэтому этот блок ниже, добавленный ранее, не нужен и будет удален.
+    /*
+    function setActiveLangButton(lang) {
+        // ...
+    }
+    setActiveLangButton(currentLang);
+    langButtons.forEach(button => {
+        // ...
+    });
+    */
+
 }); 

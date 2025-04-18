@@ -1,7 +1,6 @@
 package handler
 
 import (
-
 	// domain "novel-server/auth/internal/domain" // <<< Удаляем неправильный импорт домена
 
 	// Импортируем интерфейс репозитория
@@ -14,24 +13,12 @@ import (
 	// <<< Добавляем импорт UUID
 )
 
-// <<< Определение и регистрация кастомных метрик >>>
+// AuthHandler handles HTTP requests related to authentication.
+// <<< Удаляю структуру AuthHandler, функцию NewAuthHandler и метод RegisterRoutes >>>
 
-// --- Коды ошибок API ---
-const (
-	// 4xx Клиентские ошибки
-	ErrCodeBadRequest         = 40001
-	ErrCodeInvalidCredentials = 40101
-	ErrCodeInvalidToken       = 40102
-	ErrCodeExpiredToken       = 40103
-	ErrCodeRevokedToken       = 40104 // Токен не найден в хранилище (отозван/вышли)
-	ErrCodeForbidden          = 40301 // Доступ запрещен (если понадобится)
-	ErrCodeNotFound           = 40401 // Общая "не найдено"
-	ErrCodeUserNotFound       = 40402
-	ErrCodeUserAlreadyExists  = 40901 // Конфликт
+// --- Request/Response Structs ---
 
-	// 5xx Серверные ошибки
-	ErrCodeInternalError = 50001
-)
+// <<< Удаляю структуры registerRequest, loginRequest, refreshRequest, logoutRequest, tokenVerifyRequest, generateInterServiceTokenRequest, meResponse, updateUserRequest, updatePasswordRequest >>>
 
 // --- Константы для валидации ---
 const (
@@ -42,12 +29,4 @@ const (
 )
 
 // Регулярное выражение для проверки допустимых символов в имени пользователя
-// (латинские буквы, цифры, подчеркивание, дефис)
 var usernameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-
-// AuthHandler handles HTTP requests related to authentication.
-// <<< Удаляю структуру AuthHandler, функцию NewAuthHandler и метод RegisterRoutes >>>
-
-// --- Request/Response Structs ---
-
-// <<< Удаляю структуры registerRequest, loginRequest, refreshRequest, logoutRequest, tokenVerifyRequest, generateInterServiceTokenRequest, meResponse, updateUserRequest, updatePasswordRequest >>>

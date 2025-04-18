@@ -85,4 +85,82 @@
     {{/* Див для отображения результата сброса пароля */}}
     <div id="password-reset-status" style="margin-top: 1em;"></div>
 
+    <hr>
+
+    <!-- <<< Форма отправки уведомления >>> -->
+    <h2>Отправить уведомление</h2>
+
+    {{/* <<< Блок отображения статуса отправки >>> */}}
+    {{ if eq .NotificationStatus "success" }}
+        <article style="background-color: var(--pico-color-green-150); border-color: var(--pico-color-green-400); margin-bottom: 1em;">
+            Уведомление успешно отправлено в очередь!
+        </article>
+    {{ else if eq .NotificationStatus "error" }}
+        <article aria-invalid="true" style="margin-bottom: 1em;">
+            Ошибка при отправке уведомления в очередь.
+        </article>
+    {{ end }}
+    {{/* <<< Конец блока статуса >>> */}}
+
+    <div id="notification-section">
+        <div class="mb-3">
+            <label for="notificationMessage" class="form-label">Текст уведомления:</label>
+            <textarea class="form-control" id="notificationMessage" rows="3"></textarea>
+        </div>
+        <button type="button" class="btn btn-info" id="sendNotificationBtn" data-user-id="{{.User.ID}}">Отправить уведомление</button>
+    </div>
+
+    <hr>
+
+    <a href="/admin/users" class="btn btn-secondary">Назад к списку пользователей</a>
+    <a href="/admin/users/{{.User.ID}}/stories" class="btn btn-outline-primary ms-2">Истории пользователя</a>
+    <a href="/admin/users/{{.User.ID}}/drafts" class="btn btn-outline-secondary ms-2">Черновики пользователя</a>
+
+    <!-- <<< JavaScript для отправки уведомления >>> -->
+    <script>
+    document.getElementById('sendNotificationBtn').addEventListener('click', function() {
+        const userId = this.getAttribute('data-user-id');
+        const message = document.getElementById('notificationMessage').value.trim();
+        const statusDiv = document.getElementById('notificationStatus');
+        const sendButton = this;
+
+        if (!message) {
+            statusDiv.textContent = 'Введите текст уведомления.';
+            statusDiv.className = 'mt-2 text-danger';
+            return;
+        }
+
+        statusDiv.textContent = 'Отправка...';
+        statusDiv.className = 'mt-2 text-info';
+        sendButton.disabled = true;
+
+        fetch(`/admin/users/${userId}/send-notification`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                // Добавить 'Authorization': 'Bearer ' + token, если используется
+            },
+            body: JSON.stringify({ message: message })
+        })
+        .then(response => {
+            if (!response.ok) {
+                return response.json().then(err => { throw new Error(err.error || `Ошибка ${response.status}`) });
+            }
+            return response.json();
+        })
+        .then(data => {
+            statusDiv.textContent = 'Уведомление успешно отправлено в очередь!';
+            statusDiv.className = 'mt-2 text-success';
+            document.getElementById('notificationMessage').value = ''; // Очистить поле
+        })
+        .catch(error => {
+            console.error('Ошибка отправки уведомления:', error);
+            statusDiv.textContent = `Ошибка: ${error.message || 'Не удалось отправить'}`;
+            statusDiv.className = 'mt-2 text-danger';
+        })
+        .finally(() => {
+            sendButton.disabled = false;
+        });
+    });
+    </script>
 {{ end }} 

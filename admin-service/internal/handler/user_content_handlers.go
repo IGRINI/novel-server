@@ -7,29 +7,30 @@ import (
 	sharedModels "novel-server/shared/models"
 	"strconv"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 )
 
 const defaultLimit = 20
 
-func (h *AdminHandler) listUserDrafts(c echo.Context) error {
-	ctx := c.Request().Context()
+func (h *AdminHandler) listUserDrafts(c *gin.Context) {
+	ctx := c.Request.Context()
 	log := h.logger.With(zap.String("handler", "listUserDrafts"))
 	targetUserIDStr := c.Param("user_id")
 	targetUserID, err := uuid.Parse(targetUserIDStr)
 	if err != nil {
 		log.Error("Invalid target user ID format", zap.String("user_id", targetUserIDStr), zap.Error(err))
-		return echo.NewHTTPError(http.StatusBadRequest, "Неверный формат ID пользователя")
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID пользователя"})
+		return
 	}
 	log = log.With(zap.String("targetUserID", targetUserID.String()))
-	limitStr := c.QueryParam("limit")
+	limitStr := c.Query("limit")
 	limit, _ := strconv.Atoi(limitStr)
 	if limit <= 0 || limit > defaultLimit {
 		limit = defaultLimit
 	}
-	cursor := c.QueryParam("cursor")
+	cursor := c.Query("cursor")
 	var targetUser *sharedModels.User
 	var userErr error
 	users, _, listUsersErr := h.authClient.ListUsers(ctx, 1, fmt.Sprintf("id:%s", targetUserID.String()))
@@ -56,7 +57,7 @@ func (h *AdminHandler) listUserDrafts(c echo.Context) error {
 	} else if userErr != nil {
 		pageTitle = fmt.Sprintf("Черновики пользователя (ID: %s)", targetUserID.String())
 	}
-	data := map[string]interface{}{
+	data := gin.H{
 		"PageTitle":  pageTitle,
 		"TargetUser": targetUser,
 		"Drafts":     drafts,
@@ -74,25 +75,26 @@ func (h *AdminHandler) listUserDrafts(c echo.Context) error {
 	} else if listErr != nil {
 		data["Error"] = "Не удалось загрузить черновики: " + listErr.Error()
 	}
-	return c.Render(http.StatusOK, "user_drafts.html", data)
+	c.HTML(http.StatusOK, "user_drafts.html", data)
 }
 
-func (h *AdminHandler) listUserStories(c echo.Context) error {
-	ctx := c.Request().Context()
+func (h *AdminHandler) listUserStories(c *gin.Context) {
+	ctx := c.Request.Context()
 	log := h.logger.With(zap.String("handler", "listUserStories"))
 	targetUserIDStr := c.Param("user_id")
 	targetUserID, err := uuid.Parse(targetUserIDStr)
 	if err != nil {
 		log.Error("Invalid target user ID format", zap.String("user_id", targetUserIDStr), zap.Error(err))
-		return echo.NewHTTPError(http.StatusBadRequest, "Неверный формат ID пользователя")
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID пользователя"})
+		return
 	}
 	log = log.With(zap.String("targetUserID", targetUserID.String()))
-	limitStr := c.QueryParam("limit")
+	limitStr := c.Query("limit")
 	limit, _ := strconv.Atoi(limitStr)
 	if limit <= 0 || limit > defaultLimit {
 		limit = defaultLimit
 	}
-	offsetStr := c.QueryParam("offset")
+	offsetStr := c.Query("offset")
 	offset, _ := strconv.Atoi(offsetStr)
 	if offset < 0 {
 		offset = 0
@@ -117,7 +119,7 @@ func (h *AdminHandler) listUserStories(c echo.Context) error {
 			log.Error("Failed to get user published stories from gameplay service", zap.Error(listErr))
 		}
 	}
-	data := map[string]interface{}{
+	data := gin.H{
 		"TargetUser": targetUser,
 		"Stories":    stories,
 		"Limit":      limit,
@@ -137,5 +139,5 @@ func (h *AdminHandler) listUserStories(c echo.Context) error {
 	} else if listErr != nil {
 		data["Error"] = "Не удалось загрузить истории: " + listErr.Error()
 	}
-	return c.Render(http.StatusOK, "user_stories.html", data)
+	c.HTML(http.StatusOK, "user_stories.html", data)
 }

@@ -16,6 +16,9 @@ type StoryConfig struct {
 	UserInput   json.RawMessage `db:"user_input" json:"user_input"`
 	Config      json.RawMessage `db:"config" json:"config"`
 	Status      StoryStatus     `db:"status" json:"status"`
+	Language    string          `db:"language" json:"language"`
 	CreatedAt   time.Time       `db:"created_at" json:"created_at"`
 	UpdatedAt   time.Time       `db:"updated_at" json:"updated_at"`
 }
+
+// Consequences defines the structure for stat changes and flags within scene options.

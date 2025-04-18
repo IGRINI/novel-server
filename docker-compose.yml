@@ -211,18 +211,17 @@ services:
     ports:
       - "8084:8084" # Порт admin-service
     environment:
-      # <<: *env-vars # <<< Убираем наследование, т.к. имена переменных не совпадают
-      # Явно определяем все переменные, ожидаемые admin-service/internal/config/config.go
-      ENV: ${ENV:-development}
-      ADMIN_SERVER_PORT: 8084 # Внутренний порт сервиса
+      <<: *env-vars
+      ADMIN_SERVER_PORT: 8084
       LOG_LEVEL: ${LOG_LEVEL:-debug}
-      AUTH_SERVICE_URL: http://auth-service:8081 # Внутренний Docker URL
-      STORY_GENERATOR_URL: http://story-generator:8083 # Внутренний Docker URL
+      AUTH_SERVICE_URL: http://auth-service:8081
+      STORY_GENERATOR_URL: http://story-generator:8083
+      GAMEPLAY_SERVICE_URL: http://gameplay-service:8082
       HTTP_CLIENT_TIMEOUT: ${HTTP_CLIENT_TIMEOUT:-10s}
-      INTER_SERVICE_TOKEN_TTL: ${INTER_SERVICE_TOKEN_TTL:-1h}
       AUTH_SERVICE_TIMEOUT: ${AUTH_SERVICE_TIMEOUT:-5s}
       SERVICE_ID: admin-service
-      GAMEPLAY_SERVICE_URL: ${GAMEPLAY_SERVICE_URL} # <<< Добавляем URL для Gameplay Service
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/
+      PUSH_QUEUE_NAME: ${PUSH_QUEUE_NAME:-push_notifications}
     secrets:
       - source: inter_service_secret
         target: /run/secrets/inter_service_secret
@@ -230,6 +229,7 @@ services:
         target: /run/secrets/jwt_secret
     depends_on:
       - auth-service
+      - rabbitmq
     networks:
       - novel_network
     healthcheck: # <<< Возвращаем правильный Healthcheck для admin-service
@@ -339,6 +339,49 @@ services:
     networks:
       - novel_network
 
+  # Сервис Уведомлений (Push)
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile # Путь к Dockerfile сервиса
+    image: novel-notification-service:latest
+    container_name: novel_notification_service
+    depends_on:
+      - rabbitmq
+      # Добавьте зависимость от сервиса, предоставляющего токены, если он есть
+      # - auth-service
+    environment:
+      <<: *env-vars # Наследуем общие переменные
+      RABBITMQ_URI: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/ # URL для Docker
+      SERVICE_ID: notification-service
+      # Переменные конфигурации notification-service
+      PUSH_QUEUE_NAME: ${PUSH_QUEUE_NAME:-push_notifications}
+      WORKER_CONCURRENCY: ${NOTIFICATION_WORKER_CONCURRENCY:-10}
+      TOKEN_SERVICE_URL: ${TOKEN_SERVICE_URL:-} # URL сервиса токенов (если есть)
+      # --- Пути к секретам ВНУТРИ контейнера --- 
+      FCM_CREDENTIALS_PATH: /run/secrets/firebase_credentials # <<< Путь к секрету FCM
+      APNS_KEY_ID: ${APNS_KEY_ID:-}
+      APNS_TEAM_ID: ${APNS_TEAM_ID:-}
+      APNS_KEY_PATH: /run/secrets/apns_key # <<< Путь к секрету APNS
+      APNS_TOPIC: ${APNS_TOPIC:-}
+      # --- Порт для Health Check --- 
+      HEALTH_CHECK_PORT: ${NOTIFICATION_HEALTH_PORT:-8088} # <<< Порт для /health
+    secrets:
+      - source: firebase_credentials # <<< Имя внешнего секрета Docker Swarm/Compose
+        target: /run/secrets/firebase_credentials
+      # - source: apns_key # <<< Закомментировано, т.к. APNS пока не используется
+      #   target: /run/secrets/apns_key
+      - source: inter_service_secret # Пример секрета для связи с TokenService
+        target: /run/secrets/inter_service_secret
+    healthcheck: # <<< Добавляем Healthcheck
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:${NOTIFICATION_HEALTH_PORT:-8088}/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s # Даем время на запуск HTTP сервера
+    networks:
+      - novel_network
+
 # Новые сервисы для мониторинга
   prometheus:
     image: prom/prometheus:latest
@@ -433,7 +476,10 @@ secrets:
     external: true
   ai_api_key:
     external: true
-  # redis_password:
-  #   external: true # Если используется
-  # rabbitmq_password:
-  #   external: true # Если используется
+  # --- Добавляем внешние секреты для ключей --- 
+  firebase_credentials:
+    external: true
+  # apns_key: # <<< Закомментировано, т.к. APNS пока не используется
+  #   external: true
+  # Добавляем внешний секрет для ключа APNS, если используется
+  #

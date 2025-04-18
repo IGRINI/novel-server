@@ -4,20 +4,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http" // Импорт для StoryConfig
-
-	// <<< Добавляем импорт репозитория
+	"net/http"
 	"novel-server/gameplay-service/internal/service"
-	"novel-server/shared/authutils" // <<< Добавляем импорт общего верификатора
-
-	// <<< Добавляем импорт для ErrInvalidCursor
+	"novel-server/shared/authutils"
 	sharedMiddleware "novel-server/shared/middleware"
-	sharedModels "novel-server/shared/models" // Для парсинга limit
+	sharedModels "novel-server/shared/models"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/labstack/echo/v4"
-	"go.uber.org/zap" // Добавляем импорт zap
+	"go.uber.org/zap"
 )
 
 // StoryConfigSummary представляет сокращенную версию StoryConfig для списков.
@@ -75,20 +71,17 @@ type APIError struct {
 type GameplayHandler struct {
 	service                   service.GameplayService
 	logger                    *zap.Logger
-	userTokenVerifier         *authutils.JWTVerifier // Верификатор для токенов пользователей
-	interServiceTokenVerifier *authutils.JWTVerifier // <<< Верификатор для межсервисных токенов
+	userTokenVerifier         *authutils.JWTVerifier
+	interServiceTokenVerifier *authutils.JWTVerifier
 }
 
 // NewGameplayHandler создает новый GameplayHandler.
-// <<< Добавляем interServiceSecret в аргументы >>>
 func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret, interServiceSecret string) *GameplayHandler {
-	// Создаем верификатор токенов пользователей
 	userVerifier, err := authutils.NewJWTVerifier(jwtSecret, logger)
 	if err != nil {
 		logger.Fatal("Failed to create User JWT Verifier", zap.Error(err))
 	}
 
-	// <<< Создаем верификатор межсервисных токенов >>>
 	interServiceVerifier, err := authutils.NewJWTVerifier(interServiceSecret, logger)
 	if err != nil {
 		logger.Fatal("Failed to create Inter-Service JWT Verifier", zap.Error(err))
@@ -97,23 +90,20 @@ func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret
 	return &GameplayHandler{
 		service:                   s,
 		logger:                    logger.Named("GameplayHandler"),
-		userTokenVerifier:         userVerifier,         // <<< Сохраняем верификатор пользователя
-		interServiceTokenVerifier: interServiceVerifier, // <<< Сохраняем межсервисный верификатор
+		userTokenVerifier:         userVerifier,
+		interServiceTokenVerifier: interServiceVerifier,
 	}
 }
 
-// RegisterRoutes регистрирует маршруты для gameplay сервиса.
-func (h *GameplayHandler) RegisterRoutes(e *echo.Echo) {
-	// Middleware для проверки токена пользователя
-	authMiddleware := echo.WrapMiddleware(sharedMiddleware.AuthMiddleware(h.userTokenVerifier.VerifyToken, h.logger))
-
-	// Middleware для проверки межсервисного токена
-	// Используем созданный нами InterServiceAuthMiddleware
-	// Передаем сам верификатор, а не конкретный метод
-	// interServiceAuthMiddleware := sharedMiddleware.InterServiceAuthMiddleware(h.interServiceTokenVerifier, h.logger)
+// RegisterRoutes регистрирует маршруты для gameplay сервиса в Gin.
+func (h *GameplayHandler) RegisterRoutes(router gin.IRouter) {
+	// Middleware для проверки токена пользователя (используем Gin middleware)
+	authMiddleware := sharedMiddleware.AuthMiddleware(h.userTokenVerifier.VerifyToken, h.logger)
 
 	// --- Маршруты для черновиков историй (API для пользователей) ---
-	storiesGroup := e.Group("/stories", authMiddleware)
+	// Используем router.Group и синтаксис Gin
+	storiesGroup := router.Group("/stories")
+	storiesGroup.Use(authMiddleware) // Применяем middleware к группе
 	{
 		storiesGroup.POST("/generate", h.generateInitialStory)
 		storiesGroup.GET("", h.listStoryConfigs)
@@ -124,112 +114,108 @@ func (h *GameplayHandler) RegisterRoutes(e *echo.Echo) {
 	}
 
 	// --- Маршруты для опубликованных историй (API для пользователей) ---
-	publishedGroup := e.Group("/published-stories", authMiddleware)
+	publishedGroup := router.Group("/published-stories")
+	publishedGroup.Use(authMiddleware)
 	{
 		publishedGroup.GET("/me", h.listMyPublishedStories)
 		publishedGroup.GET("/public", h.listPublicPublishedStories)
 		publishedGroup.GET("/:id/scene", h.getPublishedStoryScene)
 		publishedGroup.POST("/:id/choice", h.makeChoice)
 		publishedGroup.DELETE("/:id/progress", h.deletePlayerProgress)
-		// Добавляем роуты для лайков
 		publishedGroup.POST("/:id/like", h.likeStory)
 		publishedGroup.DELETE("/:id/like", h.unlikeStory)
 	}
 
-	// <<< Новая группа для внутренних маршрутов >>>
-	// Группа internalGroup удалена, т.к. обработчики перенесены
+	// Группа для внутренних маршрутов (если понадобится, ее можно будет добавить позже)
 }
 
 // --- Вспомогательные функции --- //
 
-// getUserIDFromContext извлекает userID как uuid.UUID.
-func getUserIDFromContext(c echo.Context) (uuid.UUID, error) {
-	userIDVal := c.Request().Context().Value(sharedModels.UserContextKey)
-	if userIDVal == nil {
-		return uuid.Nil, fmt.Errorf("user_id не найден в контексте")
-	}
-	// <<< Ожидаем uuid.UUID из контекста >>>
-	userID, ok := userIDVal.(uuid.UUID)
-	if !ok {
-		// <<< Логика парсинга строки больше не нужна >>>
-		// userIDStr, ok := userIDVal.(string)
-		// if !ok {
-		return uuid.Nil, fmt.Errorf("неверный тип user_id в контексте: ожидался uuid.UUID, получено %T", userIDVal)
-		// }
-		//
-		// // Парсим строку как UUID
-		// userID, err := uuid.Parse(userIDStr)
-		// if err != nil {
-		// 	// Логгируем ошибку парсинга
-		// 	// h.logger.Error("Не удалось распарсить user_id из контекста как UUID", zap.String("value", userIDStr), zap.Error(err)) // Logger недоступен здесь
-		// 	return uuid.Nil, fmt.Errorf("невалидный формат user_id в контексте: %w", err)
-		// }
+// getUserIDFromContext извлекает userID как uuid.UUID из *gin.Context.
+func getUserIDFromContext(c *gin.Context) (uuid.UUID, error) {
+	// Используем ключ из shared/middleware
+	userIDVal, exists := c.Get(sharedMiddleware.GinUserContextKey)
+	if !exists {
+		return uuid.Nil, fmt.Errorf("user_id не найден в контексте Gin")
 	}
 
-	// Проверяем, не является ли UUID нулевым (дополнительная проверка)
+	userID, ok := userIDVal.(uuid.UUID)
+	if !ok {
+		return uuid.Nil, fmt.Errorf("неверный тип user_id в контексте Gin: ожидался uuid.UUID, получено %T", userIDVal)
+	}
+
 	if userID == uuid.Nil {
-		return uuid.Nil, fmt.Errorf("невалидный (нулевой) user_id UUID в контексте")
+		return uuid.Nil, fmt.Errorf("невалидный (нулевой) user_id UUID в контексте Gin")
 	}
 
 	return userID, nil
 }
 
-func handleServiceError(c echo.Context, err error) error {
+// handleServiceError обрабатывает ошибки сервисного слоя и отправляет ответ через *gin.Context.
+func handleServiceError(c *gin.Context, err error, logger *zap.Logger) {
 	var statusCode int
-	var apiErr APIError
+	// Используем sharedModels.ErrorResponse
+	var apiErr sharedModels.ErrorResponse
 
 	switch {
+	// Используем ошибки и коды из sharedModels
 	case errors.Is(err, sharedModels.ErrUnauthorized):
 		statusCode = http.StatusUnauthorized
-		apiErr = APIError{Message: "Unauthorized"}
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeUnauthorized, Message: "Unauthorized"}
+	case errors.Is(err, sharedModels.ErrForbidden):
+		statusCode = http.StatusForbidden
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeForbidden, Message: "Forbidden"}
+	case errors.Is(err, sharedModels.ErrUserBanned): // Пример, если понадобится
+		statusCode = http.StatusForbidden
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeUserBanned, Message: "User is banned"}
 	case errors.Is(err, sharedModels.ErrNotFound):
 		statusCode = http.StatusNotFound
-		apiErr = APIError{Message: "Resource not found or access denied"}
-	case errors.Is(err, sharedModels.ErrCannotRevise): // Используем sharedModels
-		statusCode = http.StatusConflict // 409 Conflict
-		apiErr = APIError{Message: err.Error()}
-	case errors.Is(err, sharedModels.ErrUserHasActiveGeneration): // Используем sharedModels
-		statusCode = http.StatusConflict // 409 Conflict (или 429 Too Many Requests?)
-		apiErr = APIError{Message: err.Error()}
+		// Уточняем сообщение в зависимости от типа NotFound, если возможно, иначе общее
+		msg := "Resource not found" // Общее сообщение
+		if errors.Is(err, service.ErrStoryNotFound) || errors.Is(err, service.ErrSceneNotFound) {
+			msg = err.Error() // Используем сообщение из ошибки сервиса
+		}
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeNotFound, Message: msg}
+	case errors.Is(err, sharedModels.ErrCannotRevise):
+		statusCode = http.StatusConflict
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeCannotRevise, Message: err.Error()}
+	case errors.Is(err, sharedModels.ErrUserHasActiveGeneration):
+		statusCode = http.StatusConflict
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeUserHasActiveGeneration, Message: err.Error()}
+	case errors.Is(err, sharedModels.ErrGenerationInProgress):
+		statusCode = http.StatusConflict // Или 422 Unprocessable Entity?
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeGenerationInProgress, Message: err.Error()}
 	case errors.Is(err, service.ErrInvalidOperation):
-		statusCode = http.StatusBadRequest // 400 Bad Request для недопустимой операции
-		apiErr = APIError{Message: err.Error()}
-	case errors.Is(err, sharedModels.ErrStoryNotReadyYet): // Используем sharedModels
-		statusCode = http.StatusNotFound // Сцена еще не готова
-		apiErr = APIError{Message: err.Error()}
-	case errors.Is(err, sharedModels.ErrSceneNeedsGeneration): // Используем sharedModels
-		statusCode = http.StatusNotFound // Сцену нужно генерировать
-		apiErr = APIError{Message: err.Error()}
-	case errors.Is(err, service.ErrInvalidChoiceIndex):
 		statusCode = http.StatusBadRequest
-		apiErr = APIError{Message: err.Error()}
-	case errors.Is(err, service.ErrStoryNotFound) || errors.Is(err, service.ErrSceneNotFound):
-		statusCode = http.StatusNotFound
-		apiErr = APIError{Message: err.Error()}
-	case errors.Is(err, service.ErrInvalidChoice) || errors.Is(err, service.ErrStoryNotReady):
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeBadRequest, Message: err.Error()}
+	case errors.Is(err, sharedModels.ErrStoryNotReadyYet):
+		statusCode = http.StatusNotFound // Или 409 Conflict?
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeStoryNotReadyYet, Message: err.Error()}
+	case errors.Is(err, sharedModels.ErrSceneNeedsGeneration):
+		statusCode = http.StatusNotFound // Или 409 Conflict?
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeSceneNeedsGeneration, Message: err.Error()}
+	case errors.Is(err, service.ErrInvalidChoiceIndex), errors.Is(err, service.ErrInvalidChoice), errors.Is(err, service.ErrStoryNotReady):
 		statusCode = http.StatusBadRequest
-		apiErr = APIError{Message: err.Error()}
-	default:
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeBadRequest, Message: err.Error()} // Можно уточнить код, если нужно
+	case errors.Is(err, sharedModels.ErrBadRequest), errors.Is(err, sharedModels.ErrInvalidInput):
+		statusCode = http.StatusBadRequest
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeBadRequest, Message: err.Error()}
+	default: // Все остальное - внутренняя ошибка
+		logger.Error("Unhandled internal error", zap.Error(err)) // Используем переданный логгер
 		statusCode = http.StatusInternalServerError
-		apiErr = APIError{Message: "Internal server error"}
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeInternal, Message: "Internal server error"}
 	}
-	return c.JSON(statusCode, apiErr)
+	// Используем c.AbortWithStatusJSON для отправки ошибки и прерывания
+	c.AbortWithStatusJSON(statusCode, apiErr)
 }
 
 // Структура ответа для пагинированных списков
 type PaginatedResponse struct {
-	Data       interface{} `json:"data"` // Срез с данными (истории, черновики)
+	Data       interface{} `json:"data"`
 	NextCursor string      `json:"next_cursor,omitempty"`
 }
 
 // --- Обработчики HTTP --- //
-
-// Все обработчики перенесены в *_handlers.go файлы
-
-// --- Новые обработчики для внутренних API --- //
-
-// Все обработчики перенесены в *_handlers.go файлы
-
-// <<< КОНЕЦ ДОБАВЛЕННОГО ОБРАБОТЧИКА >>>
-
-// <<< Конец файла >>>
+// Обработчики (h.generateInitialStory, h.listStoryConfigs и т.д.)
+// теперь должны принимать *gin.Context вместо echo.Context.
+// Их реализацию нужно будет обновить в соответствующих *_handlers.go файлах.

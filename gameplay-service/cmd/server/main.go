@@ -12,48 +12,45 @@ import (
 	"novel-server/gameplay-service/internal/service"
 	sharedDatabase "novel-server/shared/database"     // Импорт для PublishedStoryRepository
 	sharedInterfaces "novel-server/shared/interfaces" // <<< Добавляем импорт shared/interfaces
-	sharedLogger "novel-server/shared/logger"         // <<< Импортируем общий логгер
+	sharedLogger "novel-server/shared/logger"         // <<< Добавляем импорт shared/logger
 	sharedMessaging "novel-server/shared/messaging"   // <<< Добавляем импорт shared/messaging
 	sharedMiddleware "novel-server/shared/middleware" // <<< Импортируем shared/middleware
-
-	// <<< Импорт shared/models
+	sharedModels "novel-server/shared/models"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"github.com/gin-contrib/cors" // <<< Импортируем Gin CORS
+	"github.com/gin-gonic/gin"    // <<< Импортируем Gin
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
-	"github.com/labstack/echo/v4"
-	echoMiddleware "github.com/labstack/echo/v4/middleware"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap" // Импорт zap
-
-	// <<< Импорт для генерации UUID
-	"github.com/google/uuid"
-	// "novel-server/shared/models" // <<< Добавляем импорт shared/models // Already added by previous edit
-	sharedModels "novel-server/shared/models" // <<< Раскомментируем и используем алиас
 )
 
 func main() {
 	_ = godotenv.Load()
 	log.Println("Запуск Gameplay Service...")
 
-	// <<< Загружаем конфиг ДО инициализации логгера
+	// Загрузка конфигурации
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatalf("Ошибка загрузки конфигурации: %v", err) // Используем стандартный логгер, т.к. zap еще нет
+		log.Fatalf("Ошибка загрузки конфигурации: %v", err)
 	}
+	log.Println("Конфигурация загружена")
 
 	// --- Инициализация логгера (Используем shared/logger) ---
 	logger, err := sharedLogger.New(sharedLogger.Config{
-		Level: cfg.LogLevel, // <<< Берем уровень из конфига
+		Level:    cfg.LogLevel,
+		Encoding: "json", // Или cfg.LogEncoding
 	})
 	if err != nil {
 		log.Fatalf("Не удалось инициализировать логгер: %v", err)
 	}
-	defer logger.Sync() // Flush буфера логгера при выходе
-	logger.Info("Logger initialized", zap.String("logLevel", cfg.LogLevel))
+	defer logger.Sync()
+	logger.Info("Логгер инициализирован", zap.String("logLevel", cfg.LogLevel))
 	// --------------------------
 
 	// Убираем повторную загрузку конфига
@@ -78,28 +75,14 @@ func main() {
 	defer rabbitConn.Close()
 	logger.Info("Успешное подключение к RabbitMQ")
 
-	// Создаем отдельный канал для TaskPublisher
-	pubTaskChannel, err := rabbitConn.Channel()
-	if err != nil {
-		logger.Fatal("Не удалось открыть канал RabbitMQ для TaskPublisher", zap.Error(err))
-	}
-	defer pubTaskChannel.Close()
-
-	// Создаем отдельный канал для ClientUpdatePublisher
-	pubClientUpdateChannel, err := rabbitConn.Channel()
-	if err != nil {
-		logger.Fatal("Не удалось открыть канал RabbitMQ для ClientUpdatePublisher", zap.Error(err))
-	}
-	defer pubClientUpdateChannel.Close()
-
 	// Инициализация зависимостей
-	// Передаем logger, он будет использован внутри через .Named()
 	storyConfigRepo := sharedDatabase.NewPgStoryConfigRepository(dbPool, logger)
 	publishedRepo := sharedDatabase.NewPgPublishedStoryRepository(dbPool, logger)
 	sceneRepo := sharedDatabase.NewPgStorySceneRepository(dbPool, logger)
 	playerProgressRepo := sharedDatabase.NewPgPlayerProgressRepository(dbPool, logger)
 	likeRepo := sharedDatabase.NewPgLikeRepository(dbPool, logger)
 
+	// <<< Создаем все паблишеры >>>
 	taskPublisher, err := messaging.NewRabbitMQTaskPublisher(rabbitConn, cfg.GenerationTaskQueue)
 	if err != nil {
 		logger.Fatal("Не удалось создать TaskPublisher", zap.Error(err))
@@ -108,6 +91,12 @@ func main() {
 	if err != nil {
 		logger.Fatal("Не удалось создать ClientUpdatePublisher", zap.Error(err))
 	}
+	// <<< Добавляем создание PushNotificationPublisher >>>
+	pushPublisher, err := messaging.NewRabbitMQPushNotificationPublisher(rabbitConn, cfg.PushNotificationQueueName)
+	if err != nil {
+		logger.Fatal("Не удалось создать PushNotificationPublisher", zap.Error(err))
+	}
+
 	gameplayService := service.NewGameplayService(storyConfigRepo, publishedRepo, sceneRepo, playerProgressRepo, likeRepo, taskPublisher, dbPool, logger)
 	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret)
 
@@ -122,6 +111,7 @@ func main() {
 		sceneRepo,
 		clientUpdatePublisher,
 		taskPublisher,
+		pushPublisher, // <<< Передаем созданный pushPublisher
 		cfg.InternalUpdatesQueueName,
 	)
 	if err != nil {
@@ -136,53 +126,79 @@ func main() {
 		logger.Info("Горутина консьюмера уведомлений завершена.")
 	}()
 
-	// Настройка Echo
-	e := echo.New()
-	// <<< Используем общий логгер запросов из shared/middleware
-	e.Use(sharedMiddleware.EchoZapLogger(logger))
-	e.Use(echoMiddleware.Recover())
-	e.Use(echoMiddleware.CORSWithConfig(echoMiddleware.CORSConfig{ // TODO: Настроить CORS
-		AllowOrigins: []string{"*"},
-		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
-		AllowHeaders: []string{echo.HeaderOrigin, echo.HeaderContentType, echo.HeaderAccept, echo.HeaderAuthorization},
-	}))
-
-	// Регистрация маршрутов
-	gameplayHandler.RegisterRoutes(e)
-
-	// --- Регистрация healthcheck эндпоинта ---
-	healthHandler := func(c echo.Context) error {
-		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+	// --- Настройка Gin --- //
+	gin.SetMode(gin.ReleaseMode)
+	if cfg.Env == "development" {
+		gin.SetMode(gin.DebugMode)
+		logger.Info("Running in Development mode")
+	} else {
+		logger.Info("Running in Release mode")
 	}
-	e.GET("/health", healthHandler)
-	e.HEAD("/health", healthHandler) // Добавляем обработку HEAD
 
-	log.Printf("Gameplay сервер слушает на порту %s", cfg.Port)
+	router := gin.New()
 
-	// Запуск HTTP сервера
+	// <<< Используем Gin логгер запросов (предполагаем, что он есть в sharedMiddleware) >>>
+	router.Use(sharedMiddleware.GinZapLogger(logger))
+	router.Use(gin.Recovery()) // <<< Используем Gin Recovery
+
+	// <<< Настройка Gin CORS Middleware >>>
+	corsConfig := cors.DefaultConfig()
+	// TODO: Заменить "*" на конкретные разрешенные origin в production
+	corsConfig.AllowOrigins = []string{"*"} // Пока оставляем так же, как было в Echo
+	corsConfig.AllowMethods = []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}
+	corsConfig.AllowHeaders = []string{"Origin", "Content-Type", "Accept", "Authorization"}
+	corsConfig.AllowCredentials = true // Если нужны куки или Authorization header
+	corsConfig.MaxAge = 12 * time.Hour
+	router.Use(cors.New(corsConfig))
+
+	// --- Регистрация маршрутов --- //
+	gameplayHandler.RegisterRoutes(router) // <<< Передаем Gin роутер
+
+	// --- Регистрация healthcheck эндпоинта для Gin --- //
+	healthHandler := func(c *gin.Context) { // <<< Используем gin.Context
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	}
+	router.GET("/health", healthHandler) // <<< Регистрируем на Gin роутере
+	router.HEAD("/health", healthHandler)
+
+	logger.Info("Gameplay сервер готов к запуску", zap.String("port", cfg.Port))
+
+	// --- Запуск HTTP сервера (как в auth-service) --- //
+	srv := &http.Server{
+		Addr:         ":" + cfg.Port,
+		Handler:      router, // <<< Передаем Gin роутер
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
 	go func() {
-		if err := e.Start(":" + cfg.Port); err != nil && err != http.ErrServerClosed {
-			e.Logger.Fatal("Ошибка запуска HTTP сервера: ", err)
+		logger.Info("Запуск HTTP сервера...", zap.String("address", srv.Addr))
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Fatal("Ошибка запуска HTTP сервера", zap.Error(err))
 		}
 	}()
 
-	// Graceful shutdown
+	// --- Graceful shutdown --- //
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	logger.Info("Получен сигнал завершения, начинаем graceful shutdown...")
 
 	// Останавливаем консьюмер
+	logger.Info("Остановка консьюмера уведомлений...")
 	notificationConsumer.Stop()
+	logger.Info("Консьюмер уведомлений остановлен.")
 
-	// Shutdown Echo
+	// Shutdown HTTP сервера
+	logger.Info("Остановка HTTP сервера...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := e.Shutdown(ctx); err != nil {
-		e.Logger.Fatal("Ошибка при graceful shutdown Echo: ", err)
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Fatal("Ошибка при graceful shutdown HTTP сервера", zap.Error(err))
 	}
 
-	log.Println("Gameplay Service успешно остановлен")
+	logger.Info("Gameplay Service успешно остановлен")
 }
 
 // <<< Новая функция для перезапуска зависших задач >>>
@@ -210,52 +226,41 @@ func requeueStuckTasks(repo sharedInterfaces.StoryConfigRepository, publisher me
 	for _, cfg := range stuckConfigs {
 		logger.Warn("Перезапуск зависшей задачи",
 			zap.String("storyConfigID", cfg.ID.String()),
-			zap.Stringer("userID", cfg.UserID),
+			zap.String("userID", cfg.UserID.String()),
 			zap.String("status", string(cfg.Status)),
 		)
 
-		// Определяем тип промпта на основе текущего статуса
-		// Пока что обрабатываем только 'generating'
 		var promptType sharedMessaging.PromptType
 		var userInput string
 		var inputData map[string]interface{}
 
 		if cfg.Status == sharedModels.StatusGenerating {
 			promptType = sharedMessaging.PromptTypeNarrator
-			// UserInput для начальной генерации - это первый элемент из cfg.UserInput
-			if len(cfg.UserInput) > 0 {
-				// cfg.UserInput имеет тип json.RawMessage, нужно десериализовать в []string
-				var userInputs []string
-				if err := json.Unmarshal(cfg.UserInput, &userInputs); err == nil && len(userInputs) > 0 {
-					userInput = userInputs[0]
-				} else if err != nil {
-					logger.Error("Не удалось десериализовать UserInput для перезапуска задачи", zap.String("storyConfigID", cfg.ID.String()), zap.Error(err))
-					continue // Пропускаем эту задачу
-				} else {
-					logger.Error("UserInput пуст для перезапуска задачи", zap.String("storyConfigID", cfg.ID.String()))
-					continue // Пропускаем эту задачу
-				}
+			var userInputs []string
+			if err := json.Unmarshal(cfg.UserInput, &userInputs); err == nil && len(userInputs) > 0 {
+				userInput = userInputs[0]
+			} else if err != nil {
+				logger.Error("Не удалось десериализовать UserInput для перезапуска задачи", zap.String("storyConfigID", cfg.ID.String()), zap.Error(err))
+				continue
 			} else {
-				logger.Error("Не удалось извлечь UserInput для перезапуска задачи", zap.String("storyConfigID", cfg.ID.String()))
-				continue // Пропускаем эту задачу
+				logger.Error("UserInput пуст для перезапуска задачи", zap.String("storyConfigID", cfg.ID.String()))
+				continue
 			}
-			// inputData для narrator обычно nil
 			inputData = nil
 		} else {
 			logger.Warn("Обнаружена зависшая задача с необрабатываемым статусом", zap.String("status", string(cfg.Status)), zap.String("storyConfigID", cfg.ID.String()))
-			continue // Пропускаем другие статусы (revising, etc.) в этой простой реализации
+			continue
 		}
 
-		// Генерируем новый TaskID
 		newTaskID := uuid.New().String()
 
 		payload := sharedMessaging.GenerationTaskPayload{
 			TaskID:        newTaskID,
-			UserID:        fmt.Sprintf("%d", cfg.UserID), // Преобразуем uint64 в string
+			UserID:        cfg.UserID.String(),
 			PromptType:    promptType,
 			UserInput:     userInput,
 			InputData:     inputData,
-			StoryConfigID: cfg.ID.String(), // Передаем ID оригинального конфига
+			StoryConfigID: cfg.ID.String(),
 		}
 
 		if err := publisher.PublishGenerationTask(ctx, payload); err != nil {

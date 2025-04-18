@@ -2,358 +2,555 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"novel-server/gameplay-service/internal/service" // Добавляем импорт сервиса
 	sharedModels "novel-server/shared/models"
 	"strconv"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/labstack/echo/v4"
 	"go.uber.org/zap"
 )
 
-// MakeChoiceRequest определяет тело запроса для выбора игрока.
+// --- Структуры для ответов и запросов --- //
+
+// <<< ДОБАВЛЕНО: Определение запроса для makeChoice
 type MakeChoiceRequest struct {
-	// Индекс выбранной опции (0 или 1) в текущем блоке выбора.
-	SelectedOptionIndex int `json:"selected_option_index" validate:"min=0,max=1"`
+	SelectedOptionIndex int `json:"selected_option_index" binding:"required,min=0,max=1"`
 }
 
+// PublishedStorySummary представляет базовую информацию об опубликованной истории для списков.
+// !!! Поля AuthorName, Genre, Language, LastPlayedAt УБРАНЫ, т.к. их нет в основной модели PublishedStory !!!
+type PublishedStorySummary struct {
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	AuthorID    string    `json:"author_id"` // Это UserID из модели
+	PublishedAt time.Time `json:"published_at"`
+	LikesCount  int64     `json:"likes_count"`
+	IsLiked     bool      `json:"is_liked"` // Лайкнул ли текущий пользователь
+}
+
+type publishedCoreStatDetail struct {
+	Description        string                        `json:"description"`
+	InitialValue       int                           `json:"initial_value"`
+	GameOverConditions []sharedModels.StatDefinition `json:"game_over_conditions"` // <<< Заменено StatRule на StatDefinition
+}
+
+type PublishedStoryDetail struct {
+	ID                string                             `json:"id"`
+	Title             string                             `json:"title"`
+	ShortDescription  string                             `json:"short_description"`
+	AuthorID          string                             `json:"author_id"`
+	AuthorName        string                             `json:"author_name"`
+	PublishedAt       time.Time                          `json:"published_at"`
+	Genre             string                             `json:"genre"`
+	Language          string                             `json:"language"`
+	IsAdultContent    bool                               `json:"is_adult_content"`
+	PlayerName        string                             `json:"player_name"`
+	PlayerDescription string                             `json:"player_description"`
+	WorldContext      string                             `json:"world_context"`
+	StorySummary      string                             `json:"story_summary"`
+	CoreStats         map[string]publishedCoreStatDetail `json:"core_stats"`
+	LastPlayedAt      *time.Time                         `json:"last_played_at,omitempty"` // Время последнего взаимодействия игрока с историей
+	IsAuthor          bool                               `json:"is_author"`                // Является ли текущий пользователь автором
+}
+
+// --- Обработчики --- //
+
 // listMyPublishedStories получает список опубликованных историй текущего пользователя.
-func (h *GameplayHandler) listMyPublishedStories(c echo.Context) error {
+func (h *GameplayHandler) listMyPublishedStories(c *gin.Context) {
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		return c.JSON(http.StatusUnauthorized, APIError{Message: err.Error()})
+		return
 	}
 
-	// Получаем параметры пагинации (limit, offset)
-	limitStr := c.QueryParam("limit")
-	offsetStr := c.QueryParam("offset")
+	limitStr := c.Query("limit")
+	cursor := c.Query("cursor")
 
-	limit := 10 // Значение по умолчанию
+	limit := 10
 	if limitStr != "" {
 		parsedLimit, err := strconv.Atoi(limitStr)
 		if err != nil || parsedLimit <= 0 {
-			h.logger.Warn("Invalid limit parameter in listMyPublishedStories", zap.String("limit", limitStr), zap.Error(err))
-			return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid 'limit' parameter"})
+			h.logger.Warn("Invalid limit parameter received", zap.String("limit", limitStr), zap.Error(err))
+			handleServiceError(c, fmt.Errorf("%w: invalid 'limit' parameter", sharedModels.ErrBadRequest), h.logger)
+			return
 		}
-		if parsedLimit > 100 { // Ограничение сверху
+		if parsedLimit > 100 {
 			parsedLimit = 100
 		}
 		limit = parsedLimit
 	}
 
-	offset := 0 // Значение по умолчанию
-	if offsetStr != "" {
-		parsedOffset, err := strconv.Atoi(offsetStr)
-		if err != nil || parsedOffset < 0 {
-			h.logger.Warn("Invalid offset parameter in listMyPublishedStories", zap.String("offset", offsetStr), zap.Error(err))
-			return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid 'offset' parameter"})
-		}
-		offset = parsedOffset
-	}
-
-	h.logger.Debug("Fetching my published stories",
-		zap.Stringer("userID", userID),
+	log := h.logger.With(
+		zap.String("userID", userID.String()),
 		zap.Int("limit", limit),
-		zap.Int("offset", offset),
+		zap.String("cursor", cursor),
 	)
+	log.Debug("Fetching my published stories")
 
-	stories, err := h.service.ListMyPublishedStories(c.Request().Context(), userID, limit, offset)
+	stories, nextCursor, err := h.service.ListMyPublishedStories(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
-		h.logger.Error("Error listing my published stories", zap.Stringer("userID", userID), zap.Error(err))
-		// Используем общий обработчик, который может вернуть 500 или другие ошибки
-		return handleServiceError(c, err)
+		log.Error("Error listing my published stories", zap.Error(err))
+		handleServiceError(c, err, h.logger)
+		return
 	}
 
-	// Используем PaginatedResponse без курсора, т.к. сервис использует offset
+	storySummaries := make([]PublishedStorySummary, len(stories))
+	for i, story := range stories {
+		title := ""
+		if story.Title != nil {
+			title = *story.Title // <<< Разыменовываем указатель
+		}
+		description := ""
+		if story.Description != nil {
+			description = *story.Description // <<< Разыменовываем указатель
+		}
+		storySummaries[i] = PublishedStorySummary{
+			ID:          story.ID.String(),
+			Title:       title,
+			Description: description,
+			AuthorID:    story.UserID.String(), // <<< Используем UserID как AuthorID
+			PublishedAt: story.CreatedAt,       // <<< Используем CreatedAt как PublishedAt
+			LikesCount:  story.LikesCount,
+			IsLiked:     story.IsLiked,
+		}
+	}
+
 	resp := PaginatedResponse{
-		Data: stories,
-		// NextCursor здесь не используется, так как пагинация через offset
+		Data:       storySummaries,
+		NextCursor: nextCursor,
 	}
 
-	h.logger.Debug("Successfully fetched my published stories",
-		zap.Stringer("userID", userID),
-		zap.Int("count", len(stories)),
+	log.Debug("Successfully fetched my published stories",
+		zap.Int("count", len(storySummaries)),
+		zap.Bool("hasNext", nextCursor != ""),
 	)
-
-	return c.JSON(http.StatusOK, resp)
+	c.JSON(http.StatusOK, resp)
 }
 
 // listPublicPublishedStories получает список публичных опубликованных историй.
-func (h *GameplayHandler) listPublicPublishedStories(c echo.Context) error {
-	// Для публичных историй userID не нужен
-	// Получаем параметры пагинации (limit, offset)
-	limitStr := c.QueryParam("limit")
-	offsetStr := c.QueryParam("offset")
+func (h *GameplayHandler) listPublicPublishedStories(c *gin.Context) {
+	userID, _ := getUserIDFromContext(c) // Опционально для проверки лайков
 
-	limit := 20 // Значение по умолчанию (может отличаться от "моих")
+	limitStr := c.Query("limit")
+	cursor := c.Query("cursor")
+
+	limit := 20
 	if limitStr != "" {
 		parsedLimit, err := strconv.Atoi(limitStr)
 		if err != nil || parsedLimit <= 0 {
-			h.logger.Warn("Invalid limit parameter in listPublicPublishedStories", zap.String("limit", limitStr), zap.Error(err))
-			return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid 'limit' parameter"})
+			h.logger.Warn("Invalid limit parameter received", zap.String("limit", limitStr), zap.Error(err))
+			handleServiceError(c, fmt.Errorf("%w: invalid 'limit' parameter", sharedModels.ErrBadRequest), h.logger)
+			return
 		}
-		if parsedLimit > 100 { // Ограничение сверху
+		if parsedLimit > 100 {
 			parsedLimit = 100
 		}
 		limit = parsedLimit
 	}
 
-	offset := 0 // Значение по умолчанию
-	if offsetStr != "" {
-		parsedOffset, err := strconv.Atoi(offsetStr)
-		if err != nil || parsedOffset < 0 {
-			h.logger.Warn("Invalid offset parameter in listPublicPublishedStories", zap.String("offset", offsetStr), zap.Error(err))
-			return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid 'offset' parameter"})
-		}
-		offset = parsedOffset
-	}
-
-	h.logger.Debug("Fetching public published stories",
+	log := h.logger.With(
 		zap.Int("limit", limit),
-		zap.Int("offset", offset),
+		zap.String("cursor", cursor),
 	)
+	if userID != uuid.Nil {
+		log = log.With(zap.String("userID", userID.String()))
+	}
+	log.Debug("Fetching public published stories")
 
-	stories, err := h.service.ListPublicStories(c.Request().Context(), limit, offset)
+	stories, nextCursor, err := h.service.ListPublicStories(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
-		h.logger.Error("Error listing public published stories", zap.Error(err))
-		// Используем общий обработчик
-		return handleServiceError(c, err)
+		log.Error("Error listing public published stories", zap.Error(err))
+		handleServiceError(c, err, h.logger)
+		return
 	}
 
-	// Используем PaginatedResponse без курсора
+	storySummaries := make([]PublishedStorySummary, len(stories))
+	for i, story := range stories {
+		title := ""
+		if story.Title != nil {
+			title = *story.Title
+		}
+		description := ""
+		if story.Description != nil {
+			description = *story.Description
+		}
+		storySummaries[i] = PublishedStorySummary{
+			ID:          story.ID.String(),
+			Title:       title,
+			Description: description,
+			AuthorID:    story.UserID.String(),
+			PublishedAt: story.CreatedAt,
+			LikesCount:  story.LikesCount,
+			IsLiked:     story.IsLiked,
+		}
+	}
+
 	resp := PaginatedResponse{
-		Data: stories,
+		Data:       storySummaries,
+		NextCursor: nextCursor,
 	}
 
-	h.logger.Debug("Successfully fetched public published stories",
-		zap.Int("count", len(stories)),
+	log.Debug("Successfully fetched public published stories",
+		zap.Int("count", len(storySummaries)),
+		zap.Bool("hasNext", nextCursor != ""),
 	)
+	c.JSON(http.StatusOK, resp)
+}
 
-	return c.JSON(http.StatusOK, resp)
+// getPublishedStoryDetails получает детальную информацию об опубликованной истории.
+func (h *GameplayHandler) getPublishedStoryDetails(c *gin.Context) {
+	userID, _ := getUserIDFromContext(c) // Для проверки IsAuthor и LastPlayedAt
+
+	idStr := c.Param("id")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		h.logger.Warn("Invalid story ID format in getPublishedStoryDetails", zap.String("id", idStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		return
+	}
+
+	log := h.logger.With(zap.String("storyID", id.String()))
+	if userID != uuid.Nil {
+		log = log.With(zap.String("userID", userID.String()))
+	}
+	log.Info("Fetching published story details")
+
+	// Сервис возвращает *service.PublishedStoryDetailDTO
+	storyDTO, err := h.service.GetPublishedStoryDetails(c.Request.Context(), id, userID)
+	if err != nil {
+		log.Error("Error getting published story details", zap.Error(err))
+		handleServiceError(c, err, h.logger)
+		return
+	}
+
+	// Преобразование *service.PublishedStoryDetailDTO в handler.PublishedStoryDetail
+	resp := PublishedStoryDetail{
+		ID:                storyDTO.ID.String(),
+		Title:             storyDTO.Title,
+		ShortDescription:  storyDTO.ShortDescription,
+		AuthorID:          storyDTO.AuthorID.String(),
+		AuthorName:        storyDTO.AuthorName,
+		PublishedAt:       storyDTO.PublishedAt,
+		Genre:             storyDTO.Genre,
+		Language:          storyDTO.Language,
+		IsAdultContent:    storyDTO.IsAdultContent,
+		PlayerName:        storyDTO.PlayerName,
+		PlayerDescription: storyDTO.PlayerDescription,
+		WorldContext:      storyDTO.WorldContext,
+		StorySummary:      storyDTO.StorySummary,
+		CoreStats:         make(map[string]publishedCoreStatDetail, len(storyDTO.CoreStats)),
+		LastPlayedAt:      storyDTO.LastPlayedAt, // Может быть nil
+		IsAuthor:          storyDTO.IsAuthor,
+	}
+	for name, stat := range storyDTO.CoreStats {
+		resp.CoreStats[name] = publishedCoreStatDetail{
+			Description:        stat.Description,
+			InitialValue:       stat.InitialValue,
+			GameOverConditions: stat.GameOverConditions,
+		}
+	}
+
+	log.Info("Successfully fetched published story details")
+	c.JSON(http.StatusOK, resp)
 }
 
 // getPublishedStoryScene получает текущую игровую сцену для опубликованной истории.
-func (h *GameplayHandler) getPublishedStoryScene(c echo.Context) error {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		return c.JSON(http.StatusUnauthorized, APIError{Message: err.Error()})
+func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
+	userID, err := getUserIDFromContext(c) // <<< Меняем 'ok' на 'err'
+	if err != nil {                        // <<< Проверяем 'err != nil'
+		// Ошибка уже обработана в getUserIDFromContext
+		return
 	}
 
 	idStr := c.Param("id")
-	publishedStoryID, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(idStr)
 	if err != nil {
-		h.logger.Warn("Invalid published story ID format in getPublishedStoryScene", zap.String("id", idStr), zap.Error(err))
-		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid published story ID format"})
+		h.logger.Warn("Invalid story ID format in getPublishedStoryScene", zap.String("id", idStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		return
 	}
 
-	h.logger.Debug("Fetching story scene",
-		zap.Stringer("userID", userID),
-		zap.String("publishedStoryID", publishedStoryID.String()),
-	)
+	log := h.logger.With(zap.String("storyID", id.String()))
+	if userID != uuid.Nil { // Используем userID, так как он нужен для сервиса
+		log = log.With(zap.String("userID", userID.String()))
+	}
+	log.Info("Fetching story scene")
 
-	scene, err := h.service.GetStoryScene(c.Request().Context(), userID, publishedStoryID)
+	scene, err := h.service.GetStoryScene(c.Request.Context(), userID, id)
 	if err != nil {
 		// Логируем только если это НЕ стандартная ошибка (NotFound, NeedsGeneration, NotReadyYet)
+		// Проверяем на ошибки сервиса и общие ошибки
 		if !errors.Is(err, sharedModels.ErrNotFound) &&
-			!errors.Is(err, sharedModels.ErrStoryNotReadyYet) &&
 			!errors.Is(err, sharedModels.ErrSceneNeedsGeneration) &&
+			!errors.Is(err, sharedModels.ErrStoryNotReadyYet) &&
 			!errors.Is(err, service.ErrStoryNotFound) && // Добавим проверку на ошибку сервиса
 			!errors.Is(err, service.ErrSceneNotFound) { // Добавим проверку на ошибку сервиса
-			h.logger.Error("Error getting story scene (unhandled)", zap.Stringer("userID", userID), zap.String("publishedStoryID", publishedStoryID.String()), zap.Error(err))
+			log.Error("Error getting story scene (unhandled)", zap.Error(err))
 		}
-		return handleServiceError(c, err) // Используем общий обработчик
+		handleServiceError(c, err, h.logger) // Используем общий обработчик
+		return
 	}
 
-	h.logger.Debug("Successfully fetched story scene",
-		zap.Stringer("userID", userID),
-		zap.String("publishedStoryID", publishedStoryID.String()),
+	log.Info("Successfully fetched story scene",
 		zap.String("sceneID", scene.ID.String()),
 	)
-
-	return c.JSON(http.StatusOK, scene)
+	c.JSON(http.StatusOK, scene)
 }
 
 // makeChoice обрабатывает выбор игрока в опубликованной истории.
-func (h *GameplayHandler) makeChoice(c echo.Context) error {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		return c.JSON(http.StatusUnauthorized, APIError{Message: err.Error()})
+func (h *GameplayHandler) makeChoice(c *gin.Context) {
+	userID, err := getUserIDFromContext(c) // <<< Меняем 'ok' на 'err'
+	if err != nil {                        // <<< Проверяем 'err != nil'
+		// Ошибка уже обработана в getUserIDFromContext
+		return
 	}
 
 	idStr := c.Param("id")
-	publishedStoryID, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(idStr)
 	if err != nil {
-		h.logger.Warn("Invalid published story ID format in makeChoice", zap.String("id", idStr), zap.Error(err))
-		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid published story ID format"})
+		h.logger.Warn("Invalid story ID format in makeChoice", zap.String("id", idStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		return
 	}
 
 	var req MakeChoiceRequest
-	if err := c.Bind(&req); err != nil {
-		h.logger.Warn("Invalid request body for makeChoice", zap.Stringer("userID", userID), zap.String("publishedStoryID", publishedStoryID.String()), zap.Error(err))
-		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid request body: " + err.Error()})
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Invalid request body for makeChoice", zap.Stringer("userID", userID), zap.String("storyID", id.String()), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid request body: %v", sharedModels.ErrBadRequest, err), h.logger)
+		return
 	}
 
-	// Валидация индекса (хотя может быть и в Bind, но для надежности)
+	// Валидация индекса (хотя может быть и в ShouldBindJSON, но для надежности)
 	if req.SelectedOptionIndex < 0 || req.SelectedOptionIndex > 1 {
 		h.logger.Warn("Invalid selected option index", zap.Int("index", req.SelectedOptionIndex))
-		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid 'selected_option_index', must be 0 or 1"})
+		handleServiceError(c, fmt.Errorf("%w: invalid 'selected_option_index', must be 0 or 1", sharedModels.ErrBadRequest), h.logger)
+		return
 	}
 
-	h.logger.Info("Player making choice", // Используем Info, т.к. это важное действие
+	log := h.logger.With(
 		zap.Stringer("userID", userID),
-		zap.String("publishedStoryID", publishedStoryID.String()),
+		zap.String("storyID", id.String()),
 		zap.Int("selectedOptionIndex", req.SelectedOptionIndex),
 	)
+	log.Info("Player making choice")
 
-	err = h.service.MakeChoice(c.Request().Context(), userID, publishedStoryID, req.SelectedOptionIndex)
+	err = h.service.MakeChoice(c.Request.Context(), userID, id, req.SelectedOptionIndex)
 	if err != nil {
 		// Логируем только если это НЕ стандартные ожидаемые ошибки
-		if !errors.Is(err, service.ErrInvalidChoiceIndex) &&
+		if !errors.Is(err, sharedModels.ErrNotFound) &&
+			!errors.Is(err, sharedModels.ErrBadRequest) && // BadRequest может быть при невалидном выборе
 			!errors.Is(err, service.ErrStoryNotFound) &&
 			!errors.Is(err, service.ErrSceneNotFound) &&
-			!errors.Is(err, service.ErrPlayerProgressNotFound) && // Добавим ошибку прогресса
-			!errors.Is(err, service.ErrStoryNotReady) &&
-			!errors.Is(err, service.ErrInvalidChoice) &&
+			!errors.Is(err, service.ErrInvalidChoiceIndex) && // Добавим ошибку неверного индекса
 			!errors.Is(err, service.ErrNoChoicesAvailable) && // Добавим ошибку отсутствия выбора
 			!errors.Is(err, sharedModels.ErrSceneNeedsGeneration) { // Если сцена требует генерации
-			h.logger.Error("Error making choice (unhandled)", zap.Stringer("userID", userID), zap.String("publishedStoryID", publishedStoryID.String()), zap.Int("index", req.SelectedOptionIndex), zap.Error(err))
+			log.Error("Error making choice (unhandled)", zap.Error(err))
 		}
-		return handleServiceError(c, err) // Используем общий обработчик
+		handleServiceError(c, err, h.logger) // Используем общий обработчик
+		return
 	}
 
-	h.logger.Info("Player choice processed successfully",
-		zap.Stringer("userID", userID),
-		zap.String("publishedStoryID", publishedStoryID.String()),
-		zap.Int("selectedOptionIndex", req.SelectedOptionIndex),
-	)
+	log.Info("Player choice processed successfully")
 
 	// После успешного выбора, новая сцена будет доступна через getPublishedStoryScene
 	// Возвращаем 204 No Content, т.к. результат нужно запрашивать отдельно
-	return c.NoContent(http.StatusNoContent)
+	c.Status(http.StatusNoContent)
 }
 
 // deletePlayerProgress удаляет прогресс игрока для опубликованной истории.
-func (h *GameplayHandler) deletePlayerProgress(c echo.Context) error {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		return c.JSON(http.StatusUnauthorized, APIError{Message: err.Error()})
+func (h *GameplayHandler) deletePlayerProgress(c *gin.Context) {
+	userID, err := getUserIDFromContext(c) // <<< Меняем 'ok' на 'err'
+	if err != nil {                        // <<< Проверяем 'err != nil'
+		// Ошибка уже обработана в getUserIDFromContext
+		return
 	}
 
 	idStr := c.Param("id")
-	publishedStoryID, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(idStr)
 	if err != nil {
-		h.logger.Warn("Invalid published story ID format in deletePlayerProgress", zap.String("id", idStr), zap.Error(err))
-		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid published story ID format"})
+		h.logger.Warn("Invalid story ID format in deletePlayerProgress", zap.String("id", idStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		return
 	}
 
-	h.logger.Info("Deleting player progress",
-		zap.Stringer("userID", userID),
-		zap.String("publishedStoryID", publishedStoryID.String()),
-	)
+	log := h.logger.With(zap.String("storyID", id.String()))
+	if userID != uuid.Nil {
+		log = log.With(zap.String("userID", userID.String()))
+	}
+	log.Info("Deleting player progress")
 
-	err = h.service.DeletePlayerProgress(c.Request().Context(), userID, publishedStoryID)
+	err = h.service.DeletePlayerProgress(c.Request.Context(), userID, id)
 	if err != nil {
 		// Логируем только если это не ErrNotFound (ожидаемая ошибка, если прогресса нет)
 		if !errors.Is(err, service.ErrPlayerProgressNotFound) && !errors.Is(err, sharedModels.ErrNotFound) {
-			h.logger.Error("Error deleting player progress", zap.Stringer("userID", userID), zap.String("publishedStoryID", publishedStoryID.String()), zap.Error(err))
+			log.Error("Error deleting player progress", zap.Error(err))
 		}
 		// Можно вернуть 204 даже при ErrNotFound, т.к. итоговое состояние - прогресса нет.
 		// Но если хотим четко сигнализировать, что прогресса и не было, используем handleServiceError
 		if errors.Is(err, service.ErrPlayerProgressNotFound) || errors.Is(err, sharedModels.ErrNotFound) {
 			// Если прогресса не найдено, можно просто вернуть 204, так как цель достигнута
-			h.logger.Info("Player progress not found, deletion skipped (considered success)",
-				zap.Stringer("userID", userID),
-				zap.String("publishedStoryID", publishedStoryID.String()),
-			)
-			return c.NoContent(http.StatusNoContent)
+			log.Info("Player progress not found, deletion skipped (considered success)")
+			c.Status(http.StatusNoContent)
+			return
 		}
 		// Для других ошибок используем общий обработчик
-		return handleServiceError(c, err)
+		handleServiceError(c, err, h.logger)
+		return
 	}
 
-	h.logger.Info("Player progress deleted successfully",
-		zap.Stringer("userID", userID),
-		zap.String("publishedStoryID", publishedStoryID.String()),
-	)
-
-	return c.NoContent(http.StatusNoContent)
+	log.Info("Player progress deleted successfully")
+	c.Status(http.StatusNoContent)
 }
 
 // likeStory обрабатывает запрос на постановку лайка опубликованной истории.
-func (h *GameplayHandler) likeStory(c echo.Context) error {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		return c.JSON(http.StatusUnauthorized, APIError{Message: err.Error()})
+func (h *GameplayHandler) likeStory(c *gin.Context) {
+	userID, err := getUserIDFromContext(c) // <<< Меняем 'ok' на 'err'
+	if err != nil {                        // <<< Проверяем 'err != nil'
+		// Ошибка уже обработана в getUserIDFromContext
+		return
 	}
 
 	idStr := c.Param("id")
-	publishedStoryID, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(idStr)
 	if err != nil {
-		h.logger.Warn("Invalid published story ID format in likeStory", zap.String("id", idStr), zap.Error(err))
-		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid published story ID format"})
+		h.logger.Warn("Invalid story ID format in likeStory", zap.String("id", idStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		return
 	}
 
-	h.logger.Info("User liking story",
-		zap.Stringer("userID", userID),
-		zap.String("publishedStoryID", publishedStoryID.String()),
+	log := h.logger.With(
+		zap.String("storyID", id.String()),
+		zap.String("userID", userID.String()),
 	)
+	log.Info("Liking story")
 
-	// TODO: Заменить заглушку на вызов реального сервиса
-	// err = h.service.LikeStory(c.Request().Context(), userID, publishedStoryID)
-	err = nil // Заглушка
-
+	err = h.service.LikeStory(c.Request.Context(), userID, id)
 	if err != nil {
-		// TODO: Добавить обработку ожидаемых ошибок (ErrAlreadyLiked, ErrStoryNotFound)
-		// if !errors.Is(err, service.ErrAlreadyLiked) && !errors.Is(err, service.ErrStoryNotFound) {
-		h.logger.Error("Error liking story (unhandled)", zap.Stringer("userID", userID), zap.String("publishedStoryID", publishedStoryID.String()), zap.Error(err))
-		// }
-		return handleServiceError(c, err) // Используем общий обработчик
+		if !errors.Is(err, sharedModels.ErrNotFound) && !errors.Is(err, service.ErrStoryNotFound) {
+			log.Error("Error liking story", zap.Error(err))
+		}
+		handleServiceError(c, err, h.logger)
+		return
 	}
 
-	h.logger.Info("Story liked successfully",
-		zap.Stringer("userID", userID),
-		zap.String("publishedStoryID", publishedStoryID.String()),
-	)
-
-	return c.NoContent(http.StatusNoContent)
+	log.Info("Story liked successfully")
+	c.Status(http.StatusNoContent)
 }
 
 // unlikeStory обрабатывает запрос на снятие лайка с опубликованной истории.
-func (h *GameplayHandler) unlikeStory(c echo.Context) error {
+func (h *GameplayHandler) unlikeStory(c *gin.Context) {
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		return c.JSON(http.StatusUnauthorized, APIError{Message: err.Error()})
+		return
 	}
 
 	idStr := c.Param("id")
-	publishedStoryID, err := uuid.Parse(idStr)
+	id, err := uuid.Parse(idStr)
 	if err != nil {
-		h.logger.Warn("Invalid published story ID format in unlikeStory", zap.String("id", idStr), zap.Error(err))
-		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid published story ID format"})
+		h.logger.Warn("Invalid story ID format in unlikeStory", zap.String("id", idStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		return
 	}
 
-	h.logger.Info("User unliking story",
-		zap.Stringer("userID", userID),
-		zap.String("publishedStoryID", publishedStoryID.String()),
+	log := h.logger.With(
+		zap.String("storyID", id.String()),
+		zap.String("userID", userID.String()),
 	)
+	log.Info("Unliking story")
 
-	// TODO: Заменить заглушку на вызов реального сервиса
-	// err = h.service.UnlikeStory(c.Request().Context(), userID, publishedStoryID)
-	err = nil // Заглушка
-
+	err = h.service.UnlikeStory(c.Request.Context(), userID, id)
 	if err != nil {
-		// TODO: Добавить обработку ожидаемых ошибок (ErrNotLikedYet, ErrStoryNotFound)
-		// if !errors.Is(err, service.ErrNotLikedYet) && !errors.Is(err, service.ErrStoryNotFound) {
-		h.logger.Error("Error unliking story (unhandled)", zap.Stringer("userID", userID), zap.String("publishedStoryID", publishedStoryID.String()), zap.Error(err))
-		// }
-		return handleServiceError(c, err) // Используем общий обработчик
+		if !errors.Is(err, sharedModels.ErrNotFound) && !errors.Is(err, service.ErrStoryNotFound) {
+			// Ошибка 'лайк не найден' также игнорируется при логировании ошибки
+			if !errors.Is(err, service.ErrNotLikedYet) {
+				log.Error("Error unliking story", zap.Error(err))
+			}
+		}
+		// Возвращаем 204 даже если лайка не было (цель достигнута - лайка нет)
+		if errors.Is(err, sharedModels.ErrNotFound) || errors.Is(err, service.ErrStoryNotFound) || errors.Is(err, service.ErrNotLikedYet) {
+			log.Info("Story or like not found, unliking skipped (considered success)")
+			c.Status(http.StatusNoContent)
+			return
+		}
+		handleServiceError(c, err, h.logger)
+		return
 	}
 
-	h.logger.Info("Story unliked successfully",
-		zap.Stringer("userID", userID),
-		zap.String("publishedStoryID", publishedStoryID.String()),
-	)
+	log.Info("Story unliked successfully")
+	c.Status(http.StatusNoContent)
+}
 
-	return c.NoContent(http.StatusNoContent)
+// listLikedStories получает список историй, которые лайкнул пользователь.
+func (h *GameplayHandler) listLikedStories(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		return
+	}
+
+	limitStr := c.Query("limit")
+	cursor := c.Query("cursor")
+
+	limit := 10
+	if limitStr != "" {
+		parsedLimit, err := strconv.Atoi(limitStr)
+		if err != nil || parsedLimit <= 0 {
+			h.logger.Warn("Invalid limit parameter received", zap.String("limit", limitStr), zap.Error(err))
+			handleServiceError(c, fmt.Errorf("%w: invalid 'limit' parameter", sharedModels.ErrBadRequest), h.logger)
+			return
+		}
+		if parsedLimit > 100 {
+			parsedLimit = 100
+		}
+		limit = parsedLimit
+	}
+
+	log := h.logger.With(
+		zap.String("userID", userID.String()),
+		zap.Int("limit", limit),
+		zap.String("cursor", cursor),
+	)
+	log.Debug("Fetching liked stories")
+
+	stories, nextCursor, err := h.service.ListLikedStories(c.Request.Context(), userID, cursor, limit)
+	if err != nil {
+		log.Error("Error listing liked stories", zap.Error(err))
+		handleServiceError(c, err, h.logger)
+		return
+	}
+
+	storySummaries := make([]PublishedStorySummary, len(stories))
+	for i, story := range stories {
+		title := ""
+		if story.Title != nil {
+			title = *story.Title
+		}
+		description := ""
+		if story.Description != nil {
+			description = *story.Description
+		}
+		storySummaries[i] = PublishedStorySummary{
+			ID:          story.ID.String(),
+			Title:       title,
+			Description: description,
+			AuthorID:    story.UserID.String(),
+			PublishedAt: story.CreatedAt,
+			LikesCount:  story.LikesCount,
+			IsLiked:     true, // Все истории в этом списке лайкнуты пользователем
+		}
+	}
+
+	resp := PaginatedResponse{
+		Data:       storySummaries,
+		NextCursor: nextCursor,
+	}
+
+	log.Debug("Successfully fetched liked stories",
+		zap.Int("count", len(storySummaries)),
+		zap.Bool("hasNext", nextCursor != ""),
+	)
+	c.JSON(http.StatusOK, resp)
 }

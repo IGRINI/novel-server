@@ -27,6 +27,15 @@ type Config struct {
 	// Секреты без тегов
 	JWTSecret          string
 	InterServiceSecret string
+
+	// <<< Настройки RabbitMQ >>>
+	RabbitMQ RabbitMQConfig
+}
+
+// <<< Структура для настроек RabbitMQ >>>
+type RabbitMQConfig struct {
+	URL           string `env:"RABBITMQ_URL" env-required:"true"`
+	PushQueueName string `env:"PUSH_QUEUE_NAME" env-default:"push_notifications"` // Имя очереди для пушей
 }
 
 // LoadConfig загружает конфигурацию из переменных окружения и секретов
@@ -73,6 +82,12 @@ func LoadConfig(logger *zap.Logger) (*Config, error) {
 		InterServiceTokenTTL: getDurationEnv("INTER_SERVICE_TOKEN_TTL", "1h"),
 		AuthServiceTimeout:   getDurationEnv("AUTH_SERVICE_TIMEOUT", "5s"),
 		ServiceID:            getEnv("SERVICE_ID", "admin-service"),
+
+		// <<< Настройки RabbitMQ >>>
+		RabbitMQ: RabbitMQConfig{
+			URL:           getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
+			PushQueueName: getEnv("PUSH_QUEUE_NAME", "push_notifications"),
+		},
 	}
 
 	logger.Info("Конфигурация Admin Service загружена (секреты из файлов)",

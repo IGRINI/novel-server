@@ -45,7 +45,7 @@ func (h *AuthHandler) banUser(c *gin.Context) {
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		zap.L().Warn("Invalid user ID (UUID) format for ban request", zap.String("userID", userIDStr), zap.Error(err))
-		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid user ID format"})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid user ID format"})
 		return
 	}
 	err = h.authService.BanUser(c.Request.Context(), userID)
@@ -61,7 +61,7 @@ func (h *AuthHandler) unbanUser(c *gin.Context) {
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		zap.L().Warn("Invalid user ID (UUID) format for unban request", zap.String("userID", userIDStr), zap.Error(err))
-		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid user ID format"})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid user ID format"})
 		return
 	}
 	err = h.authService.UnbanUser(c.Request.Context(), userID)
@@ -79,7 +79,7 @@ type validateTokenRequest struct {
 func (h *AuthHandler) validateToken(c *gin.Context) {
 	var req validateTokenRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
 		return
 	}
 	claims, err := h.authService.ValidateAndGetClaims(c.Request.Context(), req.Token)
@@ -94,7 +94,7 @@ func (h *AuthHandler) getUserDetails(c *gin.Context) {
 	userIDStr := c.Param("user_id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid user ID format"})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid user ID format"})
 		return
 	}
 	user, err := h.userRepo.GetUserByID(c.Request.Context(), userID)
@@ -117,12 +117,12 @@ func (h *AuthHandler) updateUser(c *gin.Context) {
 	userIDStr := c.Param("user_id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid user ID format"})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid user ID format"})
 		return
 	}
 	var req updateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
 		return
 	}
 	err = h.authService.UpdateUser(c.Request.Context(), userID, req.Email, req.Roles, req.IsBanned)
@@ -137,12 +137,12 @@ func (h *AuthHandler) updatePassword(c *gin.Context) {
 	userIDStr := c.Param("user_id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid user ID format"})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid user ID format"})
 		return
 	}
 	var req updatePasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
 		return
 	}
 	err = h.authService.UpdatePassword(c.Request.Context(), userID, req.NewPassword)
@@ -161,7 +161,7 @@ type refreshAdminTokenResponse struct {
 func (h *AuthHandler) refreshAdminToken(c *gin.Context) {
 	var req refreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, ErrorResponse{Code: ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
 		return
 	}
 	newTokens, newClaims, err := h.authService.RefreshAdminToken(c.Request.Context(), req.RefreshToken)

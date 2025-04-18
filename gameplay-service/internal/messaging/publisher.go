@@ -9,6 +9,7 @@ import (
 	sharedMessaging "novel-server/shared/messaging" // Используем общие структуры
 	"time"
 
+	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -22,6 +23,24 @@ type TaskPublisher interface {
 // ClientUpdatePublisher defines the interface for publishing updates to the client.
 type ClientUpdatePublisher interface {
 	PublishClientUpdate(ctx context.Context, payload ClientStoryUpdate) error // Используем новую структуру
+}
+
+// PushNotificationPublisher defines the interface for publishing push notification requests.
+type PushNotificationPublisher interface {
+	PublishPushNotification(ctx context.Context, payload PushNotificationPayload) error
+}
+
+// PushNotificationPayload is the structure sent to the push notification queue.
+type PushNotificationPayload struct {
+	UserID       uuid.UUID         `json:"user_id"`
+	Notification PushNotification  `json:"notification"`
+	Data         map[string]string `json:"data,omitempty"` // Optional data for the client app
+}
+
+// PushNotification contains the visible parts of the push message.
+type PushNotification struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
 }
 
 // Определяем структуру для отфильтрованного сообщения клиенту
@@ -94,6 +113,22 @@ func NewRabbitMQClientUpdatePublisher(conn *amqp.Connection, queueName string) (
 	return &rabbitMQPublisher{channel: ch, queueName: queueName}, nil
 }
 
+// NewRabbitMQPushNotificationPublisher creates a new instance of PushNotificationPublisher.
+func NewRabbitMQPushNotificationPublisher(conn *amqp.Connection, queueName string) (PushNotificationPublisher, error) {
+	ch, err := conn.Channel()
+	if err != nil {
+		return nil, fmt.Errorf("push notification publisher: не удалось открыть канал: %w", err)
+	}
+	// Объявляем очередь здесь (можно без DLX, если обработка ошибок на стороне notification-service)
+	_, err = ch.QueueDeclare(queueName, true, false, false, false, nil)
+	if err != nil {
+		ch.Close()
+		return nil, fmt.Errorf("push notification publisher: не удалось объявить очередь '%s': %w", queueName, err)
+	}
+	log.Printf("PushNotificationPublisher: очередь '%s' успешно объявлена/найдена", queueName)
+	return &rabbitMQPublisher{channel: ch, queueName: queueName}, nil
+}
+
 // PublishGenerationTask publishes a generation task.
 func (p *rabbitMQPublisher) PublishGenerationTask(ctx context.Context, payload sharedMessaging.GenerationTaskPayload) error {
 	body, err := json.Marshal(payload)
@@ -131,6 +166,17 @@ func (p *rabbitMQPublisher) PublishGameOverTask(ctx context.Context, payload sha
 		return fmt.Errorf("ошибка подготовки сообщения GameOverTask: %w", err)
 	}
 	// Отправляем в ту же очередь задач, что и генерацию сцен
+	return p.publishMessage(ctx, body)
+}
+
+// PublishPushNotification publishes a push notification request.
+func (p *rabbitMQPublisher) PublishPushNotification(ctx context.Context, payload PushNotificationPayload) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("PushPublisher: Ошибка маршалинга PushNotificationPayload для UserID %s: %v", payload.UserID, err)
+		return fmt.Errorf("ошибка подготовки сообщения PushNotification: %w", err)
+	}
+	// Отправляем в очередь push_notifications
 	return p.publishMessage(ctx, body)
 }
 
