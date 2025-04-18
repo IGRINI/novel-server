@@ -29,4 +29,11 @@ type PublishedStoryRepository interface {
 
 	// ListByUserID retrieves a paginated list of stories created by a specific user.
 	ListByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.PublishedStory, error)
+
+	// IncrementLikesCount атомарно увеличивает счетчик лайков для истории.
+	IncrementLikesCount(ctx context.Context, id uuid.UUID) error
+
+	// DecrementLikesCount атомарно уменьшает счетчик лайков для истории.
+	// Реализация должна убедиться, что счетчик не уходит ниже нуля.
+	DecrementLikesCount(ctx context.Context, id uuid.UUID) error
 }

@@ -148,9 +148,11 @@ func main() {
 	e.GET("/metrics", echo.WrapHandler(promhttp.Handler()))
 
 	// --- Регистрация healthcheck эндпоинта ---
-	e.GET("/health", func(c echo.Context) error {
+	healthHandler := func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
-	})
+	}
+	e.GET("/health", healthHandler)
+	e.HEAD("/health", healthHandler) // <<< Добавляем обработку HEAD
 
 	// 7. Запуск сервера
 	serverAddr := fmt.Sprintf(":%s", cfg.ServerPort)

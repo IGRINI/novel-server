@@ -44,4 +44,4 @@ COPY --from=builder /auth-service .
 ENTRYPOINT ["/app/auth-service"]
 
 # Используем wget для healthcheck и переменную окружения для порта
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD wget --spider -q http://localhost:${AUTH_SERVER_PORT:-8081}/health || exit 1 
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD wget -q -O /dev/null http://localhost:${AUTH_SERVER_PORT:-8081}/health || exit 1 

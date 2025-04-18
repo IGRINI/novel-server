@@ -116,23 +116,24 @@ func (s *IntegrationTestSuite) SetupSuite() {
 	// Создаем тестовую конфигурацию (можно переопределить нужные значения)
 	s.config = &config.Config{
 		// Используем значения для тестовых контейнеров
-		DBHost:     "", // Не используется напрямую, берем из pgConnStr
-		DBPort:     "", // Не используется напрямую
-		DBUser:     "testuser",
-		DBPassword: "testpass",
-		DBName:     "test_db",
-		DBSSLMode:  "disable",
-		RedisAddr:  redisAddr,
-		// Устанавливаем короткие TTL для тестов (если нужно проверять истечение)
-		AccessTokenTTL:       5 * time.Minute, // Или даже секунды
+		DBHost:               "", // Не используется напрямую, берем из pgConnStr
+		DBPort:               "", // Не используется напрямую
+		DBUser:               "testuser",
+		DBPassword:           "testpass",
+		DBName:               "test_db",
+		DBSSLMode:            "disable",
+		RedisAddr:            redisAddr,
+		AccessTokenTTL:       5 * time.Minute,
 		RefreshTokenTTL:      10 * time.Minute,
 		InterServiceTokenTTL: 1 * time.Minute,
-		// Секреты можно оставить дефолтными для тестов или сгенерировать
-		JWTSecret:          "test-jwt-secret",
-		InterServiceSecret: "test-inter-service-secret",
-		ServiceID:          "test-auth-service",
-		Env:                "test",
-		LogLevel:           "debug",
+		JWTSecret:            "test-jwt-secret",
+		InterServiceSecret:   "test-inter-service-secret",
+		PasswordPepper:       "test-password-pepper",
+		ServiceID:            "test-auth-service",
+		Env:                  "test",
+		LogLevel:             "debug",
+		DBMaxConns:           5,
+		DBIdleTimeout:        1 * time.Minute,
 	}
 	s.logger.Info("Test configuration created")
 

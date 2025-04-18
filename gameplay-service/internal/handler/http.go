@@ -131,6 +131,9 @@ func (h *GameplayHandler) RegisterRoutes(e *echo.Echo) {
 		publishedGroup.GET("/:id/scene", h.getPublishedStoryScene)
 		publishedGroup.POST("/:id/choice", h.makeChoice)
 		publishedGroup.DELETE("/:id/progress", h.deletePlayerProgress)
+		// Добавляем роуты для лайков
+		publishedGroup.POST("/:id/like", h.likeStory)
+		publishedGroup.DELETE("/:id/like", h.unlikeStory)
 	}
 
 	// <<< Новая группа для внутренних маршрутов >>>
@@ -145,18 +148,22 @@ func getUserIDFromContext(c echo.Context) (uuid.UUID, error) {
 	if userIDVal == nil {
 		return uuid.Nil, fmt.Errorf("user_id не найден в контексте")
 	}
-	// Ожидаем строку UUID из контекста
-	userIDStr, ok := userIDVal.(string)
+	// <<< Ожидаем uuid.UUID из контекста >>>
+	userID, ok := userIDVal.(uuid.UUID)
 	if !ok {
-		return uuid.Nil, fmt.Errorf("неверный тип user_id в контексте: ожидалась строка, получено %T", userIDVal)
-	}
-
-	// Парсим строку как UUID
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		// Логгируем ошибку парсинга
-		// h.logger.Error("Не удалось распарсить user_id из контекста как UUID", zap.String("value", userIDStr), zap.Error(err)) // Logger недоступен здесь
-		return uuid.Nil, fmt.Errorf("невалидный формат user_id в контексте: %w", err)
+		// <<< Логика парсинга строки больше не нужна >>>
+		// userIDStr, ok := userIDVal.(string)
+		// if !ok {
+		return uuid.Nil, fmt.Errorf("неверный тип user_id в контексте: ожидался uuid.UUID, получено %T", userIDVal)
+		// }
+		//
+		// // Парсим строку как UUID
+		// userID, err := uuid.Parse(userIDStr)
+		// if err != nil {
+		// 	// Логгируем ошибку парсинга
+		// 	// h.logger.Error("Не удалось распарсить user_id из контекста как UUID", zap.String("value", userIDStr), zap.Error(err)) // Logger недоступен здесь
+		// 	return uuid.Nil, fmt.Errorf("невалидный формат user_id в контексте: %w", err)
+		// }
 	}
 
 	// Проверяем, не является ли UUID нулевым (дополнительная проверка)

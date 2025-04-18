@@ -279,3 +279,81 @@ func (h *GameplayHandler) deletePlayerProgress(c echo.Context) error {
 
 	return c.NoContent(http.StatusNoContent)
 }
+
+// likeStory обрабатывает запрос на постановку лайка опубликованной истории.
+func (h *GameplayHandler) likeStory(c echo.Context) error {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, APIError{Message: err.Error()})
+	}
+
+	idStr := c.Param("id")
+	publishedStoryID, err := uuid.Parse(idStr)
+	if err != nil {
+		h.logger.Warn("Invalid published story ID format in likeStory", zap.String("id", idStr), zap.Error(err))
+		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid published story ID format"})
+	}
+
+	h.logger.Info("User liking story",
+		zap.Stringer("userID", userID),
+		zap.String("publishedStoryID", publishedStoryID.String()),
+	)
+
+	// TODO: Заменить заглушку на вызов реального сервиса
+	// err = h.service.LikeStory(c.Request().Context(), userID, publishedStoryID)
+	err = nil // Заглушка
+
+	if err != nil {
+		// TODO: Добавить обработку ожидаемых ошибок (ErrAlreadyLiked, ErrStoryNotFound)
+		// if !errors.Is(err, service.ErrAlreadyLiked) && !errors.Is(err, service.ErrStoryNotFound) {
+		h.logger.Error("Error liking story (unhandled)", zap.Stringer("userID", userID), zap.String("publishedStoryID", publishedStoryID.String()), zap.Error(err))
+		// }
+		return handleServiceError(c, err) // Используем общий обработчик
+	}
+
+	h.logger.Info("Story liked successfully",
+		zap.Stringer("userID", userID),
+		zap.String("publishedStoryID", publishedStoryID.String()),
+	)
+
+	return c.NoContent(http.StatusNoContent)
+}
+
+// unlikeStory обрабатывает запрос на снятие лайка с опубликованной истории.
+func (h *GameplayHandler) unlikeStory(c echo.Context) error {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		return c.JSON(http.StatusUnauthorized, APIError{Message: err.Error()})
+	}
+
+	idStr := c.Param("id")
+	publishedStoryID, err := uuid.Parse(idStr)
+	if err != nil {
+		h.logger.Warn("Invalid published story ID format in unlikeStory", zap.String("id", idStr), zap.Error(err))
+		return c.JSON(http.StatusBadRequest, APIError{Message: "Invalid published story ID format"})
+	}
+
+	h.logger.Info("User unliking story",
+		zap.Stringer("userID", userID),
+		zap.String("publishedStoryID", publishedStoryID.String()),
+	)
+
+	// TODO: Заменить заглушку на вызов реального сервиса
+	// err = h.service.UnlikeStory(c.Request().Context(), userID, publishedStoryID)
+	err = nil // Заглушка
+
+	if err != nil {
+		// TODO: Добавить обработку ожидаемых ошибок (ErrNotLikedYet, ErrStoryNotFound)
+		// if !errors.Is(err, service.ErrNotLikedYet) && !errors.Is(err, service.ErrStoryNotFound) {
+		h.logger.Error("Error unliking story (unhandled)", zap.Stringer("userID", userID), zap.String("publishedStoryID", publishedStoryID.String()), zap.Error(err))
+		// }
+		return handleServiceError(c, err) // Используем общий обработчик
+	}
+
+	h.logger.Info("Story unliked successfully",
+		zap.Stringer("userID", userID),
+		zap.String("publishedStoryID", publishedStoryID.String()),
+	)
+
+	return c.NoContent(http.StatusNoContent)
+}

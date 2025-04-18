@@ -139,6 +139,8 @@ services:
       SERVER_PORT: ${AUTH_SERVER_PORT}
       SERVICE_ID: auth-service
       INTER_SERVICE_TOKEN_TTL: ${INTER_SERVICE_TOKEN_TTL}
+      DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS}
+      DB_MAX_IDLE_MINUTES: ${DB_MAX_IDLE_MINUTES}
     secrets:
       - source: db_password
         target: /run/secrets/db_password
@@ -149,7 +151,7 @@ services:
       - source: inter_service_secret
         target: /run/secrets/inter_service_secret
     healthcheck: # <<< ВОЗВРАЩАЕМ HEALTHCHECK
-      test: ["CMD", "wget", "--spider", "http://localhost:8081/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -186,15 +188,16 @@ services:
         target: /run/secrets/jwt_secret
       - source: inter_service_secret
         target: /run/secrets/inter_service_secret
+    # <<< Добавляем Healthcheck с GET запросом >>>
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:${GAMEPLAY_SERVER_PORT}/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s # Даем время на старт
     # ports: # Убираем публикацию порта наружу
     #   - "${GAMEPLAY_SERVER_PORT:-8082}:${GAMEPLAY_SERVER_PORT:-8082}"
     # labels: # <<< УДАЛЯЕМ LABELS ПОЛНОСТЬЮ
-      # --- ВРЕМЕННО УБИРАЕМ ВСЕ МЕТКИ --- 
-      # - "traefik.enable=true"
-      # - "traefik.http.routers.gameplay-http.rule=PathPrefix(`/api/stories`)" 
-      # - "traefik.http.routers.gameplay-http.entrypoints=web" 
-      # - "traefik.http.services.gameplay-service.loadbalancer.server.port=${GAMEPLAY_SERVER_PORT:-8082}"
-      # - "traefik.http.routers.gameplay-http.middlewares=gameplay-stripprefix"
     networks:
       - novel_network
 
@@ -230,7 +233,7 @@ services:
     networks:
       - novel_network
     healthcheck: # <<< Возвращаем правильный Healthcheck для admin-service
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8084/health"] # Проверяем доступность metrics
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8084/health"]
       interval: 10s
       timeout: 5s
       retries: 5

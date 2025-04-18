@@ -40,6 +40,7 @@ type PublishedStory struct {
 	Description    *string         `json:"description,omitempty" db:"description"` // Указатель, так как может быть NULL
 	CoverImageURL  *string         `json:"cover_image_url,omitempty" db:"cover_image_url"`
 	ErrorDetails   *string         `json:"error_details,omitempty" db:"error_details"` // Указатель, так как может быть NULL
+	LikesCount     int64           `json:"likes_count" db:"likes_count"`               // Добавляем счетчик лайков
 	CreatedAt      time.Time       `json:"created_at" db:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at" db:"updated_at"`
 }

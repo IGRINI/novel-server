@@ -98,6 +98,7 @@ func main() {
 	publishedRepo := sharedDatabase.NewPgPublishedStoryRepository(dbPool, logger)
 	sceneRepo := sharedDatabase.NewPgStorySceneRepository(dbPool, logger)
 	playerProgressRepo := sharedDatabase.NewPgPlayerProgressRepository(dbPool, logger)
+	likeRepo := sharedDatabase.NewPgLikeRepository(dbPool, logger)
 
 	taskPublisher, err := messaging.NewRabbitMQTaskPublisher(rabbitConn, cfg.GenerationTaskQueue)
 	if err != nil {
@@ -107,7 +108,7 @@ func main() {
 	if err != nil {
 		logger.Fatal("Не удалось создать ClientUpdatePublisher", zap.Error(err))
 	}
-	gameplayService := service.NewGameplayService(storyConfigRepo, publishedRepo, sceneRepo, playerProgressRepo, taskPublisher, dbPool, logger)
+	gameplayService := service.NewGameplayService(storyConfigRepo, publishedRepo, sceneRepo, playerProgressRepo, likeRepo, taskPublisher, dbPool, logger)
 	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret)
 
 	// <<< Перезапуск зависших задач при старте >>>
@@ -150,9 +151,11 @@ func main() {
 	gameplayHandler.RegisterRoutes(e)
 
 	// --- Регистрация healthcheck эндпоинта ---
-	e.GET("/health", func(c echo.Context) error {
+	healthHandler := func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
-	})
+	}
+	e.GET("/health", healthHandler)
+	e.HEAD("/health", healthHandler) // Добавляем обработку HEAD
 
 	log.Printf("Gameplay сервер слушает на порту %s", cfg.Port)
 

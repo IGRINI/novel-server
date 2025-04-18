@@ -47,6 +47,10 @@ var (
 	ErrInternal               = errors.New("internal service error")
 	ErrInvalidChoice          = errors.New("invalid choice")
 	ErrNoChoicesAvailable     = errors.New("no choices available in the current scene")
+
+	// <<< Добавляем ошибки для лайков >>>
+	ErrAlreadyLiked = errors.New("story already liked by this user")
+	ErrNotLikedYet  = errors.New("story not liked by this user yet")
 )
 
 // --- Структуры для парсинга SceneContent ---
@@ -83,6 +87,8 @@ type GameplayService interface {
 	ListUserDrafts(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.StoryConfig, string, error)
 	ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error)
 	RetryDraftGeneration(ctx context.Context, draftID uuid.UUID, userID uuid.UUID) error
+	LikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
+	UnlikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
 }
 
 type gameplayServiceImpl struct {
@@ -90,6 +96,7 @@ type gameplayServiceImpl struct {
 	publishedRepo      interfaces.PublishedStoryRepository
 	sceneRepo          interfaces.StorySceneRepository
 	playerProgressRepo interfaces.PlayerProgressRepository // Использует uuid.UUID UserID
+	likeRepo           interfaces.LikeRepository           // <<< Добавляем репозиторий лайков
 	publisher          messaging.TaskPublisher
 	pool               *pgxpool.Pool
 	logger             *zap.Logger
@@ -100,6 +107,7 @@ func NewGameplayService(
 	publishedRepo interfaces.PublishedStoryRepository,
 	sceneRepo interfaces.StorySceneRepository,
 	playerProgressRepo interfaces.PlayerProgressRepository, // Использует uuid.UUID UserID
+	likeRepo interfaces.LikeRepository, // <<< Инжектируем репозиторий лайков
 	publisher messaging.TaskPublisher,
 	pool *pgxpool.Pool,
 	logger *zap.Logger,
@@ -109,6 +117,7 @@ func NewGameplayService(
 		publishedRepo:      publishedRepo,
 		sceneRepo:          sceneRepo,
 		playerProgressRepo: playerProgressRepo,
+		likeRepo:           likeRepo, // <<< Сохраняем репозиторий лайков
 		publisher:          publisher,
 		pool:               pool,
 		logger:             logger.Named("GameplayService"),
@@ -1139,5 +1148,93 @@ func (s *gameplayServiceImpl) RetryDraftGeneration(ctx context.Context, draftID 
 	}
 
 	log.Info("Retry generation task published successfully")
+	return nil
+}
+
+// LikeStory добавляет лайк к опубликованной истории от пользователя.
+func (s *gameplayServiceImpl) LikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error {
+	logFields := []zap.Field{
+		zap.String("userID", userID.String()),
+		zap.String("publishedStoryID", publishedStoryID.String()),
+	}
+	s.logger.Info("Attempting to like story", logFields...)
+
+	// 1. Проверяем, существует ли история (можно сделать внутри likeRepo.AddLike)
+	//    Либо можно добавить отдельную проверку через publishedRepo.Exists(ctx, publishedStoryID)
+	//    чтобы вернуть более точную ошибку ErrStoryNotFound.
+	//    Для простоты пока положимся на то, что AddLike вернет ошибку, если story не найден (через FK constraint).
+
+	// 2. Пытаемся добавить лайк в репозиторий
+	err := s.likeRepo.AddLike(ctx, userID, publishedStoryID)
+	if err != nil {
+		// Проверяем, не ошибка ли это "уже лайкнуто" (зависит от реализации repo)
+		if errors.Is(err, interfaces.ErrLikeAlreadyExists) { // Предполагаем, что репозиторий возвращает такую ошибку
+			s.logger.Warn("User already liked this story", logFields...)
+			return ErrAlreadyLiked // Возвращаем нашу сервисную ошибку
+		}
+		// Проверяем, не ошибка ли это "история не найдена" (используем общую ошибку)
+		if errors.Is(err, sharedModels.ErrNotFound) { // <<< Используем sharedModels.ErrNotFound
+			s.logger.Warn("Story not found for liking", logFields...)
+			return ErrStoryNotFound // Возвращаем стандартную сервисную ошибку
+		}
+
+		// Другая ошибка репозитория
+		s.logger.Error("Failed to add like in repository", append(logFields, zap.Error(err))...)
+		return ErrInternal // Возвращаем общую внутреннюю ошибку
+	}
+
+	// 3. Успешно добавили лайк, теперь нужно инкрементировать счетчик.
+	//    Это может быть сделано в likeRepo.AddLike атомарно, либо отдельным вызовом.
+	//    Для надежности и гибкости лучше отдельный вызов к publishedRepo или кэшу.
+	//    Пример с publishedRepo:
+	if err := s.publishedRepo.IncrementLikesCount(ctx, publishedStoryID); err != nil {
+		// Если счетчик не удалось обновить - это проблема, лайк уже стоит.
+		// Логируем как ошибку, но пользователю можно вернуть успех (лайк поставлен).
+		// В реальной системе здесь может быть логика компенсации (удалить лайк) или retry.
+		s.logger.Error("Failed to increment likes count after adding like record", append(logFields, zap.Error(err))...)
+		// Можно вернуть nil, т.к. лайк фактически добавлен.
+	}
+
+	s.logger.Info("Story liked successfully", logFields...)
+	return nil
+}
+
+// UnlikeStory удаляет лайк с опубликованной истории от пользователя.
+func (s *gameplayServiceImpl) UnlikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error {
+	logFields := []zap.Field{
+		zap.String("userID", userID.String()),
+		zap.String("publishedStoryID", publishedStoryID.String()),
+	}
+	s.logger.Info("Attempting to unlike story", logFields...)
+
+	// 1. Пытаемся удалить лайк из репозитория
+	err := s.likeRepo.RemoveLike(ctx, userID, publishedStoryID)
+	if err != nil {
+		// Проверяем, не ошибка ли это "лайка нет" (зависит от реализации repo)
+		if errors.Is(err, interfaces.ErrLikeNotFound) { // Предполагаем, что репозиторий возвращает такую ошибку
+			s.logger.Warn("User had not liked this story", logFields...)
+			return ErrNotLikedYet // Возвращаем нашу сервисную ошибку
+		}
+		// Проверяем, не ошибка ли это "история не найдена" (используем общую ошибку)
+		if errors.Is(err, sharedModels.ErrNotFound) { // <<< Используем sharedModels.ErrNotFound
+			s.logger.Warn("Story not found for unliking", logFields...)
+			return ErrStoryNotFound // Возвращаем стандартную сервисную ошибку
+		}
+
+		// Другая ошибка репозитория
+		s.logger.Error("Failed to remove like in repository", append(logFields, zap.Error(err))...)
+		return ErrInternal // Возвращаем общую внутреннюю ошибку
+	}
+
+	// 2. Успешно удалили лайк, теперь нужно декрементировать счетчик.
+	//    Аналогично LikeStory, лучше отдельным вызовом.
+	if err := s.publishedRepo.DecrementLikesCount(ctx, publishedStoryID); err != nil {
+		// Если счетчик не удалось обновить - это проблема.
+		// Логируем как ошибку, но пользователю можно вернуть успех (лайк снят).
+		s.logger.Error("Failed to decrement likes count after removing like record", append(logFields, zap.Error(err))...)
+		// Можно вернуть nil, т.к. лайк фактически удален.
+	}
+
+	s.logger.Info("Story unliked successfully", logFields...)
 	return nil
 }

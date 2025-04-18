@@ -204,9 +204,10 @@ func (s *IntegrationTestSuite) SetupSuite() {
 	// !!! ДОБАВЛЯЕМ СОЗДАНИЕ НОВЫХ РЕПОЗИТОРИЕВ !!!
 	sceneRepo := sharedDatabase.NewPgStorySceneRepository(s.dbPool, nopLogger)
 	playerProgressRepo := sharedDatabase.NewPgPlayerProgressRepository(s.dbPool, nopLogger)
+	likeRepo := sharedDatabase.NewPgLikeRepository(s.dbPool, nopLogger)
 
 	// Передаем все 7 аргументов
-	gameplayService := service.NewGameplayService(s.repo, publishedRepo, sceneRepo, playerProgressRepo, taskPublisher, s.dbPool, nopLogger)
+	gameplayService := service.NewGameplayService(s.repo, publishedRepo, sceneRepo, playerProgressRepo, likeRepo, taskPublisher, s.dbPool, nopLogger)
 	// <<< Добавляем тестовый межсервисный секрет >>>
 	interServiceTestSecret := "test-inter-service-secret-for-integration"
 	gameplayHandler := handler.NewGameplayHandler(gameplayService, nopLogger, jwtTestSecret, interServiceTestSecret)

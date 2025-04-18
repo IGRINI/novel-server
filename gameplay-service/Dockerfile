@@ -34,5 +34,5 @@ COPY --from=builder /gameplay-service .
 # Команда для запуска приложения
 ENTRYPOINT ["/app/gameplay-service"]
 
-# Healthcheck остается прежним (но используем wget, который установили)
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD wget --spider -q http://localhost:${GAMEPLAY_SERVER_PORT:-8082}/health || exit 1
+# Healthcheck (используем wget, который установили)
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD wget -q -O /dev/null http://localhost:${GAMEPLAY_SERVER_PORT:-8082}/health || exit 1

@@ -37,5 +37,5 @@ COPY --from=builder /app/admin-service/web ./web
 # Команда для запуска приложения
 ENTRYPOINT ["/app/admin-server"]
 
-# Healthcheck остается прежним (но используем wget, который установили)
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD wget --spider -q http://localhost:${ADMIN_SERVER_PORT:-8084}/health || exit 1 
+# Healthcheck (используем wget, который установили)
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD wget -q -O /dev/null http://localhost:${ADMIN_SERVER_PORT:-8084}/health || exit 1 

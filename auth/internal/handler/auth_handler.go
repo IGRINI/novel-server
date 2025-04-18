@@ -27,7 +27,7 @@ func (h *AuthHandler) RegisterRoutes(router *gin.Engine) {
 	{
 		authGroup.POST("/register", h.register)
 		authGroup.POST("/login", h.login)
-		authGroup.POST("/logout", h.logout)
+		authGroup.POST("/logout", h.AuthMiddleware(), h.logout)
 		authGroup.POST("/refresh", h.refresh)
 		authGroup.POST("/token/verify", h.verify)
 	}

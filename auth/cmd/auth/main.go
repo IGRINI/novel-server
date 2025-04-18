@@ -107,9 +107,11 @@ func main() {
 	router.Use(cors.New(corsConfig))
 
 	// Health Check Endpoint
-	router.GET("/health", func(c *gin.Context) {
+	healthHandler := func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
+	}
+	router.GET("/health", healthHandler)
+	router.HEAD("/health", healthHandler)
 
 	// Register Application Routes
 	authHandler.RegisterRoutes(router)
@@ -157,23 +159,22 @@ func setupPostgres(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, erro
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse postgres config: %w", err)
 	}
-	// Устанавливаем параметры пула из конфига (можно добавить сюда)
-	// poolConfig.MaxConns = ...
-	// poolConfig.MinConns = ...
-	// poolConfig.MaxConnIdleTime = ...
+	// <<< Устанавливаем параметры пула из конфига (как в story-generator) >>>
+	poolConfig.MaxConns = int32(cfg.DBMaxConns)    // Используем значение из auth/config
+	poolConfig.MaxConnIdleTime = cfg.DBIdleTimeout // Используем значение из auth/config
 
 	// --- Retry Logic ---
 	var pool *pgxpool.Pool
 	var lastErr error
-	maxRetries := 50              // <<< УВЕЛИЧИВАЕМ КОЛИЧЕСТВО ПОПЫТОК
-	retryDelay := 5 * time.Second // Оставляем 5 секунд
+	maxRetries := 50              // Оставляем 50 попыток
+	retryDelay := 3 * time.Second // <<< Изменяем задержку на 3 секунды (как в story-generator) >>>
 
 	zap.L().Info("Attempting to connect to PostgreSQL", zap.Int("max_retries", maxRetries), zap.Duration("retry_delay", retryDelay))
 
 	for i := 0; i < maxRetries; i++ {
 		attempt := i + 1
-		// Используем общий контекст ctx, но с таймаутом на *эту* попытку
-		connectCtx, connectCancel := context.WithTimeout(ctx, 5*time.Second) // Таймаут на попытку подключения
+		// <<< Используем context.Background() для таймаута попытки (как в story-generator) >>>
+		connectCtx, connectCancel := context.WithTimeout(context.Background(), 5*time.Second) // Таймаут на попытку подключения
 		pool, err = pgxpool.NewWithConfig(connectCtx, poolConfig)
 		connectCancel() // Отменяем контекст этой попытки
 
@@ -191,7 +192,8 @@ func setupPostgres(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, erro
 		}
 
 		// Пытаемся пинговать, чтобы убедиться, что соединение живое
-		pingCtx, pingCancel := context.WithTimeout(ctx, 2*time.Second) // Таймаут на пинг
+		// <<< Используем context.Background() для таймаута пинга (как в story-generator) >>>
+		pingCtx, pingCancel := context.WithTimeout(context.Background(), 2*time.Second) // Таймаут на пинг
 		err = pool.Ping(pingCtx)
 		pingCancel() // Отменяем контекст пинга
 
@@ -221,30 +223,28 @@ func setupPostgres(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, erro
 // setupRedis initializes the Redis client with retry logic.
 func setupRedis(ctx context.Context, cfg *config.Config) (*redis.Client, error) {
 	zap.L().Debug("Setting up Redis connection...")
-	zap.L().Info("Attempting to connect to Redis",
-		zap.String("address", cfg.RedisAddr),
-		zap.Int("db", cfg.RedisDB),
-	)
-	client := redis.NewClient(&redis.Options{
+	// Опции выносим за цикл
+	redisOpts := &redis.Options{
 		Addr:     cfg.RedisAddr,
 		Password: cfg.RedisPassword,
 		DB:       cfg.RedisDB,
-		// Можно добавить таймауты на операции Redis, если нужно
-		// ReadTimeout:  3 * time.Second,
-		// WriteTimeout: 3 * time.Second,
-	})
+	}
+	zap.L().Info("Redis connection options configured", zap.String("address", redisOpts.Addr), zap.Int("db", redisOpts.DB))
 
-	// --- Retry Logic ---
+	var client *redis.Client
 	var lastErr error
-	maxRetries := 50              // <<< УВЕЛИЧИВАЕМ КОЛИЧЕСТВО ПОПЫТОК
-	retryDelay := 5 * time.Second // Оставляем 5 секунд
+	maxRetries := 50
+	retryDelay := 3 * time.Second // <<< Уменьшил задержку до 3 сек, как у Postgres
 
-	zap.L().Info("Attempting to ping Redis", zap.Int("max_retries", maxRetries), zap.Duration("retry_delay", retryDelay))
+	zap.L().Info("Attempting to connect and ping Redis", zap.Int("max_retries", maxRetries), zap.Duration("retry_delay", retryDelay))
 
 	for i := 0; i < maxRetries; i++ {
 		attempt := i + 1
-		// Используем общий контекст ctx, но с таймаутом на *эту* попытку пинга
-		pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second) // Таймаут на пинг
+		// <<< Создаем клиент ВНУТРИ цикла >>>
+		client = redis.NewClient(redisOpts)
+
+		// Используем context.Background() с таймаутом для пинга
+		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second) // <<< Таймаут на пинг
 		_, err := client.Ping(pingCtx).Result()
 		pingCancel() // Отменяем контекст этой попытки
 
@@ -253,6 +253,8 @@ func setupRedis(ctx context.Context, cfg *config.Config) (*redis.Client, error) 
 			return client, nil // Успех!
 		}
 
+		// <<< Закрываем неудачный клиент перед следующей попыткой >>>
+		client.Close()
 		lastErr = fmt.Errorf("unable to ping redis (attempt %d/%d): %w", attempt, maxRetries, err)
 		zap.L().Warn("Redis ping failed, retrying...",
 			zap.Int("attempt", attempt),
@@ -265,7 +267,7 @@ func setupRedis(ctx context.Context, cfg *config.Config) (*redis.Client, error) 
 	}
 
 	// Если все попытки не удались
-	client.Close() // Закрываем клиент, так как подключиться не удалось
+	// client уже будет закрыт после последней неудачной попытки
 	zap.L().Error("Failed to connect to Redis after all retries", zap.Int("attempts", maxRetries), zap.Error(lastErr))
 	return nil, fmt.Errorf("failed to connect to redis after %d attempts: %w", maxRetries, lastErr)
 }

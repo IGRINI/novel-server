@@ -38,6 +38,7 @@ type ClientStoryUpdate struct {
 	IsCompleted       bool     `json:"is_completed"`                 // Флаг завершения истории
 	EndingText        *string  `json:"ending_text,omitempty"`        // Текст концовки, если status == completed
 	ErrorDetails      *string  `json:"error_details,omitempty"`      // Если status == error
+	UpdateType        string   `json:"update_type"`                  // <<< Тип обновления (draft_update, story_update)
 }
 
 // rabbitMQPublisher implements the TaskPublisher and ClientUpdatePublisher interfaces for RabbitMQ.

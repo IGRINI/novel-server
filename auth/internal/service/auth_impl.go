@@ -237,6 +237,29 @@ func (s *authServiceImpl) Refresh(ctx context.Context, refreshTokenString string
 
 		s.logger.Debug("Refresh token verified against store", zap.String("userID", userID.String()), zap.String("refreshUUID", refreshUUID))
 
+		// <<< Добавляем проверку статуса пользователя >>>
+		user, err := s.userRepo.GetUserByID(ctx, userID)
+		if err != nil {
+			if errors.Is(err, models.ErrUserNotFound) {
+				// Пользователь из валидного токена не найден в БД?
+				s.logger.Error("User from valid refresh token not found in DB", zap.String("userID", userID.String()), zap.String("refreshUUID", refreshUUID))
+				// Удаляем токен, так как он ссылается на несуществующего пользователя
+				_, _ = s.tokenRepo.DeleteTokens(ctx, "", refreshUUID)
+				return nil, models.ErrUserNotFound // Или ErrTokenInvalid?
+			}
+			// Другая ошибка БД
+			s.logger.Error("Error fetching user details for refresh token verification", zap.Error(err), zap.String("userID", userID.String()), zap.String("refreshUUID", refreshUUID))
+			return nil, fmt.Errorf("error fetching user details: %w", err)
+		}
+
+		if user.IsBanned {
+			s.logger.Warn("Refresh attempt by a banned user", zap.String("userID", userID.String()), zap.String("refreshUUID", refreshUUID))
+			// Удаляем токен забаненного пользователя
+			_, _ = s.tokenRepo.DeleteTokens(ctx, "", refreshUUID)
+			return nil, models.ErrForbidden // Возвращаем 403 Forbidden
+		}
+		// <<< Конец проверки статуса пользователя >>>
+
 		// --- Логика удаления и создания ---
 		newTd, err := s.createTokens(ctx, claims.UserID)
 		if err != nil {

@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"regexp"
+	"strings"
+	"sync"
 
 	// "novel-server/gameplay-service/internal/models" // Удален
 	// "novel-server/gameplay-service/internal/repository" // Удален
@@ -18,6 +21,20 @@ import (
 	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
+
+// Типы обновлений для ClientStoryUpdate
+const (
+	UpdateTypeDraft = "draft_update"
+	UpdateTypeStory = "story_update"
+)
+
+// <<< Регулярное выражение для извлечения JSON из ```json ... ``` блока >>>
+// (?s) - флаг: '.' совпадает с символом новой строки
+// \x60 - символ `
+// (?:json)? - опциональная группа "json" (незахватывающая)
+// \s* - ноль или более пробельных символов
+// (\{.*\}) - Захватывающая группа 1: сам JSON объект (от { до })
+var jsonBlockRegex = regexp.MustCompile("(?s)\\x60\\x60\\x60(?:json)?\\s*(\\{.*\\})\\s*\\x60\\x60\\x60")
 
 // --- NotificationProcessor ---
 
@@ -120,35 +137,67 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 
 			log.Printf("[processor][TaskID: %s] Уведомление Narrator Success для StoryConfig %s.", taskID, storyConfigID)
 
+			// <<< Извлекаем чистый JSON перед парсингом >>>
+			rawGeneratedText := notification.GeneratedText
+			jsonToParse := rawGeneratedText // По умолчанию используем исходный текст
+
+			matches := jsonBlockRegex.FindStringSubmatch(rawGeneratedText)
+			if len(matches) > 1 {
+				// Если нашли блок ```json {...} ```, берем содержимое группы 1
+				jsonToParse = matches[1]
+				log.Printf("[processor][TaskID: %s] Извлечен JSON из блока ```json для StoryConfig %s.", taskID, storyConfigID)
+			} else {
+				// Если блок не найден, просто обрезаем пробелы
+				trimmedText := strings.TrimSpace(rawGeneratedText)
+				if strings.HasPrefix(trimmedText, "{") && strings.HasSuffix(trimmedText, "}") {
+					jsonToParse = trimmedText // Используем обрезанный, если он похож на JSON
+				} else {
+					// Оставляем jsonToParse = rawGeneratedText, если обрезка не помогла
+					log.Printf("[processor][TaskID: %s] Блок ```json не найден, попытка парсинга исходного/обрезанного текста для StoryConfig %s.", taskID, storyConfigID)
+				}
+			}
+
+			configBytes := []byte(jsonToParse) // <<< Используем очищенный текст для парсинга
+			// <<< Конец извлечения JSON >>>
+
 			// Сначала парсим JSON, и только если успешно - обновляем поля
 			var generatedConfig map[string]interface{}
-			configBytes := []byte(notification.GeneratedText)
 			parseErr = json.Unmarshal(configBytes, &generatedConfig)
 
 			if parseErr == nil {
-				// Парсинг успешен - обновляем Config, Title, Description
-				config.Config = json.RawMessage(configBytes) // Сохраняем валидный JSON
-				if title, ok := generatedConfig["t"].(string); ok {
+				// Парсинг успешен, пытаемся извлечь ключевые поля
+				title, titleOk := generatedConfig["t"].(string)
+				desc, descOk := generatedConfig["sd"].(string)
+
+				// Проверяем наличие, тип и непустое значение ключевых полей
+				if titleOk && descOk && title != "" && desc != "" {
+					// Все ключевые поля найдены и не пусты - обновляем конфиг и ставим Draft
+					config.Config = json.RawMessage(configBytes) // <<< Сохраняем ОЧИЩЕННЫЙ JSON
 					config.Title = title
-				} else {
-					log.Printf("[processor][TaskID: %s] Не удалось извлечь 't' (title) из JSON для StoryConfig %s", taskID, storyConfigID)
-				}
-				if desc, ok := generatedConfig["sd"].(string); ok {
 					config.Description = desc
+					config.Status = sharedModels.StatusDraft
+					log.Printf("[processor][TaskID: %s] JSON успешно распарсен и ключевые поля извлечены для StoryConfig %s.", taskID, storyConfigID)
 				} else {
-					log.Printf("[processor][TaskID: %s] Не удалось извлечь 'sd' (description) из JSON для StoryConfig %s", taskID, storyConfigID)
+					// Парсинг успешен, но не хватает ключевых полей или они пустые - считаем ошибкой
+					log.Printf("[processor][TaskID: %s] ОШИБКА ЗАПОЛНЕНИЯ: JSON распарсен, но 't' (ok: %t, empty: %t) или 'sd' (ok: %t, empty: %t) отсутствуют или пусты для StoryConfig %s. Config НЕ будет обновлен.", taskID, titleOk, title == "", descOk, desc == "", storyConfigID)
+					config.Status = sharedModels.StatusError
+					// Оставляем старый config.Config, Title, Description
 				}
+				// Обновляем время в любом случае после успешного парсинга
+				config.UpdatedAt = time.Now().UTC()
 			} else {
 				// Парсинг НЕ удался - логируем, Config НЕ обновляем, Title/Desc НЕ обновляем
-				log.Printf("[processor][TaskID: %s] ОШИБКА ПАРСИНГА: Не удалось распарсить JSON из GeneratedText для StoryConfig %s: %v. Содержимое: '%s'. Config НЕ будет обновлен.", taskID, storyConfigID, parseErr, string(configBytes))
+				// <<< Логируем текст, который ПЫТАЛИСЬ парсить >>>
+				log.Printf("[processor][TaskID: %s] ОШИБКА ПАРСИНГА: Не удалось распарсить JSON из GeneratedText для StoryConfig %s: %v. Текст для парсинга: '%s'. Config НЕ будет обновлен.", taskID, storyConfigID, parseErr, jsonToParse)
 				// Устанавливаем статус Error при ошибке парсинга
 				config.Status = sharedModels.StatusError // Используем sharedModels
+				config.UpdatedAt = time.Now().UTC()      // <<< Время обновляем и при ошибке
 				// config.Config = []byte("{}") // Оставляем старый конфиг
 			}
 
-			// Статус и время обновляем в любом случае (успешное уведомление получено)
-			config.Status = sharedModels.StatusDraft
-			config.UpdatedAt = time.Now().UTC()
+			// Статус и время теперь устанавливаются внутри if/else
+			// config.Status = sharedModels.StatusDraft // <<< УБИРАЕМ ЭТУ СТРОКУ ОТСЮДА
+			// config.UpdatedAt = time.Now().UTC() // <<< И ЭТУ (перенесли выше)
 
 		} else if notification.Status == sharedMessaging.NotificationStatusError { // Явное условие для Error
 			log.Printf("[processor][TaskID: %s] Уведомление Narrator Error для StoryConfig %s. Details: %s", taskID, storyConfigID, notification.ErrorDetails)
@@ -169,10 +218,11 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 		}
 		log.Printf("[processor][TaskID: %s] StoryConfig %s (Narrator) успешно обновлен в БД до статуса %s.", taskID, storyConfigID, config.Status)
 
-		// Формируем и отправляем обновление клиенту (код без изменений)
+		// Формируем и отправляем обновление клиенту
 		clientUpdate = ClientStoryUpdate{
 			ID:          config.ID.String(),
 			UserID:      config.UserID.String(),
+			UpdateType:  UpdateTypeDraft, // <<< Используем константу
 			Status:      string(config.Status),
 			Title:       config.Title,       // Будет старый title, если парсинг JSON не удался
 			Description: config.Description, // Будет старое description, если парсинг JSON не удался
@@ -207,6 +257,9 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 				log.Printf("[processor][TaskID: %s] Ошибка повторного парсинга JSON Narrator для StoryConfig %s: %v", taskID, storyConfigID, err)
 			}
 		}
+		// <<< Устанавливаем тип обновления для истории >>>
+		// clientUpdate.UpdateType = UpdateTypeStory // <<< УДАЛЯЕМ ЭТУ ОШИБОЧНУЮ СТРОКУ
+
 		pubCtx, pubCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer pubCancel()
 		if err := p.clientPub.PublishClientUpdate(pubCtx, clientUpdate); err != nil {
@@ -361,10 +414,14 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 				clientUpdate := ClientStoryUpdate{
 					ID:          publishedStoryID.String(),
 					UserID:      pubStory.UserID.String(),
+					UpdateType:  UpdateTypeStory, // <<< Используем константу
 					Status:      string(newStatus),
 					IsCompleted: newStatus == sharedModels.StatusCompleted, // Завершено или нет
 					EndingText:  endingText,                                // Текст концовки (может быть nil)
 				}
+				// <<< Устанавливаем тип обновления для истории >>>
+				// clientUpdate.UpdateType = "story_update" // <<< Эта строка теперь не нужна
+
 				pubCtx, pubCancel := context.WithTimeout(context.Background(), 10*time.Second)
 				if errPub := p.clientPub.PublishClientUpdate(pubCtx, clientUpdate); errPub != nil {
 					log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось отправить ClientStoryUpdate для PublishedStory %s (Status: %s): %v", taskID, publishedStoryID, newStatus, errPub)
@@ -395,12 +452,19 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 
 // --- NotificationConsumer ---
 
+const (
+	// Максимальное количество одновременно обрабатываемых сообщений
+	maxConcurrentHandlers = 10 // TODO: Сделать настраиваемым через config
+)
+
 // NotificationConsumer отвечает за получение уведомлений из RabbitMQ.
 type NotificationConsumer struct {
 	conn        *amqp.Connection
 	processor   *NotificationProcessor // Используем процессор
 	queueName   string
 	stopChannel chan struct{}
+	wg          sync.WaitGroup     // <<< Для ожидания завершения обработчиков
+	cancelFunc  context.CancelFunc // <<< Для отмены контекста обработчиков
 	// !!! ДОБАВЛЕНО: Зависимости для передачи в процессор
 	storyRepo     interfaces.StoryConfigRepository // Используем shared интерфейс
 	publishedRepo interfaces.PublishedStoryRepository
@@ -420,11 +484,16 @@ func NewNotificationConsumer(
 	queueName string) (*NotificationConsumer, error) {
 	// Создаем процессор с новыми зависимостями
 	processor := NewNotificationProcessor(repo, publishedRepo, sceneRepo, clientPub, taskPub)
+	// Создаем контекст, который можно будет отменить
+	// ctx, cancel := context.WithCancel(context.Background()) // <<< Делаем это в StartConsuming
+
 	return &NotificationConsumer{
-		conn:          conn,
-		processor:     processor,
-		queueName:     queueName,
-		stopChannel:   make(chan struct{}),
+		conn:        conn,
+		processor:   processor,
+		queueName:   queueName,
+		stopChannel: make(chan struct{}),
+		// wg инициализируется автоматически
+		// cancelFunc:    cancel, // <<< Инициализируем в StartConsuming
 		storyRepo:     repo,
 		publishedRepo: publishedRepo,
 		sceneRepo:     sceneRepo,
@@ -434,7 +503,13 @@ func NewNotificationConsumer(
 }
 
 // StartConsuming начинает прослушивание очереди уведомлений.
+// Блокирует выполнение до тех пор, пока консьюмер не будет остановлен или не произойдет ошибка.
 func (c *NotificationConsumer) StartConsuming() error {
+	// <<< Создаем контекст, который будет отменен при остановке консьюмера >>>
+	ctx, cancel := context.WithCancel(context.Background())
+	c.cancelFunc = cancel // Сохраняем функцию отмены
+	defer cancel()        // Гарантируем отмену контекста при выходе из функции
+
 	ch, err := c.conn.Channel()
 	if err != nil {
 		return fmt.Errorf("consumer: не удалось открыть канал RabbitMQ: %w", err)
@@ -471,13 +546,19 @@ func (c *NotificationConsumer) StartConsuming() error {
 	if err != nil {
 		return fmt.Errorf("consumer: не удалось зарегистрировать консьюмера: %w", err)
 	}
-	log.Printf("Consumer: запущен, ожидание уведомлений из очереди '%s'...", q.Name)
+	log.Printf("Consumer: запущен, ожидание уведомлений из очереди '%s' (max concurrent: %d)...", q.Name, maxConcurrentHandlers)
+
+	// <<< Семафор для ограничения количества одновременно работающих обработчиков >>>
+	semaphore := make(chan struct{}, maxConcurrentHandlers)
 
 	for {
 		select {
 		case d, ok := <-msgs:
 			if !ok {
 				log.Println("Consumer: канал сообщений RabbitMQ закрыт")
+				// <<< Ожидаем завершения всех активных обработчиков перед выходом >>>
+				c.wg.Wait()
+				log.Println("Consumer: все активные обработчики завершены.")
 				return nil
 			}
 
@@ -513,23 +594,57 @@ func (c *NotificationConsumer) StartConsuming() error {
 			}
 			// *** КОНЕЦ ИЗМЕНЕНИЯ ***
 
-			// Запускаем обработку в отдельной горутине
-			go func(body []byte, id uuid.UUID) {
-				// Передаем targetUUID в процессор
-				if err := c.processor.Process(context.Background(), body, id); err != nil {
-					// Логируем критические ошибки из процессора
-					log.Printf("Consumer: критическая ошибка при обработке уведомления для ID %s: %v", id, err)
-					// TODO: Возможно, нужна стратегия ретраев или DLQ здесь?
-				}
-			}(d.Body, targetUUID) // <<< Передаем targetUUID
+			// <<< Занимаем слот в семафоре >>>
+			select {
+			case semaphore <- struct{}{}:
+				// Слот успешно занят
+				log.Printf("Consumer: Запуск обработчика для DeliveryTag %d (активно: %d/%d)", d.DeliveryTag, len(semaphore), maxConcurrentHandlers)
+			case <-ctx.Done(): // <<< Проверяем отмену контекста перед блокировкой
+				log.Println("Consumer: контекст отменен во время ожидания слота семафора. Сообщение Nack(requeue=true). DeliveryTag:", d.DeliveryTag)
+				_ = d.Nack(false, true) // Возвращаем в очередь, т.к. не начали обработку
+				// <<< Ожидаем завершения всех активных обработчиков перед выходом >>>
+				c.wg.Wait()
+				log.Println("Consumer: все активные обработчики завершены.")
+				return context.Canceled // Возвращаем ошибку отмены
+			}
 
-			// Подтверждаем сообщение (ack) независимо от результата обработки в горутине.
-			// Это стратегия "at-most-once" для консьюмера, чтобы избежать повторной обработки
-			// в случае падения сервиса во время работы горутины. Обработка ошибок - внутри Process.
-			_ = d.Ack(false)
+			// <<< Добавляем в WaitGroup ПЕРЕД запуском горутины >>>
+			c.wg.Add(1)
+
+			// Запускаем обработку в отдельной горутине
+			go func(msg amqp.Delivery, currentCtx context.Context, id uuid.UUID) {
+				// <<< Освобождаем слот семафора и уменьшаем счетчик WaitGroup при выходе из горутины >>>
+				defer func() {
+					<-semaphore
+					c.wg.Done()
+					log.Printf("Consumer: Обработчик завершен для DeliveryTag %d (активно: %d/%d)", msg.DeliveryTag, len(semaphore), maxConcurrentHandlers)
+				}()
+
+				log.Printf("Consumer: Обработка DeliveryTag %d для ID %s...", msg.DeliveryTag, id)
+				// <<< Передаем отменяемый контекст в процессор >>>
+				if err := c.processor.Process(currentCtx, msg.Body, id); err != nil {
+					// Логируем критические ошибки из процессора
+					log.Printf("Consumer: Ошибка при обработке уведомления для ID %s (DeliveryTag: %d): %v. Сообщение будет Nack(requeue=false).", id, msg.DeliveryTag, err)
+					// TODO: Возможно, нужна стратегия ретраев или DLQ здесь? Рассмотреть requeue=true для временных ошибок.
+					_ = msg.Nack(false, false) // <<< Nack при ошибке
+				} else {
+					// <<< Ack ТОЛЬКО при успешной обработке >>>
+					log.Printf("Consumer: Успешная обработка DeliveryTag %d для ID %s. Сообщение будет Ack.", msg.DeliveryTag, id)
+					_ = msg.Ack(false)
+				}
+			}(d, ctx, targetUUID) // <<< Передаем КОПИЮ сообщения и контекст
+
+			// <<< УДАЛЯЕМ немедленный Ack отсюда >>>
+			// _ = d.Ack(false)
 
 		case <-c.stopChannel:
 			log.Println("Consumer: получен сигнал остановки")
+			// <<< Отменяем контекст, чтобы сигнализировать обработчикам >>>
+			cancel() // или c.cancelFunc()
+			// <<< Ожидаем завершения всех активных обработчиков >>>
+			log.Println("Consumer: ожидание завершения активных обработчиков...")
+			c.wg.Wait()
+			log.Println("Consumer: все активные обработчики завершены.")
 			return nil
 		}
 	}
@@ -538,7 +653,12 @@ func (c *NotificationConsumer) StartConsuming() error {
 // Stop останавливает консьюмер.
 func (c *NotificationConsumer) Stop() {
 	log.Println("Consumer: остановка...")
+	// <<< Отменяем контекст перед закрытием канала, чтобы обработчики могли среагировать >>>
+	if c.cancelFunc != nil {
+		c.cancelFunc()
+	}
 	close(c.stopChannel)
+	// <<< Ожидание wg происходит в StartConsuming перед выходом >>>
 }
 
 // Вспомогательная функция для каста []interface{} в []string

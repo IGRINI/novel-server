@@ -17,58 +17,6 @@ import (
 // Compile-time check
 var _ interfaces.PublishedStoryRepository = (*pgPublishedStoryRepository)(nil)
 
-// scanPublishedStory сканирует строку в структуру PublishedStory
-func scanPublishedStory(row pgx.Row) (*models.PublishedStory, error) {
-	var story models.PublishedStory
-	err := row.Scan(
-		&story.ID,
-		&story.UserID,
-		&story.Config,
-		&story.Setup,
-		&story.Status,
-		&story.IsPublic,
-		&story.IsAdultContent,
-		&story.Title,
-		&story.Description,
-		&story.CreatedAt, // Убедиться, что поле CreatedAt есть
-		&story.UpdatedAt, // Убедиться, что поле UpdatedAt есть
-	)
-	if err != nil {
-		return nil, err
-	}
-	return &story, nil
-}
-
-// scanPublishedStories сканирует несколько строк
-func scanPublishedStories(rows pgx.Rows) ([]models.PublishedStory, error) {
-	stories := make([]models.PublishedStory, 0)
-	var err error
-	for rows.Next() {
-		var story models.PublishedStory
-		err = rows.Scan(
-			&story.ID,
-			&story.UserID,
-			&story.Config,
-			&story.Setup,
-			&story.Status,
-			&story.IsPublic,
-			&story.IsAdultContent,
-			&story.Title,
-			&story.Description,
-			&story.CreatedAt,
-			&story.UpdatedAt,
-		)
-		if err != nil {
-			continue
-		}
-		stories = append(stories, story)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("ошибка итерации по результатам published_stories: %w", err)
-	}
-	return stories, nil
-}
-
 // scanStories сканирует несколько строк (возвращает слайс указателей)
 func scanStories(rows pgx.Rows) ([]*models.PublishedStory, error) {
 	stories := make([]*models.PublishedStory, 0)
@@ -87,7 +35,7 @@ func scanStories(rows pgx.Rows) ([]*models.PublishedStory, error) {
 			&story.Description,
 			&story.CreatedAt,
 			&story.UpdatedAt,
-			// Убедитесь, что error_details тоже сканируется, если оно есть в запросе
+			&story.LikesCount,
 		)
 		if err != nil {
 			continue
@@ -154,7 +102,7 @@ func (r *pgPublishedStoryRepository) GetByID(ctx context.Context, id uuid.UUID) 
 	query := `
         SELECT
             id, user_id, config, setup, status, is_public, is_adult_content,
-            title, description, error_details, created_at, updated_at
+            title, description, error_details, likes_count, created_at, updated_at
         FROM published_stories
         WHERE id = $1
     `
@@ -165,7 +113,7 @@ func (r *pgPublishedStoryRepository) GetByID(ctx context.Context, id uuid.UUID) 
 	err := r.db.QueryRow(ctx, query, id).Scan(
 		&story.ID, &story.UserID, &story.Config, &story.Setup, &story.Status,
 		&story.IsPublic, &story.IsAdultContent, &story.Title, &story.Description,
-		&story.ErrorDetails, &story.CreatedAt, &story.UpdatedAt,
+		&story.ErrorDetails, &story.LikesCount, &story.CreatedAt, &story.UpdatedAt,
 	)
 
 	if err != nil {
@@ -266,7 +214,7 @@ func (r *pgPublishedStoryRepository) ListByUserID(ctx context.Context, userID uu
 	query := `
         SELECT
             id, user_id, config, setup, status, is_public, is_adult_content,
-            title, description, error_details, created_at, updated_at
+            title, description, error_details, likes_count, created_at, updated_at
         FROM published_stories
         WHERE user_id = $1
         ORDER BY created_at DESC
@@ -307,7 +255,7 @@ func (r *pgPublishedStoryRepository) ListPublic(ctx context.Context, limit, offs
 
 	// Убираем is_adult_content = FALSE из запроса, если интерфейс этого не требует
 	query := `
-        SELECT id, user_id, config, setup, status, is_public, is_adult_content, title, description, created_at, updated_at /*, error_details */
+        SELECT id, user_id, config, setup, status, is_public, is_adult_content, title, description, created_at, updated_at, likes_count /*, error_details */
         FROM published_stories
         WHERE is_public = TRUE
         ORDER BY created_at DESC -- Сортировка по созданию
@@ -331,4 +279,42 @@ func (r *pgPublishedStoryRepository) ListPublic(ctx context.Context, limit, offs
 
 	r.logger.Debug("Public published stories listed successfully", append(logFields, zap.Int("count", len(stories)))...)
 	return stories, nil
+}
+
+// IncrementLikesCount атомарно увеличивает счетчик лайков для истории.
+func (r *pgPublishedStoryRepository) IncrementLikesCount(ctx context.Context, id uuid.UUID) error {
+	query := `UPDATE published_stories SET likes_count = likes_count + 1, updated_at = NOW() WHERE id = $1`
+	logFields := []zap.Field{zap.String("publishedStoryID", id.String())}
+	r.logger.Debug("Incrementing likes count", logFields...)
+
+	commandTag, err := r.db.Exec(ctx, query, id)
+	if err != nil {
+		r.logger.Error("Failed to increment likes count", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("failed to increment likes count for story %s: %w", id, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("Attempted to increment likes count for non-existent story", logFields...)
+		return models.ErrNotFound // История не найдена
+	}
+
+	r.logger.Info("Likes count incremented successfully", logFields...)
+	return nil
+}
+
+// DecrementLikesCount атомарно уменьшает счетчик лайков для истории, не давая уйти ниже нуля.
+func (r *pgPublishedStoryRepository) DecrementLikesCount(ctx context.Context, id uuid.UUID) error {
+	// Обновляем только если likes_count > 0
+	query := `UPDATE published_stories SET likes_count = likes_count - 1, updated_at = NOW() WHERE id = $1 AND likes_count > 0`
+	logFields := []zap.Field{zap.String("publishedStoryID", id.String())}
+	r.logger.Debug("Decrementing likes count", logFields...)
+
+	_, err := r.db.Exec(ctx, query, id)
+	if err != nil {
+		r.logger.Error("Failed to decrement likes count", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("failed to decrement likes count for story %s: %w", id, err)
+	}
+
+	r.logger.Info("Likes count decremented (or was already zero) successfully", logFields...)
+	return nil
 }
