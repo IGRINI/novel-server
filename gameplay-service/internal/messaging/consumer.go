@@ -323,11 +323,11 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 			setupJSON := json.RawMessage(notification.GeneratedText)
 			newStatus := sharedModels.StatusFirstScenePending
 			// Обновляем Setup и Status, используя новый метод
-			if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, newStatus, setupJSON, nil, nil); err != nil {
+			if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, newStatus, setupJSON, nil, nil, nil); err != nil {
 				log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось сохранить Setup/Status для PublishedStory %s: %v", taskID, publishedStoryID, err)
 				// Пытаемся обновить статус на Error
 				errMsg := fmt.Sprintf("Failed to update setup/status: %v", err)
-				if errRollback := p.publishedRepo.UpdateStatusDetails(context.Background(), publishedStoryID, sharedModels.StatusError, nil, &errMsg, nil); errRollback != nil {
+				if errRollback := p.publishedRepo.UpdateStatusDetails(context.Background(), publishedStoryID, sharedModels.StatusError, nil, nil, nil, &errMsg); errRollback != nil {
 					log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА 2: Не удалось откатить статус PublishedStory %s на Error: %v", taskID, publishedStoryID, errRollback)
 				}
 				return fmt.Errorf("ошибка сохранения Setup/Status для PublishedStory %s: %w", publishedStoryID, err)
@@ -345,6 +345,26 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 				return nil // Не возвращаем ошибку наверх, Setup уже сохранен.
 			}
 
+			// <<< ДОБАВЛЕНО: Извлекаем язык из конфига опубликованной истории >>>
+			languageCode := "en" // Default
+			if len(publishedStory.Config) > 0 {
+				var tempConfig struct {
+					Ln string `json:"ln"` // Language code key
+				}
+				if errUnmarshal := json.Unmarshal(publishedStory.Config, &tempConfig); errUnmarshal == nil {
+					if tempConfig.Ln != "" {
+						languageCode = tempConfig.Ln
+					} else {
+						log.Printf("[processor][TaskID: %s] WARN: Language code ('ln') is empty in config for PublishedStory %s. Defaulting to 'en'.", taskID, publishedStoryID)
+					}
+				} else {
+					log.Printf("[processor][TaskID: %s] WARN: Failed to unmarshal config to get language for PublishedStory %s: %v. Defaulting to 'en'.", taskID, publishedStoryID, errUnmarshal)
+				}
+			} else {
+				log.Printf("[processor][TaskID: %s] WARN: Config is empty for PublishedStory %s. Cannot determine language, defaulting to 'en'.", taskID, publishedStoryID)
+			}
+			// <<< КОНЕЦ ИЗВЛЕЧЕНИЯ ЯЗЫКА >>>
+
 			nextTaskPayload := sharedMessaging.GenerationTaskPayload{
 				TaskID:           uuid.New().String(),
 				UserID:           publishedStory.UserID.String(),
@@ -354,6 +374,7 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 					"config": string(publishedStory.Config),
 					"setup":  string(setupJSON), // Используем свежий setup
 				},
+				Language:  languageCode,                  // <<< ИСПРАВЛЕНО: Используем извлеченный язык
 				StateHash: sharedModels.InitialStateHash, // <<< Запускаем генерацию для начального хеша
 			}
 
@@ -368,7 +389,7 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 		} else { // notification.Status == Error для Setup
 			log.Printf("[processor][TaskID: %s] Уведомление Setup Error для PublishedStory %s. Details: %s", taskID, publishedStoryID, notification.ErrorDetails)
 			// Обновляем статус и детали ошибки, используя новый метод
-			if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, sharedModels.StatusError, nil, &notification.ErrorDetails, nil); err != nil {
+			if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, sharedModels.StatusError, nil, nil, nil, &notification.ErrorDetails); err != nil {
 				log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось обновить статус PublishedStory %s на Error: %v", taskID, publishedStoryID, err)
 				return fmt.Errorf("ошибка обновления статуса Error для PublishedStory %s: %w", publishedStoryID, err)
 			}
@@ -429,7 +450,7 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 					taskID, publishedStoryID, notification.StateHash, err)
 				// Пытаемся обновить статус PublishedStory на Error
 				errMsg := fmt.Sprintf("Failed to save scene for hash %s: %v", notification.StateHash, err)
-				if errRollback := p.publishedRepo.UpdateStatusDetails(context.Background(), publishedStoryID, sharedModels.StatusError, nil, &errMsg, nil); errRollback != nil {
+				if errRollback := p.publishedRepo.UpdateStatusDetails(context.Background(), publishedStoryID, sharedModels.StatusError, nil, nil, nil, &errMsg); errRollback != nil {
 					log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА 2: Не удалось откатить статус PublishedStory %s на Error после ошибки сохранения сцены: %v", taskID, publishedStoryID, errRollback)
 				}
 				return fmt.Errorf("ошибка сохранения StoryScene для PublishedStory %s, Hash %s: %w", publishedStoryID, notification.StateHash, err)
@@ -437,7 +458,7 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 			log.Printf("[processor][TaskID: %s] StoryScene для PublishedStory %s, Hash %s успешно сохранена.", taskID, publishedStoryID, notification.StateHash)
 
 			// Обновляем статус PublishedStory (и текст концовки, если нужно)
-			if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, newStatus, nil, nil, endingText); err != nil {
+			if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, newStatus, nil, nil, endingText, nil); err != nil {
 				log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось обновить статус PublishedStory %s на %s после сохранения сцены: %v", taskID, publishedStoryID, newStatus, err)
 				// Сцена сохранена, но статус не обновился. Это проблема.
 				// TODO: Как обрабатывать? Пометить как-то?
@@ -528,7 +549,7 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 		} else { // notification.Status == Error для Сцены/Концовки
 			log.Printf("[processor][TaskID: %s] Уведомление %s Error для PublishedStory %s. Details: %s", taskID, notification.PromptType, publishedStoryID, notification.ErrorDetails)
 			// Обновляем статус PublishedStory на Error
-			if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, sharedModels.StatusError, nil, &notification.ErrorDetails, nil); err != nil {
+			if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, sharedModels.StatusError, nil, nil, nil, &notification.ErrorDetails); err != nil {
 				log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось обновить статус PublishedStory %s на Error после ошибки генерации сцены: %v", taskID, publishedStoryID, err)
 				return fmt.Errorf("ошибка обновления статуса Error для PublishedStory %s: %w", publishedStoryID, err)
 			}

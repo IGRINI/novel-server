@@ -272,7 +272,7 @@ func (h *GameplayHandler) listStoryConfigs(c *gin.Context) { // <<< *gin.Context
 		zap.String("cursor", cursor),
 	)
 
-	drafts, nextCursor, err := h.service.ListMyDrafts(c.Request.Context(), userID, cursor, limit)
+	drafts, nextCursor, err := h.service.ListUserDrafts(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
 		h.logger.Error("Error listing story drafts", zap.String("userID", userID.String()), zap.Error(err))
 		handleServiceError(c, err, h.logger)

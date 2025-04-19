@@ -24,6 +24,7 @@ type GenerationTaskPayload struct {
 	PromptType       PromptType             `json:"prompt_type"`                  // Тип запроса к AI
 	InputData        map[string]interface{} `json:"input_data"`                   // Данные для шаблонизации промпта (из StoryConfig.UserInput)
 	UserInput        string                 `json:"user_input"`                   // Основной ввод пользователя для AI (например, описание из StoryConfig или промт ревизии)
+	Language         string                 `json:"language,omitempty"`           // <<< ДОБАВЛЕНО: Язык пользователя (например, "ru", "en")
 	StoryConfigID    string                 `json:"story_config_id,omitempty"`    // Опционально: ID конфигурации истории для связи
 	PublishedStoryID string                 `json:"published_story_id,omitempty"` // Опционально: ID опубликованной истории (для Setup и т.д.)
 	StateHash        string                 `json:"state_hash,omitempty"`         // Опционально: Хеш состояния, для которого генерируется сцена (для NovelCreator)

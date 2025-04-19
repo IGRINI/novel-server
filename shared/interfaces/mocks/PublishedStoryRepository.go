@@ -5,6 +5,8 @@ package mocks
 import (
 	context "context"
 
+	json "encoding/json"
+
 	mock "github.com/stretchr/testify/mock"
 
 	models "novel-server/shared/models"
@@ -101,6 +103,36 @@ func (_m *PublishedStoryRepository) IncrementLikesCount(ctx context.Context, id 
 	return r0
 }
 
+// ListByIDs provides a mock function with given fields: ctx, ids
+func (_m *PublishedStoryRepository) ListByIDs(ctx context.Context, ids []uuid.UUID) ([]*models.PublishedStory, error) {
+	ret := _m.Called(ctx, ids)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ListByIDs")
+	}
+
+	var r0 []*models.PublishedStory
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, []uuid.UUID) ([]*models.PublishedStory, error)); ok {
+		return rf(ctx, ids)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, []uuid.UUID) []*models.PublishedStory); ok {
+		r0 = rf(ctx, ids)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]*models.PublishedStory)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, []uuid.UUID) error); ok {
+		r1 = rf(ctx, ids)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // ListByUserID provides a mock function with given fields: ctx, userID, limit, offset
 func (_m *PublishedStoryRepository) ListByUserID(ctx context.Context, userID uuid.UUID, limit int, offset int) ([]*models.PublishedStory, error) {
 	ret := _m.Called(ctx, userID, limit, offset)
@@ -179,17 +211,35 @@ func (_m *PublishedStoryRepository) SetPublic(ctx context.Context, id uuid.UUID,
 	return r0
 }
 
-// UpdateStatusDetails provides a mock function with given fields: ctx, id, status, setup, errorDetails, endingText
-func (_m *PublishedStoryRepository) UpdateStatusDetails(ctx context.Context, id uuid.UUID, status models.StoryStatus, setup []byte, errorDetails *string, endingText *string) error {
-	ret := _m.Called(ctx, id, status, setup, errorDetails, endingText)
+// UpdateStatusDetails provides a mock function with given fields: ctx, id, status, setup, title, description, errorDetails
+func (_m *PublishedStoryRepository) UpdateStatusDetails(ctx context.Context, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, title *string, description *string, errorDetails *string) error {
+	ret := _m.Called(ctx, id, status, setup, title, description, errorDetails)
 
 	if len(ret) == 0 {
 		panic("no return value specified for UpdateStatusDetails")
 	}
 
 	var r0 error
-	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, models.StoryStatus, []byte, *string, *string) error); ok {
-		r0 = rf(ctx, id, status, setup, errorDetails, endingText)
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, models.StoryStatus, json.RawMessage, *string, *string, *string) error); ok {
+		r0 = rf(ctx, id, status, setup, title, description, errorDetails)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// UpdateVisibility provides a mock function with given fields: ctx, storyID, userID, isPublic
+func (_m *PublishedStoryRepository) UpdateVisibility(ctx context.Context, storyID uuid.UUID, userID uuid.UUID, isPublic bool) error {
+	ret := _m.Called(ctx, storyID, userID, isPublic)
+
+	if len(ret) == 0 {
+		panic("no return value specified for UpdateVisibility")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uuid.UUID, bool) error); ok {
+		r0 = rf(ctx, storyID, userID, isPublic)
 	} else {
 		r0 = ret.Error(0)
 	}

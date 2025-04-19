@@ -37,6 +37,30 @@ var (
 	ErrBadRequest     = errors.New("bad request")
 	ErrInvalidInput   = errors.New("invalid input data")
 
+	// Gameplay / Publishing Specific Errors (previously in gameplay-service)
+	ErrInvalidOperation           = errors.New("invalid operation")
+	ErrInvalidLimit               = errors.New("invalid limit value")
+	ErrInvalidOffset              = errors.New("invalid offset value")
+	ErrChoiceNotFound             = errors.New("choice or scene not found")
+	ErrInvalidChoiceIndex         = errors.New("invalid choice index")
+	ErrCannotPublish              = errors.New("story cannot be published in its current status")
+	ErrCannotPublishNoConfig      = errors.New("cannot publish without a generated config")
+	ErrStoryNotFound              = errors.New("published story not found") // Note: Consider merging with ErrNotFound if applicable
+	ErrSceneNotFound              = errors.New("current scene not found")
+	ErrPlayerProgressNotFound     = errors.New("player progress not found")
+	ErrStoryNotReady              = errors.New("story is not ready for gameplay yet")
+	ErrInvalidChoice              = errors.New("invalid choice")
+	ErrNoChoicesAvailable         = errors.New("no choices available in the current scene")
+	ErrAlreadyLiked               = errors.New("story already liked by this user")
+	ErrNotLikedYet                = errors.New("story not liked by this user yet")
+	ErrStoryNotReadyForPublishing = errors.New("story is not ready for publishing (must be in Ready status)")
+	ErrAdultContentCannotBePublic = errors.New("adult content cannot be made public")
+	ErrCannotRetry                = errors.New("cannot retry generation for this story")
+
+	// Errors moved from gameplay-service/internal/service/errors.go
+	ErrCannotUpdateSubmittedStory    = errors.New("cannot update story config that is not in draft status")
+	ErrStoryAlreadyGeneratingOrReady = errors.New("story generation already in progress or completed")
+
 	// Add other specific errors as needed
 )
 
@@ -51,25 +75,47 @@ type ErrorResponse struct {
 // These are string codes used in the ErrorResponse struct.
 const (
 	// 4xx Client Errors
-	ErrCodeBadRequest              = "BAD_REQUEST"                // Generic Bad Request (maps to models.ErrBadRequest)
-	ErrCodeUnauthorized            = "UNAUTHORIZED"               // Authentication required or invalid (maps to models.ErrUnauthorized)
-	ErrCodeForbidden               = "FORBIDDEN"                  // Authenticated but lacks permission (maps to models.ErrForbidden)
-	ErrCodeNotFound                = "NOT_FOUND"                  // General resource not found (maps to models.ErrNotFound)
-	ErrCodeDuplicate               = "DUPLICATE_ENTRY"            // General duplicate error
-	ErrCodeTokenInvalid            = "TOKEN_INVALID"              // Invalid format, not found in storage, malformed (maps to models.ErrTokenInvalid, models.ErrTokenNotFound, models.ErrTokenMalformed)
-	ErrCodeTokenExpired            = "TOKEN_EXPIRED"              // maps to models.ErrTokenExpired
-	ErrCodeValidation              = "VALIDATION_ERROR"           // Failed validation (maps to models.ErrInvalidInput)
-	ErrCodeUserBanned              = "USER_BANNED"                // maps to models.ErrUserBanned
-	ErrCodeWrongCredentials        = "WRONG_CREDENTIALS"          // maps to models.ErrInvalidCredentials
-	ErrCodeUserNotFound            = "USER_NOT_FOUND"             // maps to models.ErrUserNotFound
-	ErrCodeDuplicateUser           = "DUPLICATE_USER"             // maps to models.ErrUserAlreadyExists (username)
-	ErrCodeDuplicateEmail          = "DUPLICATE_EMAIL"            // maps to models.ErrEmailAlreadyExists
-	ErrCodeStoryConfigNotFound     = "STORY_CONFIG_NOT_FOUND"     // maps to models.ErrStoryConfigNotFound
-	ErrCodeUserHasActiveGeneration = "USER_HAS_ACTIVE_GENERATION" // maps to models.ErrUserHasActiveGeneration
-	ErrCodeCannotRevise            = "CANNOT_REVISE"              // maps to models.ErrCannotRevise
-	ErrCodeGenerationInProgress    = "GENERATION_IN_PROGRESS"     // maps to models.ErrGenerationInProgress
-	ErrCodeStoryNotReadyYet        = "STORY_NOT_READY_YET"        // maps to models.ErrStoryNotReadyYet
-	ErrCodeSceneNeedsGeneration    = "SCENE_NEEDS_GENERATION"     // maps to models.ErrSceneNeedsGeneration
+	ErrCodeBadRequest                    = "BAD_REQUEST"                // Generic Bad Request (maps to models.ErrBadRequest)
+	ErrCodeUnauthorized                  = "UNAUTHORIZED"               // Authentication required or invalid (maps to models.ErrUnauthorized)
+	ErrCodeForbidden                     = "FORBIDDEN"                  // Authenticated but lacks permission (maps to models.ErrForbidden)
+	ErrCodeNotFound                      = "NOT_FOUND"                  // General resource not found (maps to models.ErrNotFound)
+	ErrCodeDuplicate                     = "DUPLICATE_ENTRY"            // General duplicate error
+	ErrCodeTokenInvalid                  = "TOKEN_INVALID"              // Invalid format, not found in storage, malformed (maps to models.ErrTokenInvalid, models.ErrTokenNotFound, models.ErrTokenMalformed)
+	ErrCodeTokenExpired                  = "TOKEN_EXPIRED"              // maps to models.ErrTokenExpired
+	ErrCodeValidation                    = "VALIDATION_ERROR"           // Failed validation (maps to models.ErrInvalidInput)
+	ErrCodeUserBanned                    = "USER_BANNED"                // maps to models.ErrUserBanned
+	ErrCodeWrongCredentials              = "WRONG_CREDENTIALS"          // maps to models.ErrInvalidCredentials
+	ErrCodeUserNotFound                  = "USER_NOT_FOUND"             // maps to models.ErrUserNotFound
+	ErrCodeDuplicateUser                 = "DUPLICATE_USER"             // maps to models.ErrUserAlreadyExists (username)
+	ErrCodeDuplicateEmail                = "DUPLICATE_EMAIL"            // maps to models.ErrEmailAlreadyExists
+	ErrCodeStoryConfigNotFound           = "STORY_CONFIG_NOT_FOUND"     // maps to models.ErrStoryConfigNotFound
+	ErrCodeUserHasActiveGeneration       = "USER_HAS_ACTIVE_GENERATION" // maps to models.ErrUserHasActiveGeneration
+	ErrCodeCannotRevise                  = "CANNOT_REVISE"              // maps to models.ErrCannotRevise
+	ErrCodeGenerationInProgress          = "GENERATION_IN_PROGRESS"     // maps to models.ErrGenerationInProgress
+	ErrCodeStoryNotReadyYet              = "STORY_NOT_READY_YET"        // maps to models.ErrStoryNotReadyYet
+	ErrCodeSceneNeedsGeneration          = "SCENE_NEEDS_GENERATION"     // maps to models.ErrSceneNeedsGeneration
+	ErrCodeStoryNotReadyForPublishing    = "STORY_NOT_READY_FOR_PUBLISHING"
+	ErrCodeAdultContentCannotBePublic    = "ADULT_CONTENT_CANNOT_BE_PUBLIC"
+	ErrCodeCannotRetry                   = "CANNOT_RETRY_GENERATION"
+	ErrCodeCannotUpdateSubmittedStory    = "CANNOT_UPDATE_SUBMITTED_STORY"
+	ErrCodeStoryAlreadyGeneratingOrReady = "STORY_ALREADY_GENERATING_OR_READY"
+
+	// Gameplay / Publishing Specific Error Codes
+	ErrCodeInvalidOperation       = "INVALID_OPERATION"
+	ErrCodeInvalidLimit           = "INVALID_LIMIT"
+	ErrCodeInvalidOffset          = "INVALID_OFFSET"
+	ErrCodeChoiceNotFound         = "CHOICE_NOT_FOUND"
+	ErrCodeInvalidChoiceIndex     = "INVALID_CHOICE_INDEX"
+	ErrCodeCannotPublish          = "CANNOT_PUBLISH"
+	ErrCodeCannotPublishNoConfig  = "CANNOT_PUBLISH_NO_CONFIG"
+	ErrCodeStoryNotFound          = "STORY_NOT_FOUND" // Note: Consider merging with ErrCodeNotFound
+	ErrCodeSceneNotFound          = "SCENE_NOT_FOUND"
+	ErrCodePlayerProgressNotFound = "PLAYER_PROGRESS_NOT_FOUND"
+	ErrCodeStoryNotReady          = "STORY_NOT_READY" // Note: Consider merging with ErrCodeStoryNotReadyYet
+	ErrCodeInvalidChoice          = "INVALID_CHOICE"
+	ErrCodeNoChoicesAvailable     = "NO_CHOICES_AVAILABLE"
+	ErrCodeAlreadyLiked           = "ALREADY_LIKED"
+	ErrCodeNotLikedYet            = "NOT_LIKED_YET"
 
 	// 5xx Server Errors
 	ErrCodeInternal      = "INTERNAL_ERROR" // Generic Internal Server Error (maps to models.ErrInternalServer)

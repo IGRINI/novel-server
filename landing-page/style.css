@@ -42,7 +42,7 @@
 /* --- Variables --- */
 :root {
     --background-color: #0a0a1a; 
-    --primary-color: #00ffff; 
+    --primary-color: #00c3fd; /* Изменяем основной цвет на новый */
     --secondary-color: #4d00ff; 
     --text-color: #e0e0ff; 
     --text-color-muted: #a0a0cc; 
@@ -72,6 +72,43 @@ body {
     font-weight: 400; /* Default to regular */
     line-height: 1.6;
     overflow-x: hidden; 
+    position: relative; /* Нужно для позиционирования псевдо-элементов сетки */
+    z-index: 0; /* Устанавливаем базовый z-index */
+}
+
+/* Псевдо-элементы для создания анимированной сетки */
+body::before, body::after {
+    content: '';
+    position: fixed; /* Фиксируем относительно viewport */
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none; /* Не мешают взаимодействию */
+    z-index: -1; /* Под всем контентом */
+    opacity: 0.08; /* Очень слабая видимость */
+}
+
+body::before {
+    /* Горизонтальные линии */
+    background: linear-gradient(to bottom, transparent 98%, var(--primary-color) 99%);
+    background-size: 100% 40px; /* Размер ячейки */
+    animation: gridSlideVertical 30s linear infinite;
+}
+
+body::after {
+    /* Вертикальные линии */
+    background: linear-gradient(to right, transparent 98%, var(--primary-color) 99%);
+    background-size: 40px 100%; /* Размер ячейки */
+    animation: gridSlideHorizontal 25s linear infinite;
+}
+
+@keyframes gridSlideVertical {
+    from { background-position: 0 0; }
+    to { background-position: 0 -80px; } /* Сдвиг на две ячейки */
+}
+
+@keyframes gridSlideHorizontal {
+    from { background-position: 0 0; }
+    to { background-position: -80px 0; } /* Сдвиг на две ячейки */
 }
 
 .container {
@@ -93,6 +130,28 @@ h1, h2, h3 {
 h1 {
     font-size: 2.8rem;
     font-weight: 800; /* ExtraBold for main title */
+    position: relative; /* Для глитч-эффекта */
+}
+
+/* Глитч-эффект для H1 */
+@keyframes glitch {
+    0%, 100% { transform: translate(0); opacity: 1; }
+    10% { transform: translate(-3px, 2px); }
+    20% { transform: translate(3px, -2px); }
+    30% { transform: translate(-3px, -2px); }
+    40% { transform: translate(3px, 2px); }
+    50% { transform: translate(-2px, 3px); }
+    60% { transform: translate(2px, -3px); }
+    70% { transform: translate(0); opacity: 0.8; }
+    80% { transform: translate(-1px, 1px) skewX(-5deg); color: var(--secondary-color); text-shadow: none; }
+    90% { transform: translate(1px, -1px) skewX(5deg); color: var(--primary-color); text-shadow: var(--glow-effect); }
+}
+
+.hero__title {
+    margin-bottom: 0.5em;
+    /* Применяем анимацию */
+    animation: fadeInDown 0.8s ease-out forwards, glitch 5s 1s infinite linear alternate;
+    /* Запускаем глитч с задержкой, не постоянно, делаем его случайным позже через JS */
 }
 
 h2 {
@@ -143,10 +202,22 @@ ul {
 }
 
 .logo {
-    font-size: 1.5rem;
-    font-weight: 800; /* ExtraBold logo */
-    text-shadow: var(--glow-effect);
+    display: inline-block; /* Чтобы размеры правильно применялись */
+    vertical-align: middle; /* Выравниваем по центру с другими элементами хедера */
+    line-height: 0; /* Убираем лишнее пространство под картинкой */
 }
+
+.logo img {
+    max-height: 40px; /* Ограничиваем высоту логотипа */
+    width: auto; /* Ширина подстроится автоматически */
+    display: block; /* Убираем лишнее пространство под картинкой */
+    transition: filter 0.3s ease; /* Добавляем плавность для возможного hover-эффекта */
+}
+
+/* Можно добавить эффект при наведении, если нужно */
+/* .logo:hover img {
+    filter: drop-shadow(0 0 5px var(--primary-color));
+} */
 
 .nav__list {
     display: flex;
@@ -194,16 +265,47 @@ ul {
     align-items: center;
     text-align: center;
     padding: 4rem 0;
-    
-    background: radial-gradient(circle, rgba(10, 10, 30, 0.9) 0%, var(--background-color) 70%);
+    position: relative; 
+    overflow: hidden; 
+    /* Заменяем градиент на фоновое изображение */
+    /* background: radial-gradient(circle, rgba(10, 10, 30, 0.9) 0%, var(--background-color) 70%); */
+    background-image: url('assets/images/bg.jpg');
+    background-size: cover; /* Масштабируем, чтобы покрыть всю секцию */
+    background-position: center center; /* Центрируем изображение */
+    background-repeat: no-repeat; /* Не повторяем */
+}
+
+/* Уменьшаем прозрачность оверлея с градиентом */
+.hero::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: linear-gradient(135deg, rgba(0, 195, 253, 0.02), rgba(77, 0, 255, 0.03), rgba(0, 195, 253, 0.02)); 
+    background-size: 400% 400%;
+    animation: subtleGradientShift 25s ease infinite;
+    z-index: 1; /* Над фоном, под затемнением */
+    opacity: 0.3; 
+}
+
+/* Добавляем темный оверлей для затемнения фона */
+.hero::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-color: rgba(10, 10, 30, 0.7); /* Черный с 50% прозрачностью */
+    z-index: 0; /* Прямо над фоновой картинкой */
+}
+
+@keyframes subtleGradientShift {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
 }
 
 .hero__container {
     max-width: 800px;
-}
-
-.hero__title {
-    margin-bottom: 0.5em;
+    position: relative; 
+    z-index: 2; /* Над всеми оверлеями */
 }
 
 .hero__tagline {
@@ -252,7 +354,7 @@ ul {
 
 .cta-button--primary:hover,
 .cta-button--primary:focus {
-    transform: translateY(-3px);
+    transform: translateY(-4px); /* Чуть заметнее */
     box-shadow: var(--glow-effect);
     background-color: #fff;
     color: var(--background-color);
@@ -267,7 +369,7 @@ ul {
 
 .cta-button--secondary:hover,
 .cta-button--secondary:focus {
-    transform: translateY(-3px);
+    transform: translateY(-4px); /* Чуть заметнее */
     background-color: rgba(0, 255, 255, 0.1);
     box-shadow: 0 0 12px rgba(0, 255, 255, 0.7);
 }
@@ -334,7 +436,6 @@ ul {
 .how-it-works__steps {
     display: flex;
     justify-content: space-around; /* Distribute space */
-    align-items: flex-start; /* Align items top */
     flex-wrap: wrap; /* Allow wrapping on smaller screens */
     gap: 1rem; /* Space between items if they wrap */
     margin-top: 3rem;
@@ -406,10 +507,22 @@ ul {
     padding: 2rem;
     border-radius: 10px;
     text-align: center;
-    transition: transform 0.3s ease, box-shadow 0.3s ease, background-color 0.3s ease;
+    transition: transform 0.3s ease, box-shadow 0.3s ease, background-color 0.3s ease, opacity 0.6s ease-out; /* Добавляем opacity в transition */
     position: relative;
     overflow: hidden;
     z-index: 1;
+    opacity: 0; /* Скрываем по умолчанию для анимации */
+}
+
+/* Стили для видимых карточек (добавляются JS) */
+.feature-card.is-visible-left {
+    opacity: 1;
+    animation: fadeInLeft 0.7s ease-out forwards;
+}
+
+.feature-card.is-visible-right {
+    opacity: 1;
+    animation: fadeInRight 0.7s ease-out forwards;
 }
 
 .feature-card:hover {
@@ -423,6 +536,12 @@ ul {
     margin-bottom: 1rem;
     color: var(--primary-color);
     text-shadow: var(--glow-effect);
+    transition: text-shadow 0.3s ease; /* Плавный переход для тени */
+}
+
+/* Свечение иконки при наведении на карточку */
+.feature-card:hover .feature-card__icon {
+     text-shadow: 0 0 8px var(--primary-color), 0 0 15px var(--primary-color);
 }
 
 .feature-card__title {
@@ -929,25 +1048,26 @@ ul {
 /* --------- AI Prompt Section Styles --------- */
 .ai-prompt-section {
     padding: 80px 0;
-    background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%); /* Светлый градиент */
+    background: var(--background-color); /* Используем основной фон */
     text-align: center;
     position: relative;
-    overflow: hidden; /* Для возможных фоновых эффектов */
+    overflow: hidden; 
+    /* Добавим границу сверху для визуального отделения */
+    border-top: 1px solid rgba(0, 255, 255, 0.1);
 }
 
 .ai-prompt-section h2 {
     font-size: 2.8rem;
-    color: #333;
     margin-bottom: 20px;
 }
 
 .ai-prompt-section p {
     font-size: 1.1rem;
-    color: #555;
     margin-bottom: 40px;
     max-width: 600px;
     margin-left: auto;
     margin-right: auto;
+    color: var(--text-color-muted); /* Явно зададим приглушенный цвет */
 }
 
 .prompt-input-wrapper {
@@ -956,22 +1076,71 @@ ul {
     margin: 0 auto 30px auto;
 }
 
+/* --- Индикатор мышления ИИ --- */
+.ai-thinking-indicator {
+    position: absolute;
+    right: 15px; /* Располагаем справа внутри wrapper */
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    gap: 4px; /* Расстояние между точками */
+    pointer-events: none; /* Не мешает кликам по textarea */
+}
+
+.ai-thinking-indicator::before,
+.ai-thinking-indicator::after {
+    content: '';
+    display: block;
+    width: 8px;
+    height: 8px;
+    background-color: var(--primary-color);
+    border-radius: 50%;
+    animation: thinkingPulse 1.4s infinite ease-in-out both;
+}
+
+.ai-thinking-indicator::before {
+    animation-delay: -0.32s; /* Задержка для первой точки */
+}
+
+.ai-thinking-indicator::after {
+    animation-delay: -0.16s; /* Задержка для второй точки */
+}
+
+/* Анимация пульсации для точек */
+@keyframes thinkingPulse {
+    0%, 80%, 100% { 
+        transform: scale(0.5);
+        opacity: 0.5;
+    } 
+    40% { 
+        transform: scale(1.0);
+        opacity: 1; 
+    } 
+}
+
 #ai-prompt-input {
     width: 100%;
-    padding: 18px 25px;
+    padding: 15px 20px;
     font-size: 1.1rem;
-    border: 2px solid #ccc;
-    border-radius: 50px; /* Более скругленные углы */
-    background-color: #fff;
-    color: #333;
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
-    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+    font-family: var(--font-primary);
+    background-color: rgba(10, 10, 30, 0.7); 
+    border: 1px solid rgba(0, 255, 255, 0.5); 
+    border-radius: 5px;
+    color: var(--text-color);
+    transition: border-color 0.3s ease, box-shadow 0.3s ease, background-color 0.3s ease;
+    caret-color: var(--primary-color); 
+    resize: none; /* Запрещаем изменение размера */
+    line-height: 1.4; /* Немного увеличиваем межстрочный интервал */
+    /* Убедимся, что высота соответствует примерно двум строкам + padding */
+    /* Можно использовать min-height, если нужно, но rows=2 должно хватить */
 }
 
 #ai-prompt-input:focus {
     outline: none;
-    border-color: #007bff;
-    box-shadow: 0 0 0 4px rgba(0, 123, 255, 0.2);
+    border-color: var(--primary-color);
+    background-color: rgba(10, 10, 30, 0.7); /* Darken slightly more on focus */
+    /* Using the standard glow effect variable */
+    box-shadow: var(--glow-effect); 
 }
 
 #ai-prompt-input::placeholder {
@@ -987,13 +1156,17 @@ ul {
 
 /* Стиль для неактивного (readonly) поля */
 #ai-prompt-input[readonly] {
-    cursor: default; /* Стандартный курсор */
-    background-color: #f8f9fa; /* Немного другой фон */
+    /* Keep readonly styles subtle */
+    background-color: rgba(10, 10, 30, 0.4);
+    cursor: default;
 }
+
 #ai-prompt-input[readonly]:focus {
-    /* Убираем стандартное выделение фокуса для readonly поля */
-    box-shadow: none;
-    border-color: #ccc;
+     /* Ensure readonly focus doesn't add the full interactive glow */
+    outline: none;
+    border-color: rgba(0, 255, 255, 0.5); 
+    box-shadow: none; 
+    background-color: rgba(10, 10, 30, 0.4);
 }
 
 /* --------- How It Works Section Styles --------- */
@@ -1281,25 +1454,25 @@ html {
 }
 
 /* --- Animations --- */
-@keyframes fadeInDown {
+@keyframes fadeInLeft {
     from {
         opacity: 0;
-        transform: translateY(-20px);
+        transform: translateX(-30px);
     }
     to {
         opacity: 1;
-        transform: translateY(0);
+        transform: translateX(0);
     }
 }
 
-@keyframes fadeInUp {
+@keyframes fadeInRight {
     from {
         opacity: 0;
-        transform: translateY(20px);
+        transform: translateX(30px);
     }
     to {
         opacity: 1;
-        transform: translateY(0);
+        transform: translateX(0);
     }
 }
 

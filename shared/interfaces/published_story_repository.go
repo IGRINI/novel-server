@@ -2,6 +2,7 @@ package interfaces
 
 import (
 	"context"
+	"encoding/json"
 	"novel-server/shared/models"
 
 	"github.com/google/uuid"
@@ -18,17 +19,17 @@ type PublishedStoryRepository interface {
 	// UpdateStatusDetails updates the status, setup, error details, and potentially ending text of a published story.
 	// Use this method for various state transitions after generation tasks.
 	// Set setup, errorDetails, or endingText to nil if they shouldn't be updated.
-	UpdateStatusDetails(ctx context.Context, id uuid.UUID, status models.StoryStatus, setup []byte, errorDetails *string, endingText *string) error
+	UpdateStatusDetails(ctx context.Context, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, title, description, errorDetails *string) error
 
 	// SetPublic updates the is_public flag for a story.
 	// Requires userID for ownership check.
 	SetPublic(ctx context.Context, id uuid.UUID, userID uuid.UUID, isPublic bool) error
 
-	// ListPublic retrieves a paginated list of public, non-adult stories.
-	ListPublic(ctx context.Context, limit, offset int) ([]*models.PublishedStory, error)
+	// ListPublic retrieves a paginated list of public, non-adult stories using cursor pagination.
+	ListPublic(ctx context.Context, cursor string, limit int) ([]*models.PublishedStory, string, error)
 
-	// ListByUserID retrieves a paginated list of stories created by a specific user.
-	ListByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.PublishedStory, error)
+	// ListByUserID retrieves a paginated list of stories created by a specific user using cursor pagination.
+	ListByUserID(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*models.PublishedStory, string, error)
 
 	// IncrementLikesCount атомарно увеличивает счетчик лайков для истории.
 	IncrementLikesCount(ctx context.Context, id uuid.UUID) error
@@ -36,4 +37,11 @@ type PublishedStoryRepository interface {
 	// DecrementLikesCount атомарно уменьшает счетчик лайков для истории.
 	// Реализация должна убедиться, что счетчик не уходит ниже нуля.
 	DecrementLikesCount(ctx context.Context, id uuid.UUID) error
+
+	// UpdateVisibility updates the visibility of a story.
+	UpdateVisibility(ctx context.Context, storyID, userID uuid.UUID, isPublic bool) error
+
+	// ListByIDs retrieves a list of published stories based on their IDs.
+	// The order of returned stories is not guaranteed to match the input ID order.
+	ListByIDs(ctx context.Context, ids []uuid.UUID) ([]*models.PublishedStory, error)
 }

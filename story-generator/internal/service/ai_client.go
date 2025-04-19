@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/api"
+	"github.com/pkoukk/tiktoken-go"
 	openaigo "github.com/sashabaranov/go-openai"
 
 	// Prometheus imports
@@ -34,13 +35,22 @@ type GenerationParams struct {
 // ErrAIGenerationFailed - ошибка при генерации текста AI
 var ErrAIGenerationFailed = errors.New("ошибка генерации текста AI")
 
+// --- Pricing Constants (Example for gpt-4.1-nano variants) ---
+// TODO: Move pricing to configuration?
+const (
+	pricePerMillionInputTokensNano  = 0.10
+	pricePerMillionOutputTokensNano = 0.40
+)
+
+// --- End Pricing Constants ---
+
 var (
 	aiRequestsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "story_generator_ai_requests_total",
 			Help: "Total number of requests to the AI API.",
 		},
-		[]string{"model", "status"}, // Labels: model used, success/error
+		[]string{"model", "status", "user_id"}, // Labels: model used, success/error, user_id
 	)
 	aiRequestDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -48,7 +58,7 @@ var (
 			Help:    "Histogram of AI API request durations.",
 			Buckets: prometheus.DefBuckets, // Default buckets: .005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10
 		},
-		[]string{"model"},
+		[]string{"model", "user_id"}, // Labels: model used, user_id
 	)
 	aiPromptTokens = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -56,7 +66,7 @@ var (
 			Help:    "Histogram of prompt token counts.",
 			Buckets: prometheus.LinearBuckets(250, 250, 20), // 250, 500, ..., 5000
 		},
-		[]string{"model"},
+		[]string{"model", "user_id"}, // Labels: model used, user_id
 	)
 	aiCompletionTokens = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -64,7 +74,7 @@ var (
 			Help:    "Histogram of completion token counts.",
 			Buckets: prometheus.LinearBuckets(100, 100, 20), // 100, 200, ..., 2000
 		},
-		[]string{"model"},
+		[]string{"model", "user_id"}, // Labels: model used, user_id
 	)
 	aiTotalTokens = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -72,16 +82,24 @@ var (
 			Help:    "Histogram of total token counts (prompt + completion).",
 			Buckets: prometheus.LinearBuckets(350, 350, 20), // 350, 700, ..., 7000
 		},
-		[]string{"model"},
+		[]string{"model", "user_id"}, // Labels: model used, user_id
+	)
+	// <<< Новая метрика для стоимости >>>
+	aiEstimatedCostUSD = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "story_generator_ai_estimated_cost_usd_total",
+			Help: "Estimated cost of AI token usage in USD.",
+		},
+		[]string{"model", "user_id"}, // Labels: model used, user_id
 	)
 )
 
 // AIClient интерфейс для взаимодействия с AI API
 type AIClient interface {
 	// GenerateText генерирует текст на основе системного промта, ввода пользователя и параметров.
-	GenerateText(ctx context.Context, systemPrompt string, userInput string, params GenerationParams) (string, error)
+	GenerateText(ctx context.Context, userID string, systemPrompt string, userInput string, params GenerationParams) (string, error)
 	// GenerateTextStream генерирует текст и вызывает chunkHandler для каждого полученного фрагмента.
-	GenerateTextStream(ctx context.Context, systemPrompt string, userInput string, params GenerationParams, chunkHandler func(string) error) error
+	GenerateTextStream(ctx context.Context, userID string, systemPrompt string, userInput string, params GenerationParams, chunkHandler func(string) error) error
 }
 
 // --- OpenAI Client Implementation ---
@@ -93,10 +111,10 @@ type openAIClient struct {
 }
 
 // GenerateText генерирует текст на основе системного промта и ввода пользователя
-func (c *openAIClient) GenerateText(ctx context.Context, systemPrompt string, userInput string, params GenerationParams) (string, error) {
+func (c *openAIClient) GenerateText(ctx context.Context, userID string, systemPrompt string, userInput string, params GenerationParams) (string, error) {
 	if strings.TrimSpace(systemPrompt) == "" {
-		log.Printf("Ошибка: Системный промт пуст после подготовки. Невозможно отправить запрос к AI.")
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error"}).Inc()
+		log.Printf("Ошибка: Системный промт пуст после подготовки. userID: %s", userID)
+		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error", "user_id": userID}).Inc()
 		return "", fmt.Errorf("%w: системный промт пуст", ErrAIGenerationFailed)
 	}
 
@@ -115,8 +133,8 @@ func (c *openAIClient) GenerateText(ctx context.Context, systemPrompt string, us
 	}
 
 	startTime := time.Now()
-	log.Printf("Отправка запроса к AI: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes",
-		c.model, len(systemPrompt), len(userInput))
+	log.Printf("Отправка запроса к AI: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes, UserID: %s",
+		c.model, len(systemPrompt), len(userInput), userID)
 
 	resp, err := c.client.CreateChatCompletion(
 		ctx,
@@ -133,43 +151,49 @@ func (c *openAIClient) GenerateText(ctx context.Context, systemPrompt string, us
 	duration := time.Since(startTime)
 
 	if err != nil {
-		log.Printf("Ошибка от AI API за %v: %v", duration, err)
+		log.Printf("Ошибка от AI API за %v (userID: %s): %v", duration, userID, err)
 		// <<< Prometheus Metrics: Increment error counter >>>
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error"}).Inc()
+		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error", "user_id": userID}).Inc()
 		return "", fmt.Errorf("%w: %v", ErrAIGenerationFailed, err)
 	}
 
 	if len(resp.Choices) == 0 || resp.Choices[0].Message.Content == "" {
-		log.Printf("AI API вернул пустой ответ за %v", duration)
+		log.Printf("AI API вернул пустой ответ за %v (userID: %s)", duration, userID)
 		// <<< Prometheus Metrics: Increment error counter (empty response treated as error) >>>
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error"}).Inc()
+		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error", "user_id": userID}).Inc()
 		return "", fmt.Errorf("%w: получен пустой ответ", ErrAIGenerationFailed)
 	}
 
 	// <<< Prometheus Metrics: Increment success counter and observe metrics >>>
-	aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "success"}).Inc()
-	aiRequestDuration.With(prometheus.Labels{"model": c.model}).Observe(duration.Seconds())
+	aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "success", "user_id": userID}).Inc()
+	aiRequestDuration.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(duration.Seconds())
 
 	generatedText := resp.Choices[0].Message.Content
-	log.Printf("Ответ от AI API получен за %v. Длина ответа: %d символов.", duration, len(generatedText))
+	log.Printf("Ответ от AI API получен за %v. Длина ответа: %d символов. (userID: %s)", duration, len(generatedText), userID)
 
 	// Дополнительно можно логировать Usage info: resp.Usage
 	if resp.Usage.TotalTokens > 0 {
-		log.Printf("AI Usage: PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
-			resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
+		log.Printf("AI Usage (userID: %s): PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
+			userID, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
 		// <<< Prometheus Metrics: Observe token counts >>>
-		aiPromptTokens.With(prometheus.Labels{"model": c.model}).Observe(float64(resp.Usage.PromptTokens))
-		aiCompletionTokens.With(prometheus.Labels{"model": c.model}).Observe(float64(resp.Usage.CompletionTokens))
-		aiTotalTokens.With(prometheus.Labels{"model": c.model}).Observe(float64(resp.Usage.TotalTokens))
+		aiPromptTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(resp.Usage.PromptTokens))
+		aiCompletionTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(resp.Usage.CompletionTokens))
+		aiTotalTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(resp.Usage.TotalTokens))
+		// <<< Рассчитываем и обновляем стоимость >>>
+		cost := calculateCost(c.model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+		if cost > 0 {
+			aiEstimatedCostUSD.With(prometheus.Labels{"model": c.model, "user_id": userID}).Add(cost)
+			log.Printf("AI Usage Cost (estimated, userID: %s): $%.6f", userID, cost)
+		}
 	}
 
 	return generatedText, nil
 }
 
 // GenerateTextStream генерирует текст в потоковом режиме, вызывая chunkHandler.
-func (c *openAIClient) GenerateTextStream(ctx context.Context, systemPrompt string, userInput string, params GenerationParams, chunkHandler func(string) error) error {
+func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, systemPrompt string, userInput string, params GenerationParams, chunkHandler func(string) error) error {
 	if strings.TrimSpace(systemPrompt) == "" {
-		log.Printf("Ошибка стриминга: Системный промт пуст после подготовки.")
+		log.Printf("Ошибка стриминга: Системный промт пуст после подготовки. userID: %s", userID)
 		// Не инкрементируем метрику здесь, т.к. запрос не будет отправлен
 		return fmt.Errorf("%w: системный промт пуст для стриминга", ErrAIGenerationFailed)
 	}
@@ -196,31 +220,32 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, systemPrompt stri
 		TopP:        float32Val(params.TopP),
 	}
 
-	log.Printf("Отправка STREAM запроса к OpenAI: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes",
-		c.model, len(systemPrompt), len(userInput))
+	log.Printf("Отправка STREAM запроса к OpenAI: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes, UserID: %s",
+		c.model, len(systemPrompt), len(userInput), userID)
 
 	stream, err := c.client.CreateChatCompletionStream(ctx, request)
 	if err != nil {
-		log.Printf("Ошибка создания стрима от OpenAI API: %v", err)
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error_stream_init"}).Inc()
+		log.Printf("Ошибка создания стрима от OpenAI API (userID: %s): %v", userID, err)
+		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error_stream_init", "user_id": userID}).Inc()
 		return fmt.Errorf("%w: ошибка создания стрима: %v", ErrAIGenerationFailed, err)
 	}
 	defer stream.Close()
 
-	log.Printf("Стрим от OpenAI API успешно инициирован. Чтение...")
+	log.Printf("Стрим от OpenAI API успешно инициирован. Чтение... (userID: %s)", userID)
 	startTime := time.Now()
 	completionTokens := 0
-	promptTokens := 0 // Попытаемся получить из первого ответа, если возможно
+	promptTokens := 0                       // Попытаемся получить из первого ответа, если возможно
+	var responseTextBuilder strings.Builder // <<< Для сбора полного текста ответа
 
 	for {
 		response, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
-			log.Printf("Стрим OpenAI завершен.")
+			log.Printf("Стрим OpenAI завершен. (userID: %s)", userID)
 			break
 		}
 		if err != nil {
-			log.Printf("Ошибка чтения из стрима OpenAI: %v", err)
-			aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error_stream_read"}).Inc()
+			log.Printf("Ошибка чтения из стрима OpenAI (userID: %s): %v", userID, err)
+			aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error_stream_read", "user_id": userID}).Inc()
 			return fmt.Errorf("%w: ошибка чтения стрима: %v", ErrAIGenerationFailed, err)
 		}
 
@@ -233,9 +258,10 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, systemPrompt stri
 			if chunk != "" {
 				// Считаем completion токены по мере поступления (приблизительно, по количеству чанков/символов)
 				// Точный подсчет токенов в стриме сложен без доп. информации от API
-				completionTokens++ // Очень грубый подсчет
+				// completionTokens++ // <<< Удаляем очень грубый подсчет
+				responseTextBuilder.WriteString(chunk) // <<< Собираем текст ответа
 				if err := chunkHandler(chunk); err != nil {
-					log.Printf("Ошибка обработки чанка стрима OpenAI: %v", err)
+					log.Printf("Ошибка обработки чанка стрима OpenAI (userID: %s): %v", userID, err)
 					// Решаем, должна ли ошибка обработчика прерывать стрим
 					return fmt.Errorf("ошибка обработчика стрима: %w", err) // Прерываем
 				}
@@ -244,24 +270,76 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, systemPrompt stri
 	}
 
 	duration := time.Since(startTime)
-	log.Printf("Обработка стрима OpenAI завершена за %v.", duration)
+	log.Printf("Обработка стрима OpenAI завершена за %v. (userID: %s)", duration, userID)
 
 	// Метрики после успешного завершения стрима
-	aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "success_stream"}).Inc()
-	aiRequestDuration.With(prometheus.Labels{"model": c.model}).Observe(duration.Seconds())
+	aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "success_stream", "user_id": userID}).Inc()
+	aiRequestDuration.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(duration.Seconds())
 	// Токены для стрима - сложная задача. OpenAI обычно не дает их в стриме.
 	// Можно логировать/метрики по количеству чанков или общей длине текста.
+	// <<< Начало: Подсчет токенов с помощью tiktoken >>>
+	tke, err := tiktoken.EncodingForModel(c.model)
+	if err != nil {
+		log.Printf("Ошибка получения кодировщика tiktoken для модели %s: %v. Метрики токенов не будут записаны.", c.model, err)
+	} else {
+		// Считаем токены промпта
+		promptTokens = len(tke.Encode(systemPrompt, nil, nil))
+		if userInput != "" {
+			promptTokens += len(tke.Encode(userInput, nil, nil))
+			// TODO: Учесть служебные токены для сообщений (зависит от модели, см. документацию OpenAI/tiktoken)
+		}
+
+		// Считаем токены ответа
+		completionText := responseTextBuilder.String()
+		completionTokens = len(tke.Encode(completionText, nil, nil))
+
+		log.Printf("OpenAI Stream Usage (tiktoken, userID: %s): PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
+			userID, promptTokens, completionTokens, promptTokens+completionTokens)
+
+		if promptTokens > 0 {
+			aiPromptTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(promptTokens))
+		}
+		if completionTokens > 0 {
+			aiCompletionTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(completionTokens))
+		}
+		if promptTokens > 0 && completionTokens > 0 {
+			aiTotalTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(promptTokens + completionTokens))
+		}
+		// <<< Рассчитываем и обновляем стоимость для стрима >>>
+		cost := calculateCost(c.model, promptTokens, completionTokens)
+		if cost > 0 {
+			aiEstimatedCostUSD.With(prometheus.Labels{"model": c.model, "user_id": userID}).Add(cost)
+			log.Printf("OpenAI Stream Usage Cost (estimated, userID: %s): $%.6f", userID, cost)
+		}
+	}
+	// <<< Конец: Подсчет токенов с помощью tiktoken >>>
+	/* <<< Удаляем старую, неработающую логику записи метрик токенов >>>
 	if promptTokens > 0 { // Если удалось получить
-		aiPromptTokens.With(prometheus.Labels{"model": c.model}).Observe(float64(promptTokens))
+		aiPromptTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(promptTokens))
 	}
 	if completionTokens > 0 { // Используем наш грубый подсчет
-		aiCompletionTokens.With(prometheus.Labels{"model": c.model}).Observe(float64(completionTokens))
+		aiCompletionTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(completionTokens))
 	}
 	if promptTokens > 0 && completionTokens > 0 {
-		aiTotalTokens.With(prometheus.Labels{"model": c.model}).Observe(float64(promptTokens + completionTokens))
+		aiTotalTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(promptTokens + completionTokens))
 	}
+	*/
 
 	return nil
+}
+
+// <<< Новая функция для расчета стоимости >>>
+// calculateCost рассчитывает стоимость на основе модели и количества токенов
+func calculateCost(modelName string, promptTokens, completionTokens int) float64 {
+	// Используем цены "nano", если модель содержит "gpt-4.1-nano"
+	// Можно расширить логику для других моделей
+	if strings.Contains(modelName, "gpt-4.1-nano") {
+		promptCost := float64(promptTokens) * pricePerMillionInputTokensNano / 1_000_000
+		completionCost := float64(completionTokens) * pricePerMillionOutputTokensNano / 1_000_000
+		return promptCost + completionCost
+	}
+	// Возвращаем 0, если для модели нет цены
+	return 0.0
 }
 
 // --- Вспомогательная функция для конвертации *float64 в float32 ---
@@ -332,10 +410,10 @@ func newOllamaClient(cfg *config.Config) (AIClient, error) {
 }
 
 // GenerateText генерирует текст с использованием Ollama
-func (c *ollamaClient) GenerateText(ctx context.Context, systemPrompt string, userInput string, params GenerationParams) (string, error) {
+func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPrompt string, userInput string, params GenerationParams) (string, error) {
 	if strings.TrimSpace(systemPrompt) == "" {
-		log.Printf("Ошибка: Системный промт пуст. Невозможно отправить запрос к Ollama.")
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error"}).Inc()
+		log.Printf("Ошибка: Системный промт пуст. Невозможно отправить запрос к Ollama. userID: %s", userID)
+		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error", "user_id": userID}).Inc()
 		return "", fmt.Errorf("%w: системный промт пуст", ErrAIGenerationFailed)
 	}
 
@@ -362,8 +440,8 @@ func (c *ollamaClient) GenerateText(ctx context.Context, systemPrompt string, us
 	defer cancel()
 
 	startTime := time.Now()
-	log.Printf("Отправка запроса к Ollama: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes",
-		c.model, len(systemPrompt), len(userInput))
+	log.Printf("Отправка запроса к Ollama: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes, UserID: %s",
+		c.model, len(systemPrompt), len(userInput), userID)
 
 	// <<< DEBUG: Логирование полного запроса перед отправкой >>>
 	log.Printf("[OLLAMA_DEBUG] Request Messages: %+v", req.Messages)
@@ -398,11 +476,11 @@ func (c *ollamaClient) GenerateText(ctx context.Context, systemPrompt string, us
 		// <<< END DEBUG >>>
 		// Проверяем, не связана ли ошибка с таймаутом контекста
 		if errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("Ошибка таймаута (%v) от Ollama API за %v: %v", c.timeout, duration, err)
+			log.Printf("Ошибка таймаута (%v) от Ollama API за %v (userID: %s): %v", c.timeout, duration, userID, err)
 		} else {
-			log.Printf("Ошибка от Ollama API за %v: %v", duration, err)
+			log.Printf("Ошибка от Ollama API за %v (userID: %s): %v", duration, userID, err)
 		}
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error"}).Inc()
+		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error", "user_id": userID}).Inc()
 		return "", fmt.Errorf("%w: %v", ErrAIGenerationFailed, err)
 	}
 
@@ -410,8 +488,8 @@ func (c *ollamaClient) GenerateText(ctx context.Context, systemPrompt string, us
 		// <<< DEBUG: Логирование ответа при пустом контенте >>>
 		log.Printf("[OLLAMA_DEBUG] Empty content in final response: %+v", resp)
 		// <<< END DEBUG >>>
-		log.Printf("Ollama API вернул пустой ответ за %v", duration)
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error"}).Inc()
+		log.Printf("Ollama API вернул пустой ответ за %v (userID: %s)", duration, userID)
+		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error", "user_id": userID}).Inc()
 		return "", fmt.Errorf("%w: получен пустой ответ", ErrAIGenerationFailed)
 	}
 
@@ -419,27 +497,33 @@ func (c *ollamaClient) GenerateText(ctx context.Context, systemPrompt string, us
 	log.Printf("[OLLAMA_DEBUG] Successful final response: %+v", resp)
 	// <<< END DEBUG >>>
 
-	aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "success"}).Inc()
-	aiRequestDuration.With(prometheus.Labels{"model": c.model}).Observe(duration.Seconds())
+	aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "success", "user_id": userID}).Inc()
+	aiRequestDuration.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(duration.Seconds())
 
 	generatedText := resp.Message.Content
-	log.Printf("Ответ от Ollama API получен за %v. Длина ответа: %d символов.", duration, len(generatedText))
+	log.Printf("Ответ от Ollama API получен за %v. Длина ответа: %d символов. (userID: %s)", duration, len(generatedText), userID)
 
 	if resp.PromptEvalCount > 0 || resp.EvalCount > 0 {
-		log.Printf("Ollama Usage: PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
-			resp.PromptEvalCount, resp.EvalCount, resp.PromptEvalCount+resp.EvalCount)
-		aiPromptTokens.With(prometheus.Labels{"model": c.model}).Observe(float64(resp.PromptEvalCount))
-		aiCompletionTokens.With(prometheus.Labels{"model": c.model}).Observe(float64(resp.EvalCount))
-		aiTotalTokens.With(prometheus.Labels{"model": c.model}).Observe(float64(resp.PromptEvalCount + resp.EvalCount))
+		log.Printf("Ollama Usage (userID: %s): PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
+			userID, resp.PromptEvalCount, resp.EvalCount, resp.PromptEvalCount+resp.EvalCount)
+		aiPromptTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(resp.PromptEvalCount))
+		aiCompletionTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(resp.EvalCount))
+		aiTotalTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(resp.PromptEvalCount + resp.EvalCount))
+		// <<< Рассчитываем и обновляем стоимость >>>
+		cost := calculateCost(c.model, resp.PromptEvalCount, resp.EvalCount)
+		if cost > 0 {
+			aiEstimatedCostUSD.With(prometheus.Labels{"model": c.model, "user_id": userID}).Add(cost)
+			log.Printf("Ollama Usage Cost (estimated, userID: %s): $%.6f", userID, cost)
+		}
 	}
 
 	return generatedText, nil
 }
 
 // GenerateTextStream генерирует текст с использованием Ollama в потоковом режиме
-func (c *ollamaClient) GenerateTextStream(ctx context.Context, systemPrompt string, userInput string, params GenerationParams, chunkHandler func(string) error) error {
+func (c *ollamaClient) GenerateTextStream(ctx context.Context, userID string, systemPrompt string, userInput string, params GenerationParams, chunkHandler func(string) error) error {
 	if strings.TrimSpace(systemPrompt) == "" {
-		log.Printf("Ошибка стриминга Ollama: Системный промт пуст.")
+		log.Printf("Ошибка стриминга Ollama: Системный промт пуст. userID: %s", userID)
 		return fmt.Errorf("%w: системный промт пуст для стриминга", ErrAIGenerationFailed)
 	}
 
@@ -466,8 +550,8 @@ func (c *ollamaClient) GenerateTextStream(ctx context.Context, systemPrompt stri
 	defer cancel()
 
 	startTime := time.Now()
-	log.Printf("Отправка STREAM запроса к Ollama: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes",
-		c.model, len(systemPrompt), len(userInput))
+	log.Printf("Отправка STREAM запроса к Ollama: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes, UserID: %s",
+		c.model, len(systemPrompt), len(userInput), userID)
 
 	var finalErr error
 	var promptTokens, completionTokens int
@@ -476,7 +560,7 @@ func (c *ollamaClient) GenerateTextStream(ctx context.Context, systemPrompt stri
 		// Обрабатываем каждый чанк
 		if resp.Message.Content != "" {
 			if err := chunkHandler(resp.Message.Content); err != nil {
-				log.Printf("Ошибка обработки чанка стрима Ollama: %v", err)
+				log.Printf("Ошибка обработки чанка стрима Ollama (userID: %s): %v", userID, err)
 				// Прерываем стрим, возвращая ошибку из колбэка
 				return fmt.Errorf("ошибка обработчика стрима: %w", err)
 			}
@@ -501,11 +585,11 @@ func (c *ollamaClient) GenerateTextStream(ctx context.Context, systemPrompt stri
 	if err != nil {
 		// Если ошибка произошла во время стриминга (не в chunkHandler)
 		if errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("Ошибка таймаута (%v) во время стриминга Ollama за %v: %v", c.timeout, duration, err)
+			log.Printf("Ошибка таймаута (%v) во время стриминга Ollama за %v (userID: %s): %v", c.timeout, duration, userID, err)
 		} else {
-			log.Printf("Ошибка во время стриминга Ollama за %v: %v", duration, err)
+			log.Printf("Ошибка во время стриминга Ollama за %v (userID: %s): %v", duration, userID, err)
 		}
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error_stream"}).Inc()
+		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error_stream", "user_id": userID}).Inc()
 		// Если ошибка произошла в chunkHandler, она уже была возвращена выше
 		// Если ошибка произошла в самом клиенте Ollama, возвращаем ее
 		if finalErr == nil { // Не перезаписываем ошибку из resp.Done, если она была
@@ -518,16 +602,22 @@ func (c *ollamaClient) GenerateTextStream(ctx context.Context, systemPrompt stri
 	}
 
 	// Стрим успешно завершен (либо обработчиком, либо сам по себе)
-	log.Printf("Обработка стрима Ollama завершена за %v.", duration)
-	aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "success_stream"}).Inc()
-	aiRequestDuration.With(prometheus.Labels{"model": c.model}).Observe(duration.Seconds())
+	log.Printf("Обработка стрима Ollama завершена за %v. (userID: %s)", duration, userID)
+	aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "success_stream", "user_id": userID}).Inc()
+	aiRequestDuration.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(duration.Seconds())
 
 	if promptTokens > 0 || completionTokens > 0 {
-		log.Printf("Ollama Stream Usage: PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
-			promptTokens, completionTokens, promptTokens+completionTokens)
-		aiPromptTokens.With(prometheus.Labels{"model": c.model}).Observe(float64(promptTokens))
-		aiCompletionTokens.With(prometheus.Labels{"model": c.model}).Observe(float64(completionTokens))
-		aiTotalTokens.With(prometheus.Labels{"model": c.model}).Observe(float64(promptTokens + completionTokens))
+		log.Printf("Ollama Stream Usage (userID: %s): PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
+			userID, promptTokens, completionTokens, promptTokens+completionTokens)
+		aiPromptTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(promptTokens))
+		aiCompletionTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(completionTokens))
+		aiTotalTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(promptTokens + completionTokens))
+		// <<< Рассчитываем и обновляем стоимость >>>
+		cost := calculateCost(c.model, promptTokens, completionTokens)
+		if cost > 0 {
+			aiEstimatedCostUSD.With(prometheus.Labels{"model": c.model, "user_id": userID}).Add(cost)
+			log.Printf("Ollama Stream Usage Cost (estimated, userID: %s): $%.6f", userID, cost)
+		}
 	}
 
 	return nil

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,7 +12,8 @@ import (
 	sharedDatabase "novel-server/shared/database"     // Импорт для PublishedStoryRepository
 	sharedInterfaces "novel-server/shared/interfaces" // <<< Добавляем импорт shared/interfaces
 	sharedLogger "novel-server/shared/logger"         // <<< Добавляем импорт shared/logger
-	sharedMessaging "novel-server/shared/messaging"   // <<< Добавляем импорт shared/messaging
+
+	// <<< Добавляем импорт shared/messaging
 	sharedMiddleware "novel-server/shared/middleware" // <<< Импортируем shared/middleware
 	sharedModels "novel-server/shared/models"
 	"os"
@@ -23,7 +23,6 @@ import (
 
 	"github.com/gin-contrib/cors" // <<< Импортируем Gin CORS
 	"github.com/gin-gonic/gin"    // <<< Импортируем Gin
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -100,8 +99,11 @@ func main() {
 	gameplayService := service.NewGameplayService(storyConfigRepo, publishedRepo, sceneRepo, playerProgressRepo, likeRepo, taskPublisher, dbPool, logger)
 	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret)
 
-	// <<< Перезапуск зависших задач при старте >>>
-	go requeueStuckTasks(storyConfigRepo, taskPublisher, logger)
+	// <<< УДАЛЕНО: Перезапуск зависших задач при старте >>>
+	// go requeueStuckTasks(storyConfigRepo, taskPublisher, logger)
+
+	// <<< НОВОЕ: Установка статуса Error для зависших задач при старте >>>
+	go markStuckTasksAsError(storyConfigRepo, logger)
 
 	// Инициализация консьюмера уведомлений
 	notificationConsumer, err := messaging.NewNotificationConsumer(
@@ -201,82 +203,63 @@ func main() {
 	logger.Info("Gameplay Service успешно остановлен")
 }
 
-// <<< Новая функция для перезапуска зависших задач >>>
-func requeueStuckTasks(repo sharedInterfaces.StoryConfigRepository, publisher messaging.TaskPublisher, logger *zap.Logger) {
-	// Небольшая задержка перед проверкой, чтобы дать другим сервисам время запуститься
-	time.Sleep(10 * time.Second)
-	logger.Info("Проверка зависших задач генерации...")
+// <<< НОВАЯ ФУНКЦИЯ: Установка статуса Error для зависших задач >>>
+func markStuckTasksAsError(repo sharedInterfaces.StoryConfigRepository, logger *zap.Logger) {
+	// Небольшая задержка перед проверкой
+	time.Sleep(5 * time.Second)
+	logger.Info("Проверка зависших задач для установки статуса Error...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // Таймаут на всю операцию
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // Увеличим таймаут на случай большого кол-ва задач
 	defer cancel()
 
 	stuckConfigs, err := repo.FindGeneratingConfigs(ctx)
 	if err != nil {
-		logger.Error("Не удалось получить список зависших задач", zap.Error(err))
+		logger.Error("Не удалось получить список зависших задач для установки статуса Error", zap.Error(err))
 		return
 	}
 
 	if len(stuckConfigs) == 0 {
-		logger.Info("Зависших задач генерации не найдено.")
+		logger.Info("Зависших задач для установки статуса Error не найдено.")
 		return
 	}
 
-	logger.Info("Найдено зависших задач", zap.Int("count", len(stuckConfigs)))
+	logger.Info("Найдено зависших задач для установки статуса Error", zap.Int("count", len(stuckConfigs)))
+	updatedCount := 0
+	errorCount := 0
 
 	for _, cfg := range stuckConfigs {
-		logger.Warn("Перезапуск зависшей задачи",
+		logFields := []zap.Field{
 			zap.String("storyConfigID", cfg.ID.String()),
 			zap.String("userID", cfg.UserID.String()),
-			zap.String("status", string(cfg.Status)),
-		)
+			zap.String("currentStatus", string(cfg.Status)),
+		}
 
-		var promptType sharedMessaging.PromptType
-		var userInput string
-		var inputData map[string]interface{}
-
-		if cfg.Status == sharedModels.StatusGenerating {
-			promptType = sharedMessaging.PromptTypeNarrator
-			var userInputs []string
-			if err := json.Unmarshal(cfg.UserInput, &userInputs); err == nil && len(userInputs) > 0 {
-				userInput = userInputs[0]
-			} else if err != nil {
-				logger.Error("Не удалось десериализовать UserInput для перезапуска задачи", zap.String("storyConfigID", cfg.ID.String()), zap.Error(err))
-				continue
-			} else {
-				logger.Error("UserInput пуст для перезапуска задачи", zap.String("storyConfigID", cfg.ID.String()))
-				continue
-			}
-			inputData = nil
-		} else {
-			logger.Warn("Обнаружена зависшая задача с необрабатываемым статусом", zap.String("status", string(cfg.Status)), zap.String("storyConfigID", cfg.ID.String()))
+		// Проверяем еще раз на всякий случай, вдруг статус изменился пока мы работали
+		if cfg.Status != sharedModels.StatusGenerating && cfg.Status != sharedModels.StatusRevising { // Используем StatusRevising если он есть
+			logger.Info("Статус задачи изменился, пропускаем обновление", logFields...)
 			continue
 		}
 
-		newTaskID := uuid.New().String()
+		cfg.Status = sharedModels.StatusError
+		cfg.UpdatedAt = time.Now().UTC()
 
-		payload := sharedMessaging.GenerationTaskPayload{
-			TaskID:        newTaskID,
-			UserID:        cfg.UserID.String(),
-			PromptType:    promptType,
-			UserInput:     userInput,
-			InputData:     inputData,
-			StoryConfigID: cfg.ID.String(),
-		}
-
-		if err := publisher.PublishGenerationTask(ctx, payload); err != nil {
-			logger.Error("Не удалось отправить перезапущенную задачу в очередь",
-				zap.String("storyConfigID", cfg.ID.String()),
-				zap.String("newTaskID", newTaskID),
-				zap.Error(err),
-			)
+		// Используем новый контекст для обновления, чтобы не зависеть от общего таймаута
+		updateCtx, updateCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := repo.Update(updateCtx, cfg); err != nil {
+			logger.Error("Ошибка установки статуса Error для зависшей задачи", append(logFields, zap.Error(err))...)
+			errorCount++
 		} else {
-			logger.Info("Зависшая задача успешно отправлена в очередь на повторную обработку",
-				zap.String("storyConfigID", cfg.ID.String()),
-				zap.String("newTaskID", newTaskID),
-			)
+			logger.Warn("Установлен статус Error для зависшей задачи", logFields...)
+			updatedCount++
 		}
-		// Не меняем статус в БД здесь, пусть story-generator обработает и пришлет уведомление
+		updateCancel()
 	}
+
+	logger.Info("Завершение обработки зависших задач",
+		zap.Int("totalFound", len(stuckConfigs)),
+		zap.Int("updatedToError", updatedCount),
+		zap.Int("updateErrors", errorCount),
+	)
 }
 
 // setupDatabase инициализирует и возвращает пул соединений с БД

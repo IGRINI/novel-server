@@ -51,15 +51,24 @@
     {{/* Пагинация по offset */}}
     <nav aria-label="Pagination">
         <ul>
-            {{ $nextOffset := add .Offset .Limit }}
             <li>
+                {{/* Кнопка Назад */}}
+                {{ $prevOffset := max 0 (sub .Offset .Limit) }}
+                {{ if gt .Offset 0 }}
+                    <a href="/admin/users/{{ .TargetUser.ID }}/stories?limit={{ .Limit }}&offset={{ $prevOffset }}" role="button">← Предыдущая страница</a>
+                {{ else }}
+                    <button disabled aria-disabled="true">← Предыдущая страница</button>
+                {{ end }}
+            </li>
+            <li>
+                {{/* Кнопка Вперед */}}
+                {{ $nextOffset := add .Offset .Limit }}
                 {{ if .HasMore }}
                     <a href="/admin/users/{{ .TargetUser.ID }}/stories?limit={{ .Limit }}&offset={{ $nextOffset }}" role="button">Следующая страница →</a>
                 {{ else }}
                     <button disabled aria-disabled="true">Следующая страница →</button>
                 {{ end }}
             </li>
-            {{/* TODO: Добавить кнопку "Предыдущая страница", если offset > 0 */}}
         </ul>
     </nav>
 

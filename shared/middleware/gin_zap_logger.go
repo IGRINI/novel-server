@@ -10,19 +10,33 @@ import (
 )
 
 // ZapLoggingMiddlewareForGin возвращает middleware для Gin, которое логирует запросы с помощью zap.
+// Добавлена логика пропуска логирования для healthcheck и metrics эндпоинтов.
 func ZapLoggingMiddlewareForGin(log *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
+		path := c.Request.URL.Path
 
-		// Обрабатываем запрос
+		// <<< НАЧАЛО ИЗМЕНЕНИЙ: Пропускаем логирование для /health и /metrics >>>
+		// Проверяем путь ДО обработки запроса
+		if path == "/health" || path == "/metrics" {
+			c.Next() // Просто передаем управление дальше
+			return   // Выходим из middleware, логирование не будет выполнено
+		}
+		// <<< КОНЕЦ ИЗМЕНЕНИЙ >>>
+
+		// Обрабатываем запрос (только если путь не /health и не /metrics)
 		c.Next()
 
 		// После обработки запроса
 		latency := time.Since(start)
-		path := c.Request.URL.Path
+		// path уже получен выше
 		rawQuery := c.Request.URL.RawQuery
 		if rawQuery != "" {
-			path = path + "?" + rawQuery
+			// Важно: Не переопределять path здесь, если он /health или /metrics,
+			// но мы до этого кода не дойдем благодаря return выше.
+			// Если бы дошли, то нужно было бы получать path снова или использовать исходное значение.
+			pathWithQuery := path + "?" + rawQuery
+			path = pathWithQuery // Обновляем path для лога, если есть query
 		}
 
 		// Собираем поля для лога

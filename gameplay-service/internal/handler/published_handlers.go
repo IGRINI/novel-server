@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -16,9 +17,50 @@ import (
 
 // --- Структуры для ответов и запросов --- //
 
+// <<< НОВЫЕ СТРУКТУРЫ DTO ДЛЯ ОТВЕТА СЦЕНЫ КЛИЕНТУ >>>
+
+// GameSceneResponse - структура ответа для сцены, отправляемая клиенту
+type GameSceneResponse struct {
+	ID               string           `json:"id"`               // ID сцены
+	PublishedStoryID string           `json:"publishedStoryId"` // ID истории
+	Content          GameSceneContent `json:"content"`          // Содержимое сцены для клиента
+}
+
+// GameSceneContent - Содержимое сцены, отправляемое клиенту
+type GameSceneContent struct {
+	Type    string            `json:"type"`         // Тип контента ("choices", "game_over", "continuation")
+	Choices []GameChoiceBlock `json:"ch,omitempty"` // Блоки выбора (только для type="choices" или "continuation")
+	// Поля для концовок (копируем из SceneContent, т.к. они нужны клиенту)
+	EndingText             string         `json:"et,omitempty"`  // Текст стандартной концовки
+	NewPlayerDescription   string         `json:"npd,omitempty"` // Описание нового персонажа (для продолжения)
+	CoreStatsReset         map[string]int `json:"csr,omitempty"` // Новые статы (для продолжения)
+	EndingTextPreviousChar string         `json:"etp,omitempty"` // Текст концовки пред. персонажа (для продолжения)
+}
+
+// GameChoiceBlock - Блок выбора для клиента
+type GameChoiceBlock struct {
+	Shuffleable int               `json:"sh"`   // Можно ли перемешивать
+	Description string            `json:"desc"` // Описание ситуации
+	Options     []GameSceneOption `json:"opts"` // Опции выбора
+}
+
+// GameSceneOption - Опция выбора для клиента
+type GameSceneOption struct {
+	Text         string           `json:"txt"`  // Текст опции
+	Consequences GameConsequences `json:"cons"` // Последствия (только нужные клиенту)
+}
+
+// GameConsequences - Последствия выбора для клиента
+type GameConsequences struct {
+	CoreStatsChange map[string]int `json:"cs_chg,omitempty"`   // Изменения статов (показываем игроку)
+	ResponseText    string         `json:"resp_txt,omitempty"` // Текст-реакция на выбор (если есть)
+}
+
+// <<< КОНЕЦ НОВЫХ СТРУКТУР DTO >>>
+
 // <<< ДОБАВЛЕНО: Определение запроса для makeChoice
-type MakeChoiceRequest struct {
-	SelectedOptionIndex int `json:"selected_option_index" binding:"required,min=0,max=1"`
+type MakeChoicesRequest struct {
+	SelectedOptionIndices []int `json:"selected_option_indices" binding:"required,dive,min=0,max=1"`
 }
 
 // PublishedStorySummary представляет базовую информацию об опубликованной истории для списков.
@@ -56,6 +98,14 @@ type PublishedStoryDetail struct {
 	CoreStats         map[string]publishedCoreStatDetail `json:"core_stats"`
 	LastPlayedAt      *time.Time                         `json:"last_played_at,omitempty"` // Время последнего взаимодействия игрока с историей
 	IsAuthor          bool                               `json:"is_author"`                // Является ли текущий пользователь автором
+}
+
+// <<< НОВЫЙ ОБРАБОТЧИК: setStoryVisibility >>>
+// SetStoryVisibilityRequest - структура тела запроса для изменения видимости
+type SetStoryVisibilityRequest struct {
+	IsPublic bool `json:"is_public"` // Используем binding:"required"?
+	// Поле IsPublic должно быть булевым, но binding может не работать с bool напрямую?
+	// Проще проверить значение после биндинга.
 }
 
 // --- Обработчики --- //
@@ -295,10 +345,57 @@ func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
 		return
 	}
 
-	log.Info("Successfully fetched story scene",
+	// <<< НАЧАЛО ПРЕОБРАЗОВАНИЯ В DTO >>>
+	// Десериализуем Content из json.RawMessage в структуру SceneContent
+	var sceneContent sharedModels.SceneContent
+	if err := json.Unmarshal(scene.Content, &sceneContent); err != nil {
+		log.Error("Failed to unmarshal scene content", zap.String("sceneID", scene.ID.String()), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("internal error processing scene data"), h.logger) // Не отдаем детали ошибки клиенту
+		return
+	}
+
+	// Создаем DTO для ответа
+	responseDTO := GameSceneResponse{
+		ID:               scene.ID.String(),
+		PublishedStoryID: scene.PublishedStoryID.String(),
+		Content: GameSceneContent{
+			Type:                   sceneContent.Type,
+			EndingText:             sceneContent.EndingText, // Копируем поля концовок
+			NewPlayerDescription:   sceneContent.NewPlayerDescription,
+			CoreStatsReset:         sceneContent.CoreStatsReset,
+			EndingTextPreviousChar: sceneContent.EndingTextPreviousChar,
+		},
+	}
+
+	// Если тип контента - выборы, то конвертируем их
+	if sceneContent.Type == "choices" || sceneContent.Type == "continuation" {
+		responseDTO.Content.Choices = make([]GameChoiceBlock, 0, len(sceneContent.Choices))
+		for _, choiceBlock := range sceneContent.Choices {
+			gameChoiceBlock := GameChoiceBlock{
+				Shuffleable: choiceBlock.Shuffleable,
+				Description: choiceBlock.Description,
+				Options:     make([]GameSceneOption, 0, len(choiceBlock.Options)),
+			}
+			for _, option := range choiceBlock.Options {
+				gameSceneOption := GameSceneOption{
+					Text: option.Text,
+					Consequences: GameConsequences{
+						CoreStatsChange: option.Consequences.CoreStatsChange, // Копируем только изменения статов
+						ResponseText:    option.Consequences.ResponseText,    // и текст-реакцию
+					},
+				}
+				gameChoiceBlock.Options = append(gameChoiceBlock.Options, gameSceneOption)
+			}
+			responseDTO.Content.Choices = append(responseDTO.Content.Choices, gameChoiceBlock)
+		}
+	}
+	// <<< КОНЕЦ ПРЕОБРАЗОВАНИЯ В DTO >>>
+
+	log.Info("Successfully fetched and formatted story scene",
 		zap.String("sceneID", scene.ID.String()),
 	)
-	c.JSON(http.StatusOK, scene)
+	// <<< ОТПРАВЛЯЕМ DTO >>>
+	c.JSON(http.StatusOK, responseDTO)
 }
 
 // makeChoice обрабатывает выбор игрока в опубликованной истории.
@@ -317,28 +414,21 @@ func (h *GameplayHandler) makeChoice(c *gin.Context) {
 		return
 	}
 
-	var req MakeChoiceRequest
+	var req MakeChoicesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		h.logger.Warn("Invalid request body for makeChoice", zap.Stringer("userID", userID), zap.String("storyID", id.String()), zap.Error(err))
 		handleServiceError(c, fmt.Errorf("%w: invalid request body: %v", sharedModels.ErrBadRequest, err), h.logger)
 		return
 	}
 
-	// Валидация индекса (хотя может быть и в ShouldBindJSON, но для надежности)
-	if req.SelectedOptionIndex < 0 || req.SelectedOptionIndex > 1 {
-		h.logger.Warn("Invalid selected option index", zap.Int("index", req.SelectedOptionIndex))
-		handleServiceError(c, fmt.Errorf("%w: invalid 'selected_option_index', must be 0 or 1", sharedModels.ErrBadRequest), h.logger)
-		return
-	}
-
 	log := h.logger.With(
 		zap.Stringer("userID", userID),
 		zap.String("storyID", id.String()),
-		zap.Int("selectedOptionIndex", req.SelectedOptionIndex),
+		zap.Any("selectedOptionIndices", req.SelectedOptionIndices),
 	)
-	log.Info("Player making choice")
+	log.Info("Player making choices (batch)")
 
-	err = h.service.MakeChoice(c.Request.Context(), userID, id, req.SelectedOptionIndex)
+	err = h.service.MakeChoice(c.Request.Context(), userID, id, req.SelectedOptionIndices)
 	if err != nil {
 		// Логируем только если это НЕ стандартные ожидаемые ошибки
 		if !errors.Is(err, sharedModels.ErrNotFound) &&
@@ -553,4 +643,81 @@ func (h *GameplayHandler) listLikedStories(c *gin.Context) {
 		zap.Bool("hasNext", nextCursor != ""),
 	)
 	c.JSON(http.StatusOK, resp)
+}
+
+// setStoryVisibility обрабатывает запрос на изменение видимости опубликованной истории.
+func (h *GameplayHandler) setStoryVisibility(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		return // Ошибка уже обработана
+	}
+
+	idStr := c.Param("id")
+	storyID, err := uuid.Parse(idStr)
+	if err != nil {
+		h.logger.Warn("Invalid story ID format in setStoryVisibility", zap.String("id", idStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		return
+	}
+
+	var req SetStoryVisibilityRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Warn("Invalid request body for setStoryVisibility", zap.String("storyID", storyID.String()), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid request body: %v", sharedModels.ErrBadRequest, err), h.logger)
+		return
+	}
+
+	log := h.logger.With(
+		zap.String("storyID", storyID.String()),
+		zap.Stringer("userID", userID),
+		zap.Bool("isPublic", req.IsPublic),
+	)
+	log.Info("Setting story visibility")
+
+	err = h.service.SetStoryVisibility(c.Request.Context(), storyID, userID, req.IsPublic)
+	if err != nil {
+		// Логируем только неожидаемые ошибки
+		if !errors.Is(err, sharedModels.ErrNotFound) &&
+			!errors.Is(err, sharedModels.ErrForbidden) &&
+			!errors.Is(err, service.ErrStoryNotReadyForPublishing) &&
+			!errors.Is(err, service.ErrInternal) { // Проверяем и на ErrInternal
+			log.Error("Error setting story visibility (unhandled)", zap.Error(err))
+		}
+		handleServiceError(c, err, h.logger) // Передаем ошибку для стандартизированной обработки
+		return
+	}
+
+	log.Info("Story visibility set successfully")
+	c.Status(http.StatusNoContent) // Успех
+}
+
+// <<< ДОБАВЛЕНО: Обработчик для повторной генерации опубликованной истории >>>
+func (h *GameplayHandler) retryPublishedStoryGeneration(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		return // Ошибка уже обработана
+	}
+
+	idStr := c.Param("id")
+	storyID, err := uuid.Parse(idStr)
+	if err != nil {
+		h.logger.Warn("Invalid story ID format in retryPublishedStoryGeneration", zap.String("id", idStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		return
+	}
+
+	log := h.logger.With(zap.String("userID", userID.String()), zap.String("storyID", storyID.String()))
+	log.Info("Handling retry published story generation request")
+
+	// Вызываем новый метод сервиса
+	err = h.service.RetryStoryGeneration(c.Request.Context(), storyID, userID)
+	if err != nil {
+		log.Error("Error retrying published story generation", zap.Error(err))
+		// Используем handleServiceError для стандартизации
+		handleServiceError(c, err, h.logger)
+		return
+	}
+
+	log.Info("Published story retry request accepted")
+	c.Status(http.StatusAccepted)
 }

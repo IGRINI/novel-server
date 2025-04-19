@@ -89,8 +89,8 @@ func main() {
 
 	// <<< Возвращаем Prometheus Middleware >>>
 	p := ginprometheus.NewPrometheus("gin") // Префикс для метрик (например, gin_request_...)
-	p.Use(router)                           // Регистрируем middleware (он сам зарегистрирует /metrics)
-	// <<< Конец возвращения >>>
+	// <<< ПОКА НЕ ПРИМЕНЯЕМ ЗДЕСЬ >>>
+	// p.Use(router)
 
 	// Configure CORS Middleware
 	corsConfig := cors.DefaultConfig()
@@ -116,6 +116,9 @@ func main() {
 
 	// Register Application Routes
 	authHandler.RegisterRoutes(router)
+
+	// <<< ПРИМЕНЯЕМ Prometheus Middleware ПОСЛЕ регистрации роутов >>>
+	p.Use(router)
 
 	// --- Start Server ---
 	srv := &http.Server{

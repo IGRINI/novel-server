@@ -28,11 +28,19 @@ WORKDIR /app
 # Копируем скомпилированный бинарник
 COPY --from=builder /admin-server .
 
-# Копируем шаблоны HTML из исходников в директорию web внутри /app
+# Копируем веб-файлы (шаблоны И статику) из admin-service/web
 COPY --from=builder /app/admin-service/web ./web
+
+# --- ДОБАВЛЕНО: Копируем ОБЩИЙ 404.html --- 
+# Убедимся, что директория для статики существует
+RUN mkdir -p /app/web/static
+# Копируем общий 404 из shared/static в /app/web/static/
+COPY --from=builder /app/shared/static/404.html /app/web/static/404.html
 
 # Порт, который будет слушать приложение (для информации)
 # EXPOSE 8084 - порт определяется переменной окружения
+# Порт для метрик Prometheus
+EXPOSE 9094
 
 # Команда для запуска приложения
 ENTRYPOINT ["/app/admin-server"]

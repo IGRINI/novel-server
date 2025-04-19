@@ -40,6 +40,7 @@ func (h *AdminHandler) RegisterRoutes(router *gin.Engine) {
 
 	adminApiGroup := router.Group("/", h.authMiddleware)
 	{
+		adminApiGroup.GET("/", h.getDashboardData)
 		adminApiGroup.GET("/dashboard", h.getDashboardData)
 		adminApiGroup.GET("/users", h.listUsers)
 		adminApiGroup.GET("/logout", h.handleLogout)

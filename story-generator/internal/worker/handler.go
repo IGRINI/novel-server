@@ -115,6 +115,18 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 
 	// --- Этап 3: Вызов AI API с ретраями ---
 	userInput := payload.UserInput
+
+	// <<< ДОБАВЛЕНО: Формирование строки с языком >>>
+	if payload.Language != "" {
+		languageString := getLanguageString(payload.Language)
+		if languageString != "" {
+			// Добавляем строку с языком в начало userInput, разделяя новой строкой
+			userInput = languageString + "\n\n" + userInput
+			log.Printf("[TaskID: %s] Добавлена информация о языке ('%s') к userInput.", payload.TaskID, payload.Language)
+		}
+	}
+	// <<< КОНЕЦ ФОРМИРОВАНИЯ ЯЗЫКА >>>
+
 	baseDelay := h.baseRetryDelay
 
 	for attempt := 1; attempt <= h.maxAttempts; attempt++ {
@@ -122,7 +134,7 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 		aiStartTime := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), h.aiTimeout)
 
-		aiResponse, err = h.aiClient.GenerateText(ctx, finalSystemPrompt, userInput, service.GenerationParams{})
+		aiResponse, err = h.aiClient.GenerateText(ctx, payload.UserID, finalSystemPrompt, userInput, service.GenerationParams{})
 		cancel()
 
 		processingTime = time.Since(aiStartTime) // Обновляем время обработки последним вызовом
@@ -324,3 +336,33 @@ func (h *TaskHandler) saveAndNotifyResult(
 	log.Printf("[TaskID: %s] Задача успешно обработана, сохранена и уведомление отправлено за %v.", payload.TaskID, completedAt.Sub(createdAt))
 	return nil // Успешное завершение
 }
+
+// <<< ДОБАВЛЕНО: Функция для получения строки языка >>>
+func getLanguageString(langCode string) string {
+	switch langCode {
+	case "ru":
+		return "Язык приложения игрока: Русский"
+	case "en":
+		return "Player's application language: English"
+	case "fr":
+		return "Langue de l'application du joueur : Français"
+	case "de":
+		return "Sprache der Spieleranwendung: Deutsch"
+	case "es":
+		return "Idioma de la aplicación del jugador: Español"
+	case "it":
+		return "Lingua dell'applicazione del giocatore: Italiano"
+	case "pt":
+		return "Idioma do aplicativo do jogador: Português"
+	case "zh":
+		return "玩家的应用语言: 中文"
+	case "ja":
+		return "プレイヤーのアプリケーション言語: 日本語"
+	default:
+		// Если язык не поддерживается или неизвестен, не добавляем строку
+		log.Printf("Неизвестный или неподдерживаемый код языка для добавления в промпт: %s", langCode)
+		return ""
+	}
+}
+
+// <<< КОНЕЦ ФУНКЦИИ ЯЗЫКА >>>

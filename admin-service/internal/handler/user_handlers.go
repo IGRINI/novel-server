@@ -7,8 +7,8 @@ import (
 	"novel-server/admin-service/internal/client"
 	sharedModels "novel-server/shared/models"
 	"strconv"
-	"strings"
 
+	// Возвращаем импорт entities
 	"novel-server/shared/entities"
 
 	"github.com/gin-gonic/gin"
@@ -21,6 +21,9 @@ type userUpdateFormData struct {
 	Roles    []string `form:"roles"`
 	IsBanned string   `form:"is_banned"`
 }
+
+const defaultUserListLimit = 20
+const maxUserListLimit = 100
 
 func getUserIDFromContext(c *gin.Context) (uuid.UUID, bool) {
 	val, ok := c.Get(string(sharedModels.UserContextKey))
@@ -38,31 +41,28 @@ func (h *AdminHandler) listUsers(c *gin.Context) {
 	adminUserID, _ := getUserIDFromContext(c)
 	log := h.logger.With(zap.String("adminUserID", adminUserID.String()))
 	log.Info("Admin requested user list")
-	limitStr := c.Query("limit")
-	afterCursor := c.Query("after")
-	limit := 20
-	var err error
-	if limitStr != "" {
-		limit, err = strconv.Atoi(limitStr)
-		if err != nil || limit <= 0 {
-			log.Warn("Invalid limit parameter, using default", zap.String("limit", limitStr))
-			limit = 20
-		}
+	limitStr := c.DefaultQuery("limit", strconv.Itoa(defaultUserListLimit))
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 || limit > maxUserListLimit {
+		limit = defaultUserListLimit
 	}
-	log = log.With(zap.Int("limit", limit), zap.String("after", afterCursor))
+	log = log.With(zap.Int("limit", limit))
 	log.Debug("Fetching user list with pagination")
-	users, nextCursor, err := h.authClient.ListUsers(c.Request.Context(), limit, afterCursor)
+	after := c.Query("after")
+	users, nextCursor, err := h.authClient.ListUsers(c.Request.Context(), limit, after)
+	userFacingError := ""
 	if err != nil {
 		log.Error("Failed to get user list from auth-service", zap.Error(err))
-		users = []sharedModels.User{}
+		userFacingError = "Не удалось загрузить список пользователей: " + err.Error()
 		data := gin.H{
 			"PageTitle":  "Управление пользователями",
 			"Users":      users,
-			"Error":      "Не удалось загрузить список пользователей: " + err.Error(),
+			"Error":      userFacingError,
 			"IsLoggedIn": true,
-			"NextCursor": "",
+			"NextCursor": nextCursor,
 			"Limit":      limit,
 		}
+		log.Debug("HANDLER: listUsers - Rendering template users.html (with error)")
 		c.HTML(http.StatusOK, "users.html", data)
 		return
 	}
@@ -73,6 +73,7 @@ func (h *AdminHandler) listUsers(c *gin.Context) {
 		"NextCursor": nextCursor,
 		"Limit":      limit,
 	}
+	log.Debug("HANDLER: listUsers - Rendering template users.html")
 	c.HTML(http.StatusOK, "users.html", data)
 }
 
@@ -80,7 +81,9 @@ func (h *AdminHandler) handleBanUser(c *gin.Context) {
 	userIDStr := c.Param("user_id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID format"})
+		h.logger.Warn("Invalid user ID format for ban", zap.String("rawID", userIDStr), zap.Error(err))
+		c.String(http.StatusBadRequest, "Неверный ID пользователя.")
+		c.Abort()
 		return
 	}
 	adminUserID, _ := getUserIDFromContext(c)
@@ -106,7 +109,9 @@ func (h *AdminHandler) handleUnbanUser(c *gin.Context) {
 	userIDStr := c.Param("user_id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID format"})
+		h.logger.Warn("Invalid user ID format for unban", zap.String("rawID", userIDStr), zap.Error(err))
+		c.String(http.StatusBadRequest, "Неверный ID пользователя.")
+		c.Abort()
 		return
 	}
 	adminUserID, _ := getUserIDFromContext(c)
@@ -132,24 +137,23 @@ func (h *AdminHandler) showUserEditPage(c *gin.Context) {
 	userIDStr := c.Param("user_id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID format"})
+		h.logger.Warn("Invalid user ID format for edit page", zap.String("rawID", userIDStr), zap.Error(err))
+		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 	h.logger.Info("Showing edit page for user", zap.String("userID", userID.String()))
 	users, _, err := h.authClient.ListUsers(c.Request.Context(), 1, fmt.Sprintf("id:%s", userID.String()))
 	if err != nil {
-		h.logger.Error("Failed to get user details for editing", zap.String("userID", userID.String()), zap.Error(err))
-		c.Redirect(http.StatusSeeOther, "/admin/users?error=fetch_failed")
+		h.logger.Error("Failed to get user details for editing (via ListUsers)", zap.String("userID", userID.String()), zap.Error(err))
+		c.Redirect(http.StatusSeeOther, "/users?error=fetch_failed")
 		return
 	}
-	var user *sharedModels.User
-	if len(users) > 0 {
-		user = &users[0]
-	} else {
+	if len(users) == 0 {
 		h.logger.Warn("User not found for edit page", zap.String("userID", userID.String()))
-		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "Пользователь не найден"})
+		c.Redirect(http.StatusSeeOther, "/users?error=not_found")
 		return
 	}
+	user := users[0]
 
 	notificationStatus := c.Query("notification_status")
 
@@ -168,12 +172,14 @@ func (h *AdminHandler) handleUserUpdate(c *gin.Context) {
 	userIDStr := c.Param("user_id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID format"})
+		h.logger.Warn("Invalid user ID format for update", zap.String("rawID", userIDStr), zap.Error(err))
+		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 	var formData userUpdateFormData
 	if err := c.ShouldBind(&formData); err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid form data: " + err.Error()})
+		h.logger.Warn("Failed to bind user update form data", zap.String("userID", userIDStr), zap.Error(err))
+		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/users/%s/edit?error=invalid_data", userIDStr))
 		return
 	}
 	adminUserID, _ := getUserIDFromContext(c)
@@ -209,38 +215,21 @@ func (h *AdminHandler) handleUserUpdate(c *gin.Context) {
 		updatePayload.Email = nil
 	}
 	err = h.authClient.UpdateUser(c.Request.Context(), userID, updatePayload)
-	users, _, listErr := h.authClient.ListUsers(c.Request.Context(), 1, fmt.Sprintf("id:%s", userID.String()))
-	if listErr != nil {
-		h.logger.Error("Failed to reload user after update attempt", zap.String("userID", userID.String()), zap.Error(listErr))
-	}
-	var user *sharedModels.User
-	if listErr == nil && len(users) > 0 {
-		user = &users[0]
-	} else {
-		h.logger.Warn("User not found in list after update attempt or list failed, using form data as fallback for render", zap.String("userID", userID.String()))
-		user = &sharedModels.User{ID: userID, Username: "(unknown)", Email: formData.Email, Roles: rolesSlice, IsBanned: isBanned}
-	}
-	data := gin.H{
-		"PageTitle":   "Редактирование пользователя",
-		"User":        user,
-		"RolesString": strings.Join(user.Roles, " "),
-		"IsLoggedIn":  true,
-	}
 	if err != nil {
 		h.logger.Error("Failed to update user via auth client", zap.String("targetUserID", userID.String()), zap.Error(err))
-		data["Error"] = "Не удалось сохранить изменения. " + err.Error()
-	} else {
-		userUpdatesTotal.Inc()
-		data["Success"] = "Изменения успешно сохранены!"
+		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/users/%s/edit?error=update_failed", userIDStr))
+		return
 	}
-	c.HTML(http.StatusOK, "user_edit.html", data)
+	userUpdatesTotal.Inc()
+	c.Redirect(http.StatusSeeOther, fmt.Sprintf("/users/%s/edit?success=updated", userIDStr))
 }
 
 func (h *AdminHandler) handleResetPassword(c *gin.Context) {
 	userIDStr := c.Param("user_id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID format"})
+		h.logger.Warn("Invalid user ID format for password reset", zap.String("rawID", userIDStr), zap.Error(err))
+		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 	adminUserID, _ := getUserIDFromContext(c)
@@ -248,65 +237,46 @@ func (h *AdminHandler) handleResetPassword(c *gin.Context) {
 		zap.String("adminUserID", adminUserID.String()),
 		zap.String("targetUserID", userID.String()),
 	)
-	newPassword, err := h.authClient.ResetPassword(c.Request.Context(), userID)
+	_, err = h.authClient.ResetPassword(c.Request.Context(), userID)
 	if err != nil {
-		h.logger.Error("Failed to reset password via auth client", zap.String("targetUserID", userID.String()), zap.Error(err))
-		errorMessage := "Не удалось сбросить пароль."
-		status := http.StatusInternalServerError
-		if errors.Is(err, sharedModels.ErrUserNotFound) {
-			errorMessage = "Пользователь не найден."
-			status = http.StatusNotFound
-		}
-		c.Header("HX-Retarget", "#password-reset-status")
-		c.Header("HX-Reswap", "innerHTML")
-		c.String(status, fmt.Sprintf("<article aria-invalid='true'>%s</article>", errorMessage))
+		h.logger.Error("Failed to reset password via auth-service", zap.String("targetUserID", userID.String()), zap.Error(err))
+		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/users/%s/edit?error=password_reset_failed", userIDStr))
 		return
 	}
 	passwordResetsTotal.Inc()
-	h.logger.Info("Password reset successful for user", zap.String("targetUserID", userID.String()))
-	c.Header("HX-Retarget", "#password-reset-status")
-	c.Header("HX-Reswap", "innerHTML")
-	responseHTML := fmt.Sprintf(
-		`<article style="background-color: var(--pico-color-green-150); border-color: var(--pico-color-green-400);">
-			Пароль успешно сброшен. Новый временный пароль:
-			<pre><code>%s</code></pre>
-			<small>Пожалуйста, скопируйте этот пароль и передайте пользователю. После первого входа ему следует сменить пароль.</small>
-		</article>`,
-		newPassword,
-	)
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(responseHTML))
+	h.logger.Info("User password reset successfully", zap.String("targetUserID", userID.String()))
+	c.Redirect(http.StatusSeeOther, fmt.Sprintf("/users/%s/edit?success=password_reset", userIDStr))
 }
 
 func (h *AdminHandler) handleSendUserNotification(c *gin.Context) {
 	userIDStr := c.Param("user_id")
-
-	type notificationPayload struct {
-		Message string `json:"message" form:"message"`
-	}
-
-	payload := new(notificationPayload)
-	if err := c.ShouldBind(payload); err != nil {
-		h.logger.Error("Failed to bind notification payload", zap.Error(err))
-		c.String(http.StatusBadRequest, "Invalid request payload: "+err.Error())
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		h.logger.Warn("Invalid user ID format for sending notification", zap.String("rawID", userIDStr), zap.Error(err))
+		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/users/%s/edit?error=invalid_user_id", userIDStr))
 		return
 	}
 
-	if payload.Message == "" {
-		h.logger.Warn("Notification message is empty")
-		c.String(http.StatusBadRequest, "Notification message cannot be empty")
+	message := c.PostForm("notification_message")
+	if message == "" {
+		h.logger.Warn("Notification message is empty", zap.String("userID", userIDStr))
+		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/users/%s/edit?error=empty_message", userIDStr))
 		return
 	}
 
-	h.logger.Info("Attempting to send notification", zap.String("userID", userIDStr), zap.String("message", payload.Message))
+	h.logger.Info("Attempting to send notification", zap.String("userID", userIDStr), zap.String("message", message))
 
+	// Используем entities.UserPushEvent и переменную userID (uuid.UUID)
 	event := entities.UserPushEvent{
-		UserID:  userIDStr,
-		Title:   "Сообщение от администрации",
-		Message: payload.Message,
+		UserID:  userID.String(),              // Используем uuid.UUID
+		Title:   "Сообщение от администрации", // Используем правильное название поля Title
+		Message: message,
+		// Data:    map[string]string{"source": "admin"}, // Поле Data отсутствует в entities.UserPushEvent? Убираем.
 	}
 
-	redirectURL := fmt.Sprintf("/admin/users/%s/edit", userIDStr)
+	redirectURL := fmt.Sprintf("/users/%s/edit", userIDStr)
 
+	// Используем правильное имя метода PublishUserPushEvent
 	if err := h.pushPublisher.PublishUserPushEvent(c.Request.Context(), event); err != nil {
 		h.logger.Error("Failed to publish user push event", zap.Error(err), zap.String("userID", userIDStr))
 		c.Redirect(http.StatusSeeOther, redirectURL+"?notification_status=error")

@@ -4,7 +4,7 @@ global:
 scrape_configs:
   - job_name: 'admin-service'
     static_configs:
-      - targets: ['admin-service:8084'] # Используем имя сервиса и его порт
+      - targets: ['admin-service:9094'] # Используем имя сервиса и НОВЫЙ порт метрик 9094
 
   - job_name: 'auth-service'
     static_configs:

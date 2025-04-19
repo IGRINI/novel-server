@@ -18,6 +18,10 @@ type loginPageData struct {
 
 func (h *AdminHandler) showLoginPage(c *gin.Context) {
 	cookie, err := c.Cookie("admin_session")
+	h.logger.Info("showLoginPage cookie check",
+		zap.String("cookieValue", cookie),
+		zap.Error(err),
+	)
 	if err == nil && cookie != "" {
 		h.logger.Debug("Attempting to validate admin token via auth-service for login page check")
 		startTime := time.Now()
@@ -34,6 +38,7 @@ func (h *AdminHandler) showLoginPage(c *gin.Context) {
 		"IsLoginPage": true,
 		"Error":       c.Query("error"),
 	}
+	h.logger.Debug("HANDLER: showLoginPage - Rendering template login.html")
 	c.HTML(http.StatusOK, "login.html", data)
 }
 
@@ -55,6 +60,7 @@ func (h *AdminHandler) handleLogin(c *gin.Context) {
 			"Username":    username,
 			"Error":       userFacingError,
 		}
+		h.logger.Debug("HANDLER: handleLogin (error) - Rendering template login.html")
 		c.HTML(http.StatusOK, "login.html", data)
 		return
 	}
@@ -67,6 +73,7 @@ func (h *AdminHandler) handleLogin(c *gin.Context) {
 			"Username":    username,
 			"Error":       "Неверный логин или пароль",
 		}
+		h.logger.Debug("HANDLER: handleLogin (verify error) - Rendering template login.html")
 		c.HTML(http.StatusOK, "login.html", data)
 		return
 	}
@@ -77,6 +84,7 @@ func (h *AdminHandler) handleLogin(c *gin.Context) {
 			"Username":    username,
 			"Error":       "Неверный логин или пароль",
 		}
+		h.logger.Debug("HANDLER: handleLogin (no role) - Rendering template login.html")
 		c.HTML(http.StatusOK, "login.html", data)
 		return
 	}

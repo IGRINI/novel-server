@@ -11,50 +11,147 @@ import (
 	"novel-server/admin-service/internal/messaging"
 	sharedLogger "novel-server/shared/logger"
 	sharedMiddleware "novel-server/shared/middleware"
+	sharedModels "novel-server/shared/models"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
+	"html/template"
+	"strings"
+
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/render"
+	"github.com/joho/godotenv"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
+
+	// Добавляем импорт для Prometheus
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// <<< Начинаем определение кастомного рендерера >>>
+// multiTemplateRenderer управляет отдельными экземплярами шаблонов для каждой страницы.
+type multiTemplateRenderer struct {
+	templates map[string]*template.Template
+	logger    *zap.Logger // Добавляем логгер для отладки
+}
+
+// NewMultiTemplateRenderer создает новый рендерер.
+func NewMultiTemplateRenderer(templatesDir string, funcMap template.FuncMap, logger *zap.Logger) *multiTemplateRenderer {
+	r := &multiTemplateRenderer{
+		templates: make(map[string]*template.Template),
+		logger:    logger.Named("MultiTemplateRenderer"),
+	}
+
+	// Сначала загружаем layout отдельно, он будет основой
+	layoutPath := fmt.Sprintf("%s/layout.html", templatesDir)
+	layoutTmpl, err := template.New("layout.html").Funcs(funcMap).ParseFiles(layoutPath)
+	if err != nil {
+		logger.Fatal("Не удалось загрузить layout.html", zap.String("path", layoutPath), zap.Error(err))
+	}
+
+	// Находим все остальные *.html файлы (кроме layout)
+	pageFiles, err := os.ReadDir(templatesDir)
+	if err != nil {
+		logger.Fatal("Не удалось прочитать директорию шаблонов", zap.String("dir", templatesDir), zap.Error(err))
+	}
+
+	for _, file := range pageFiles {
+		fileName := file.Name()
+		// Пропускаем layout и не-html файлы
+		// Используем проверку расширения файла напрямую
+		isHTML := strings.HasSuffix(fileName, ".html") || strings.HasSuffix(fileName, ".tmpl") || strings.HasSuffix(fileName, ".gohtml")
+		if file.IsDir() || fileName == "layout.html" || !isHTML {
+			continue
+		}
+
+		// Для каждого файла страницы: клонируем layout и парсим файл страницы в него
+		pagePath := fmt.Sprintf("%s/%s", templatesDir, fileName)
+		tmplClone, err := layoutTmpl.Clone()
+		if err != nil {
+			logger.Fatal("Не удалось клонировать layout для страницы", zap.String("page", fileName), zap.Error(err))
+		}
+
+		// Парсим файл страницы в склонированный шаблон
+		_, err = tmplClone.ParseFiles(pagePath)
+		if err != nil {
+			logger.Fatal("Не удалось загрузить шаблон страницы", zap.String("page", fileName), zap.String("path", pagePath), zap.Error(err))
+		}
+
+		// Сохраняем готовый шаблон под именем файла страницы
+		r.templates[fileName] = tmplClone
+		r.logger.Debug("Загружен и ассоциирован шаблон", zap.String("name", fileName))
+	}
+
+	return r
+}
+
+// Instance возвращает render.Render для указанного имени шаблона.
+func (r *multiTemplateRenderer) Instance(name string, data interface{}) render.Render {
+	tmpl, ok := r.templates[name]
+	if !ok {
+		// Если шаблон не найден, логируем ошибку и возвращаем ошибку рендеринга
+		r.logger.Error("Шаблон не найден в рендерере", zap.String("name", name))
+		// Возвращаем пустой рендер или рендер ошибки
+		// Здесь можно вернуть, например, рендер текста с ошибкой
+		return render.Data{
+			ContentType: "text/plain; charset=utf-8",
+			Data:        []byte(fmt.Sprintf("Template '%s' not found", name)),
+		}
+	}
+	// Возвращаем HTML рендер, указывая конкретный экземпляр шаблона
+	// и имя основного шаблона для выполнения (обычно это layout).
+	return render.HTML{
+		Template: tmpl,
+		Name:     "layout.html", // <<< Мы исполняем layout, который внутри найдет правильный `define` блока
+		Data:     data,
+	}
+}
+
+// <<< Заканчиваем определение кастомного рендерера >>>
+
 func main() {
-	// Используем стандартный log для самых ранних ошибок, до инициализации zap
 	log.Println("Запуск Admin Service...")
 
-	// --- Загрузка конфигурации ---
-	// Передаем nil логгер, так как он еще не создан.
-	// LoadConfig должен уметь работать с nil логгером или использовать стандартный log.
-	// TODO: Проверить реализацию config.LoadConfig
-	cfg, err := config.LoadConfig(nil)
-	if err != nil {
-		log.Fatalf("Ошибка загрузки конфигурации: %v", err)
+	// --- Предварительная загрузка минимума для логгера ---
+	// Загружаем переменные из .env, если есть
+	_ = godotenv.Load()
+	// Читаем уровень логгирования из ENV, по умолчанию "info"
+	logLevel := os.Getenv("LOG_LEVEL")
+	if logLevel == "" {
+		logLevel = "info"
 	}
-	log.Println("Конфигурация загружена")
 
 	// --- Инициализация логгера (Используем shared/logger) ---
+	// Используем предварительно загруженный logLevel
 	logger, err := sharedLogger.New(sharedLogger.Config{
-		Level:      cfg.LogLevel,
-		Encoding:   "json", // Или cfg.LogEncoding, если есть в конфиге
-		OutputPath: "",     // stdout по умолчанию, или cfg.LogOutputPath
+		Level:      logLevel,
+		Encoding:   "json", // Или читаем из ENV, если нужно
+		OutputPath: "",     // stdout по умолчанию
 	})
 	if err != nil {
 		log.Fatalf("Не удалось инициализировать логгер: %v", err)
 	}
 	defer logger.Sync()
 	sugar := logger.Sugar()
-	sugar.Info("Логгер инициализирован", zap.String("logLevel", cfg.LogLevel))
+	sugar.Info("Логгер инициализирован", zap.String("logLevel", logLevel))
 
-	// Если LoadConfig требовал логгер, можно передать его сюда повторно,
-	// но лучше чтобы LoadConfig не требовал логгер.
-	// cfg, err = config.LoadConfig(logger) // Пример, если LoadConfig надо обновить
-	// if err != nil {
-	// 	sugar.Fatalf("Ошибка повторной загрузки конфигурации с логгером: %v", err)
-	// }
+	// --- Загрузка конфигурации ---
+	// Теперь передаем созданный логгер
+	cfg, err := config.LoadConfig(logger)
+	if err != nil {
+		sugar.Fatalf("Ошибка загрузки конфигурации: %v", err)
+	}
+	sugar.Info("Конфигурация загружена")
+
+	// --- Проверка и обновление уровня логгера (если он изменился в конфиге) ---
+	if cfg.LogLevel != logLevel {
+		sugar.Warnf("Уровень логгирования изменен с %s на %s после загрузки конфига", logLevel, cfg.LogLevel)
+		// Если требуется динамическое изменение уровня, можно пересоздать логгер
+		// или использовать zap.AtomicLevel, но для простоты пока оставляем так.
+	}
 
 	// --- Подключение к RabbitMQ ---
 	rabbitConn, err := connectRabbitMQ(cfg.RabbitMQ.URL, logger) // Передаем созданный логгер
@@ -80,6 +177,35 @@ func main() {
 	if err != nil {
 		sugar.Fatalf("Не удалось создать AuthServiceClient: %v", err)
 	}
+
+	// <<< ПОЛУЧЕНИЕ И УСТАНОВКА МЕЖСЕРВИСНОГО ТОКЕНА >>>
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // Таймаут на получение токена
+		defer cancel()
+		maxRetries := 50
+		retryDelay := 2 * time.Second
+
+		for i := 0; i < maxRetries; i++ {
+			sugar.Infof("Попытка [%d/%d] получить межсервисный токен...", i+1, maxRetries)
+			interServiceToken, tokenErr := authClient.GenerateInterServiceToken(ctx, cfg.ServiceID) // Используем ServiceID из конфига
+			if tokenErr == nil {
+				authClient.SetInterServiceToken(interServiceToken)
+				sugar.Info("Межсервисный токен успешно получен и установлен.")
+				return // Выходим из горутины при успехе
+			}
+
+			sugar.Errorf("Не удалось получить межсервисный токен (попытка %d): %v", i+1, tokenErr)
+			if i < maxRetries-1 {
+				sugar.Infof("Повторная попытка через %v...", retryDelay)
+				time.Sleep(retryDelay)
+				retryDelay *= 2 // Увеличиваем задержку
+			} else {
+				sugar.Fatalf("Не удалось получить межсервисный токен после %d попыток. Завершение работы.", maxRetries)
+			}
+		}
+	}()
+	// <<< КОНЕЦ БЛОКА ПОЛУЧЕНИЯ ТОКЕНА >>>
+
 	storyGenClient, err := client.NewStoryGeneratorClient(cfg.StoryGeneratorURL, cfg.ClientTimeout, logger)
 	if err != nil {
 		sugar.Fatalf("Не удалось создать StoryGeneratorClient: %v", err)
@@ -95,10 +221,78 @@ func main() {
 	// --- Настройка Gin ---
 	router := gin.New()
 
+	// <<< УДАЛЯЕМ НАСТРОЙКУ ДОВЕРЕННЫХ ПРОКСИ >>>
+	/*
+		ttrustedProxiesEnv := os.Getenv("TRUSTED_PROXIES") // Читаем из ENV
+		var trustedProxies []string
+		if trustedProxiesEnv != "" {
+			trustedProxies = strings.Split(trustedProxiesEnv, ",")
+			// Удаляем лишние пробелы вокруг IP/CIDR
+			for i := range trustedProxies {
+				trustedProxies[i] = strings.TrimSpace(trustedProxies[i])
+			}
+			sugar.Infof("Настроены доверенные прокси: %v", trustedProxies)
+		} else {
+			sugar.Warn("Переменная окружения TRUSTED_PROXIES не установлена! Заголовки X-Forwarded-* НЕ будут обработаны.")
+			trustedProxies = []string{}
+		}
+		err = router.SetTrustedProxies(trustedProxies) // Передаем список
+		if err != nil {
+			sugar.Fatalf("Не удалось настроить доверенные прокси: %v", err)
+		}
+		// Обработку X-Forwarded-Proto можно оставить включенной,
+		// но она не будет иметь эффекта без доверенных прокси.
+		// Можно и закомментировать, если для IP она не нужна.
+		// router.ForwardedByClientIP = true
+	*/
+
+	// <<< Регистрация кастомных функций шаблонов >>>
+	// Сохраняем FuncMap для передачи в рендерер
+	funcMap := template.FuncMap{
+		// Используем реальную функцию HasRole с адаптером для типа
+		"hasRole": func(userArg interface{}, targetRole string) bool {
+			// Адаптируем тип userArg к ожидаемому типу, например *sharedModels.User
+			// Если в шаблон передается другой тип, измените его здесь.
+			if u, ok := userArg.(*sharedModels.User); ok {
+				// Вызываем реальную функцию проверки роли
+				return sharedModels.HasRole(u.Roles, targetRole)
+			} else if rolesSlice, ok := userArg.([]string); ok {
+				// Обрабатываем случай, если передается слайс строк
+				return sharedModels.HasRole(rolesSlice, targetRole)
+			}
+			// Не смогли извлечь роли, логируем и возвращаем false
+			logger.Error("Функция шаблона 'hasRole' получила аргумент пользователя неподдерживаемого типа", zap.String("argType", fmt.Sprintf("%T", userArg)))
+			return false
+		},
+		// Функция для сложения двух целых чисел в шаблоне
+		"add": func(a, b int) int {
+			return a + b
+		},
+		// Функция для вычитания двух целых чисел в шаблоне
+		"sub": func(a, b int) int {
+			return a - b
+		},
+		// Функция для нахождения максимума из двух целых чисел
+		"max": func(a, b int) int {
+			if a > b {
+				return a
+			}
+			return b
+		},
+		// Можно добавить другие функции здесь
+	}
+	router.SetFuncMap(funcMap) // Устанавливаем FuncMap для Gin, хотя кастомный рендер тоже его получит
+
+	// <<< Загрузка шаблонов через кастомный рендерер >>>
+	// Путь к шаблонам внутри контейнера
+	templatesDir := "/app/web/templates"
+	router.HTMLRender = NewMultiTemplateRenderer(templatesDir, funcMap, logger) // <<< Используем кастомный рендерер
+
 	router.Use(gin.Recovery())
 	router.Use(sharedMiddleware.GinZapLogger(logger))
 
-	custom404Path := "./admin-service/web/static/404.html"
+	// Используем АБСОЛЮТНЫЙ путь внутри контейнера
+	custom404Path := "/app/web/static/404.html"
 	router.Use(handler.CustomErrorMiddleware(logger, custom404Path))
 
 	// CORS Middleware
@@ -109,8 +303,12 @@ func main() {
 	corsConfig.AllowCredentials = true
 	router.Use(cors.New(corsConfig))
 
-	// Загрузка HTML шаблонов
-	router.LoadHTMLGlob("./admin-service/web/templates/**/*")
+	// Health Check Endpoint
+	healthHandler := func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	}
+	router.GET("/health", healthHandler)
+	router.HEAD("/health", healthHandler)
 
 	// Настройка маршрутов
 	h.RegisterRoutes(router)
@@ -126,6 +324,17 @@ func main() {
 		sugar.Infof("Admin сервер запускается на порту %s", cfg.ServerPort)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			sugar.Fatalf("Ошибка запуска HTTP сервера: %v", err)
+		}
+	}()
+
+	// --- Запуск сервера метрик Prometheus ---
+	go func() {
+		metricsAddr := ":9094" // Порт для метрик - ИЗМЕНЕН НА 9094
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", promhttp.Handler()) // Регистрируем стандартный обработчик
+		sugar.Infof("Сервер метрик Prometheus запускается на порту %s", metricsAddr)
+		if err := http.ListenAndServe(metricsAddr, metricsMux); err != nil {
+			sugar.Fatalf("Ошибка запуска сервера метрик: %v", err)
 		}
 	}()
 

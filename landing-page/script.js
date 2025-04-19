@@ -271,26 +271,45 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // --- Animate On Scroll --- //
+    // --- Intersection Observer for animations ---
     const animatedElements = document.querySelectorAll('.animate-on-scroll');
+    const featureCards = document.querySelectorAll('.feature-card'); // Получаем карточки фич
 
-    if ("IntersectionObserver" in window) {
-        const observer = new IntersectionObserver((entries, observerInstance) => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
+    const observerOptions = {
+        root: null, // viewport
+        rootMargin: '0px',
+        threshold: 0.1 // Trigger when 10% of the element is visible
+    };
+
+    const observerCallback = (entries, observer) => {
+        entries.forEach((entry, index) => {
+            if (entry.isIntersecting) {
+                // Проверяем, является ли элемент карточкой фичи
+                if (entry.target.classList.contains('feature-card')) {
+                    // Чередуем анимацию для карточек
+                    if (index % 2 === 0) {
+                        entry.target.classList.add('is-visible-left');
+                    } else {
+                        entry.target.classList.add('is-visible-right');
+                    }
+                } else {
+                    // Стандартная анимация для остальных элементов
                     entry.target.classList.add('is-visible');
-                    observerInstance.unobserve(entry.target); // Отключаем наблюдение после анимации
                 }
-            });
-        }, { threshold: 0.1 }); // Анимация начнется, когда 10% элемента видно
+                observer.unobserve(entry.target); // Stop observing once animated
+            }
+        });
+    };
 
-        animatedElements.forEach(el => observer.observe(el));
-    } else {
-        // Fallback для старых браузеров (просто показать элементы)
-        animatedElements.forEach(el => el.classList.add('is-visible'));
-    }
+    const observer = new IntersectionObserver(observerCallback, observerOptions);
 
-    // --- AI Prompt Placeholder Animation --- //
+    // Наблюдаем за всеми элементами с классом .animate-on-scroll
+    animatedElements.forEach(el => observer.observe(el));
+
+    // Отдельно наблюдаем за карточками фич, чтобы применить к ним fadeInLeft/Right
+    featureCards.forEach(card => observer.observe(card));
+
+    // --- AI Prompt Placeholder Animation ---
     const promptInput = document.getElementById('ai-prompt-input');
     if (promptInput) {
         const hints = [

@@ -7,6 +7,10 @@ import (
 	"novel-server/shared/interfaces"
 	"novel-server/shared/models"
 
+	"encoding/base64"
+	"strings"
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"go.uber.org/zap"
@@ -121,4 +125,121 @@ func (r *pgLikeRepository) CountLikes(ctx context.Context, publishedStoryID uuid
 
 	r.logger.Debug("Likes counted successfully", append(logFields, zap.Int64("count", count))...)
 	return count, nil
+}
+
+// ListLikedStoryIDsByUserID возвращает список ID историй, лайкнутых пользователем, с пагинацией по курсору.
+func (r *pgLikeRepository) ListLikedStoryIDsByUserID(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]uuid.UUID, string, error) {
+	logFields := []zap.Field{
+		zap.String("userID", userID.String()),
+		zap.String("cursor", cursor),
+		zap.Int("limit", limit),
+	}
+	r.logger.Debug("Listing liked story IDs by user ID", logFields...)
+
+	if limit <= 0 {
+		limit = 10 // Default limit
+	}
+
+	var args []interface{}
+	args = append(args, userID, limit+1) // Fetch one extra to check for next page
+
+	query := `SELECT published_story_id, created_at FROM story_likes WHERE user_id = $1 `
+
+	// --- Cursor Logic ---
+	var cursorTime time.Time
+	var cursorStoryID uuid.UUID
+	var cursorErr error
+
+	if cursor != "" {
+		cursorTime, cursorStoryID, cursorErr = decodeLikeCursor(cursor)
+		if cursorErr != nil {
+			r.logger.Warn("Invalid cursor format", append(logFields, zap.Error(cursorErr))...)
+			return nil, "", interfaces.ErrInvalidCursor // Use shared interface error
+		}
+		// Add WHERE clause for cursor pagination
+		// We assume descending order (newest first)
+		query += `AND (created_at, published_story_id) < ($3, $4) `
+		args = append(args, cursorTime, cursorStoryID)
+	}
+	// --- End Cursor Logic ---
+
+	query += `ORDER BY created_at DESC, published_story_id DESC LIMIT $2`
+	r.logger.Debug("Executing query to list liked stories", append(logFields, zap.String("query", query), zap.Any("args", args))...)
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		r.logger.Error("Failed to query liked stories", append(logFields, zap.Error(err))...)
+		return nil, "", fmt.Errorf("failed to query liked stories: %w", err)
+	}
+	defer rows.Close()
+
+	likedIDs := make([]uuid.UUID, 0, limit)
+	var lastTime time.Time
+	var lastStoryID uuid.UUID
+	count := 0
+
+	for rows.Next() {
+		count++
+		var storyID uuid.UUID
+		var createdAt time.Time
+		if err := rows.Scan(&storyID, &createdAt); err != nil {
+			r.logger.Error("Failed to scan liked story row", append(logFields, zap.Error(err))...)
+			return nil, "", fmt.Errorf("failed to scan liked story: %w", err)
+		}
+
+		if count <= limit {
+			likedIDs = append(likedIDs, storyID)
+		}
+		// Keep track of the last item for the next cursor
+		lastTime = createdAt
+		lastStoryID = storyID
+	}
+
+	if err := rows.Err(); err != nil {
+		r.logger.Error("Error iterating liked story rows", append(logFields, zap.Error(err))...)
+		return nil, "", fmt.Errorf("failed to iterate liked stories: %w", err)
+	}
+
+	var nextCursor string
+	if count > limit {
+		// We fetched one extra row, so there is a next page
+		nextCursor = encodeLikeCursor(lastTime, lastStoryID)
+	} // else: no next page, nextCursor remains ""
+
+	r.logger.Debug("Successfully listed liked story IDs", append(logFields, zap.Int("count_returned", len(likedIDs)), zap.Bool("has_next_page", nextCursor != ""))...)
+	return likedIDs, nextCursor, nil
+}
+
+// --- Cursor Encoding/Decoding Helpers ---
+
+// encodeLikeCursor encodes the timestamp and story ID into a base64 string.
+func encodeLikeCursor(t time.Time, storyID uuid.UUID) string {
+	// Format: RFC3339Nano,UUID_string
+	cursorData := fmt.Sprintf("%s,%s", t.Format(time.RFC3339Nano), storyID.String())
+	return base64.StdEncoding.EncodeToString([]byte(cursorData))
+}
+
+// decodeLikeCursor decodes the base64 cursor string back into time and story ID.
+func decodeLikeCursor(cursor string) (time.Time, uuid.UUID, error) {
+	decodedBytes, err := base64.StdEncoding.DecodeString(cursor)
+	if err != nil {
+		return time.Time{}, uuid.Nil, fmt.Errorf("invalid base64 cursor: %w", err)
+	}
+
+	parts := strings.SplitN(string(decodedBytes), ",", 2)
+	if len(parts) != 2 {
+		return time.Time{}, uuid.Nil, errors.New("invalid cursor format: expected time,uuid")
+	}
+
+	cursorTime, err := time.Parse(time.RFC3339Nano, parts[0])
+	if err != nil {
+		return time.Time{}, uuid.Nil, fmt.Errorf("invalid time format in cursor: %w", err)
+	}
+
+	cursorStoryID, err := uuid.Parse(parts[1])
+	if err != nil {
+		return time.Time{}, uuid.Nil, fmt.Errorf("invalid uuid format in cursor: %w", err)
+	}
+
+	return cursorTime, cursorStoryID, nil
 }

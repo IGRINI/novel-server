@@ -79,7 +79,7 @@ func (h *APIHandler) HandleGenerateStream(w http.ResponseWriter, r *http.Request
 	log.Println("API: Начинаем стримить ответ клиенту...")
 
 	// <<< Вызываем GenerateTextStream с callback-функцией >>>
-	err := h.aiClient.GenerateTextStream(r.Context(), reqPayload.SystemPrompt, reqPayload.UserPrompt, genParams, func(chunk string) error {
+	err := h.aiClient.GenerateTextStream(r.Context(), "api_user", reqPayload.SystemPrompt, reqPayload.UserPrompt, genParams, func(chunk string) error {
 		// Отправляем сырой текст клиенту
 		_, writeErr := fmt.Fprint(w, chunk) // Пишем просто текст
 		if writeErr != nil {
@@ -144,7 +144,8 @@ func (h *APIHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 
 	// <<< Вызываем не-стриминговый метод AI клиента >>>
 	// generatedText, err := h.aiClient.GenerateText(r.Context(), reqPayload.SystemPrompt, reqPayload.UserPrompt)
-	generatedText, err := h.aiClient.GenerateText(r.Context(), reqPayload.SystemPrompt, reqPayload.UserPrompt, genParams) // <<< Передаем genParams
+	// <<< Исправляем вызов: передаем "api_user" как userID и genParams >>>
+	generatedText, err := h.aiClient.GenerateText(r.Context(), "api_user", reqPayload.SystemPrompt, reqPayload.UserPrompt, genParams)
 	if err != nil {
 		log.Printf("API: Ошибка генерации текста от AI: %v", err)
 		http.Error(w, "Ошибка генерации текста от AI: "+err.Error(), http.StatusInternalServerError)

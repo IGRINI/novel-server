@@ -34,4 +34,9 @@ type LikeRepository interface {
 	// CountLikes возвращает общее количество лайков для истории.
 	// (Может быть полезно для периодической синхронизации, если используется кэш)
 	CountLikes(ctx context.Context, publishedStoryID uuid.UUID) (int64, error)
+
+	// ListLikedStoryIDsByUserID возвращает список ID историй, лайкнутых пользователем, с пагинацией по курсору.
+	// Возвращает срез ID, следующий курсор и ошибку.
+	// Реализация должна поддерживать курсор (например, на основе времени лайка или ID лайка).
+	ListLikedStoryIDsByUserID(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]uuid.UUID, string, error)
 }

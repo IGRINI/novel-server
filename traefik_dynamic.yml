@@ -35,25 +35,15 @@ http:
       service: "landing-page-service"
       priority: 1 # Low priority ensures API routes match first
 
-    # --- Auth Service --- 
-    auth-http-router:
+    # --- Auth Service (Single Router for all /api/*) ---
+    auth-router:
       entryPoints:
         - "web"
-      # Matches path prefix
-      rule: "PathPrefix(`/api/auth`)"
+      rule: "PathPrefix(`/api`)"
       service: "auth-service"
       middlewares:
         - "auth-stripprefix"
-      priority: 10 # Higher priority for API routes
-
-    # --- Auth Service (Get Me) ---
-    auth-me-router:
-      entryPoints:
-        - "web"
-      # Matches exact path
-      rule: "Path(`/api/me`)"
-      service: "auth-service"
-      priority: 11 # Higher priority for exact path
+      priority: 10
 
     # --- Gameplay Service ---
     gameplay-http-router:
@@ -64,7 +54,7 @@ http:
       service: "gameplay-service"
       middlewares:
        - "gameplay-stripprefix"
-      priority: 10 # Higher priority for API routes
+      priority: 11 # Higher priority for API routes
 
     # --- Admin Service (Login Page) ---
     admin-login-router:

@@ -40,20 +40,22 @@ func (h *AuthHandler) RegisterRoutes(router *gin.Engine) {
 	{
 		baseAuthGroup.POST("/register", h.register)
 		baseAuthGroup.POST("/login", h.login)
-		baseAuthGroup.POST("/logout", h.AuthMiddleware(), h.logout)
 		baseAuthGroup.POST("/refresh", h.refresh)
 		baseAuthGroup.POST("/token/verify", h.verify)
 	}
 
-	protectedV1 := router.Group("/api/v1")
-	protectedV1.Use(h.AuthMiddleware())
+	// Группа для защищенных роутов БЕЗ префикса пути
+	protectedGroup := router.Group("/")    // Группа от корня
+	protectedGroup.Use(h.AuthMiddleware()) // Применяем middleware ко всей группе
 	{
-		protectedV1.GET("/me", h.getMe)
+		protectedGroup.GET("/me", h.getMe)       // /me
+		protectedGroup.POST("/logout", h.logout) // /logout ТЕПЕРЬ ЗДЕСЬ
 
-		deviceTokenRoutes := protectedV1.Group("/device-tokens")
+		deviceTokenRoutes := protectedGroup.Group("/device-tokens") // /device-tokens
 		{
-			deviceTokenRoutes.POST("", h.registerDeviceToken)
-			deviceTokenRoutes.DELETE("", h.unregisterDeviceToken)
+			// Middleware уже применено родительской группой
+			deviceTokenRoutes.POST("", h.registerDeviceToken)     // /device-tokens
+			deviceTokenRoutes.DELETE("", h.unregisterDeviceToken) // /device-tokens
 		}
 	}
 

@@ -47,7 +47,9 @@
 <body>
     <header class="header">
         <div class="container header__container">
-            <a href="#" class="logo">TALESHIFT</a>
+            <a href="#" class="logo">
+                <img src="assets/images/Logo.png" alt="TaleShift Logo">
+            </a>
             <nav class="nav">
                 <ul class="nav__list">
                     <li class="nav__item"><a href="#features" class="nav__link" data-lang-key="nav_features">Features</a></li>
@@ -90,7 +92,8 @@
                 <h2>Попробуйте силу ИИ</h2>
                 <p>Введите начало вашей истории, и наш ИИ поможет её развить.</p>
                 <div class="prompt-input-wrapper">
-                    <input type="text" id="ai-prompt-input" placeholder="" readonly>
+                    <textarea id="ai-prompt-input" rows="2" placeholder="" readonly></textarea>
+                    <span class="ai-thinking-indicator"></span> <!-- Индикатор мышления -->
                     <!-- Анимация плейсхолдера будет управляться через JS -->
                 </div>
                 <button class="cta-button" id="scroll-to-download-btn">Начать творить</button>

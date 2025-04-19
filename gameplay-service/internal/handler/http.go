@@ -124,6 +124,9 @@ func (h *GameplayHandler) RegisterRoutes(router gin.IRouter) {
 		publishedGroup.DELETE("/:id/progress", h.deletePlayerProgress)
 		publishedGroup.POST("/:id/like", h.likeStory)
 		publishedGroup.DELETE("/:id/like", h.unlikeStory)
+		publishedGroup.GET("/users/me/likes", h.listLikedStories)
+		publishedGroup.PATCH("/:id/visibility", h.setStoryVisibility)
+		publishedGroup.POST("/:id/retry", h.retryPublishedStoryGeneration)
 	}
 
 	// Группа для внутренних маршрутов (если понадобится, ее можно будет добавить позже)
@@ -189,14 +192,20 @@ func handleServiceError(c *gin.Context, err error, logger *zap.Logger) {
 		statusCode = http.StatusBadRequest
 		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeBadRequest, Message: err.Error()}
 	case errors.Is(err, sharedModels.ErrStoryNotReadyYet):
-		statusCode = http.StatusNotFound // Или 409 Conflict?
+		statusCode = http.StatusConflict
 		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeStoryNotReadyYet, Message: err.Error()}
 	case errors.Is(err, sharedModels.ErrSceneNeedsGeneration):
-		statusCode = http.StatusNotFound // Или 409 Conflict?
+		statusCode = http.StatusConflict
 		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeSceneNeedsGeneration, Message: err.Error()}
 	case errors.Is(err, service.ErrInvalidChoiceIndex), errors.Is(err, service.ErrInvalidChoice), errors.Is(err, service.ErrStoryNotReady):
 		statusCode = http.StatusBadRequest
 		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeBadRequest, Message: err.Error()} // Можно уточнить код, если нужно
+	case errors.Is(err, service.ErrStoryNotReadyForPublishing):
+		statusCode = http.StatusConflict // 409 Conflict - состояние ресурса не позволяет выполнить операцию
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeStoryNotReadyForPublishing, Message: err.Error()}
+	case errors.Is(err, service.ErrAdultContentCannotBePublic):
+		statusCode = http.StatusBadRequest // 400 Bad Request - сама операция невалидна для такого контента
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeAdultContentCannotBePublic, Message: err.Error()}
 	case errors.Is(err, sharedModels.ErrBadRequest), errors.Is(err, sharedModels.ErrInvalidInput):
 		statusCode = http.StatusBadRequest
 		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeBadRequest, Message: err.Error()}

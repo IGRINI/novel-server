@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"novel-server/shared/interfaces"
 	"novel-server/shared/models"
+	"novel-server/shared/utils"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,9 +34,10 @@ func scanStories(rows pgx.Rows) ([]*models.PublishedStory, error) {
 			&story.IsAdultContent,
 			&story.Title,
 			&story.Description,
+			&story.ErrorDetails,
+			&story.LikesCount,
 			&story.CreatedAt,
 			&story.UpdatedAt,
-			&story.LikesCount,
 		)
 		if err != nil {
 			continue
@@ -132,25 +134,31 @@ func (r *pgPublishedStoryRepository) GetByID(ctx context.Context, id uuid.UUID) 
 // updateStatusDetailsQuery builds the SET clause dynamically.
 const baseUpdateStatusDetailsQuery = `UPDATE published_stories SET status = $2, updated_at = $3`
 
-// UpdateStatusDetails updates various fields based on non-nil arguments.
-func (r *pgPublishedStoryRepository) UpdateStatusDetails(ctx context.Context, id uuid.UUID, status models.StoryStatus, setup []byte, errorDetails *string, endingText *string) error {
+// UpdateStatusDetails обновляет статус, детали ошибки или setup опубликованной истории.
+func (r *pgPublishedStoryRepository) UpdateStatusDetails(ctx context.Context, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, title, description, errorDetails *string) error {
 	query := baseUpdateStatusDetailsQuery
-	args := []interface{}{id, status, time.Now()}
-	paramIndex := 4 // Start after id, status, updated_at
+	args := []interface{}{id, status, time.Now().UTC()} // Используем UTC
+	paramIndex := 4                                     // Start after id, status, updated_at
 
 	if setup != nil {
 		query += fmt.Sprintf(", setup = $%d", paramIndex)
-		args = append(args, json.RawMessage(setup)) // Ensure it's json.RawMessage
+		args = append(args, setup)
 		paramIndex++
 	}
+	if title != nil {
+		query += fmt.Sprintf(", title = $%d", paramIndex)
+		args = append(args, *title)
+		paramIndex++
+	}
+	if description != nil {
+		query += fmt.Sprintf(", description = $%d", paramIndex)
+		args = append(args, *description)
+		paramIndex++
+	}
+	// Добавляем обновление error_details
 	if errorDetails != nil {
 		query += fmt.Sprintf(", error_details = $%d", paramIndex)
-		args = append(args, errorDetails)
-		paramIndex++
-	}
-	if endingText != nil {
-		query += fmt.Sprintf(", ending_text = $%d", paramIndex)
-		args = append(args, endingText)
+		args = append(args, *errorDetails)
 		paramIndex++
 	}
 
@@ -159,11 +167,11 @@ func (r *pgPublishedStoryRepository) UpdateStatusDetails(ctx context.Context, id
 	logFields := []zap.Field{
 		zap.String("publishedStoryID", id.String()),
 		zap.String("newStatus", string(status)),
-		zap.Bool("setupUpdated", setup != nil),
-		zap.Bool("errorUpdated", errorDetails != nil),
-		zap.Bool("endingTextUpdated", endingText != nil),
 	}
-	r.logger.Debug("Updating published story status and details", logFields...)
+	if setup != nil {
+		logFields = append(logFields, zap.Int("setupSize", len(setup))) // Логируем размер setup
+	}
+	r.logger.Debug("Updating published story status/details", append(logFields, zap.String("query", query))...)
 
 	tag, err := r.db.Exec(ctx, query, args...)
 	if err != nil {
@@ -209,76 +217,149 @@ func (r *pgPublishedStoryRepository) SetPublic(ctx context.Context, id uuid.UUID
 	return nil
 }
 
-// ListByUserID retrieves a paginated list of stories created by a specific user.
-func (r *pgPublishedStoryRepository) ListByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.PublishedStory, error) {
+// ListByUserID retrieves a paginated list of stories created by a specific user using cursor pagination.
+func (r *pgPublishedStoryRepository) ListByUserID(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*models.PublishedStory, string, error) {
+	if limit <= 0 {
+		limit = 10 // Default limit
+	}
+	// Fetch one extra item to determine if there's a next page
+	fetchLimit := limit + 1
+
+	cursorTime, cursorID, err := utils.DecodeCursor(cursor)
+	if err != nil {
+		r.logger.Warn("Invalid cursor provided for ListByUserID", zap.String("cursor", cursor), zap.Error(err))
+		// Consider returning a specific error like models.ErrInvalidInput or interfaces.ErrInvalidCursor
+		return nil, "", fmt.Errorf("invalid cursor: %w", err)
+	}
+
 	query := `
         SELECT
             id, user_id, config, setup, status, is_public, is_adult_content,
             title, description, error_details, likes_count, created_at, updated_at
         FROM published_stories
-        WHERE user_id = $1
-        ORDER BY created_at DESC
-        LIMIT $2 OFFSET $3
-    `
+        WHERE user_id = $1 ` // Note the space before appending WHERE clause
+
+	args := []interface{}{userID}
+	paramIndex := 2
+
+	// Add cursor condition if cursor is provided
+	if !cursorTime.IsZero() && cursorID != uuid.Nil {
+		query += fmt.Sprintf("AND (created_at, id) < ($%d, $%d) ", paramIndex, paramIndex+1)
+		args = append(args, cursorTime, cursorID)
+		paramIndex += 2
+	}
+
+	query += fmt.Sprintf("ORDER BY created_at DESC, id DESC LIMIT $%d", paramIndex)
+	args = append(args, fetchLimit)
+
 	logFields := []zap.Field{
 		zap.String("userID", userID.String()),
+		zap.String("cursor", cursor),
+		zap.Time("cursorTime", cursorTime),
+		zap.Stringer("cursorID", cursorID),
 		zap.Int("limit", limit),
-		zap.Int("offset", offset),
+		zap.Int("fetchLimit", fetchLimit),
 	}
-	r.logger.Debug("Listing published stories by user", logFields...)
+	r.logger.Debug("Listing published stories by user with cursor", logFields...)
 
-	rows, err := r.db.Query(ctx, query, userID, limit, offset)
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
-		r.logger.Error("Failed to query published stories by user", append(logFields, zap.Error(err))...)
-		return nil, fmt.Errorf("ошибка получения списка опубликованных историй пользователя %s: %w", userID.String(), err)
+		r.logger.Error("Failed to query published stories by user with cursor", append(logFields, zap.Error(err))...)
+		return nil, "", fmt.Errorf("ошибка получения списка опубликованных историй пользователя %s (курсор): %w", userID.String(), err)
 	}
 	defer rows.Close()
 
-	stories, err := scanStories(rows) // Используем scanStories
+	stories, err := scanStories(rows) // scanStories remains the same
 	if err != nil {
-		// Ошибка уже залогирована в scanStories, если rows.Err() != nil
-		return nil, err // Просто возвращаем ошибку сканирования
+		// scanStories already logs row iteration errors
+		r.logger.Error("Failed to scan stories in ListByUserID", append(logFields, zap.Error(err))...)
+		return nil, "", err // Return the scan error
 	}
 
-	r.logger.Debug("Published stories listed successfully by user", append(logFields, zap.Int("count", len(stories)))...)
-	return stories, nil
+	var nextCursor string
+	if len(stories) == fetchLimit {
+		// There is a next page
+		lastStory := stories[limit] // The last story to generate cursor from
+		nextCursor = utils.EncodeCursor(lastStory.CreatedAt, lastStory.ID)
+		stories = stories[:limit] // Return only the requested number of stories
+	} else {
+		// This is the last page
+		nextCursor = ""
+	}
+
+	r.logger.Debug("Published stories listed successfully by user with cursor", append(logFields, zap.Int("count", len(stories)), zap.Bool("hasNext", nextCursor != ""))...)
+	return stories, nextCursor, nil
 }
 
-// ListPublic retrieves a paginated list of public stories.
-func (r *pgPublishedStoryRepository) ListPublic(ctx context.Context, limit, offset int) ([]*models.PublishedStory, error) {
+// ListPublic retrieves a paginated list of public stories using cursor pagination.
+func (r *pgPublishedStoryRepository) ListPublic(ctx context.Context, cursor string, limit int) ([]*models.PublishedStory, string, error) {
 	if limit <= 0 {
 		limit = 10 // Default limit
 	}
-	if offset < 0 {
-		offset = 0 // Offset cannot be negative
+	// Fetch one extra item to determine if there's a next page
+	fetchLimit := limit + 1
+
+	cursorTime, cursorID, err := utils.DecodeCursor(cursor)
+	if err != nil {
+		r.logger.Warn("Invalid cursor provided for ListPublic", zap.String("cursor", cursor), zap.Error(err))
+		return nil, "", fmt.Errorf("invalid cursor: %w", err)
 	}
 
-	// Убираем is_adult_content = FALSE из запроса, если интерфейс этого не требует
+	// Note: Query SELECT list should match scanStories exactly!
+	// Corrected to include all fields expected by scanStories.
 	query := `
-        SELECT id, user_id, config, setup, status, is_public, is_adult_content, title, description, created_at, updated_at, likes_count /*, error_details */
+        SELECT
+            id, user_id, config, setup, status, is_public, is_adult_content,
+            title, description, error_details, likes_count, created_at, updated_at
         FROM published_stories
-        WHERE is_public = TRUE
-        ORDER BY created_at DESC -- Сортировка по созданию
-        LIMIT $1 OFFSET $2
-    `
-	logFields := []zap.Field{zap.Int("limit", limit), zap.Int("offset", offset)}
-	r.logger.Debug("Listing public published stories (offset/limit)", logFields...)
+        WHERE is_public = TRUE ` // Note the space
 
-	rows, err := r.db.Query(ctx, query, limit, offset)
+	args := []interface{}{}
+	paramIndex := 1
+
+	// Add cursor condition if cursor is provided
+	if !cursorTime.IsZero() && cursorID != uuid.Nil {
+		query += fmt.Sprintf("AND (created_at, id) < ($%d, $%d) ", paramIndex, paramIndex+1)
+		args = append(args, cursorTime, cursorID)
+		paramIndex += 2
+	}
+
+	query += fmt.Sprintf("ORDER BY created_at DESC, id DESC LIMIT $%d", paramIndex)
+	args = append(args, fetchLimit)
+
+	logFields := []zap.Field{
+		zap.String("cursor", cursor),
+		zap.Time("cursorTime", cursorTime),
+		zap.Stringer("cursorID", cursorID),
+		zap.Int("limit", limit),
+		zap.Int("fetchLimit", fetchLimit),
+	}
+	r.logger.Debug("Listing public published stories with cursor", logFields...)
+
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
-		r.logger.Error("Failed to query public published stories", append(logFields, zap.Error(err))...)
-		return nil, fmt.Errorf("ошибка получения списка публичных историй: %w", err)
+		r.logger.Error("Failed to query public published stories with cursor", append(logFields, zap.Error(err))...)
+		return nil, "", fmt.Errorf("ошибка получения списка публичных историй (курсор): %w", err)
 	}
 	defer rows.Close()
 
-	stories, err := scanStories(rows) // Используем scanStories, возвращающий []*...
+	stories, err := scanStories(rows)
 	if err != nil {
 		r.logger.Error("Failed to scan public published stories", append(logFields, zap.Error(err))...)
-		return nil, err
+		return nil, "", err
 	}
 
-	r.logger.Debug("Public published stories listed successfully", append(logFields, zap.Int("count", len(stories)))...)
-	return stories, nil
+	var nextCursor string
+	if len(stories) == fetchLimit {
+		lastStory := stories[limit]
+		nextCursor = utils.EncodeCursor(lastStory.CreatedAt, lastStory.ID)
+		stories = stories[:limit]
+	} else {
+		nextCursor = ""
+	}
+
+	r.logger.Debug("Public published stories listed successfully with cursor", append(logFields, zap.Int("count", len(stories)), zap.Bool("hasNext", nextCursor != ""))...)
+	return stories, nextCursor, nil
 }
 
 // IncrementLikesCount атомарно увеличивает счетчик лайков для истории.
@@ -317,4 +398,85 @@ func (r *pgPublishedStoryRepository) DecrementLikesCount(ctx context.Context, id
 
 	r.logger.Info("Likes count decremented (or was already zero) successfully", logFields...)
 	return nil
+}
+
+// UpdateVisibility updates the visibility of a story.
+func (r *pgPublishedStoryRepository) UpdateVisibility(ctx context.Context, storyID, userID uuid.UUID, isPublic bool) error {
+	query := `
+		UPDATE published_stories
+		SET is_public = $1, updated_at = NOW()
+		WHERE id = $2 AND user_id = $3
+	`
+	logFields := []zap.Field{
+		zap.String("publishedStoryID", storyID.String()),
+		zap.String("userID", userID.String()),
+		zap.Bool("isPublic", isPublic),
+	}
+	r.logger.Debug("Updating story visibility", logFields...)
+
+	commandTag, err := r.db.Exec(ctx, query, isPublic, storyID, userID)
+	if err != nil {
+		r.logger.Error("Failed to update story visibility", append(logFields, zap.Error(err))...)
+		// Можно добавить проверку на конкретные ошибки БД, если нужно
+		return fmt.Errorf("ошибка обновления видимости истории %s: %w", storyID, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		// Важно: Сначала проверяем, существует ли вообще история с таким ID,
+		// чтобы отличить 'не найдено' от 'не принадлежит пользователю'.
+		existsQuery := `SELECT EXISTS(SELECT 1 FROM published_stories WHERE id = $1)`
+		var exists bool
+		if existsErr := r.db.QueryRow(ctx, existsQuery, storyID).Scan(&exists); existsErr != nil {
+			r.logger.Error("Failed to check story existence after visibility update failed", append(logFields, zap.Error(existsErr))...)
+			// Возвращаем исходную ошибку 'не найдено', т.к. не смогли проверить причину
+			return models.ErrNotFound
+		}
+		if !exists {
+			r.logger.Warn("Attempted to update visibility for non-existent story", logFields...)
+			return models.ErrNotFound
+		} else {
+			// История существует, но не принадлежит пользователю
+			r.logger.Warn("Attempted to update visibility for story not owned by user", logFields...)
+			// Возвращаем Forbidden, т.к. пользователь не автор
+			return models.ErrForbidden
+		}
+	}
+
+	r.logger.Info("Story visibility updated successfully", logFields...)
+	return nil
+}
+
+// ListByIDs retrieves a list of published stories based on their IDs.
+func (r *pgPublishedStoryRepository) ListByIDs(ctx context.Context, ids []uuid.UUID) ([]*models.PublishedStory, error) {
+	if len(ids) == 0 {
+		return []*models.PublishedStory{}, nil // Return empty slice if no IDs provided
+	}
+
+	query := `
+        SELECT
+            id, user_id, config, setup, status, is_public, is_adult_content,
+            title, description, error_details, likes_count, created_at, updated_at
+        FROM published_stories
+        WHERE id = ANY($1::uuid[]) -- Use PostgreSQL array operator
+    `
+	logFields := []zap.Field{zap.Int("id_count", len(ids))}
+	r.logger.Debug("Listing published stories by IDs", logFields...)
+
+	rows, err := r.db.Query(ctx, query, ids)
+	if err != nil {
+		r.logger.Error("Failed to query published stories by IDs", append(logFields, zap.Error(err))...)
+		return nil, fmt.Errorf("ошибка получения опубликованных историй по IDs: %w", err)
+	}
+	defer rows.Close()
+
+	stories, err := scanStories(rows) // Используем scanStories
+	if err != nil {
+		// Ошибка уже залогирована в scanStories
+		return nil, err
+	}
+
+	// Note: The order might not match the input `ids` slice order depending on DB execution.
+	// If order is critical, you might need to reorder the results in the application code.
+	r.logger.Debug("Published stories listed successfully by IDs", append(logFields, zap.Int("found_count", len(stories)))...)
+	return stories, nil
 }
