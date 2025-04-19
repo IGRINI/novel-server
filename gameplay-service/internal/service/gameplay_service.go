@@ -113,13 +113,14 @@ type GameplayService interface {
 	// Like methods (delegated)
 	LikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
 	UnlikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
-	ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error)
+	ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*LikedStoryDetailDTO, string, error)
 
 	// Story Browsing methods (delegated)
-	ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error)
-	ListPublicStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error)
-	GetPublishedStoryDetails(ctx context.Context, storyID, userID uuid.UUID) (*PublishedStoryDetailDTO, error) // Use DTO from story_browsing_service
+	ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStoryDetailWithProgressDTO, string, error)
+	ListPublicStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStoryDetailWithProgressDTO, string, error)
+	GetPublishedStoryDetails(ctx context.Context, storyID, userID uuid.UUID) (*PublishedStoryDetailDTO, error)
 	ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error)
+	GetPublishedStoryDetailsWithProgress(ctx context.Context, userID, publishedStoryID uuid.UUID) (*PublishedStoryDetailWithProgressDTO, error)
 
 	// Core Gameplay methods
 	GetStoryScene(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error)
@@ -134,6 +135,10 @@ type GameplayService interface {
 	GetDraftDetailsInternal(ctx context.Context, draftID uuid.UUID) (*sharedModels.StoryConfig, error)
 	GetPublishedStoryDetailsInternal(ctx context.Context, storyID uuid.UUID) (*sharedModels.PublishedStory, error)
 	ListStoryScenesInternal(ctx context.Context, storyID uuid.UUID) ([]sharedModels.StoryScene, error)
+	// <<< ДОБАВЛЕНО: Методы обновления для внутреннего API админки >>>
+	UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string) error
+	UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON string) error
+	UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error
 }
 
 type gameplayServiceImpl struct {
@@ -167,9 +172,9 @@ func NewGameplayService(
 	// <<< СОЗДАЕМ PublishingService >>>
 	publishingSvc := NewPublishingService(configRepo, publishedRepo, publisher, pool, logger)
 	// <<< СОЗДАЕМ LikeService >>>
-	likeSvc := NewLikeService(likeRepo, publishedRepo, logger)
+	likeSvc := NewLikeService(likeRepo, publishedRepo, playerProgressRepo, logger)
 	// <<< СОЗДАЕМ StoryBrowsingService >>>
-	storyBrowsingSvc := NewStoryBrowsingService(publishedRepo, sceneRepo, logger)
+	storyBrowsingSvc := NewStoryBrowsingService(publishedRepo, sceneRepo, playerProgressRepo, logger)
 	// <<< СОЗДАЕМ GameLoopService >>>
 	gameLoopSvc := NewGameLoopService(publishedRepo, sceneRepo, playerProgressRepo, publisher, logger)
 
@@ -246,7 +251,7 @@ func (s *gameplayServiceImpl) UnlikeStory(ctx context.Context, userID uuid.UUID,
 }
 
 // ListLikedStories delegates to LikeService.
-func (s *gameplayServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error) {
+func (s *gameplayServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*LikedStoryDetailDTO, string, error) {
 	return s.likeService.ListLikedStories(ctx, userID, cursor, limit)
 }
 
@@ -255,12 +260,12 @@ func (s *gameplayServiceImpl) ListLikedStories(ctx context.Context, userID uuid.
 // === Методы, делегированные StoryBrowsingService ===
 
 // ListMyPublishedStories delegates to StoryBrowsingService.
-func (s *gameplayServiceImpl) ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error) {
+func (s *gameplayServiceImpl) ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStoryDetailWithProgressDTO, string, error) {
 	return s.storyBrowsingService.ListMyPublishedStories(ctx, userID, cursor, limit)
 }
 
 // ListPublicStories delegates to StoryBrowsingService.
-func (s *gameplayServiceImpl) ListPublicStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error) {
+func (s *gameplayServiceImpl) ListPublicStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStoryDetailWithProgressDTO, string, error) {
 	return s.storyBrowsingService.ListPublicStories(ctx, userID, cursor, limit)
 }
 
@@ -273,6 +278,11 @@ func (s *gameplayServiceImpl) GetPublishedStoryDetails(ctx context.Context, stor
 // ListUserPublishedStories delegates to StoryBrowsingService.
 func (s *gameplayServiceImpl) ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error) {
 	return s.storyBrowsingService.ListUserPublishedStories(ctx, userID, limit, offset)
+}
+
+// GetPublishedStoryDetailsWithProgress delegates to StoryBrowsingService.
+func (s *gameplayServiceImpl) GetPublishedStoryDetailsWithProgress(ctx context.Context, userID, publishedStoryID uuid.UUID) (*PublishedStoryDetailWithProgressDTO, error) {
+	return s.storyBrowsingService.GetPublishedStoryDetailsWithProgress(ctx, userID, publishedStoryID)
 }
 
 // === Конец делегированных методов StoryBrowsingService ===
@@ -315,6 +325,23 @@ func (s *gameplayServiceImpl) GetPublishedStoryDetailsInternal(ctx context.Conte
 func (s *gameplayServiceImpl) ListStoryScenesInternal(ctx context.Context, storyID uuid.UUID) ([]sharedModels.StoryScene, error) {
 	// Implementation of ListStoryScenesInternal method
 	return s.storyBrowsingService.ListStoryScenesInternal(ctx, storyID)
+}
+
+// <<< ДОБАВЛЕНО: Делегаты для методов обновления внутреннего API админки >>>
+
+func (s *gameplayServiceImpl) UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string) error {
+	return s.draftService.UpdateDraftInternal(ctx, draftID, configJSON, userInputJSON)
+}
+
+func (s *gameplayServiceImpl) UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON string) error {
+	// Делегируем StoryBrowsingService, так как он уже работает с PublishedStoryRepository
+	// (Хотя, возможно, логичнее было бы создать отдельный сервис для этого)
+	return s.storyBrowsingService.UpdateStoryInternal(ctx, storyID, configJSON, setupJSON)
+}
+
+func (s *gameplayServiceImpl) UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error {
+	// Делегируем GameLoopService, так как он работает со сценами
+	return s.gameLoopService.UpdateSceneInternal(ctx, sceneID, contentJSON)
 }
 
 // --- Helper Functions moved to game_loop_service.go ---

@@ -32,6 +32,7 @@ type DraftService interface {
 	ListUserDrafts(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.StoryConfig, string, error)
 	RetryDraftGeneration(ctx context.Context, draftID uuid.UUID, userID uuid.UUID) error
 	GetDraftDetailsInternal(ctx context.Context, draftID uuid.UUID) (*sharedModels.StoryConfig, error)
+	UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string) error
 }
 
 type draftServiceImpl struct {
@@ -345,4 +346,48 @@ func (s *draftServiceImpl) GetDraftDetailsInternal(ctx context.Context, draftID 
 		return nil, fmt.Errorf("error getting StoryConfig: %w", err)
 	}
 	return config, nil
+}
+
+// UpdateDraftInternal updates a story draft with new config and user input.
+func (s *draftServiceImpl) UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string) error {
+	log := s.logger.With(zap.String("draftID", draftID.String()))
+	log.Info("UpdateDraftInternal called")
+
+	// Валидация JSON
+	var configBytes, userInputBytes []byte
+	var err error
+
+	if configJSON != "" {
+		if !json.Valid([]byte(configJSON)) {
+			log.Warn("Invalid JSON received for config")
+			return fmt.Errorf("%w: invalid config JSON format", sharedModels.ErrBadRequest)
+		}
+		configBytes = []byte(configJSON)
+	} else {
+		configBytes = nil // Разрешаем обнулять поле
+	}
+
+	if userInputJSON != "" {
+		if !json.Valid([]byte(userInputJSON)) {
+			log.Warn("Invalid JSON received for user input")
+			return fmt.Errorf("%w: invalid user input JSON format", sharedModels.ErrBadRequest)
+		}
+		userInputBytes = []byte(userInputJSON)
+	} else {
+		userInputBytes = nil // Разрешаем обнулять поле
+	}
+
+	// Вызов репозитория
+	err = s.repo.UpdateConfigAndInput(ctx, draftID, configBytes, userInputBytes)
+	if err != nil {
+		if errors.Is(err, sharedModels.ErrNotFound) {
+			log.Warn("Draft not found for update")
+			return sharedModels.ErrNotFound // Пробрасываем ошибку
+		}
+		log.Error("Failed to update draft config and input in repository", zap.Error(err))
+		return ErrInternal // Возвращаем общую ошибку
+	}
+
+	log.Info("Draft updated successfully by internal request")
+	return nil
 }

@@ -14,8 +14,9 @@ import (
 	"time"
 
 	interfaces "novel-server/shared/interfaces" // <<< Используем shared интерфейсы
-	sharedModels "novel-server/shared/models"   // <<< Используем shared модели
-	"novel-server/shared/utils"                 // <<< Добавляем импорт utils
+	"novel-server/shared/models"
+	sharedModels "novel-server/shared/models" // <<< Используем shared модели
+	"novel-server/shared/utils"               // <<< Добавляем импорт utils
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -363,4 +364,144 @@ func (r *pgStoryConfigRepository) FindGeneratingConfigs(ctx context.Context) ([]
 
 	r.logger.Info("Найдено генерирующихся конфигов", zap.Int("count", len(configs)))
 	return configs, nil
+}
+
+// <<< ДОБАВЛЕНО: Реализация FindGeneratingOlderThan >>>
+const findGeneratingOlderThanQuery = `
+SELECT id, user_id, title, description, user_input, config, status, created_at, updated_at, language
+FROM story_configs
+WHERE status = 'generating' AND created_at < $1
+ORDER BY created_at ASC`
+
+// <<< ДОБАВЛЕНО: Реализация UpdateConfigAndInput >>>
+const updateConfigAndInputQuery = `
+UPDATE story_configs
+SET config = $2, user_input = $3, updated_at = NOW()
+WHERE id = $1`
+
+func (r *pgStoryConfigRepository) FindGeneratingOlderThan(ctx context.Context, threshold time.Time) ([]sharedModels.StoryConfig, error) {
+	logFields := []zap.Field{zap.Time("threshold", threshold)}
+	r.logger.Debug("Finding generating story configs older than threshold", logFields...)
+
+	rows, err := r.db.Query(ctx, findGeneratingOlderThanQuery, threshold)
+	if err != nil {
+		r.logger.Error("Failed to query generating story configs older than threshold", append(logFields, zap.Error(err))...)
+		return nil, fmt.Errorf("ошибка поиска старых генерирующихся черновиков: %w", err)
+	}
+	defer rows.Close()
+
+	configs := make([]sharedModels.StoryConfig, 0)
+	for rows.Next() { // <<< Ручное сканирование >>>
+		var config sharedModels.StoryConfig
+		if err := rows.Scan(
+			&config.ID,
+			&config.UserID,
+			&config.Title,
+			&config.Description,
+			&config.UserInput,
+			&config.Config,
+			&config.Status,
+			&config.CreatedAt,
+			&config.UpdatedAt,
+			&config.Language,
+		); err != nil {
+			r.logger.Error("Failed to scan story config row in FindGeneratingOlderThan", append(logFields, zap.Error(err))...)
+			// Не прерываем весь процесс, просто пропускаем эту строку?
+			// Или возвращаем ошибку? Пока вернем ошибку.
+			return nil, fmt.Errorf("ошибка сканирования строки черновика: %w", err)
+		}
+		configs = append(configs, config)
+	} // <<< Конец ручного сканирования >>>
+
+	if err := rows.Err(); err != nil { // Проверка ошибок после цикла
+		r.logger.Error("Error during row iteration in FindGeneratingOlderThan", append(logFields, zap.Error(err))...)
+		return nil, fmt.Errorf("ошибка итерации по строкам черновиков: %w", err)
+	}
+
+	r.logger.Debug("Found old generating story configs", append(logFields, zap.Int("count", len(configs)))...)
+	return configs, nil
+}
+
+// <<< ДОБАВЛЕНО: Реализация UpdateConfigAndInput >>>
+func (r *pgStoryConfigRepository) UpdateConfigAndInput(ctx context.Context, id uuid.UUID, config, userInput []byte) error {
+	logFields := []zap.Field{
+		zap.String("storyConfigID", id.String()),
+		zap.Int("configSize", len(config)),
+		zap.Int("userInputSize", len(userInput)),
+	}
+	r.logger.Debug("Updating story config and user input", logFields...)
+
+	commandTag, err := r.db.Exec(ctx, updateConfigAndInputQuery, id, config, userInput)
+	if err != nil {
+		r.logger.Error("Failed to update story config and user input", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления конфига и ввода пользователя для черновика %s: %w", id, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("Story config not found for update (config/input)", logFields...)
+		return sharedModels.ErrNotFound // Используем стандартную ошибку
+	}
+
+	r.logger.Info("Story config and user input updated successfully", logFields...)
+	return nil
+}
+
+// <<< ДОБАВЛЕНО: Реализация UpdateStatusAndConfig >>>
+const updateStatusAndConfigQuery = `
+UPDATE story_configs
+SET status = $2, config = $3, title = $4, description = $5, updated_at = NOW()
+WHERE id = $1`
+
+func (r *pgStoryConfigRepository) UpdateStatusAndConfig(ctx context.Context, id uuid.UUID, status models.StoryStatus, config json.RawMessage, title, description string) error {
+	logFields := []zap.Field{
+		zap.String("storyConfigID", id.String()),
+		zap.String("newStatus", string(status)),
+		zap.Int("configSize", len(config)),
+		zap.String("title", title),
+		zap.String("description", description),
+	}
+	r.logger.Debug("Updating story config status and config data", logFields...)
+
+	commandTag, err := r.db.Exec(ctx, updateStatusAndConfigQuery, id, status, config, title, description)
+	if err != nil {
+		r.logger.Error("Failed to update story config status and config data", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления статуса и конфига черновика %s: %w", id, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("Story config not found for status/config update", logFields...)
+		return models.ErrNotFound
+	}
+
+	r.logger.Info("Story config status and config data updated successfully", logFields...)
+	return nil
+}
+
+// <<< ДОБАВЛЕНО: Реализация UpdateStatusAndError >>>
+const updateStatusAndErrorQuery = `
+UPDATE story_configs
+SET status = $2, error_details = $3, updated_at = NOW()
+WHERE id = $1`
+
+func (r *pgStoryConfigRepository) UpdateStatusAndError(ctx context.Context, id uuid.UUID, status models.StoryStatus, errorDetails string) error {
+	logFields := []zap.Field{
+		zap.String("storyConfigID", id.String()),
+		zap.String("newStatus", string(status)),
+		zap.String("errorDetails", errorDetails),
+	}
+	r.logger.Debug("Updating story config status and error details", logFields...)
+
+	commandTag, err := r.db.Exec(ctx, updateStatusAndErrorQuery, id, status, errorDetails)
+	if err != nil {
+		r.logger.Error("Failed to update story config status and error details", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления статуса и ошибки черновика %s: %w", id, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("Story config not found for status/error update", logFields...)
+		return models.ErrNotFound
+	}
+
+	r.logger.Info("Story config status and error details updated successfully", logFields...)
+	return nil
 }

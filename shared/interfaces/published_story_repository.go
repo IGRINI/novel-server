@@ -44,4 +44,7 @@ type PublishedStoryRepository interface {
 	// ListByIDs retrieves a list of published stories based on their IDs.
 	// The order of returned stories is not guaranteed to match the input ID order.
 	ListByIDs(ctx context.Context, ids []uuid.UUID) ([]*models.PublishedStory, error)
+
+	// UpdateConfigAndSetup updates the config and setup of a story.
+	UpdateConfigAndSetup(ctx context.Context, id uuid.UUID, config, setup []byte) error
 }

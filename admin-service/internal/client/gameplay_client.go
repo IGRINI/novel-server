@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -356,4 +357,162 @@ func (c *gameplayClient) ListStoryScenes(ctx context.Context, userID, storyID uu
 
 	log.Info("Story scenes retrieved successfully", zap.Int("count", len(resp)))
 	return resp, nil
+}
+
+// <<< ДОБАВЛЕНО: Реализация UpdateDraft >>>
+func (c *gameplayClient) UpdateDraft(ctx context.Context, userID, draftID uuid.UUID, configJSON, userInputJSON string) error {
+	updateURL := fmt.Sprintf("%s/internal/users/%s/drafts/%s", c.baseURL, userID.String(), draftID.String())
+	log := c.logger.With(zap.String("url", updateURL), zap.String("userID", userID.String()), zap.String("draftID", draftID.String()))
+
+	// Подготовка тела запроса
+	body := map[string]string{
+		"configJson":    configJSON,
+		"userInputJson": userInputJSON,
+	}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		log.Error("Failed to marshal update draft request body", zap.Error(err))
+		return fmt.Errorf("internal error creating request body: %w", err)
+	}
+	bodyReader := bytes.NewReader(bodyBytes)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, updateURL, bodyReader) // Используем POST
+	if err != nil {
+		log.Error("Failed to create update draft HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
+	c.mu.RLock()
+	token := c.interServiceToken
+	c.mu.RUnlock()
+	if token == "" {
+		log.Warn("Inter-service token is not set, API call might fail")
+		// Возможно, стоит вернуть ошибку здесь?
+	} else {
+		httpReq.Header.Set("X-Internal-Service-Token", token)
+	}
+
+	log.Debug("Sending update draft request to gameplay-service")
+	httpResp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		log.Error("HTTP request for update draft failed", zap.Error(err))
+		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	// Проверяем статус ответа
+	if httpResp.StatusCode != http.StatusNoContent && httpResp.StatusCode != http.StatusOK { // Ожидаем 204 или 200
+		respBodyBytes, _ := io.ReadAll(httpResp.Body)
+		log.Warn("Received non-OK/NoContent status for update draft", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		// TODO: Parse error response
+		return fmt.Errorf("received unexpected status %d from gameplay service for update draft", httpResp.StatusCode)
+	}
+
+	log.Info("Draft update request sent successfully")
+	return nil
+}
+
+// <<< ДОБАВЛЕНО: Реализация UpdateStory >>>
+func (c *gameplayClient) UpdateStory(ctx context.Context, userID, storyID uuid.UUID, configJSON, setupJSON string) error {
+	updateURL := fmt.Sprintf("%s/internal/users/%s/stories/%s", c.baseURL, userID.String(), storyID.String())
+	log := c.logger.With(zap.String("url", updateURL), zap.String("userID", userID.String()), zap.String("storyID", storyID.String()))
+
+	// Подготовка тела запроса
+	body := map[string]string{
+		"configJson": configJSON,
+		"setupJson":  setupJSON,
+	}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		log.Error("Failed to marshal update story request body", zap.Error(err))
+		return fmt.Errorf("internal error creating request body: %w", err)
+	}
+	bodyReader := bytes.NewReader(bodyBytes)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, updateURL, bodyReader) // Используем POST
+	if err != nil {
+		log.Error("Failed to create update story HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
+	c.mu.RLock()
+	token := c.interServiceToken
+	c.mu.RUnlock()
+	if token == "" {
+		log.Warn("Inter-service token is not set, API call might fail")
+	} else {
+		httpReq.Header.Set("X-Internal-Service-Token", token)
+	}
+
+	log.Debug("Sending update story request to gameplay-service")
+	httpResp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		log.Error("HTTP request for update story failed", zap.Error(err))
+		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusNoContent && httpResp.StatusCode != http.StatusOK {
+		respBodyBytes, _ := io.ReadAll(httpResp.Body)
+		log.Warn("Received non-OK/NoContent status for update story", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		return fmt.Errorf("received unexpected status %d from gameplay service for update story", httpResp.StatusCode)
+	}
+
+	log.Info("Story update request sent successfully")
+	return nil
+}
+
+// <<< ДОБАВЛЕНО: Реализация UpdateScene >>>
+func (c *gameplayClient) UpdateScene(ctx context.Context, userID, storyID, sceneID uuid.UUID, contentJSON string) error {
+	updateURL := fmt.Sprintf("%s/internal/users/%s/stories/%s/scenes/%s", c.baseURL, userID.String(), storyID.String(), sceneID.String())
+	log := c.logger.With(zap.String("url", updateURL), zap.String("userID", userID.String()), zap.String("storyID", storyID.String()), zap.String("sceneID", sceneID.String()))
+
+	// Подготовка тела запроса
+	body := map[string]string{
+		"contentJson": contentJSON,
+	}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		log.Error("Failed to marshal update scene request body", zap.Error(err))
+		return fmt.Errorf("internal error creating request body: %w", err)
+	}
+	bodyReader := bytes.NewReader(bodyBytes)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, updateURL, bodyReader) // Используем POST
+	if err != nil {
+		log.Error("Failed to create update scene HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
+	c.mu.RLock()
+	token := c.interServiceToken
+	c.mu.RUnlock()
+	if token == "" {
+		log.Warn("Inter-service token is not set, API call might fail")
+	} else {
+		httpReq.Header.Set("X-Internal-Service-Token", token)
+	}
+
+	log.Debug("Sending update scene request to gameplay-service")
+	httpResp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		log.Error("HTTP request for update scene failed", zap.Error(err))
+		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusNoContent && httpResp.StatusCode != http.StatusOK {
+		respBodyBytes, _ := io.ReadAll(httpResp.Body)
+		log.Warn("Received non-OK/NoContent status for update scene", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		return fmt.Errorf("received unexpected status %d from gameplay service for update scene", httpResp.StatusCode)
+	}
+
+	log.Info("Scene update request sent successfully")
+	return nil
 }

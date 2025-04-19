@@ -40,7 +40,6 @@ func (h *AdminHandler) RegisterRoutes(router *gin.Engine) {
 
 	adminApiGroup := router.Group("/", h.authMiddleware)
 	{
-		adminApiGroup.GET("/", h.getDashboardData)
 		adminApiGroup.GET("/dashboard", h.getDashboardData)
 		adminApiGroup.GET("/users", h.listUsers)
 		adminApiGroup.GET("/logout", h.handleLogout)
@@ -54,14 +53,17 @@ func (h *AdminHandler) RegisterRoutes(router *gin.Engine) {
 			userGroup.POST("/reset-password", h.handleResetPassword)
 			userGroup.GET("/drafts", h.listUserDrafts)
 			userGroup.GET("/drafts/:draft_id", h.showDraftDetailsPage)
+			userGroup.POST("/drafts/:draft_id", h.handleUpdateDraft)
 			userGroup.GET("/stories", h.listUserStories)
 			userGroup.GET("/stories/:story_id", h.showPublishedStoryDetailsPage)
+			userGroup.POST("/stories/:story_id", h.handleUpdateStory)
+			userGroup.POST("/stories/:story_id/scenes/:scene_id", h.handleUpdateScene)
 			userGroup.POST("/send-notification", h.handleSendUserNotification)
 		}
 
 		aiGroup := adminApiGroup.Group("/ai-playground")
 		{
-			aiGroup.GET("/", h.handleAIPlaygroundPage)
+			aiGroup.GET("", h.handleAIPlaygroundPage)
 			aiGroup.POST("/generate", h.handleAIPlaygroundGenerate)
 		}
 	}

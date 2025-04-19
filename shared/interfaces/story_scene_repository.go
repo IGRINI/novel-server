@@ -24,4 +24,7 @@ type StorySceneRepository interface {
 	// ListByStoryID retrieves all scenes for a given story.
 	// Returns models.ErrNotFound if no scenes exist for the story.
 	ListByStoryID(ctx context.Context, publishedStoryID uuid.UUID) ([]models.StoryScene, error)
+
+	// UpdateContent updates the content of a story scene.
+	UpdateContent(ctx context.Context, id uuid.UUID, content []byte) error
 }

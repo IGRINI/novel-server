@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	sharedInterfaces "novel-server/shared/interfaces"
 	sharedModels "novel-server/shared/models"
@@ -206,4 +207,127 @@ func (h *GameplayHandler) listStoryScenesInternal(c *gin.Context) {
 
 	// Возвращаем список сцен (может быть пустым)
 	c.JSON(http.StatusOK, scenes)
+}
+
+// <<< ДОБАВЛЕНО: Обработчик для обновления черновика >>>
+func (h *GameplayHandler) updateDraftInternal(c *gin.Context) {
+	log := h.logger.With(zap.String("handler", "updateDraftInternal"))
+
+	// Парсим ID
+	userIDStr := c.Param("user_id") // userID не используется сервисом, но есть в URL
+	draftIDStr := c.Param("draft_id")
+	draftID, err := uuid.Parse(draftIDStr)
+	if err != nil {
+		log.Warn("Invalid draft ID format", zap.String("draft_id", draftIDStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid draft ID", sharedModels.ErrBadRequest), h.logger)
+		return
+	}
+	log = log.With(zap.String("draftID", draftID.String()), zap.String("userIDParam", userIDStr))
+
+	// Парсим тело запроса
+	type updateRequest struct {
+		ConfigJson    string `json:"configJson"`
+		UserInputJson string `json:"userInputJson"`
+	}
+	var req updateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Warn("Invalid request body for draft update", zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid request body: %v", sharedModels.ErrBadRequest, err), h.logger)
+		return
+	}
+
+	log.Info("Handling internal draft update request")
+
+	// Вызываем сервис
+	err = h.service.UpdateDraftInternal(c.Request.Context(), draftID, req.ConfigJson, req.UserInputJson)
+	if err != nil {
+		log.Error("Error updating draft internally", zap.Error(err))
+		handleServiceError(c, err, h.logger) // Передаем ошибку для стандартизированной обработки
+		return
+	}
+
+	log.Info("Internal draft update successful")
+	c.Status(http.StatusNoContent) // Успех
+}
+
+// <<< ДОБАВЛЕНО: Обработчик для обновления истории >>>
+func (h *GameplayHandler) updateStoryInternal(c *gin.Context) {
+	log := h.logger.With(zap.String("handler", "updateStoryInternal"))
+
+	// Парсим ID
+	userIDStr := c.Param("user_id")
+	storyIDStr := c.Param("story_id")
+	storyID, err := uuid.Parse(storyIDStr)
+	if err != nil {
+		log.Warn("Invalid story ID format", zap.String("story_id", storyIDStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID", sharedModels.ErrBadRequest), h.logger)
+		return
+	}
+	log = log.With(zap.String("storyID", storyID.String()), zap.String("userIDParam", userIDStr))
+
+	// Парсим тело запроса
+	type updateRequest struct {
+		ConfigJson string `json:"configJson"`
+		SetupJson  string `json:"setupJson"`
+	}
+	var req updateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Warn("Invalid request body for story update", zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid request body: %v", sharedModels.ErrBadRequest, err), h.logger)
+		return
+	}
+
+	log.Info("Handling internal story update request")
+
+	// Вызываем сервис
+	err = h.service.UpdateStoryInternal(c.Request.Context(), storyID, req.ConfigJson, req.SetupJson)
+	if err != nil {
+		log.Error("Error updating story internally", zap.Error(err))
+		handleServiceError(c, err, h.logger)
+		return
+	}
+
+	log.Info("Internal story update successful")
+	c.Status(http.StatusNoContent)
+}
+
+// <<< ДОБАВЛЕНО: Обработчик для обновления сцены >>>
+func (h *GameplayHandler) updateSceneInternal(c *gin.Context) {
+	log := h.logger.With(zap.String("handler", "updateSceneInternal"))
+
+	// Парсим ID
+	userIDStr := c.Param("user_id")
+	storyIDStr := c.Param("story_id")
+	sceneIDStr := c.Param("scene_id")
+	sceneID, err := uuid.Parse(sceneIDStr)
+	if err != nil {
+		log.Warn("Invalid scene ID format", zap.String("scene_id", sceneIDStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid scene ID", sharedModels.ErrBadRequest), h.logger)
+		return
+	}
+	log = log.With(zap.String("sceneID", sceneID.String()), zap.String("storyIDParam", storyIDStr), zap.String("userIDParam", userIDStr))
+
+	// Парсим тело запроса
+	type updateRequest struct {
+		ContentJson string `json:"contentJson" binding:"required"`
+	}
+	var req updateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Warn("Invalid request body for scene update", zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid request body: %v", sharedModels.ErrBadRequest, err), h.logger)
+		return
+	}
+
+	log.Info("Handling internal scene update request")
+
+	// Вызываем сервис
+	err = h.service.UpdateSceneInternal(c.Request.Context(), sceneID, req.ContentJson)
+	if err != nil {
+		log.Error("Error updating scene internally", zap.Error(err))
+		handleServiceError(c, err, h.logger)
+		return
+	}
+
+	log.Info("Internal scene update successful")
+	c.JSON(http.StatusOK, gin.H{"message": "Scene updated successfully"}) // Отвечаем JSON для AJAX запроса
 }

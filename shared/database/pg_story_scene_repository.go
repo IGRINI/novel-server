@@ -163,3 +163,32 @@ func (r *pgStorySceneRepository) ListByStoryID(ctx context.Context, publishedSto
 	r.logger.Debug("Successfully listed story scenes by story ID", zap.String("publishedStoryID", publishedStoryID.String()), zap.Int("count", len(scenes)))
 	return scenes, nil
 }
+
+// <<< ДОБАВЛЕНО: Реализация UpdateContent >>>
+const updateSceneContentQuery = `
+UPDATE story_scenes
+SET scene_content = $2, updated_at = NOW()
+WHERE id = $1`
+
+func (r *pgStorySceneRepository) UpdateContent(ctx context.Context, id uuid.UUID, content []byte) error {
+	logFields := []zap.Field{
+		zap.String("sceneID", id.String()),
+		zap.Int("contentSize", len(content)),
+	}
+	r.logger.Debug("Updating story scene content", logFields...)
+
+	// Используем NOW() для updated_at, если такой колонки нет, надо будет добавить миграцией
+	commandTag, err := r.db.Exec(ctx, updateSceneContentQuery, id, content)
+	if err != nil {
+		r.logger.Error("Failed to update story scene content", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления контента сцены %s: %w", id, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("Story scene not found for content update", logFields...)
+		return models.ErrNotFound // Используем стандартную ошибку
+	}
+
+	r.logger.Info("Story scene content updated successfully", logFields...)
+	return nil
+}

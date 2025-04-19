@@ -10,6 +10,12 @@
     {{ if .DraftError }}
         <div class="alert alert-danger">{{ .DraftError }}</div>
     {{ end }}
+    {{ if .SuccessMessage }}
+        <div class="alert alert-success">{{ .SuccessMessage }}</div>
+    {{ end }}
+    {{ if .ErrorMessage }}
+        <div class="alert alert-danger">{{ .ErrorMessage }}</div>
+    {{ end }}
 
     {{ if and (not .UserError) .TargetUser }}
         <div class="card mb-3">
@@ -24,29 +30,36 @@
     {{ end }}
 
     {{ if and (not .DraftError) .Draft }}
-        <div class="card mb-3">
-            <div class="card-header">Детали черновика</div>
-            <div class="card-body">
-                <p><strong>ID Черновика:</strong> {{ .Draft.ID }}</p>
-                <p><strong>Заголовок:</strong> {{ .Draft.Title | default "-" }}</p>
-                <p><strong>Описание:</strong> {{ .Draft.Description | default "-" }}</p>
-                <p><strong>Статус:</strong> <span class="badge bg-{{ .Draft.Status | statusBadge }}">{{ .Draft.Status }}</span></p>
-                <p><strong>Язык:</strong> {{ .Draft.Language | default "-" }}</p>
-                <p><strong>Создан:</strong> {{ .Draft.CreatedAt | formatAsDateTime }}</p>
-                <p><strong>Обновлен:</strong> {{ .Draft.UpdatedAt | formatAsDateTime }}</p>
+        <form method="POST" action="/admin/users/{{ .TargetUser.ID }}/drafts/{{ .Draft.ID }}">
+            <div class="card mb-3">
+                <div class="card-header">Детали черновика</div>
+                <div class="card-body">
+                    <p><strong>ID Черновика:</strong> {{ .Draft.ID }}</p>
+                    <p><strong>Заголовок:</strong> {{ .Draft.Title | default "-" }}</p>
+                    <p><strong>Описание:</strong> {{ .Draft.Description | default "-" }}</p>
+                    <p><strong>Статус:</strong> <span class="badge bg-{{ .Draft.Status | statusBadge }}">{{ .Draft.Status }}</span></p>
+                    <p><strong>Язык:</strong> {{ .Draft.Language | default "-" }}</p>
+                    <p><strong>Создан:</strong> {{ .Draft.CreatedAt | formatAsDateTime }}</p>
+                    <p><strong>Обновлен:</strong> {{ .Draft.UpdatedAt | formatAsDateTime }}</p>
 
-                <div class="mb-3">
-                    <label for="configJson" class="form-label"><strong>Config (JSON):</strong></label>
-                    <textarea id="configJson" class="form-control" rows="15" readonly>{{ .Draft.Config | bytesToString }}</textarea>
+                    <div class="mb-3">
+                        <label for="configJson" class="form-label"><strong>Config (JSON):</strong></label>
+                        <textarea id="configJson" name="configJson" class="form-control" rows="15">{{ .Draft.Config | bytesToString }}</textarea>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="userInputJson" class="form-label"><strong>User Input (JSON):</strong></label>
+                        <textarea id="userInputJson" name="userInputJson" class="form-control" rows="5">{{ .Draft.UserInput | bytesToString }}</textarea>
+                    </div>
+
                 </div>
-
-                <div class="mb-3">
-                    <label for="userInputJson" class="form-label"><strong>User Input (JSON):</strong></label>
-                    <textarea id="userInputJson" class="form-control" rows="5" readonly>{{ .Draft.UserInput | bytesToString }}</textarea>
+                <div class="card-footer">
+                    <button type="submit" class="btn btn-primary">Сохранить изменения черновика</button>
+                    <button type="button" class="btn btn-secondary" onclick="formatJsonTextarea('configJson')">Форматировать Config</button>
+                    <button type="button" class="btn btn-secondary" onclick="formatJsonTextarea('userInputJson')">Форматировать User Input</button>
                 </div>
-
             </div>
-        </div>
+        </form>
     {{ else if not .DraftError }}
         <div class="alert alert-info">Информация о черновике недоступна.</div>
     {{ end }}
@@ -55,20 +68,20 @@
 </div>
 
 <script>
-document.addEventListener('DOMContentLoaded', (event) => {
-    function formatJsonTextarea(textareaId) {
-        const textarea = document.getElementById(textareaId);
-        if (textarea && textarea.value.trim()) {
-            try {
-                const jsonObject = JSON.parse(textarea.value);
-                textarea.value = JSON.stringify(jsonObject, null, 2); // Форматируем с отступом 2
-            } catch (e) {
-                console.warn(`Could not parse JSON in textarea #${textareaId}:`, e);
-                // Оставляем как есть, если невалидный JSON
-            }
+function formatJsonTextarea(textareaId) {
+    const textarea = document.getElementById(textareaId);
+    if (textarea && textarea.value.trim()) {
+        try {
+            const jsonObject = JSON.parse(textarea.value);
+            textarea.value = JSON.stringify(jsonObject, null, 2);
+        } catch (e) {
+            console.warn(`Could not parse JSON in textarea #${textareaId}:`, e);
+            alert(`Невалидный JSON в поле ${textareaId}! Пожалуйста, исправьте перед сохранением.`);
         }
     }
+}
 
+document.addEventListener('DOMContentLoaded', (event) => {
     formatJsonTextarea('configJson');
     formatJsonTextarea('userInputJson');
 });

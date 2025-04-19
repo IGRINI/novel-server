@@ -7,6 +7,7 @@ import (
 	sharedModels "novel-server/shared/models"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
 )
 
@@ -17,16 +18,23 @@ var (
 	// ErrStoryNotFound will be returned directly from the repo or checked explicitly if needed
 )
 
+// <<< ДОБАВЛЕНО: DTO для ответа с флагом прогресса >>>
+type LikedStoryDetailDTO struct {
+	sharedModels.PublishedStory
+	HasPlayerProgress bool `json:"hasPlayerProgress"`
+}
+
 // LikeService defines the interface for managing story likes.
 type LikeService interface {
 	LikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
 	UnlikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
-	ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error)
+	ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*LikedStoryDetailDTO, string, error)
 }
 
 type likeServiceImpl struct {
 	likeRepo      interfaces.LikeRepository
-	publishedRepo interfaces.PublishedStoryRepository // Needed to inc/dec counts and maybe for ListLikedStories
+	publishedRepo interfaces.PublishedStoryRepository
+	progressRepo  interfaces.PlayerProgressRepository // <<< ДОБАВЛЕНО
 	logger        *zap.Logger
 }
 
@@ -34,11 +42,13 @@ type likeServiceImpl struct {
 func NewLikeService(
 	likeRepo interfaces.LikeRepository,
 	publishedRepo interfaces.PublishedStoryRepository,
+	progressRepo interfaces.PlayerProgressRepository, // <<< ДОБАВЛЕНО
 	logger *zap.Logger,
 ) LikeService {
 	return &likeServiceImpl{
 		likeRepo:      likeRepo,
 		publishedRepo: publishedRepo,
+		progressRepo:  progressRepo, // <<< ДОБАВЛЕНО
 		logger:        logger.Named("LikeService"),
 	}
 }
@@ -122,8 +132,8 @@ func (s *likeServiceImpl) UnlikeStory(ctx context.Context, userID uuid.UUID, pub
 	return nil
 }
 
-// ListLikedStories retrieves a list of stories liked by a user.
-func (s *likeServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error) {
+// ListLikedStories retrieves a paginated list of stories liked by a user, with progress flag.
+func (s *likeServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*LikedStoryDetailDTO, string, error) {
 	log := s.logger.With(zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
 	log.Info("ListLikedStories called")
 
@@ -133,18 +143,17 @@ func (s *likeServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID
 
 	// 1. Get the IDs of liked stories from the like repository
 	log.Debug("Fetching liked story IDs from like repository")
-	likedStoryIDs, nextCursor, err := s.likeRepo.ListLikedStoryIDsByUserID(ctx, userID, cursor, limit+1)
+	likedStoryIDs, nextCursor, err := s.likeRepo.ListLikedStoryIDsByUserID(ctx, userID, cursor, limit+1) // Fetch one extra to check for next page
 	if err != nil {
 		if errors.Is(err, interfaces.ErrInvalidCursor) {
 			log.Warn("Invalid cursor provided for ListLikedStories")
 			return nil, "", err
 		}
 		log.Error("Error listing liked story IDs from like repository", zap.Error(err))
-		// Assuming ErrInternal exists in sharedModels or gameplay_service scope
-		return nil, "", ErrInternal
+		return nil, "", sharedModels.ErrInternalServer
 	}
 
-	// 2. Check if there's a next page based on the number of IDs fetched
+	// 2. Check if there's a next page
 	hasNextPage := len(likedStoryIDs) > limit
 	if hasNextPage {
 		likedStoryIDs = likedStoryIDs[:limit]
@@ -154,22 +163,43 @@ func (s *likeServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID
 
 	if len(likedStoryIDs) == 0 {
 		log.Info("No liked stories found for user")
-		return []*sharedModels.PublishedStory{}, "", nil // Return empty list and no error
+		return []*LikedStoryDetailDTO{}, "", nil // Return empty list
 	}
 
 	// 3. Fetch the actual PublishedStory details using the IDs
 	log.Debug("Fetching published story details for liked IDs", zap.Int("id_count", len(likedStoryIDs)))
-	// Assuming PublishedStoryRepository has a ListByIDs method
 	likedStories, err := s.publishedRepo.ListByIDs(ctx, likedStoryIDs)
 	if err != nil {
 		log.Error("Error fetching published stories by IDs", zap.Error(err))
-		return nil, "", ErrInternal // Use appropriate internal error
+		return nil, "", sharedModels.ErrInternalServer
 	}
 
-	// Note: The order of stories returned by ListByIDs might not match likedStoryIDs order.
-	// If specific order (e.g., by like time) is needed, ListByIDs would need to support it,
-	// or additional sorting logic would be required here.
+	// 4. Check progress for each story and create DTOs
+	// We need a map to efficiently match stories to IDs if order isn't guaranteed
+	storyMap := make(map[uuid.UUID]*sharedModels.PublishedStory, len(likedStories))
+	for _, story := range likedStories {
+		storyMap[story.ID] = story
+	}
 
-	log.Info("Successfully listed liked stories", zap.Int("count", len(likedStories)))
-	return likedStories, nextCursor, nil
+	results := make([]*LikedStoryDetailDTO, 0, len(likedStoryIDs)) // Use original ID list for order
+	for _, storyID := range likedStoryIDs {
+		story, ok := storyMap[storyID]
+		if !ok {
+			log.Warn("Story details not found for liked story ID, skipping", zap.String("storyID", storyID.String()))
+			continue // Skip if story details weren't returned
+		}
+
+		_, errProgress := s.progressRepo.GetByUserIDAndStoryID(ctx, userID, story.ID)
+		hasProgress := errProgress == nil || !errors.Is(errProgress, pgx.ErrNoRows)
+		if errProgress != nil && !errors.Is(errProgress, pgx.ErrNoRows) {
+			log.Error("Error checking progress for liked story in list", zap.String("storyID", story.ID.String()), zap.Error(errProgress))
+		}
+		results = append(results, &LikedStoryDetailDTO{
+			PublishedStory:    *story,
+			HasPlayerProgress: hasProgress,
+		})
+	}
+
+	log.Debug("Successfully listed liked stories with progress", zap.Int("count", len(results)), zap.Bool("hasNext", hasNextPage))
+	return results, nextCursor, nil
 }

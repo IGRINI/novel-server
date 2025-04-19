@@ -21,4 +21,9 @@ type GameplayServiceClient interface {
 	GetDraftDetails(ctx context.Context, userID, draftID uuid.UUID) (*models.StoryConfig, error)
 	GetPublishedStoryDetails(ctx context.Context, userID, storyID uuid.UUID) (*models.PublishedStory, error)
 	ListStoryScenes(ctx context.Context, userID, storyID uuid.UUID) ([]models.StoryScene, error)
+
+	// <<< ДОБАВЛЕНО: Методы для обновления >>>
+	UpdateDraft(ctx context.Context, userID, draftID uuid.UUID, configJSON, userInputJSON string) error
+	UpdateStory(ctx context.Context, userID, storyID uuid.UUID, configJSON, setupJSON string) error
+	UpdateScene(ctx context.Context, userID, storyID, sceneID uuid.UUID, contentJSON string) error
 }

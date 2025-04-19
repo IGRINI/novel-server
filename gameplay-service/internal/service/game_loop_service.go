@@ -57,6 +57,7 @@ type GameLoopService interface {
 	MakeChoice(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID, selectedOptionIndices []int) error
 	DeletePlayerProgress(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
 	RetrySceneGeneration(ctx context.Context, storyID, userID uuid.UUID) error
+	UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error
 }
 
 type gameLoopServiceImpl struct {
@@ -428,87 +429,155 @@ func (s *gameLoopServiceImpl) DeletePlayerProgress(ctx context.Context, userID u
 	return nil
 }
 
-// RetrySceneGeneration handles the logic for retrying scene generation.
+// RetrySceneGeneration handles the logic for retrying generation for a published story.
+// It checks if the error occurred during Setup or Scene generation and restarts the appropriate task.
 func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID, userID uuid.UUID) error {
 	log := s.logger.With(zap.String("publishedStoryID", storyID.String()), zap.String("userID", userID.String()))
 	log.Info("RetrySceneGeneration called")
 
-	// 1. Получаем историю
+	// 1. Get the story
 	story, err := s.publishedRepo.GetByID(ctx, storyID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			log.Warn("Published story not found for retry")
-			return sharedModels.ErrStoryNotFound // Используем ошибку из shared
+			return sharedModels.ErrStoryNotFound
 		}
 		log.Error("Failed to get published story for retry", zap.Error(err))
-		return sharedModels.ErrInternalServer // Используем локальную ошибку
+		return sharedModels.ErrInternalServer
 	}
 
-	// 2. Проверяем статус
+	// 2. Check status (must be Error)
 	if story.Status != sharedModels.StatusError {
 		log.Warn("Attempt to retry generation for story not in Error status", zap.String("status", string(story.Status)))
-		return sharedModels.ErrCannotRetry // Используем ошибку из shared
+		return sharedModels.ErrCannotRetry
 	}
 
-	// 3. Получаем последний прогресс игрока
-	progress, err := s.playerProgressRepo.GetByUserIDAndStoryID(ctx, userID, storyID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			log.Error("Player progress not found for retry, cannot determine state")
-			// Это странная ситуация: история в ошибке, но прогресса нет.
-			// Возможно, стоит вернуть другую ошибку или попробовать сгенерировать сцену с начальным состоянием?
-			// Пока возвращаем внутреннюю ошибку.
+	// 3. Check if Setup generation failed or Scene generation failed
+	if story.Setup == nil {
+		// --- Error occurred during Setup generation ---
+		log.Info("Setup is nil, retrying Setup generation")
+
+		if story.Config == nil {
+			log.Error("CRITICAL: Story is in Error, Setup is nil, and Config is also nil. Cannot retry Setup.")
+			return sharedModels.ErrInternalServer // Cannot proceed
+		}
+
+		// Update status back to SetupPending
+		if err := s.publishedRepo.UpdateStatusDetails(ctx, storyID, sharedModels.StatusSetupPending, nil, nil, nil, nil); err != nil {
+			log.Error("Failed to update story status to SetupPending before retry task publish", zap.Error(err))
 			return sharedModels.ErrInternalServer
 		}
-		log.Error("Failed to get player progress for retry", zap.Error(err))
-		return sharedModels.ErrInternalServer
+
+		// Create and publish Setup task payload
+		taskID := uuid.New().String()
+		configJSONString := string(story.Config) // Config is needed for Setup
+		setupPayload := sharedMessaging.GenerationTaskPayload{
+			TaskID:           taskID,
+			UserID:           story.UserID.String(), // Use UserID from the story
+			PromptType:       sharedMessaging.PromptTypeNovelSetup,
+			UserInput:        configJSONString,
+			PublishedStoryID: storyID.String(),
+		}
+
+		if err := s.publisher.PublishGenerationTask(ctx, setupPayload); err != nil {
+			log.Error("Error publishing retry setup generation task. Rolling back status...", zap.Error(err))
+			if rollbackErr := s.publishedRepo.UpdateStatusDetails(context.Background(), storyID, sharedModels.StatusError, nil, nil, nil, nil); rollbackErr != nil {
+				log.Error("CRITICAL: Failed to roll back status to Error after setup retry publish error", zap.Error(rollbackErr))
+			}
+			return sharedModels.ErrInternalServer
+		}
+
+		log.Info("Retry setup generation task published successfully", zap.String("taskID", taskID))
+		return nil
+
+	} else {
+		// --- Error occurred during Scene generation (Setup exists) ---
+		log.Info("Setup exists, retrying Scene generation")
+
+		// Get player progress to determine which scene to retry
+		progress, err := s.playerProgressRepo.GetByUserIDAndStoryID(ctx, userID, storyID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				log.Error("Player progress not found for scene retry, cannot determine state", zap.String("userID", userID.String()))
+				// If progress is missing, we can't know what scene to generate.
+				// Maybe default to retrying the first scene?
+				// For now, return error.
+				return sharedModels.ErrPlayerProgressNotFound
+			}
+			log.Error("Failed to get player progress for scene retry", zap.Error(err))
+			return sharedModels.ErrInternalServer
+		}
+
+		// Update status back to GeneratingScene
+		if err := s.publishedRepo.UpdateStatusDetails(ctx, storyID, sharedModels.StatusGeneratingScene, nil, nil, nil, nil); err != nil {
+			log.Error("Failed to update story status to GeneratingScene before retry task publish", zap.Error(err))
+			return sharedModels.ErrInternalServer
+		}
+
+		// Create payload for the scene indicated by progress.CurrentStateHash
+		madeChoicesInfo := []userChoiceInfo{} // No choice info on a simple retry
+		generationPayload, err := createGenerationPayload(
+			userID,
+			story,
+			progress,
+			madeChoicesInfo,
+			progress.CurrentStateHash, // Retry for the current hash in progress
+		)
+		if err != nil {
+			log.Error("Failed to create generation payload for scene retry", zap.Error(err))
+			if rollbackErr := s.publishedRepo.UpdateStatusDetails(context.Background(), storyID, sharedModels.StatusError, nil, nil, nil, nil); rollbackErr != nil {
+				log.Error("CRITICAL: Failed to roll back status to Error after payload creation error", zap.Error(rollbackErr))
+			}
+			return sharedModels.ErrInternalServer
+		}
+		generationPayload.PromptType = sharedMessaging.PromptTypeNovelCreator // Ensure correct type
+
+		if err := s.publisher.PublishGenerationTask(ctx, generationPayload); err != nil {
+			log.Error("Error publishing retry scene generation task. Rolling back status...", zap.Error(err))
+			if rollbackErr := s.publishedRepo.UpdateStatusDetails(context.Background(), storyID, sharedModels.StatusError, nil, nil, nil, nil); rollbackErr != nil {
+				log.Error("CRITICAL: Failed to roll back status to Error after scene retry publish error", zap.Error(rollbackErr))
+			}
+			return sharedModels.ErrInternalServer
+		}
+
+		log.Info("Retry scene generation task published successfully", zap.String("taskID", generationPayload.TaskID), zap.String("stateHash", progress.CurrentStateHash))
+		return nil
+	}
+}
+
+// UpdateSceneInternal updates the content of a scene.
+func (s *gameLoopServiceImpl) UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error {
+	log := s.logger.With(zap.String("sceneID", sceneID.String()))
+	log.Info("UpdateSceneInternal called")
+
+	// Валидация JSON
+	var contentBytes []byte
+	if contentJSON != "" {
+		if !json.Valid([]byte(contentJSON)) {
+			log.Warn("Invalid JSON received for scene content")
+			return fmt.Errorf("%w: invalid scene content JSON format", sharedModels.ErrBadRequest)
+		}
+		contentBytes = []byte(contentJSON)
+	} else {
+		// Запрещаем делать контент пустым? Или разрешаем?
+		// Пока запретим, так как пустая сцена бессмысленна.
+		log.Warn("Attempted to set empty content for scene")
+		return fmt.Errorf("%w: scene content cannot be empty", sharedModels.ErrBadRequest)
+		// Если нужно разрешить, использовать: contentBytes = nil
 	}
 
-	// 4. Обновляем статус истории на Generating (убираем ошибку)
-	// Передаем nil для setup, title, description, errorDetails
-	if err := s.publishedRepo.UpdateStatusDetails(ctx, storyID, sharedModels.StatusGenerating, nil, nil, nil, nil); err != nil {
-		log.Error("Failed to update story status to Generating before retry task publish", zap.Error(err))
-		return sharedModels.ErrInternalServer
-	}
-
-	// 5. Отправляем задачу на генерацию сцены
-	taskID := uuid.New().String()
-	// Если PreviousStateHash нет, возможно, это была первая сцена (начальный хеш)
-	madeChoicesInfo := []userChoiceInfo{} // Нет информации о предыдущем выборе при простом retry
-
-	// Нужен ли нам здесь PreviousStateHash? Зависит от логики генератора.
-	// Пока что будем считать, что для регенерации текущего хеша достаточно
-	// данных из прогресса и сетапа. И PreviousStateHash не нужен.
-
-	generationPayload, err := createGenerationPayload(
-		userID,
-		story,
-		progress,
-		madeChoicesInfo,
-		progress.CurrentStateHash,
-	)
+	// Вызов репозитория
+	err := s.sceneRepo.UpdateContent(ctx, sceneID, contentBytes)
 	if err != nil {
-		log.Error("Failed to create generation payload for retry", zap.Error(err))
-		// Попытка откатить статус обратно к Error
-		if rollbackErr := s.publishedRepo.UpdateStatusDetails(context.Background(), storyID, sharedModels.StatusError, nil, nil, nil, nil); rollbackErr != nil {
-			log.Error("CRITICAL: Failed to roll back status to Error after payload creation error", zap.Error(rollbackErr))
+		if errors.Is(err, sharedModels.ErrNotFound) {
+			log.Warn("Scene not found for update")
+			return sharedModels.ErrNotFound
 		}
-		return sharedModels.ErrInternalServer
-	}
-	generationPayload.TaskID = taskID
-	generationPayload.PublishedStoryID = storyID.String()
-	generationPayload.PromptType = sharedMessaging.PromptTypeNovelCreator // Исправлено на PromptTypeNovelCreator
-
-	if err := s.publisher.PublishGenerationTask(ctx, generationPayload); err != nil {
-		log.Error("Error publishing retry scene generation task. Rolling back status...", zap.Error(err))
-		// Попытка откатить статус обратно к Error
-		if rollbackErr := s.publishedRepo.UpdateStatusDetails(context.Background(), storyID, sharedModels.StatusError, nil, nil, nil, nil); rollbackErr != nil {
-			log.Error("CRITICAL: Failed to roll back status to Error after retry publish error", zap.Error(rollbackErr))
-		}
-		return sharedModels.ErrInternalServer
+		log.Error("Failed to update scene content in repository", zap.Error(err))
+		return ErrInternal
 	}
 
-	log.Info("Retry scene generation task published successfully", zap.String("taskID", taskID))
+	log.Info("Scene content updated successfully by internal request")
 	return nil
 }
 

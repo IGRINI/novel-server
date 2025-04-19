@@ -13,6 +13,12 @@
     {{ if .ScenesError }}
         <div class="alert alert-warning">{{ .ScenesError }}</div>
     {{ end }}
+    {{ if .SuccessMessage }}
+        <div class="alert alert-success">{{ .SuccessMessage }}</div>
+    {{ end }}
+    {{ if .ErrorMessage }}
+        <div class="alert alert-danger">{{ .ErrorMessage }}</div>
+    {{ end }}
 
     {{ if and (not .UserError) .TargetUser }}
         <div class="card mb-3">
@@ -27,30 +33,37 @@
     {{ end }}
 
     {{ if and (not .StoryError) .Story }}
-        <div class="card mb-3">
-            <div class="card-header">Детали опубликованной истории</div>
-            <div class="card-body">
-                <p><strong>ID Истории:</strong> {{ .Story.ID }}</p>
-                <p><strong>Заголовок:</strong> {{ .Story.Title | derefString | default "-" }}</p>
-                <p><strong>Описание:</strong> {{ .Story.Description | derefString | default "-" }}</p>
-                <p><strong>Статус:</strong> <span class="badge bg-{{ .Story.Status | statusBadge }}">{{ .Story.Status }}</span></p>
-                <p><strong>Публичная:</strong> {{ if .Story.IsPublic }}Да{{ else }}Нет{{ end }}</p>
-                <p><strong>18+:</strong> {{ if .Story.IsAdultContent }}Да{{ else }}Нет{{ end }}</p>
-                <p><strong>Создана (опубл.):</strong> {{ .Story.CreatedAt | formatAsDateTime }}</p>
-                <p><strong>Обновлена:</strong> {{ .Story.UpdatedAt | formatAsDateTime }}</p>
-                <p><strong>Лайки:</strong> {{ .Story.LikesCount }}</p>
+        <form method="POST" action="/admin/users/{{ .TargetUser.ID }}/stories/{{ .Story.ID }}">
+            <div class="card mb-3">
+                <div class="card-header">Детали опубликованной истории</div>
+                <div class="card-body">
+                    <p><strong>ID Истории:</strong> {{ .Story.ID }}</p>
+                    <p><strong>Заголовок:</strong> {{ .Story.Title | derefString | default "-" }}</p>
+                    <p><strong>Описание:</strong> {{ .Story.Description | derefString | default "-" }}</p>
+                    <p><strong>Статус:</strong> <span class="badge bg-{{ .Story.Status | statusBadge }}">{{ .Story.Status }}</span></p>
+                    <p><strong>Публичная:</strong> {{ if .Story.IsPublic }}Да{{ else }}Нет{{ end }}</p>
+                    <p><strong>18+:</strong> {{ if .Story.IsAdultContent }}Да{{ else }}Нет{{ end }}</p>
+                    <p><strong>Создана (опубл.):</strong> {{ .Story.CreatedAt | formatAsDateTime }}</p>
+                    <p><strong>Обновлена:</strong> {{ .Story.UpdatedAt | formatAsDateTime }}</p>
+                    <p><strong>Лайки:</strong> {{ .Story.LikesCount }}</p>
 
-                <div class="mb-3">
-                    <label for="configJson" class="form-label"><strong>Config (JSON):</strong></label>
-                    <textarea id="configJson" class="form-control" rows="15" readonly>{{ .Story.Config | bytesToString }}</textarea>
+                    <div class="mb-3">
+                        <label for="configJson" class="form-label"><strong>Config (JSON):</strong></label>
+                        <textarea id="configJson" name="configJson" class="form-control" rows="15">{{ .Story.Config | bytesToString }}</textarea>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="setupJson" class="form-label"><strong>Setup (JSON):</strong></label>
+                        <textarea id="setupJson" name="setupJson" class="form-control" rows="15">{{ .Story.Setup | bytesToString }}</textarea>
+                    </div>
                 </div>
-
-                <div class="mb-3">
-                    <label for="setupJson" class="form-label"><strong>Setup (JSON):</strong></label>
-                    <textarea id="setupJson" class="form-control" rows="15" readonly>{{ .Story.Setup | bytesToString }}</textarea>
+                <div class="card-footer">
+                    <button type="submit" class="btn btn-primary">Сохранить изменения истории (Config/Setup)</button>
+                    <button type="button" class="btn btn-secondary" onclick="formatJsonTextarea('configJson')">Форматировать Config</button>
+                    <button type="button" class="btn btn-secondary" onclick="formatJsonTextarea('setupJson')">Форматировать Setup</button>
                 </div>
             </div>
-        </div>
+        </form>
 
         <div class="card mb-3">
             <div class="card-header">Сцены истории ({{ len .Scenes }})</div>
@@ -74,7 +87,7 @@
                                     <td><small>{{ .StateHash }}</small></td>
                                     <td><small>{{ .CreatedAt | formatAsDateTime }}</small></td>
                                     <td>
-                                        <button class="btn btn-sm btn-outline-secondary" onclick="showSceneContent('{{ .ID }}')">Показать JSON</button>
+                                        <button class="btn btn-sm btn-outline-secondary" onclick="showSceneContent('{{ .ID }}')">Показать/Редактировать JSON</button>
                                         <textarea id="scene-{{ .ID }}" style="display: none;">{{ .Content | bytesToString }}</textarea>
                                     </td>
                                 </tr>
@@ -93,7 +106,7 @@
         <div class="alert alert-info">Информация об истории недоступна.</div>
     {{ end }}
 
-    <!-- Модальное окно для показа JSON -->
+    <!-- Модальное окно для показа/редактирования JSON сцены -->
     <div class="modal fade" id="sceneJsonModal" tabindex="-1" aria-labelledby="sceneJsonModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg modal-dialog-scrollable">
             <div class="modal-content">
@@ -102,7 +115,14 @@
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
-                    <pre><code id="sceneJsonContent" class="language-json"></code></pre>
+                    <input type="hidden" id="currentSceneId">
+                    <textarea id="sceneJsonContentEditable" class="form-control" rows="20"></textarea>
+                    <div id="sceneSaveStatus" class="mt-2"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Закрыть</button>
+                    <button type="button" class="btn btn-info" onclick="formatSceneJson()">Форматировать</button>
+                    <button type="button" class="btn btn-primary" onclick="saveSceneContent()">Сохранить контент сцены</button>
                 </div>
             </div>
         </div>
@@ -112,48 +132,108 @@
 </div>
 
 <script>
-document.addEventListener('DOMContentLoaded', (event) => {
-    function formatJsonTextarea(textareaId) {
-        const textarea = document.getElementById(textareaId);
-        if (textarea && textarea.value.trim()) {
-            try {
-                const jsonObject = JSON.parse(textarea.value);
-                textarea.value = JSON.stringify(jsonObject, null, 2); // Форматируем с отступом 2
-            } catch (e) {
-                console.warn(`Could not parse JSON in textarea #${textareaId}:`, e);
-            }
+function formatJsonTextarea(textareaId) {
+    const textarea = document.getElementById(textareaId);
+    if (textarea && textarea.value.trim()) {
+        try {
+            const jsonObject = JSON.parse(textarea.value);
+            textarea.value = JSON.stringify(jsonObject, null, 2);
+        } catch (e) {
+            console.warn(`Could not parse JSON in textarea #${textareaId}:`, e);
+            alert(`Невалидный JSON в поле ${textareaId}! Пожалуйста, исправьте перед сохранением.`);
         }
     }
+}
 
+document.addEventListener('DOMContentLoaded', (event) => {
     formatJsonTextarea('configJson');
     formatJsonTextarea('setupJson');
 });
 
-function showSceneContent(sceneId) {
-    const textarea = document.getElementById(`scene-${sceneId}`);
-    const modalContent = document.getElementById('sceneJsonContent');
-    const modalTitle = document.getElementById('sceneJsonModalLabel');
-    const modal = new bootstrap.Modal(document.getElementById('sceneJsonModal'));
+let sceneModalInstance = null;
 
-    modalTitle.textContent = `Содержимое сцены ${sceneId}`;
-    modalContent.textContent = ''; // Очищаем перед показом
+function getSceneModalInstance() {
+    if (!sceneModalInstance) {
+        sceneModalInstance = new bootstrap.Modal(document.getElementById('sceneJsonModal'));
+    }
+    return sceneModalInstance;
+}
 
+function formatSceneJson() {
+    const textarea = document.getElementById('sceneJsonContentEditable');
     if (textarea && textarea.value.trim()) {
         try {
             const jsonObject = JSON.parse(textarea.value);
-            modalContent.textContent = JSON.stringify(jsonObject, null, 2);
-            // Подсветка синтаксиса, если используется Prism.js или подобное
-            if (typeof Prism !== 'undefined') {
-                Prism.highlightElement(modalContent);
-            }
+            textarea.value = JSON.stringify(jsonObject, null, 2);
         } catch (e) {
-            console.warn(`Could not parse JSON for scene ${sceneId}:`, e);
-            modalContent.textContent = textarea.value; // Показываем как есть
+            console.warn(`Could not parse JSON in scene modal:`, e);
+            alert('Невалидный JSON! Пожалуйста, исправьте.');
         }
-    } else {
-        modalContent.textContent = '(Нет данных)';
     }
-    modal.show();
+}
+
+function showSceneContent(sceneId) {
+    const originalTextarea = document.getElementById(`scene-${sceneId}`);
+    const editableTextarea = document.getElementById('sceneJsonContentEditable');
+    const modalTitle = document.getElementById('sceneJsonModalLabel');
+    const currentSceneIdInput = document.getElementById('currentSceneId');
+    const saveStatusDiv = document.getElementById('sceneSaveStatus');
+
+    modalTitle.textContent = `Содержимое сцены ${sceneId}`;
+    editableTextarea.value = originalTextarea.value;
+    currentSceneIdInput.value = sceneId;
+    saveStatusDiv.innerHTML = '';
+
+    formatSceneJson();
+
+    getSceneModalInstance().show();
+}
+
+function saveSceneContent() {
+    const sceneId = document.getElementById('currentSceneId').value;
+    const contentJson = document.getElementById('sceneJsonContentEditable').value;
+    const saveStatusDiv = document.getElementById('sceneSaveStatus');
+    saveStatusDiv.innerHTML = '<span class="text-info">Сохранение...</span>';
+
+    try {
+        JSON.parse(contentJson);
+    } catch (e) {
+        saveStatusDiv.innerHTML = '<span class="text-danger">Ошибка: Невалидный JSON!</span>';
+        return;
+    }
+
+    const storyId = '{{ .Story.ID }}';
+    const userId = '{{ .TargetUser.ID }}';
+    const url = `/admin/users/${userId}/stories/${storyId}/scenes/${sceneId}`;
+
+    fetch(url, {
+        method: 'POST', 
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        },
+        body: JSON.stringify({ contentJson: contentJson })
+    })
+    .then(response => {
+        if (!response.ok) {
+            return response.json().then(errData => {
+                throw new Error(errData.error || `Ошибка сети: ${response.status}`);
+            });
+        }
+        return response.json(); 
+    })
+    .then(data => {
+        saveStatusDiv.innerHTML = '<span class="text-success">Успешно сохранено!</span>';
+        const originalTextarea = document.getElementById(`scene-${sceneId}`);
+        if(originalTextarea) {
+            originalTextarea.value = contentJson; 
+        }
+        setTimeout(() => getSceneModalInstance().hide(), 1500);
+    })
+    .catch(error => {
+        console.error('Error saving scene content:', error);
+        saveStatusDiv.innerHTML = `<span class="text-danger">Ошибка сохранения: ${error.message}</span>`;
+    });
 }
 </script>
 

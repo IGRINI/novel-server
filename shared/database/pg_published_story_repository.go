@@ -480,3 +480,32 @@ func (r *pgPublishedStoryRepository) ListByIDs(ctx context.Context, ids []uuid.U
 	r.logger.Debug("Published stories listed successfully by IDs", append(logFields, zap.Int("found_count", len(stories)))...)
 	return stories, nil
 }
+
+// <<< ДОБАВЛЕНО: Реализация UpdateConfigAndSetup >>>
+const updateConfigAndSetupQuery = `
+UPDATE published_stories
+SET config = $2, setup = $3, updated_at = NOW()
+WHERE id = $1`
+
+func (r *pgPublishedStoryRepository) UpdateConfigAndSetup(ctx context.Context, id uuid.UUID, config, setup []byte) error {
+	logFields := []zap.Field{
+		zap.String("publishedStoryID", id.String()),
+		zap.Int("configSize", len(config)),
+		zap.Int("setupSize", len(setup)),
+	}
+	r.logger.Debug("Updating published story config and setup", logFields...)
+
+	commandTag, err := r.db.Exec(ctx, updateConfigAndSetupQuery, id, config, setup)
+	if err != nil {
+		r.logger.Error("Failed to update published story config and setup", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления конфига и сетапа для истории %s: %w", id, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("Published story not found for update (config/setup)", logFields...)
+		return models.ErrNotFound // Используем стандартную ошибку
+	}
+
+	r.logger.Info("Published story config and setup updated successfully", logFields...)
+	return nil
+}

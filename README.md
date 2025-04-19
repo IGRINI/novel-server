@@ -397,18 +397,20 @@
     *   Описание: Получение списка **своих** опубликованных историй. Поддерживает курсорную пагинацию.
     *   Аутентификация: **Требуется.**
     *   Query параметры: `limit`, `cursor` (аналогично `/api/stories`).
-    *   Ответ при успехе (`200 OK`): Пагинированный список `PublishedStorySummary`.
+    *   Ответ при успехе (`200 OK`): Пагинированный список `PublishedStorySummaryWithProgress`.
         ```json
         {
           "data": [
             {
               "id": "uuid-string",
               "title": "string",
-              "description": "string", // Не shortDescription
-              "published_at": "timestamp", // Используется published_at
+              "description": "string",
+              "published_at": "timestamp",
               "likes_count": 123,
               "is_liked": true,
-              "author_id": "uuid-string" // ID автора (UserID), без display_name
+              "author_id": "uuid-string",
+              "hasPlayerProgress": false, // Есть ли прогресс у текущего пользователя
+              "status": "ready | completed | error | generating_scene | ..."
             }
             /* ... */
           ],
@@ -424,10 +426,57 @@
     *   Описание: Получение списка **публичных** опубликованных историй (доступных всем). Поддерживает курсорную пагинацию.
     *   Аутентификация: **Требуется** (проверяется токен, но доступ не ограничивается автором).
     *   Query параметры: `limit`, `cursor`.
-    *   Ответ при успехе (`200 OK`): Аналогично `/api/published-stories/me` (но `is_liked` будет `false` для неаутентифицированных или если проверка не реализована).
+    *   Ответ при успехе (`200 OK`): Пагинированный список `PublishedStorySummaryWithProgress`.
+        ```json
+        {
+          "data": [
+            {
+              "id": "uuid-string",
+              "title": "string",
+              "description": "string",
+              "published_at": "timestamp",
+              "likes_count": 123,
+              "is_liked": false,
+              "author_id": "uuid-string",
+              "hasPlayerProgress": true // Есть ли прогресс у текущего пользователя
+            }
+            /* ... */
+          ],
+          "next_cursor": "string | null"
+        }
+        ```
     *   Ответ при ошибке:
         *   `400 Bad Request`: Невалидный курсор или `limit`.
         *   `401 Unauthorized`: Невалидный токен.
+        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
+
+*   **`GET /api/published-stories/:id`**
+    *   Описание: Получение детальной информации об **одной** опубликованной истории, включая флаг наличия прогресса у текущего пользователя.
+    *   Аутентификация: **Требуется.**
+    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
+    *   Ответ при успехе (`200 OK`): Объект `PublishedStoryDetailWithProgressDTO` (содержит все поля `PublishedStory` + `hasPlayerProgress`).
+        ```json
+        {
+          "id": "uuid-string",
+          "user_id": "uuid-string",
+          "config": { ... }, // Нераспарсенный JSON конфига
+          "setup": { ... }, // Нераспарсенный JSON сетапа
+          "status": "ready | completed | error",
+          "is_public": true,
+          "is_adult_content": false,
+          "title": "string",
+          "description": "string",
+          "likes_count": 123,
+          "is_liked": true, // Лайкнул ли текущий пользователь
+          "created_at": "timestamp",
+          "updated_at": "timestamp",
+          "hasPlayerProgress": true // Есть ли прогресс у текущего пользователя
+        }
+        ```
+    *   Ответ при ошибке:
+        *   `400 Bad Request`: Невалидный UUID.
+        *   `401 Unauthorized`: Невалидный токен.
+        *   `404 Not Found`: История не найдена.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 *   **`GET /api/published-stories/:id/scene`**
@@ -532,6 +581,47 @@
         *   `400 Bad Request`: Невалидный UUID.
         *   `401 Unauthorized`: Невалидный токен.
         *   `404 Not Found` (`{"message": "story not liked by this user yet"}`): Пользователь не лайкал эту историю.
+        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
+
+*   **`POST /api/published-stories/:id/retry`**
+    *   Описание: Повторный запуск задачи генерации (Setup или Scene) для опубликованной истории, которая завершилась с ошибкой (`status: "error"`).
+    *   Аутентификация: **Требуется.**
+    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
+    *   Тело запроса: Нет.
+    *   Ответ при успехе (`202 Accepted`): **Пустое тело.** Статус истории изменится на `setup_pending` или `generating_scene`.
+    *   Ответ при ошибке:
+        *   `400 Bad Request`: Невалидный UUID.
+        *   `401 Unauthorized`: Невалидный токен.
+        *   `404 Not Found`: История не найдена.
+        *   `409 Conflict` (`{"message": "Story is not in error state"}`): История не в статусе ошибки.
+        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
+
+*   **`GET /api/users/me/likes`**
+    *   Описание: Получение списка историй, которые лайкнул пользователь.
+    *   Аутентификация: **Требуется.**
+    *   Query параметры: `limit`, `cursor`.
+    *   Ответ при успехе (`200 OK`): Пагинированный список `PublishedStorySummaryWithProgress`.
+        ```json
+        {
+          "data": [
+            {
+              "id": "uuid-string",
+              "title": "string",
+              "description": "string",
+              "published_at": "timestamp",
+              "likes_count": 123,
+              "is_liked": true, // Всегда true для этого эндпоинта
+              "author_id": "uuid-string",
+              "hasPlayerProgress": false // Есть ли прогресс у текущего пользователя
+            }
+            /* ... */
+          ],
+          "next_cursor": "string | null"
+        }
+        ```
+    *   Ответ при ошибке:
+        *   `400 Bad Request`: Невалидный курсор или `limit`.
+        *   `401 Unauthorized`: Невалидный токен.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 ---

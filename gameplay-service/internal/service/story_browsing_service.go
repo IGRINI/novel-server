@@ -25,6 +25,11 @@ var (
 
 // DTOs for browsing stories
 
+type PublishedStoryDetailWithProgressDTO struct {
+	sharedModels.PublishedStory
+	HasPlayerProgress bool `json:"hasPlayerProgress"`
+}
+
 type PublishedStoryDetailDTO struct {
 	ID                uuid.UUID
 	Title             string
@@ -52,41 +57,40 @@ type CoreStatDetailDTO struct {
 
 // StoryBrowsingService defines the interface for browsing published stories.
 type StoryBrowsingService interface {
-	ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error)
-	ListPublicStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error)
+	ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStoryDetailWithProgressDTO, string, error)
+	ListPublicStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStoryDetailWithProgressDTO, string, error)
 	GetPublishedStoryDetails(ctx context.Context, storyID, userID uuid.UUID) (*PublishedStoryDetailDTO, error)
-	ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error) // Note: Offset-based, might be deprecated
+	ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error)
 	GetPublishedStoryDetailsInternal(ctx context.Context, storyID uuid.UUID) (*sharedModels.PublishedStory, error)
 	ListStoryScenesInternal(ctx context.Context, storyID uuid.UUID) ([]sharedModels.StoryScene, error)
+	UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON string) error
+	GetPublishedStoryDetailsWithProgress(ctx context.Context, userID, publishedStoryID uuid.UUID) (*PublishedStoryDetailWithProgressDTO, error)
 }
 
 type storyBrowsingServiceImpl struct {
 	publishedRepo interfaces.PublishedStoryRepository
 	sceneRepo     interfaces.StorySceneRepository
-	// playerProgressRepo interfaces.PlayerProgressRepository // May be needed for LastPlayedAt
-	// userRepo interfaces.UserRepository // May be needed for AuthorName
-	logger *zap.Logger
+	progressRepo  interfaces.PlayerProgressRepository
+	logger        *zap.Logger
 }
 
 // NewStoryBrowsingService creates a new instance of StoryBrowsingService.
 func NewStoryBrowsingService(
 	publishedRepo interfaces.PublishedStoryRepository,
 	sceneRepo interfaces.StorySceneRepository,
-	// playerProgressRepo interfaces.PlayerProgressRepository,
-	// userRepo interfaces.UserRepository,
+	progressRepo interfaces.PlayerProgressRepository,
 	logger *zap.Logger,
 ) StoryBrowsingService {
 	return &storyBrowsingServiceImpl{
 		publishedRepo: publishedRepo,
 		sceneRepo:     sceneRepo,
-		// playerProgressRepo: playerProgressRepo,
-		// userRepo: userRepo,
-		logger: logger.Named("StoryBrowsingService"),
+		progressRepo:  progressRepo,
+		logger:        logger.Named("StoryBrowsingService"),
 	}
 }
 
-// ListMyPublishedStories returns a list of the user's published stories.
-func (s *storyBrowsingServiceImpl) ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error) {
+// ListMyPublishedStories returns a list of the user's published stories with progress flag.
+func (s *storyBrowsingServiceImpl) ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStoryDetailWithProgressDTO, string, error) {
 	log := s.logger.With(zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
 	log.Info("ListMyPublishedStories called")
 
@@ -94,23 +98,34 @@ func (s *storyBrowsingServiceImpl) ListMyPublishedStories(ctx context.Context, u
 		limit = 20
 	}
 
-	// Call the repository method with cursor pagination
 	stories, nextCursor, err := s.publishedRepo.ListByUserID(ctx, userID, cursor, limit)
 	if err != nil {
-		// Check for specific cursor errors if the repository returns them
-		// if errors.Is(err, interfaces.ErrInvalidCursor) { ... }
 		log.Error("Failed to list user published stories using cursor", zap.Error(err))
-		return nil, "", sharedModels.ErrInternalServer // Use shared error
+		return nil, "", sharedModels.ErrInternalServer
 	}
 
-	log.Debug("Successfully listed user published stories", zap.Int("count", len(stories)), zap.Bool("hasNext", nextCursor != ""))
-	return stories, nextCursor, nil
+	// <<< ДОБАВЛЕНО: Проверка прогресса для каждой истории >>>
+	results := make([]*PublishedStoryDetailWithProgressDTO, 0, len(stories))
+	for _, story := range stories {
+		_, errProgress := s.progressRepo.GetByUserIDAndStoryID(ctx, userID, story.ID)
+		hasProgress := errProgress == nil || !errors.Is(errProgress, pgx.ErrNoRows)
+		if errProgress != nil && !errors.Is(errProgress, pgx.ErrNoRows) {
+			// Логируем неожиданную ошибку, но продолжаем, считая что прогресса нет
+			log.Error("Error checking progress for story in list", zap.String("storyID", story.ID.String()), zap.Error(errProgress))
+		}
+		results = append(results, &PublishedStoryDetailWithProgressDTO{
+			PublishedStory:    *story,
+			HasPlayerProgress: hasProgress,
+		})
+	}
+	// <<< КОНЕЦ: Проверка прогресса >>>
+
+	log.Debug("Successfully listed user published stories with progress", zap.Int("count", len(results)), zap.Bool("hasNext", nextCursor != ""))
+	return results, nextCursor, nil // <<< Возвращаем новый тип
 }
 
-// ListPublicStories returns a list of public published stories.
-func (s *storyBrowsingServiceImpl) ListPublicStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error) {
-	// userID is passed but currently unused in this specific method's core logic,
-	// but might be used later for filtering (e.g., liked status, blocking)
+// ListPublicStories returns a list of public published stories with progress flag for the requesting user.
+func (s *storyBrowsingServiceImpl) ListPublicStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStoryDetailWithProgressDTO, string, error) {
 	log := s.logger.With(zap.String("requestingUserID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
 	log.Info("ListPublicStories called")
 
@@ -118,16 +133,32 @@ func (s *storyBrowsingServiceImpl) ListPublicStories(ctx context.Context, userID
 		limit = 20
 	}
 
-	// Call the repository method with cursor pagination
-	// Note: userID is not directly used by ListPublic in the repo currently
 	stories, nextCursor, err := s.publishedRepo.ListPublic(ctx, cursor, limit)
 	if err != nil {
 		log.Error("Failed to list public stories using cursor", zap.Error(err))
-		return nil, "", sharedModels.ErrInternalServer // Use shared error
+		return nil, "", sharedModels.ErrInternalServer
 	}
 
-	log.Debug("Successfully listed public stories", zap.Int("count", len(stories)), zap.Bool("hasNext", nextCursor != ""))
-	return stories, nextCursor, nil
+	// <<< ДОБАВЛЕНО: Проверка прогресса для каждой истории (если userID есть) >>>
+	results := make([]*PublishedStoryDetailWithProgressDTO, 0, len(stories))
+	for _, story := range stories {
+		hasProgress := false
+		if userID != uuid.Nil { // Проверяем прогресс только если пользователь аутентифицирован
+			_, errProgress := s.progressRepo.GetByUserIDAndStoryID(ctx, userID, story.ID)
+			hasProgress = errProgress == nil || !errors.Is(errProgress, pgx.ErrNoRows)
+			if errProgress != nil && !errors.Is(errProgress, pgx.ErrNoRows) {
+				log.Error("Error checking progress for public story in list", zap.String("storyID", story.ID.String()), zap.Error(errProgress))
+			}
+		}
+		results = append(results, &PublishedStoryDetailWithProgressDTO{
+			PublishedStory:    *story,
+			HasPlayerProgress: hasProgress,
+		})
+	}
+	// <<< КОНЕЦ: Проверка прогресса >>>
+
+	log.Debug("Successfully listed public stories with progress", zap.Int("count", len(results)), zap.Bool("hasNext", nextCursor != ""))
+	return results, nextCursor, nil // <<< Возвращаем новый тип
 }
 
 // GetPublishedStoryDetails retrieves the details of a published story.
@@ -281,4 +312,92 @@ func (s *storyBrowsingServiceImpl) ListStoryScenesInternal(ctx context.Context, 
 
 	log.Info("Successfully retrieved story scenes for internal use", zap.Int("count", len(scenes)))
 	return scenes, nil
+}
+
+// UpdateStoryInternal updates the story configuration and setup for internal use.
+func (s *storyBrowsingServiceImpl) UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON string) error {
+	log := s.logger.With(zap.String("storyID", storyID.String()))
+	log.Info("UpdateStoryInternal called")
+
+	// Validate JSON
+	var configBytes, setupBytes []byte
+	var err error
+
+	if configJSON != "" {
+		if !json.Valid([]byte(configJSON)) {
+			log.Warn("Invalid JSON received for config")
+			return fmt.Errorf("%w: invalid config JSON format", sharedModels.ErrBadRequest)
+		}
+		configBytes = []byte(configJSON)
+	} else {
+		configBytes = nil
+	}
+
+	if setupJSON != "" {
+		if !json.Valid([]byte(setupJSON)) {
+			log.Warn("Invalid JSON received for setup")
+			return fmt.Errorf("%w: invalid setup JSON format", sharedModels.ErrBadRequest)
+		}
+		setupBytes = []byte(setupJSON)
+	} else {
+		setupBytes = nil
+	}
+
+	// Call the repository method
+	err = s.publishedRepo.UpdateConfigAndSetup(ctx, storyID, configBytes, setupBytes)
+	if err != nil {
+		if errors.Is(err, sharedModels.ErrNotFound) {
+			log.Warn("Published story not found for update")
+			return sharedModels.ErrNotFound
+		}
+		log.Error("Failed to update published story config and setup in repository", zap.Error(err))
+		return ErrInternal
+	}
+
+	log.Info("Published story updated successfully by internal request")
+	return nil
+}
+
+// GetPublishedStoryDetailsWithProgress fetches published story details and checks if the user has progress.
+func (s *storyBrowsingServiceImpl) GetPublishedStoryDetailsWithProgress(ctx context.Context, userID, publishedStoryID uuid.UUID) (*PublishedStoryDetailWithProgressDTO, error) {
+	log := s.logger.With(zap.String("userID", userID.String()), zap.String("publishedStoryID", publishedStoryID.String()))
+	log.Info("GetPublishedStoryDetailsWithProgress called")
+
+	// 1. Get the published story
+	story, err := s.publishedRepo.GetByID(ctx, publishedStoryID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			log.Warn("Published story not found")
+			return nil, sharedModels.ErrStoryNotFound
+		}
+		log.Error("Error getting published story", zap.Error(err))
+		return nil, sharedModels.ErrInternalServer
+	}
+
+	// 2. Check if player progress exists
+	var hasProgress bool
+	if userID != uuid.Nil { // Check progress only if userID is provided
+		_, errProgress := s.progressRepo.GetByUserIDAndStoryID(ctx, userID, publishedStoryID)
+		if errProgress == nil {
+			hasProgress = true
+		} else if errors.Is(errProgress, pgx.ErrNoRows) {
+			hasProgress = false
+		} else {
+			log.Error("Error checking player progress", zap.Error(errProgress))
+			// Return error if progress check fails?
+			// return nil, sharedModels.ErrInternalServer
+			hasProgress = false // Default to false on error
+		}
+	} else {
+		hasProgress = false // No user ID, no progress
+	}
+
+	// 3. Create DTO
+	responseDTO := &PublishedStoryDetailWithProgressDTO{
+		PublishedStory:    *story,
+		HasPlayerProgress: hasProgress,
+	}
+
+	log.Info("Successfully fetched story details and progress status", zap.Bool("hasProgress", hasProgress))
+	return responseDTO, nil
 }

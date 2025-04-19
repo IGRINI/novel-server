@@ -63,16 +63,30 @@ type MakeChoicesRequest struct {
 	SelectedOptionIndices []int `json:"selected_option_indices" binding:"required,dive,min=0,max=1"`
 }
 
-// PublishedStorySummary представляет базовую информацию об опубликованной истории для списков.
-// !!! Поля AuthorName, Genre, Language, LastPlayedAt УБРАНЫ, т.к. их нет в основной модели PublishedStory !!!
+// <<< ИЗМЕНЕНО: Старая структура summary, оставляем для справки >>>
+/*
 type PublishedStorySummary struct {
 	ID          string    `json:"id"`
 	Title       string    `json:"title"`
 	Description string    `json:"description"`
-	AuthorID    string    `json:"author_id"` // Это UserID из модели
+	AuthorID    string    `json:"author_id"`
 	PublishedAt time.Time `json:"published_at"`
 	LikesCount  int64     `json:"likes_count"`
-	IsLiked     bool      `json:"is_liked"` // Лайкнул ли текущий пользователь
+	IsLiked     bool      `json:"is_liked"`
+}
+*/
+
+// <<< ДОБАВЛЕНО: Новая структура summary с флагом прогресса >>>
+type PublishedStorySummaryWithProgress struct {
+	ID                string    `json:"id"`
+	Title             string    `json:"title"`
+	Description       string    `json:"description"`
+	AuthorID          string    `json:"author_id"`
+	PublishedAt       time.Time `json:"published_at"`
+	LikesCount        int64     `json:"likes_count"`
+	IsLiked           bool      `json:"is_liked"`
+	HasPlayerProgress bool      `json:"hasPlayerProgress"` // Флаг наличия прогресса
+	Status            string    `json:"status"`            // <<< ДОБАВЛЕНО: Статус истории
 }
 
 type publishedCoreStatDetail struct {
@@ -141,31 +155,35 @@ func (h *GameplayHandler) listMyPublishedStories(c *gin.Context) {
 	)
 	log.Debug("Fetching my published stories")
 
-	stories, nextCursor, err := h.service.ListMyPublishedStories(c.Request.Context(), userID, cursor, limit)
+	// <<< ИЗМЕНЕНО: Вызываем обновленный метод сервиса >>>
+	storiesDTO, nextCursor, err := h.service.ListMyPublishedStories(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
 		log.Error("Error listing my published stories", zap.Error(err))
 		handleServiceError(c, err, h.logger)
 		return
 	}
 
-	storySummaries := make([]PublishedStorySummary, len(stories))
-	for i, story := range stories {
+	// <<< ИЗМЕНЕНО: Преобразуем DTO в SummaryWithProgress >>>
+	storySummaries := make([]PublishedStorySummaryWithProgress, len(storiesDTO))
+	for i, storyDTO := range storiesDTO {
 		title := ""
-		if story.Title != nil {
-			title = *story.Title // <<< Разыменовываем указатель
+		if storyDTO.Title != nil {
+			title = *storyDTO.Title
 		}
 		description := ""
-		if story.Description != nil {
-			description = *story.Description // <<< Разыменовываем указатель
+		if storyDTO.Description != nil {
+			description = *storyDTO.Description
 		}
-		storySummaries[i] = PublishedStorySummary{
-			ID:          story.ID.String(),
-			Title:       title,
-			Description: description,
-			AuthorID:    story.UserID.String(), // <<< Используем UserID как AuthorID
-			PublishedAt: story.CreatedAt,       // <<< Используем CreatedAt как PublishedAt
-			LikesCount:  story.LikesCount,
-			IsLiked:     story.IsLiked,
+		storySummaries[i] = PublishedStorySummaryWithProgress{
+			ID:                storyDTO.ID.String(),
+			Title:             title,
+			Description:       description,
+			AuthorID:          storyDTO.UserID.String(),
+			PublishedAt:       storyDTO.CreatedAt,
+			LikesCount:        storyDTO.LikesCount,
+			IsLiked:           storyDTO.IsLiked,
+			HasPlayerProgress: storyDTO.HasPlayerProgress, // <<< Используем флаг из DTO
+			Status:            string(storyDTO.Status),    // <<< ДОБАВЛЕНО: Заполняем статус
 		}
 	}
 
@@ -183,7 +201,7 @@ func (h *GameplayHandler) listMyPublishedStories(c *gin.Context) {
 
 // listPublicPublishedStories получает список публичных опубликованных историй.
 func (h *GameplayHandler) listPublicPublishedStories(c *gin.Context) {
-	userID, _ := getUserIDFromContext(c) // Опционально для проверки лайков
+	userID, _ := getUserIDFromContext(c) // Опционально для проверки лайков и прогресса
 
 	limitStr := c.Query("limit")
 	cursor := c.Query("cursor")
@@ -211,31 +229,34 @@ func (h *GameplayHandler) listPublicPublishedStories(c *gin.Context) {
 	}
 	log.Debug("Fetching public published stories")
 
-	stories, nextCursor, err := h.service.ListPublicStories(c.Request.Context(), userID, cursor, limit)
+	// <<< ИЗМЕНЕНО: Вызываем обновленный метод сервиса >>>
+	storiesDTO, nextCursor, err := h.service.ListPublicStories(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
 		log.Error("Error listing public published stories", zap.Error(err))
 		handleServiceError(c, err, h.logger)
 		return
 	}
 
-	storySummaries := make([]PublishedStorySummary, len(stories))
-	for i, story := range stories {
+	// <<< ИЗМЕНЕНО: Преобразуем DTO в SummaryWithProgress >>>
+	storySummaries := make([]PublishedStorySummaryWithProgress, len(storiesDTO))
+	for i, storyDTO := range storiesDTO {
 		title := ""
-		if story.Title != nil {
-			title = *story.Title
+		if storyDTO.Title != nil {
+			title = *storyDTO.Title
 		}
 		description := ""
-		if story.Description != nil {
-			description = *story.Description
+		if storyDTO.Description != nil {
+			description = *storyDTO.Description
 		}
-		storySummaries[i] = PublishedStorySummary{
-			ID:          story.ID.String(),
-			Title:       title,
-			Description: description,
-			AuthorID:    story.UserID.String(),
-			PublishedAt: story.CreatedAt,
-			LikesCount:  story.LikesCount,
-			IsLiked:     story.IsLiked,
+		storySummaries[i] = PublishedStorySummaryWithProgress{
+			ID:                storyDTO.ID.String(),
+			Title:             title,
+			Description:       description,
+			AuthorID:          storyDTO.UserID.String(),
+			PublishedAt:       storyDTO.CreatedAt,
+			LikesCount:        storyDTO.LikesCount,
+			IsLiked:           storyDTO.IsLiked,
+			HasPlayerProgress: storyDTO.HasPlayerProgress, // <<< Используем флаг из DTO
 		}
 	}
 
@@ -248,63 +269,6 @@ func (h *GameplayHandler) listPublicPublishedStories(c *gin.Context) {
 		zap.Int("count", len(storySummaries)),
 		zap.Bool("hasNext", nextCursor != ""),
 	)
-	c.JSON(http.StatusOK, resp)
-}
-
-// getPublishedStoryDetails получает детальную информацию об опубликованной истории.
-func (h *GameplayHandler) getPublishedStoryDetails(c *gin.Context) {
-	userID, _ := getUserIDFromContext(c) // Для проверки IsAuthor и LastPlayedAt
-
-	idStr := c.Param("id")
-	id, err := uuid.Parse(idStr)
-	if err != nil {
-		h.logger.Warn("Invalid story ID format in getPublishedStoryDetails", zap.String("id", idStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
-		return
-	}
-
-	log := h.logger.With(zap.String("storyID", id.String()))
-	if userID != uuid.Nil {
-		log = log.With(zap.String("userID", userID.String()))
-	}
-	log.Info("Fetching published story details")
-
-	// Сервис возвращает *service.PublishedStoryDetailDTO
-	storyDTO, err := h.service.GetPublishedStoryDetails(c.Request.Context(), id, userID)
-	if err != nil {
-		log.Error("Error getting published story details", zap.Error(err))
-		handleServiceError(c, err, h.logger)
-		return
-	}
-
-	// Преобразование *service.PublishedStoryDetailDTO в handler.PublishedStoryDetail
-	resp := PublishedStoryDetail{
-		ID:                storyDTO.ID.String(),
-		Title:             storyDTO.Title,
-		ShortDescription:  storyDTO.ShortDescription,
-		AuthorID:          storyDTO.AuthorID.String(),
-		AuthorName:        storyDTO.AuthorName,
-		PublishedAt:       storyDTO.PublishedAt,
-		Genre:             storyDTO.Genre,
-		Language:          storyDTO.Language,
-		IsAdultContent:    storyDTO.IsAdultContent,
-		PlayerName:        storyDTO.PlayerName,
-		PlayerDescription: storyDTO.PlayerDescription,
-		WorldContext:      storyDTO.WorldContext,
-		StorySummary:      storyDTO.StorySummary,
-		CoreStats:         make(map[string]publishedCoreStatDetail, len(storyDTO.CoreStats)),
-		LastPlayedAt:      storyDTO.LastPlayedAt, // Может быть nil
-		IsAuthor:          storyDTO.IsAuthor,
-	}
-	for name, stat := range storyDTO.CoreStats {
-		resp.CoreStats[name] = publishedCoreStatDetail{
-			Description:        stat.Description,
-			InitialValue:       stat.InitialValue,
-			GameOverConditions: stat.GameOverConditions,
-		}
-	}
-
-	log.Info("Successfully fetched published story details")
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -605,31 +569,34 @@ func (h *GameplayHandler) listLikedStories(c *gin.Context) {
 	)
 	log.Debug("Fetching liked stories")
 
-	stories, nextCursor, err := h.service.ListLikedStories(c.Request.Context(), userID, cursor, limit)
+	// <<< ИЗМЕНЕНО: Вызываем обновленный сервис, получаем DTO >>>
+	storiesDTO, nextCursor, err := h.service.ListLikedStories(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
 		log.Error("Error listing liked stories", zap.Error(err))
 		handleServiceError(c, err, h.logger)
 		return
 	}
 
-	storySummaries := make([]PublishedStorySummary, len(stories))
-	for i, story := range stories {
+	// <<< ИЗМЕНЕНО: Преобразуем DTO в SummaryWithProgress >>>
+	storySummaries := make([]PublishedStorySummaryWithProgress, len(storiesDTO))
+	for i, storyDTO := range storiesDTO {
 		title := ""
-		if story.Title != nil {
-			title = *story.Title
+		if storyDTO.Title != nil {
+			title = *storyDTO.Title
 		}
 		description := ""
-		if story.Description != nil {
-			description = *story.Description
+		if storyDTO.Description != nil {
+			description = *storyDTO.Description
 		}
-		storySummaries[i] = PublishedStorySummary{
-			ID:          story.ID.String(),
-			Title:       title,
-			Description: description,
-			AuthorID:    story.UserID.String(),
-			PublishedAt: story.CreatedAt,
-			LikesCount:  story.LikesCount,
-			IsLiked:     true, // Все истории в этом списке лайкнуты пользователем
+		storySummaries[i] = PublishedStorySummaryWithProgress{
+			ID:                storyDTO.ID.String(),
+			Title:             title,
+			Description:       description,
+			AuthorID:          storyDTO.UserID.String(),
+			PublishedAt:       storyDTO.CreatedAt,
+			LikesCount:        storyDTO.LikesCount,
+			IsLiked:           true,                       // Всегда true для этого эндпоинта
+			HasPlayerProgress: storyDTO.HasPlayerProgress, // <<< Используем флаг из DTO
 		}
 	}
 
