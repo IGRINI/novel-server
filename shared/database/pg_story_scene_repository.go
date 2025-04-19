@@ -192,3 +192,44 @@ func (r *pgStorySceneRepository) UpdateContent(ctx context.Context, id uuid.UUID
 	r.logger.Info("Story scene content updated successfully", logFields...)
 	return nil
 }
+
+// <<< ДОБАВЛЕНО: Запрос и реализация Upsert >>>
+const upsertStorySceneQuery = `
+INSERT INTO story_scenes (id, published_story_id, state_hash, scene_content, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, NOW())
+ON CONFLICT (published_story_id, state_hash) DO UPDATE SET
+    scene_content = EXCLUDED.scene_content,
+    updated_at = NOW()
+WHERE trim(story_scenes.scene_content) = '{}' OR trim(story_scenes.scene_content) = '[]';`
+
+// Upsert creates a new scene or updates an existing one based on storyID and stateHash.
+func (r *pgStorySceneRepository) Upsert(ctx context.Context, scene *models.StoryScene) error {
+	if scene.ID == uuid.Nil {
+		scene.ID = uuid.New() // Генерируем ID для новой записи
+	}
+	if scene.CreatedAt.IsZero() {
+		scene.CreatedAt = time.Now() // Устанавливаем время создания только для новой записи
+	}
+	// updated_at обрабатывается через NOW() в самом запросе
+
+	logFields := []zap.Field{
+		zap.String("publishedStoryID", scene.PublishedStoryID.String()),
+		zap.String("stateHash", scene.StateHash),
+		zap.String("sceneIDHint", scene.ID.String()), // ID может измениться при конфликте
+	}
+
+	_, err := r.db.Exec(ctx, upsertStorySceneQuery,
+		scene.ID,
+		scene.PublishedStoryID,
+		scene.StateHash,
+		scene.Content,
+		scene.CreatedAt,
+	)
+
+	if err != nil {
+		r.logger.Error("Failed to upsert story scene", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка upsert сцены: %w", err)
+	}
+	r.logger.Info("Story scene upserted successfully", logFields...)
+	return nil
+}

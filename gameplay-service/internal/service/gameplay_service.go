@@ -177,7 +177,7 @@ func NewGameplayService(
 	// <<< СОЗДАЕМ StoryBrowsingService >>>
 	storyBrowsingSvc := NewStoryBrowsingService(publishedRepo, sceneRepo, playerProgressRepo, logger)
 	// <<< СОЗДАЕМ GameLoopService >>>
-	gameLoopSvc := NewGameLoopService(publishedRepo, sceneRepo, playerProgressRepo, publisher, logger)
+	gameLoopSvc := NewGameLoopService(publishedRepo, sceneRepo, playerProgressRepo, publisher, configRepo, logger)
 
 	return &gameplayServiceImpl{
 		configRepo:           configRepo,

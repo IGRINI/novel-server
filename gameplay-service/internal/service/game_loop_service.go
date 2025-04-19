@@ -65,6 +65,7 @@ type gameLoopServiceImpl struct {
 	sceneRepo          interfaces.StorySceneRepository
 	playerProgressRepo interfaces.PlayerProgressRepository
 	publisher          messaging.TaskPublisher
+	storyConfigRepo    interfaces.StoryConfigRepository
 	logger             *zap.Logger
 }
 
@@ -74,6 +75,7 @@ func NewGameLoopService(
 	sceneRepo interfaces.StorySceneRepository,
 	playerProgressRepo interfaces.PlayerProgressRepository,
 	publisher messaging.TaskPublisher,
+	storyConfigRepo interfaces.StoryConfigRepository,
 	logger *zap.Logger,
 ) GameLoopService {
 	return &gameLoopServiceImpl{
@@ -81,6 +83,7 @@ func NewGameLoopService(
 		sceneRepo:          sceneRepo,
 		playerProgressRepo: playerProgressRepo,
 		publisher:          publisher,
+		storyConfigRepo:    storyConfigRepo,
 		logger:             logger.Named("GameLoopService"),
 	}
 }
@@ -435,6 +438,19 @@ func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID,
 	log := s.logger.With(zap.String("publishedStoryID", storyID.String()), zap.String("userID", userID.String()))
 	log.Info("RetrySceneGeneration called")
 
+	// <<< ДОБАВЛЕНО: Проверка лимита активных генераций >>>
+	activeCount, err := s.storyConfigRepo.CountActiveGenerations(ctx, userID)
+	if err != nil {
+		log.Error("Error counting active generations before RetrySceneGeneration", zap.Error(err))
+		return sharedModels.ErrInternalServer // Внутренняя ошибка
+	}
+	generationLimit := 1 // TODO: Сделать лимит конфигурируемым
+	if activeCount >= generationLimit {
+		log.Warn("User reached the active generation limit, RetrySceneGeneration rejected", zap.Int("limit", generationLimit))
+		return sharedModels.ErrUserHasActiveGeneration
+	}
+	// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
+
 	// 1. Get the story
 	story, err := s.publishedRepo.GetByID(ctx, storyID)
 	if err != nil {
@@ -453,12 +469,16 @@ func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID,
 	}
 
 	// 3. Check if Setup generation failed or Scene generation failed
-	if story.Setup == nil {
-		// --- Error occurred during Setup generation ---
-		log.Info("Setup is nil, retrying Setup generation")
+	// <<< ИЗМЕНЕНО: Улучшенная проверка на существование Setup >>>
+	// Считаем Setup отсутствующим, если он nil ИЛИ содержит JSON 'null'.
+	setupExists := story.Setup != nil && string(story.Setup) != "null"
+
+	if !setupExists {
+		// --- Error occurred during Setup generation (Setup is nil or JSON null) ---
+		log.Info("Setup is nil or JSON null, retrying Setup generation")
 
 		if story.Config == nil {
-			log.Error("CRITICAL: Story is in Error, Setup is nil, and Config is also nil. Cannot retry Setup.")
+			log.Error("CRITICAL: Story is in Error, Setup is nil/null, and Config is also nil. Cannot retry Setup.")
 			return sharedModels.ErrInternalServer // Cannot proceed
 		}
 
@@ -491,7 +511,7 @@ func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID,
 		return nil
 
 	} else {
-		// --- Error occurred during Scene generation (Setup exists) ---
+		// --- Error occurred during Scene generation (Setup exists and is not JSON null) ---
 		log.Info("Setup exists, retrying Scene generation")
 
 		// Get player progress to determine which scene to retry

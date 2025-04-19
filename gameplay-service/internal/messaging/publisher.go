@@ -82,17 +82,18 @@ func NewRabbitMQTaskPublisher(conn *amqp.Connection, queueName string) (TaskPubl
 	if err != nil {
 		return nil, fmt.Errorf("task publisher: не удалось открыть канал: %w", err)
 	}
-	// Объявляем очередь здесь для TaskPublisher, т.к. он может быть первым
-	args := amqp.Table{
-		"x-dead-letter-exchange":    "tasks_dlx", // Указываем DLX
-		"x-dead-letter-routing-key": queueName,   // Указываем routing key для DLX (обычно имя исходной очереди)
-	}
-	_, err = ch.QueueDeclare(queueName, true, false, false, false, args)
+	// <<< ИЗМЕНЕНО: Используем QueueDeclarePassive вместо QueueDeclare >>>
+	// Паблишер не должен создавать или изменять очередь, только проверять её существование (пассивно).
+	// Ответственность за создание с правильными DLX-аргументами лежит на консьюмере (story-generator).
+	_, err = ch.QueueDeclarePassive(queueName, true, false, false, false, nil) // nil - не проверяем аргументы здесь
 	if err != nil {
-		ch.Close() // Закрываем канал при ошибке
-		return nil, fmt.Errorf("task publisher: не удалось объявить очередь '%s': %w", queueName, err)
+		// Ошибка может означать, что очередь не существует. Это нормально, если консьюмер её создаст.
+		// Или что параметры не совпадают (тоже проблема консьюмера).
+		// Логируем как Warning, но не падаем.
+		log.Printf("TaskPublisher WARN: Пассивная проверка очереди '%s' не удалась (возможно, еще не создана консьюмером): %v", queueName, err)
+		// Не закрываем канал и не возвращаем ошибку здесь, продолжаем работу.
 	}
-	log.Printf("TaskPublisher: очередь '%s' успешно объявлена/найдена", queueName)
+	log.Printf("TaskPublisher: Пассивная проверка очереди '%s' выполнена.", queueName)
 	// Канал не закрываем здесь, он должен управляться извне или при остановке приложения
 	return &rabbitMQPublisher{channel: ch, queueName: queueName}, nil
 }

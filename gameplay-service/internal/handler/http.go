@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"novel-server/gameplay-service/internal/config"
 	"novel-server/gameplay-service/internal/service"
 	"novel-server/shared/authutils"
 	interfaces "novel-server/shared/interfaces"
@@ -75,10 +76,12 @@ type GameplayHandler struct {
 	userTokenVerifier         *authutils.JWTVerifier
 	interServiceTokenVerifier *authutils.JWTVerifier
 	storyConfigRepo           interfaces.StoryConfigRepository
+	publishedStoryRepo        interfaces.PublishedStoryRepository
+	config                    *config.Config
 }
 
 // NewGameplayHandler создает новый GameplayHandler.
-func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret, interServiceSecret string, storyConfigRepo interfaces.StoryConfigRepository) *GameplayHandler {
+func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret, interServiceSecret string, storyConfigRepo interfaces.StoryConfigRepository, publishedStoryRepo interfaces.PublishedStoryRepository, cfg *config.Config) *GameplayHandler {
 	userVerifier, err := authutils.NewJWTVerifier(jwtSecret, logger)
 	if err != nil {
 		logger.Fatal("Failed to create User JWT Verifier", zap.Error(err))
@@ -95,6 +98,8 @@ func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret
 		userTokenVerifier:         userVerifier,
 		interServiceTokenVerifier: interServiceVerifier,
 		storyConfigRepo:           storyConfigRepo,
+		publishedStoryRepo:        publishedStoryRepo,
+		config:                    cfg,
 	}
 }
 

@@ -455,7 +455,7 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 			}
 
 			// Создаем и сохраняем новую сцену (даже для концовки, там может быть доп. инфо)
-			newScene := &sharedModels.StoryScene{
+			scene := &sharedModels.StoryScene{
 				ID:               uuid.New(),
 				PublishedStoryID: publishedStoryID,
 				StateHash:        notification.StateHash,
@@ -463,17 +463,18 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 				CreatedAt:        time.Now().UTC(),
 			}
 
-			if err := p.sceneRepo.Create(dbCtx, newScene); err != nil {
-				log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось сохранить StoryScene для PublishedStory %s, Hash %s: %v",
-					taskID, publishedStoryID, notification.StateHash, err)
-				// Пытаемся обновить статус PublishedStory на Error
-				errMsg := fmt.Sprintf("Failed to save scene for hash %s: %v", notification.StateHash, err)
-				if errRollback := p.publishedRepo.UpdateStatusDetails(context.Background(), publishedStoryID, sharedModels.StatusError, nil, nil, nil, &errMsg); errRollback != nil {
-					log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА 2: Не удалось откатить статус PublishedStory %s на Error после ошибки сохранения сцены: %v", taskID, publishedStoryID, errRollback)
+			// <<< ИЗМЕНЕНИЕ: Используем Upsert вместо Create >>>
+			upsertErr := p.sceneRepo.Upsert(dbCtx, scene)
+			if upsertErr != nil {
+				log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось сохранить/обновить StoryScene для PublishedStory %s, Hash %s: %v", taskID, publishedStoryID, notification.StateHash, upsertErr)
+				// Обновляем статус основной истории на Error
+				errorReason := fmt.Sprintf("Failed to save scene for hash %s: %v", notification.StateHash, upsertErr)
+				if updateErr := p.publishedRepo.UpdateStatusDetails(context.Background(), publishedStoryID, sharedModels.StatusError, nil, nil, nil, &errorReason); updateErr != nil {
+					log.Printf("[processor][TaskID: %s] CRITICAL: Failed to set PublishedStory %s status to Error after scene save failure: %v", taskID, publishedStoryID, updateErr)
 				}
-				return fmt.Errorf("ошибка сохранения StoryScene для PublishedStory %s, Hash %s: %w", publishedStoryID, notification.StateHash, err)
+				return fmt.Errorf("ошибка сохранения StoryScene для PublishedStory %s, Hash %s: %w", publishedStoryID, notification.StateHash, upsertErr)
 			}
-			log.Printf("[processor][TaskID: %s] StoryScene для PublishedStory %s, Hash %s успешно сохранена.", taskID, publishedStoryID, notification.StateHash)
+			log.Printf("[processor][TaskID: %s] StoryScene для PublishedStory %s, Hash %s успешно сохранена/обновлена.", taskID, publishedStoryID, notification.StateHash)
 
 			// Обновляем статус PublishedStory (и текст концовки, если нужно)
 			if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, newStatus, nil, nil, endingText, nil); err != nil {

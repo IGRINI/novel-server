@@ -30,6 +30,11 @@ const (
 	deadLetterQueue    = taskQueueName + "_dlq" // DLQ для этой конкретной очереди
 	// Порт для метрик Prometheus
 	metricsPort = "9091"
+	// <<< ДОБАВЛЕНО: Имена для DLX/DLQ >>>
+	dlxName       = "story_generation_tasks_dlx" // Dead Letter Exchange
+	dlqName       = "story_generation_tasks_dlq" // Dead Letter Queue
+	dlqRoutingKey = "dlq"                        // Routing key for DLQ
+	// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
 )
 
 func main() {
@@ -61,7 +66,7 @@ func main() {
 	log.Println("Успешное подключение к PostgreSQL")
 
 	// Подключаемся к RabbitMQ с логикой повторных попыток
-	conn, err := connectRabbitMQ(cfg.RabbitMQURL) // Используем URL из конфига
+	conn, err := connectRabbitMQ(cfg.RabbitMQURL)
 	if err != nil {
 		log.Fatalf("Не удалось подключиться к RabbitMQ: %v", err)
 	}
@@ -81,61 +86,73 @@ func main() {
 
 	// Объявляем Dead Letter Exchange (DLX)
 	err = ch.ExchangeDeclare(
-		deadLetterExchange, // name
-		"direct",           // type
-		true,               // durable
-		false,              // auto-deleted
-		false,              // internal
-		false,              // no-wait
-		nil,                // arguments
+		dlxName,  // name
+		"direct", // type
+		true,     // durable
+		false,    // auto-deleted
+		false,    // internal
+		false,    // no-wait
+		nil,      // arguments
 	)
 	if err != nil {
-		log.Fatalf("Не удалось объявить Dead Letter Exchange '%s': %v", deadLetterExchange, err)
+		log.Fatalf("Не удалось объявить DLX: %v", err)
 	}
+	log.Printf("DLX '%s' успешно объявлен.", dlxName)
 
 	// Объявляем Dead Letter Queue (DLQ)
 	_, err = ch.QueueDeclare(
-		deadLetterQueue, // name
-		true,            // durable
-		false,           // delete when unused
-		false,           // exclusive
-		false,           // no-wait
-		nil,             // arguments
+		dlqName, // name
+		true,    // durable
+		false,   // delete when unused
+		false,   // exclusive
+		false,   // no-wait
+		nil,     // arguments
 	)
 	if err != nil {
-		log.Fatalf("Не удалось объявить Dead Letter Queue '%s': %v", deadLetterQueue, err)
+		log.Fatalf("Не удалось объявить Dead Letter Queue '%s': %v", dlqName, err)
 	}
+	log.Printf("DLQ '%s' успешно объявлена.", dlqName)
 
 	// Связываем DLQ с DLX. Используем имя основной очереди как ключ маршрутизации.
 	err = ch.QueueBind(
-		deadLetterQueue,    // queue name
-		taskQueueName,      // routing key (куда DLX будет пересылать сообщения из taskQueueName)
-		deadLetterExchange, // exchange
+		dlqName,       // queue name
+		dlqRoutingKey, // routing key
+		dlxName,       // exchange
 		false,
 		nil,
 	)
 	if err != nil {
-		log.Fatalf("Не удалось связать DLQ '%s' с DLX '%s': %v", deadLetterQueue, deadLetterExchange, err)
+		log.Fatalf("Не удалось связать DLQ '%s' с DLX '%s': %v", dlqName, dlxName, err)
 	}
-	log.Printf("DLQ '%s' успешно связана с DLX '%s' с ключом '%s'.", deadLetterQueue, deadLetterExchange, taskQueueName)
+	log.Printf("DLQ '%s' успешно связана с DLX '%s' с ключом '%s'.", dlqName, dlxName, dlqRoutingKey)
 
-	// --- Объявляем основную очередь задач с настройками DLQ ---
-	args := amqp.Table{
-		"x-dead-letter-exchange":    deadLetterExchange,
-		"x-dead-letter-routing-key": taskQueueName, // Ключ, с которым сообщения попадут в DLX
+	// --- Объявляем основные очереди (добавляем аргументы для DLX) ---
+	queues := []string{taskQueueName, "game_over_tasks", "draft_story_tasks"}
+	for _, qName := range queues {
+		args := amqp.Table{
+			"x-queue-mode": "lazy", // Используем lazy queues для экономии памяти
+		}
+		// <<< ДОБАВЛЕНО: Аргументы DLX для основной очереди задач >>>
+		if qName == taskQueueName {
+			args["x-dead-letter-exchange"] = dlxName
+			args["x-dead-letter-routing-key"] = dlqRoutingKey
+			log.Printf("Настройка DLX для очереди '%s'", qName)
+		}
+		// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
+
+		_, err = ch.QueueDeclare(
+			qName, // name
+			true,  // durable
+			false, // delete when unused
+			false, // exclusive
+			false, // no-wait
+			args,  // arguments (с добавленными аргументами DLX для taskQueueName)
+		)
+		if err != nil {
+			log.Fatalf("Не удалось объявить очередь '%s': %v", qName, err)
+		}
+		log.Printf("Очередь '%s' успешно объявлена.", qName)
 	}
-	q, err := ch.QueueDeclare(
-		taskQueueName, // name
-		true,          // durable
-		false,         // delete when unused
-		false,         // exclusive
-		false,         // no-wait
-		args,          // arguments (для DLQ)
-	)
-	if err != nil {
-		log.Fatalf("Не удалось объявить основную очередь задач '%s' с DLQ: %v", taskQueueName, err)
-	}
-	log.Printf("Основная очередь задач '%s' успешно объявлена/найдена с настройками DLQ.", q.Name)
 
 	// Устанавливаем QoS
 	err = ch.Qos(1, 0, false)
@@ -163,7 +180,7 @@ func main() {
 
 	// Начинаем потреблять сообщения из очереди для воркера
 	msgs, err := ch.Consume(
-		q.Name, "", false, false, false, false, nil)
+		taskQueueName, "", false, false, false, false, nil)
 	if err != nil {
 		log.Fatalf("Не удалось зарегистрировать консьюмера: %v", err)
 	}
@@ -314,24 +331,6 @@ func setupDatabase(cfg *config.Config) (*pgxpool.Pool, error) {
 	return nil, fmt.Errorf("не удалось подключиться к БД после %d попыток: %w", maxRetries, err) // Возвращаем последнюю ошибку
 }
 
-// connectRabbitMQ пытается подключиться к RabbitMQ с несколькими попытками
-func connectRabbitMQ(url string) (*amqp.Connection, error) {
-	var conn *amqp.Connection
-	var err error
-	maxRetries := 5
-	retryDelay := 5 * time.Second
-
-	for i := 0; i < maxRetries; i++ {
-		conn, err = amqp.Dial(url)
-		if err == nil {
-			return conn, nil // Успешное подключение
-		}
-		log.Printf("Не удалось подключиться к RabbitMQ (попытка %d/%d): %v. Повтор через %v...", i+1, maxRetries, err, retryDelay)
-		time.Sleep(retryDelay)
-	}
-	return nil, err // Не удалось подключиться после всех попыток
-}
-
 // --- Обновленная функция для запуска основного HTTP API сервера ---
 // Теперь принимает *config.Config
 func startHTTPServer(cfg *config.Config, apiHandler *api.APIHandler) *http.Server {
@@ -369,3 +368,24 @@ func startHTTPServer(cfg *config.Config, apiHandler *api.APIHandler) *http.Serve
 }
 
 // ----------------------------------------------------------
+
+// <<< ВОЗВРАЩАЮ ЛОКАЛЬНУЮ ФУНКЦИЮ >>>
+// connectRabbitMQ пытается подключиться к RabbitMQ с несколькими попытками
+func connectRabbitMQ(url string) (*amqp.Connection, error) {
+	var conn *amqp.Connection
+	var err error
+	maxRetries := 5
+	retryDelay := 5 * time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		conn, err = amqp.Dial(url)
+		if err == nil {
+			return conn, nil // Успешное подключение
+		}
+		log.Printf("Не удалось подключиться к RabbitMQ (попытка %d/%d): %v. Повтор через %v...", i+1, maxRetries, err, retryDelay)
+		time.Sleep(retryDelay)
+	}
+	return nil, err // Не удалось подключиться после всех попыток
+}
+
+// <<< КОНЕЦ ВОЗВРАТА >>>

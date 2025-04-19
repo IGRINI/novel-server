@@ -27,4 +27,7 @@ type StorySceneRepository interface {
 
 	// UpdateContent updates the content of a story scene.
 	UpdateContent(ctx context.Context, id uuid.UUID, content []byte) error
+
+	// Upsert creates a new scene or updates an existing one based on storyID and stateHash.
+	Upsert(ctx context.Context, scene *models.StoryScene) error
 }

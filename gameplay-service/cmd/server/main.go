@@ -9,6 +9,7 @@ import (
 	"novel-server/gameplay-service/internal/handler"
 	"novel-server/gameplay-service/internal/messaging"
 	"novel-server/gameplay-service/internal/service"
+	"novel-server/gameplay-service/internal/worker"
 	sharedDatabase "novel-server/shared/database"     // Импорт для PublishedStoryRepository
 	sharedInterfaces "novel-server/shared/interfaces" // <<< Добавляем импорт shared/interfaces
 	sharedLogger "novel-server/shared/logger"         // <<< Добавляем импорт shared/logger
@@ -96,8 +97,10 @@ func main() {
 		logger.Fatal("Не удалось создать PushNotificationPublisher", zap.Error(err))
 	}
 
+	// <<< ИЗМЕНЕНО: Передаем logger в NewGameplayService >>>
 	gameplayService := service.NewGameplayService(storyConfigRepo, publishedRepo, sceneRepo, playerProgressRepo, likeRepo, taskPublisher, dbPool, logger)
-	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret, storyConfigRepo)
+	// <<< ИЗМЕНЕНО: Передаем logger, publishedRepo и cfg в NewGameplayHandler >>>
+	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret, storyConfigRepo, publishedRepo, cfg)
 
 	// <<< УДАЛЕНО: Перезапуск зависших задач при старте >>>
 	// go requeueStuckTasks(storyConfigRepo, taskPublisher, logger)
@@ -201,6 +204,31 @@ func main() {
 	}
 
 	logger.Info("Gameplay Service успешно остановлен")
+
+	// --- Инициализация и запуск DLQ Consumer --- //
+	// <<< ДОБАВЛЕНО: Запуск DLQ Consumer >>>
+	dlqConsumer := worker.NewDLQConsumer(rabbitConn, publishedRepo, logger)
+	dlqConsumer.StartConsuming()
+	// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
+
+	// --- Graceful Shutdown --- //
+	quit = make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	logger.Info("Получен сигнал завершения, начинаем graceful shutdown...")
+
+	// <<< ДОБАВЛЕНО: Остановка DLQ Consumer >>>
+	dlqConsumer.Stop()
+	logger.Info("DLQ Consumer остановлен.")
+	// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
+
+	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Fatal("Ошибка при graceful shutdown HTTP сервера", zap.Error(err))
+	}
+	logger.Info("HTTP сервер успешно остановлен.")
 }
 
 // <<< НОВАЯ ФУНКЦИЯ: Установка статуса Error для зависших задач >>>
@@ -326,16 +354,20 @@ func setupDatabase(cfg *config.Config, logger *zap.Logger) (*pgxpool.Pool, error
 	return nil, fmt.Errorf("не удалось подключиться к БД после %d попыток: %w", maxRetries, err) // Возвращаем последнюю ошибку
 }
 
+// <<< ДОБАВЛЯЮ ФУНКЦИЮ ИЗ STORY-GENERATOR >>>
 // connectRabbitMQ пытается подключиться к RabbitMQ с несколькими попытками
-func connectRabbitMQ(url string, logger *zap.Logger) (*amqp.Connection, error) { // Добавляем логгер
-	// ... (реализация без изменений, как в других сервисах) ...
+func connectRabbitMQ(url string, logger *zap.Logger) (*amqp.Connection, error) {
 	var conn *amqp.Connection
 	var err error
-	maxRetries := 5
+	maxRetries := 50
 	retryDelay := 5 * time.Second
 	for i := 0; i < maxRetries; i++ {
 		conn, err = amqp.Dial(url)
 		if err == nil {
+			logger.Info("Успешное подключение к RabbitMQ",
+				zap.Int("attempt", i+1),
+				zap.Int("max_attempts", maxRetries),
+			)
 			return conn, nil
 		}
 		logger.Warn("Не удалось подключиться к RabbitMQ",
@@ -346,5 +378,7 @@ func connectRabbitMQ(url string, logger *zap.Logger) (*amqp.Connection, error) {
 		)
 		time.Sleep(retryDelay)
 	}
-	return nil, err
+	return nil, fmt.Errorf("не удалось подключиться к RabbitMQ после %d попыток: %w", maxRetries, err)
 }
+
+// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>

@@ -676,20 +676,19 @@ func (h *GameplayHandler) retryPublishedStoryGeneration(c *gin.Context) {
 	log := h.logger.With(zap.String("userID", userID.String()), zap.String("storyID", storyID.String()))
 	log.Info("Handling retry published story generation request")
 
-	// <<< ДОБАВЛЕНО: Проверка лимита активных генераций >>>
-	activeCount, err := h.storyConfigRepo.CountActiveGenerations(c.Request.Context(), userID)
+	// <<< ИЗМЕНЕНО: Проверка лимита активных генераций через publishedStoryRepo >>>
+	activeCount, err := h.publishedStoryRepo.CountActiveGenerationsForUser(c.Request.Context(), userID)
 	if err != nil {
 		log.Error("Error counting active generations before retry", zap.Error(err))
 		handleServiceError(c, fmt.Errorf("error checking generation status: %w", err), h.logger)
 		return
 	}
-	generationLimit := 1 // TODO: Сделать настраиваемым?
+	generationLimit := h.config.Generation.LimitPerUser // Используем лимит из конфига
 	if activeCount >= generationLimit {
-		log.Warn("User reached active generation limit, retry rejected", zap.Int("limit", generationLimit))
+		log.Warn("User reached active generation limit, retry rejected", zap.Int("limit", generationLimit), zap.Int("count", activeCount))
 		handleServiceError(c, sharedModels.ErrUserHasActiveGeneration, h.logger)
 		return
 	}
-	// <<< КОНЕЦ ПРОВЕРКИ >>>
 
 	// Вызываем метод сервиса
 	err = h.service.RetryStoryGeneration(c.Request.Context(), storyID, userID)

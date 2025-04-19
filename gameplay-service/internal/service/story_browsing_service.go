@@ -315,35 +315,57 @@ func (s *storyBrowsingServiceImpl) ListStoryScenesInternal(ctx context.Context, 
 }
 
 // UpdateStoryInternal updates the Config and Setup JSON fields of a published story. (Admin only)
-// <<< ИЗМЕНЕНО: Принимает json.RawMessage >>>
+// It also validates the input JSON fields.
 func (s *storyBrowsingServiceImpl) UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON json.RawMessage, status sharedModels.StoryStatus) error {
-	log := s.logger.With(zap.String("storyID", storyID.String()), zap.String("newStatus", string(status)))
+	log := s.logger.With(zap.String("publishedStoryID", storyID.String()))
 	log.Info("UpdateStoryInternal called")
 
-	// <<< УДАЛЕНО: Валидация JSON (теперь делается в клиенте/обработчике) >>>
-	// var rawConfig, rawSetup json.RawMessage
-	// if err := json.Unmarshal([]byte(configJSON), &rawConfig); err != nil {
-	// 	log.Error("Invalid config JSON in internal story update", zap.Error(err))
-	// 	return fmt.Errorf("invalid config JSON provided internally: %w", err)
-	// }
-	// if err := json.Unmarshal([]byte(setupJSON), &rawSetup); err != nil {
-	// 	log.Error("Invalid setup JSON in internal story update", zap.Error(err))
-	// 	return fmt.Errorf("invalid setup JSON provided internally: %w", err)
-	// }
+	var validatedConfig, validatedSetup json.RawMessage
 
-	// 2. Вызов репозитория для обновления полей
-	// Передаем полученные json.RawMessage напрямую
-	err := s.publishedRepo.UpdateConfigAndSetupAndStatus(ctx, storyID, configJSON, setupJSON, status)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) { // Используем pgx.ErrNoRows
-			log.Warn("Published story not found for internal update")
-			return sharedModels.ErrNotFound
+	// Validate Config JSON
+	if configJSON != nil && len(configJSON) > 0 && string(configJSON) != "null" {
+		if !json.Valid(configJSON) {
+			log.Warn("Invalid Config JSON provided for update")
+			return fmt.Errorf("%w: invalid config JSON format", sharedModels.ErrBadRequest)
 		}
-		log.Error("Failed to update published story internally in repository", zap.Error(err))
-		return fmt.Errorf("repository update failed: %w", err)
+		validatedConfig = configJSON
+	} else {
+		// Allow clearing config by passing null or empty
+		validatedConfig = nil
 	}
 
-	log.Info("Published story updated successfully internally")
+	// Validate Setup JSON
+	if setupJSON != nil && len(setupJSON) > 0 && string(setupJSON) != "null" {
+		if !json.Valid(setupJSON) {
+			log.Warn("Invalid Setup JSON provided for update")
+			return fmt.Errorf("%w: invalid setup JSON format", sharedModels.ErrBadRequest)
+		}
+		// <<< ДОПОЛНИТЕЛЬНО: Проверка структуры Setup, если нужно >>>
+		/*
+			var tempSetup models.NovelSetupContent
+			if err := json.Unmarshal(setupJSON, &tempSetup); err != nil {
+			    log.Warn("Failed to unmarshal Setup JSON into expected structure", zap.Error(err))
+			    return fmt.Errorf("%w: setup JSON does not match expected structure: %v", sharedModels.ErrBadRequest, err)
+			}
+		*/
+		validatedSetup = setupJSON
+	} else {
+		// Allow clearing setup by passing null or empty
+		validatedSetup = nil
+	}
+
+	// Call repository to update
+	err := s.publishedRepo.UpdateConfigAndSetupAndStatus(ctx, storyID, validatedConfig, validatedSetup, status)
+	if err != nil {
+		if errors.Is(err, sharedModels.ErrNotFound) {
+			log.Warn("Story not found for internal update")
+			return sharedModels.ErrNotFound
+		}
+		log.Error("Failed to update story internally in repository", zap.Error(err))
+		return sharedModels.ErrInternalServer
+	}
+
+	log.Info("Story config/setup/status updated successfully internally")
 	return nil
 }
 

@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
@@ -529,3 +531,279 @@ func (r *pgPublishedStoryRepository) UpdateConfigAndSetupAndStatus(ctx context.C
 	r.logger.Info("Published story config/setup/status updated successfully", logFields...)
 	return nil
 }
+
+// CountActiveGenerationsForUser counts the number of published stories with statuses
+// indicating active generation for a specific user.
+func (r *pgPublishedStoryRepository) CountActiveGenerationsForUser(ctx context.Context, userID uuid.UUID) (int, error) {
+	activeStatuses := []string{
+		string(models.StatusSetupPending),
+		string(models.StatusSetupGenerating),
+		string(models.StatusFirstScenePending),
+		string(models.StatusGeneratingScene),
+		string(models.StatusGameOverPending),
+		string(models.StatusGenerating), // Assuming this is a general generating status
+		string(models.StatusRevising),
+	}
+
+	query := `SELECT COUNT(*) FROM published_stories WHERE user_id = $1 AND status = ANY($2::story_status[])`
+
+	var count int
+	logFields := []zap.Field{zap.String("userID", userID.String()), zap.Strings("activeStatuses", activeStatuses)}
+	r.logger.Debug("Counting active generations for user in published_stories", logFields...)
+
+	err := r.db.QueryRow(ctx, query, userID, pq.Array(activeStatuses)).Scan(&count)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Not an error, just means count is 0
+			r.logger.Debug("No active generations found for user", logFields...)
+			return 0, nil
+		}
+		r.logger.Error("Failed to count active generations in published_stories", append(logFields, zap.Error(err))...)
+		return 0, fmt.Errorf("ошибка подсчета активных генераций для user %s: %w", userID.String(), err)
+	}
+
+	r.logger.Debug("Active generations count retrieved from published_stories", append(logFields, zap.Int("count", count))...)
+	return count, nil
+}
+
+// IsStoryLikedByUser проверяет, лайкнул ли пользователь указанную историю.
+func (r *pgPublishedStoryRepository) IsStoryLikedByUser(ctx context.Context, storyID uuid.UUID, userID uuid.UUID) (bool, error) {
+	query := `SELECT EXISTS(SELECT 1 FROM user_story_likes WHERE user_id = $1 AND published_story_id = $2)`
+	var exists bool
+	logFields := []zap.Field{zap.String("storyID", storyID.String()), zap.String("userID", userID.String())}
+	r.logger.Debug("Checking if story is liked by user", logFields...)
+
+	err := r.db.QueryRow(ctx, query, userID, storyID).Scan(&exists)
+	if err != nil {
+		r.logger.Error("Failed to check if story is liked", append(logFields, zap.Error(err))...)
+		return false, fmt.Errorf("ошибка проверки лайка для story %s user %s: %w", storyID, userID, err)
+	}
+
+	r.logger.Debug("Story like status checked successfully", append(logFields, zap.Bool("isLiked", exists))...)
+	return exists, nil
+}
+
+// ListLikedByUser получает пагинированный список историй, лайкнутых пользователем, используя курсор.
+func (r *pgPublishedStoryRepository) ListLikedByUser(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*models.PublishedStory, string, error) {
+	if limit <= 0 {
+		limit = 10 // Default limit
+	}
+	fetchLimit := limit + 1
+
+	cursorTime, cursorID, err := utils.DecodeCursor(cursor) // Курсор основан на user_story_likes.created_at и published_story_id
+	if err != nil {
+		r.logger.Warn("Invalid cursor provided for ListLikedByUser", zap.String("cursor", cursor), zap.Stringer("userID", userID), zap.Error(err))
+		return nil, "", fmt.Errorf("invalid cursor: %w", err)
+	}
+
+	// <<< ИЗМЕНЕНО: Добавляем l.created_at AS like_created_at в SELECT >>>
+	query := `
+        SELECT
+            p.id, p.user_id, p.config, p.setup, p.status, p.is_public, p.is_adult_content,
+            p.title, p.description, p.error_details, p.likes_count, p.created_at, p.updated_at,
+            l.created_at AS like_created_at
+        FROM published_stories p
+        JOIN user_story_likes l ON p.id = l.published_story_id
+        WHERE l.user_id = $1 `
+
+	args := []interface{}{userID}
+	paramIndex := 2
+
+	if !cursorTime.IsZero() && cursorID != uuid.Nil {
+		// Фильтруем по времени лайка и ID истории
+		query += fmt.Sprintf("AND (l.created_at, p.id) < ($%d, $%d) ", paramIndex, paramIndex+1)
+		args = append(args, cursorTime, cursorID)
+		paramIndex += 2
+	}
+
+	// Упорядочиваем по времени лайка (сначала новые), затем по ID истории
+	query += fmt.Sprintf("ORDER BY l.created_at DESC, p.id DESC LIMIT $%d", paramIndex)
+	args = append(args, fetchLimit)
+
+	logFields := []zap.Field{
+		zap.Stringer("userID", userID),
+		zap.String("cursor", cursor),
+		zap.Time("cursorTime", cursorTime),
+		zap.Stringer("cursorID", cursorID),
+		zap.Int("limit", limit),
+		zap.Int("fetchLimit", fetchLimit),
+	}
+	r.logger.Debug("Listing liked stories by user with cursor", logFields...)
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		r.logger.Error("Failed to query liked stories", append(logFields, zap.Error(err))...)
+		return nil, "", fmt.Errorf("ошибка получения списка лайкнутых историй для user %s: %w", userID, err)
+	}
+	defer rows.Close()
+
+	// <<< ИЗМЕНЕНО: Ручное сканирование вместо scanStories >>>
+	stories := make([]*models.PublishedStory, 0, fetchLimit)
+	likeTimes := make([]time.Time, 0, fetchLimit) // Храним время лайка отдельно
+
+	for rows.Next() {
+		var story models.PublishedStory
+		var likeCreatedAt time.Time
+		err = rows.Scan(
+			&story.ID,
+			&story.UserID,
+			&story.Config,
+			&story.Setup,
+			&story.Status,
+			&story.IsPublic,
+			&story.IsAdultContent,
+			&story.Title,
+			&story.Description,
+			&story.ErrorDetails,
+			&story.LikesCount,
+			&story.CreatedAt,
+			&story.UpdatedAt,
+			&likeCreatedAt, // Сканируем время лайка
+		)
+		if err != nil {
+			r.logger.Error("Failed to scan liked story row", append(logFields, zap.Error(err))...)
+			// Не прерываем весь процесс, просто пропускаем эту строку
+			continue
+		}
+		stories = append(stories, &story)
+		likeTimes = append(likeTimes, likeCreatedAt)
+	}
+	if err := rows.Err(); err != nil {
+		r.logger.Error("Error iterating liked story rows", append(logFields, zap.Error(err))...)
+		return nil, "", fmt.Errorf("ошибка итерации по результатам лайкнутых историй: %w", err)
+	}
+	// <<< КОНЕЦ ИЗМЕНЕНИЙ СКАНИРОВАНИЯ >>>
+
+	var nextCursor string
+	if len(stories) == fetchLimit {
+		// <<< ИЗМЕНЕНО: Используем likeTimes для генерации курсора >>>
+		lastStory := stories[limit]      // Нужен ID последнего элемента
+		lastLikeTime := likeTimes[limit] // Используем время лайка последнего элемента
+		nextCursor = utils.EncodeCursor(lastLikeTime, lastStory.ID)
+		stories = stories[:limit] // Возвращаем запрошенное количество
+	} else {
+		nextCursor = ""
+	}
+
+	r.logger.Debug("Liked stories listed successfully", append(logFields, zap.Int("count", len(stories)), zap.Bool("hasNext", nextCursor != ""))...)
+	return stories, nextCursor, nil
+}
+
+// MarkStoryAsLiked отмечает историю как лайкнутую пользователем.
+// Выполняется в транзакции: добавляет запись в user_story_likes и инкрементирует счетчик.
+func (r *pgPublishedStoryRepository) MarkStoryAsLiked(ctx context.Context, storyID uuid.UUID, userID uuid.UUID) error {
+	logFields := []zap.Field{zap.String("storyID", storyID.String()), zap.String("userID", userID.String())}
+	r.logger.Debug("Marking story as liked", logFields...)
+
+	// <<< ИЗМЕНЕНО: Приведение типа r.db к *pgxpool.Pool для вызова Begin >>>
+	pool, ok := r.db.(*pgxpool.Pool)
+	if !ok {
+		// Если r.db не *pgxpool.Pool, мы не можем начать транзакцию стандартным способом.
+		// Возможно, нужно использовать другой подход или изменить тип r.db.
+		// Пока возвращаем ошибку.
+		r.logger.Error("r.db is not *pgxpool.Pool, cannot begin transaction for like", logFields...)
+		return fmt.Errorf("внутренняя ошибка: невозможно начать транзакцию (неверный тип DBTX)")
+	}
+	tx, err := pool.Begin(ctx) // <<< Используем pool.Begin >>>
+	if err != nil {
+		r.logger.Error("Failed to begin transaction for marking like", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка начала транзакции для лайка: %w", err)
+	}
+	defer tx.Rollback(ctx) // Откат по умолчанию
+
+	// 1. Вставить запись в user_story_likes
+	// ON CONFLICT DO NOTHING - если лайк уже есть, ничего не делаем, но и ошибку не возвращаем
+	insertLikeQuery := `INSERT INTO user_story_likes (user_id, published_story_id, created_at) VALUES ($1, $2, NOW()) ON CONFLICT (user_id, published_story_id) DO NOTHING`
+	result, err := tx.Exec(ctx, insertLikeQuery, userID, storyID)
+	if err != nil {
+		r.logger.Error("Failed to insert into user_story_likes", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка добавления лайка в user_story_likes: %w", err)
+	}
+
+	// 2. Если запись была успешно вставлена (RowsAffected > 0), инкрементировать счетчик
+	if result.RowsAffected() > 0 {
+		incrementQuery := `UPDATE published_stories SET likes_count = likes_count + 1, updated_at = NOW() WHERE id = $1`
+		incrementResult, err := tx.Exec(ctx, incrementQuery, storyID)
+		if err != nil {
+			r.logger.Error("Failed to increment likes count after inserting like", append(logFields, zap.Error(err))...)
+			return fmt.Errorf("ошибка инкремента счетчика лайков: %w", err)
+		}
+		if incrementResult.RowsAffected() == 0 {
+			// Это странная ситуация: лайк добавили, а историю не нашли для инкремента?
+			r.logger.Error("Story not found for incrementing likes count after inserting like record", logFields...)
+			// Возвращаем ошибку, т.к. данные могут быть несогласованными
+			return models.ErrNotFound // Или более специфичная ошибка несогласованности
+		}
+		r.logger.Debug("Likes count incremented", logFields...)
+	} else {
+		r.logger.Debug("Like record already existed, likes count not incremented", logFields...)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		r.logger.Error("Failed to commit transaction for marking like", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка коммита транзакции для лайка: %w", err)
+	}
+
+	r.logger.Info("Story marked as liked successfully (or already liked)", logFields...)
+	return nil
+}
+
+// MarkStoryAsUnliked отмечает историю как не лайкнутую пользователем.
+// Выполняется в транзакции: удаляет запись из user_story_likes и декрементирует счетчик.
+func (r *pgPublishedStoryRepository) MarkStoryAsUnliked(ctx context.Context, storyID uuid.UUID, userID uuid.UUID) error {
+	logFields := []zap.Field{zap.String("storyID", storyID.String()), zap.String("userID", userID.String())}
+	r.logger.Debug("Marking story as unliked", logFields...)
+
+	// <<< ИЗМЕНЕНО: Приведение типа r.db к *pgxpool.Pool для вызова Begin >>>
+	pool, ok := r.db.(*pgxpool.Pool)
+	if !ok {
+		r.logger.Error("r.db is not *pgxpool.Pool, cannot begin transaction for unlike", logFields...)
+		return fmt.Errorf("внутренняя ошибка: невозможно начать транзакцию (неверный тип DBTX)")
+	}
+	tx, err := pool.Begin(ctx) // <<< Используем pool.Begin >>>
+	if err != nil {
+		r.logger.Error("Failed to begin transaction for unmarking like", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка начала транзакции для снятия лайка: %w", err)
+	}
+	defer tx.Rollback(ctx) // Откат по умолчанию
+
+	// 1. Удалить запись из user_story_likes
+	deleteLikeQuery := `DELETE FROM user_story_likes WHERE user_id = $1 AND published_story_id = $2`
+	result, err := tx.Exec(ctx, deleteLikeQuery, userID, storyID)
+	if err != nil {
+		r.logger.Error("Failed to delete from user_story_likes", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка удаления лайка из user_story_likes: %w", err)
+	}
+
+	// 2. Если запись была успешно удалена (RowsAffected > 0), декрементировать счетчик
+	if result.RowsAffected() > 0 {
+		// Используем уже существующий DecrementLikesCount, но передаем ему транзакцию tx
+		// Для этого нужен способ передать tx в DecrementLikesCount или продублировать логику.
+		// Проще продублировать логику декремента здесь.
+		decrementQuery := `UPDATE published_stories SET likes_count = GREATEST(0, likes_count - 1), updated_at = NOW() WHERE id = $1`
+		decrementResult, err := tx.Exec(ctx, decrementQuery, storyID)
+		if err != nil {
+			r.logger.Error("Failed to decrement likes count after deleting like", append(logFields, zap.Error(err))...)
+			return fmt.Errorf("ошибка декремента счетчика лайков: %w", err)
+		}
+		if decrementResult.RowsAffected() == 0 {
+			// Это тоже странно: лайк удалили, а историю не нашли для декремента?
+			r.logger.Error("Story not found for decrementing likes count after deleting like record", logFields...)
+			return models.ErrNotFound // Ошибка несогласованности
+		}
+		r.logger.Debug("Likes count decremented", logFields...)
+	} else {
+		r.logger.Debug("Like record did not exist, likes count not decremented", logFields...)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		r.logger.Error("Failed to commit transaction for unmarking like", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка коммита транзакции для снятия лайка: %w", err)
+	}
+
+	r.logger.Info("Story marked as unliked successfully (or was not liked)", logFields...)
+	return nil
+}
+
+// Ensure pgPublishedStoryRepository implements PublishedStoryRepository
+var _ interfaces.PublishedStoryRepository = (*pgPublishedStoryRepository)(nil)
