@@ -121,11 +121,6 @@ func (s *publishingServiceImpl) PublishDraft(ctx context.Context, draftID uuid.U
 		log.Error("Failed to unmarshal draft config to extract flags/language", zap.Error(err))
 		return uuid.Nil, fmt.Errorf("error reading draft configuration: %w", err)
 	}
-	// Use draft.Language as fallback if not in config JSON (though it should be)
-	language := draft.Language
-	if tempConfig.Language != "" {
-		language = tempConfig.Language
-	}
 
 	// 4. Create PublishedStory within the transaction
 	newPublishedStory := &sharedModels.PublishedStory{
@@ -157,12 +152,12 @@ func (s *publishingServiceImpl) PublishDraft(ctx context.Context, draftID uuid.U
 
 	// 6. Send task for Setup generation (outside the transaction, after commit)
 	taskID := uuid.New().String()
+	configJSONString := string(newPublishedStory.Config) // Конфиг истории как строка
 	setupPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:           taskID,
 		UserID:           newPublishedStory.UserID.String(),
 		PromptType:       sharedMessaging.PromptTypeNovelSetup,
-		InputData:        map[string]interface{}{"config": string(newPublishedStory.Config)}, // Pass JSON config
-		Language:         language,
+		UserInput:        configJSONString,              // <-- Передаем JSON конфиг сюда
 		PublishedStoryID: newPublishedStory.ID.String(), // Link to published story
 	}
 

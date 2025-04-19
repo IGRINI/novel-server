@@ -165,7 +165,7 @@ func startHealthCheckServer(port string, logger *zap.Logger) *http.Server {
 func connectRabbitMQ(uri string, logger *zap.Logger) (*amqp.Connection, error) {
 	var connection *amqp.Connection
 	var err error
-	maxRetries := 5
+	maxRetries := 50
 	retryDelay := 5 * time.Second
 
 	for i := 0; i < maxRetries; i++ {

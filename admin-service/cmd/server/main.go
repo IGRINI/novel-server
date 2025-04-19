@@ -14,6 +14,7 @@ import (
 	sharedModels "novel-server/shared/models"
 	"os"
 	"os/signal"
+	"reflect"
 	"syscall"
 	"time"
 
@@ -178,6 +179,16 @@ func main() {
 		sugar.Fatalf("Не удалось создать AuthServiceClient: %v", err)
 	}
 
+	// <<< ПЕРЕНОС: Инициализируем другие клиенты ДО получения токена >>>
+	storyGenClient, err := client.NewStoryGeneratorClient(cfg.StoryGeneratorURL, cfg.ClientTimeout, logger)
+	if err != nil {
+		sugar.Fatalf("Не удалось создать StoryGeneratorClient: %v", err)
+	}
+	gameplayClient, err := client.NewGameplayServiceClient(cfg.GameplayServiceURL, cfg.ClientTimeout, logger)
+	if err != nil {
+		sugar.Fatalf("Не удалось создать GameplayServiceClient: %v", err)
+	}
+
 	// <<< ПОЛУЧЕНИЕ И УСТАНОВКА МЕЖСЕРВИСНОГО ТОКЕНА >>>
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // Таймаут на получение токена
@@ -190,6 +201,7 @@ func main() {
 			interServiceToken, tokenErr := authClient.GenerateInterServiceToken(ctx, cfg.ServiceID) // Используем ServiceID из конфига
 			if tokenErr == nil {
 				authClient.SetInterServiceToken(interServiceToken)
+				gameplayClient.SetInterServiceToken(interServiceToken)
 				sugar.Info("Межсервисный токен успешно получен и установлен.")
 				return // Выходим из горутины при успехе
 			}
@@ -205,15 +217,6 @@ func main() {
 		}
 	}()
 	// <<< КОНЕЦ БЛОКА ПОЛУЧЕНИЯ ТОКЕНА >>>
-
-	storyGenClient, err := client.NewStoryGeneratorClient(cfg.StoryGeneratorURL, cfg.ClientTimeout, logger)
-	if err != nil {
-		sugar.Fatalf("Не удалось создать StoryGeneratorClient: %v", err)
-	}
-	gameplayClient, err := client.NewGameplayServiceClient(cfg.GameplayServiceURL, cfg.ClientTimeout, logger)
-	if err != nil {
-		sugar.Fatalf("Не удалось создать GameplayServiceClient: %v", err)
-	}
 
 	// --- Создание обработчика HTTP ---
 	h := handler.NewAdminHandler(cfg, logger, authClient, storyGenClient, gameplayClient, pushPublisher)
@@ -278,6 +281,63 @@ func main() {
 				return a
 			}
 			return b
+		},
+		// <<< ДОБАВЛЕНО: Кастомные функции форматирования >>>
+		"default": func(value interface{}, defaultValue string) interface{} {
+			// Проверяем, является ли значение "нулевым" (nil, пустая строка, 0 и т.д.)
+			v := reflect.ValueOf(value)
+			switch v.Kind() {
+			case reflect.String:
+				if v.String() == "" {
+					return defaultValue
+				}
+			case reflect.Ptr, reflect.Interface:
+				if v.IsNil() {
+					return defaultValue
+				}
+			case reflect.Slice, reflect.Map, reflect.Array:
+				if v.Len() == 0 {
+					return defaultValue
+				}
+			case reflect.Invalid: // Для nil интерфейса
+				return defaultValue
+			}
+			// Если значение не нулевое, возвращаем его
+			return value
+		},
+		"derefString": func(s *string) string {
+			if s != nil {
+				return *s
+			}
+			return ""
+		},
+		"formatAsDateTime": func(t time.Time) string {
+			if t.IsZero() {
+				return "-"
+			}
+			// TODO: Можно использовать локализацию или более гибкий формат
+			return t.Format("2006-01-02 15:04:05")
+		},
+		"bytesToString": func(b []byte) string {
+			return string(b)
+		},
+		"statusBadge": func(status sharedModels.StoryStatus) string {
+			switch status {
+			case sharedModels.StatusGenerating:
+				return "warning"
+			case sharedModels.StatusDraft:
+				return "primary"
+			case sharedModels.StatusError:
+				return "danger"
+			case sharedModels.StatusReady:
+				return "success"
+			case sharedModels.StatusSetupPending:
+				return "info"
+			case sharedModels.StatusGameOverPending:
+				return "secondary"
+			default:
+				return "secondary"
+			}
 		},
 		// Можно добавить другие функции здесь
 	}

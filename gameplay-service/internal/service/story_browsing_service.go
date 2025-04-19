@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	interfaces "novel-server/shared/interfaces"
@@ -55,10 +56,13 @@ type StoryBrowsingService interface {
 	ListPublicStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error)
 	GetPublishedStoryDetails(ctx context.Context, storyID, userID uuid.UUID) (*PublishedStoryDetailDTO, error)
 	ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error) // Note: Offset-based, might be deprecated
+	GetPublishedStoryDetailsInternal(ctx context.Context, storyID uuid.UUID) (*sharedModels.PublishedStory, error)
+	ListStoryScenesInternal(ctx context.Context, storyID uuid.UUID) ([]sharedModels.StoryScene, error)
 }
 
 type storyBrowsingServiceImpl struct {
 	publishedRepo interfaces.PublishedStoryRepository
+	sceneRepo     interfaces.StorySceneRepository
 	// playerProgressRepo interfaces.PlayerProgressRepository // May be needed for LastPlayedAt
 	// userRepo interfaces.UserRepository // May be needed for AuthorName
 	logger *zap.Logger
@@ -67,12 +71,14 @@ type storyBrowsingServiceImpl struct {
 // NewStoryBrowsingService creates a new instance of StoryBrowsingService.
 func NewStoryBrowsingService(
 	publishedRepo interfaces.PublishedStoryRepository,
+	sceneRepo interfaces.StorySceneRepository,
 	// playerProgressRepo interfaces.PlayerProgressRepository,
 	// userRepo interfaces.UserRepository,
 	logger *zap.Logger,
 ) StoryBrowsingService {
 	return &storyBrowsingServiceImpl{
 		publishedRepo: publishedRepo,
+		sceneRepo:     sceneRepo,
 		// playerProgressRepo: playerProgressRepo,
 		// userRepo: userRepo,
 		logger: logger.Named("StoryBrowsingService"),
@@ -239,4 +245,40 @@ func (s *storyBrowsingServiceImpl) ListUserPublishedStories(ctx context.Context,
 	}
 
 	return stories, nil
+}
+
+// GetPublishedStoryDetailsInternal retrieves the details of a published story for internal use.
+func (s *storyBrowsingServiceImpl) GetPublishedStoryDetailsInternal(ctx context.Context, storyID uuid.UUID) (*sharedModels.PublishedStory, error) {
+	log := s.logger.With(zap.String("storyID", storyID.String()))
+	log.Info("GetPublishedStoryDetailsInternal called")
+
+	// 1. Get the core PublishedStory data
+	story, err := s.publishedRepo.GetByID(ctx, storyID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) { // Assuming repo uses pgx errors
+			log.Warn("Published story not found")
+			return nil, sharedModels.ErrStoryNotFound // Use specific shared error
+		}
+		log.Error("Failed to get published story by ID", zap.Error(err))
+		return nil, ErrInternal // Use local error from gameplay_service scope
+	}
+
+	log.Info("Successfully retrieved published story details for internal use")
+	return story, nil
+}
+
+// ListStoryScenesInternal retrieves a list of scenes for a published story for internal use.
+func (s *storyBrowsingServiceImpl) ListStoryScenesInternal(ctx context.Context, storyID uuid.UUID) ([]sharedModels.StoryScene, error) {
+	log := s.logger.With(zap.String("storyID", storyID.String()))
+	log.Info("ListStoryScenesInternal called")
+
+	// 2. Fetch scenes
+	scenes, err := s.sceneRepo.ListByStoryID(ctx, storyID)
+	if err != nil {
+		log.Error("Failed to list story scenes", zap.Error(err))
+		return nil, fmt.Errorf("failed to list story scenes from repository: %w", err)
+	}
+
+	log.Info("Successfully retrieved story scenes for internal use", zap.Int("count", len(scenes)))
+	return scenes, nil
 }

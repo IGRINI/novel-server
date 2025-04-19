@@ -339,9 +339,8 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 				userID,
 				publishedStory,
 				progress,
-				previousHash,
-				newStateHash,
 				madeChoicesInfo,
+				newStateHash,
 			)
 			if errGenPayload != nil {
 				s.logger.Error("Failed to create generation payload after batch", append(logFields, zap.Error(errGenPayload))...)
@@ -474,12 +473,8 @@ func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID,
 
 	// 5. Отправляем задачу на генерацию сцены
 	taskID := uuid.New().String()
-	// Используем текущий хеш из прогресса как целевой для регенерации
-	// Предыдущий хеш берем из поля PreviousStateHash прогресса (если оно есть)
 	// Если PreviousStateHash нет, возможно, это была первая сцена (начальный хеш)
-	previousHash := progress.CurrentStateHash  // TODO: Это неверно. Нужен хеш ДО неудачной генерации.
-	nextStateHash := progress.CurrentStateHash // Перегенерируем сцену для текущего хеша.
-	madeChoicesInfo := []userChoiceInfo{}      // Нет информации о предыдущем выборе при простом retry
+	madeChoicesInfo := []userChoiceInfo{} // Нет информации о предыдущем выборе при простом retry
 
 	// Нужен ли нам здесь PreviousStateHash? Зависит от логики генератора.
 	// Пока что будем считать, что для регенерации текущего хеша достаточно
@@ -489,9 +484,8 @@ func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID,
 		userID,
 		story,
 		progress,
-		previousHash, // ??? Возможно, здесь нужно передавать progress.PreviousStateHash, если он есть?
-		nextStateHash,
 		madeChoicesInfo,
+		progress.CurrentStateHash,
 	)
 	if err != nil {
 		log.Error("Failed to create generation payload for retry", zap.Error(err))
@@ -678,9 +672,8 @@ func createGenerationPayload(
 	userID uuid.UUID,
 	story *sharedModels.PublishedStory,
 	progress *sharedModels.PlayerProgress,
-	previousHash string,
-	nextStateHash string,
 	madeChoicesInfo []userChoiceInfo,
+	currentStateHash string,
 ) (sharedMessaging.GenerationTaskPayload, error) {
 
 	var configMap map[string]interface{}
@@ -708,20 +701,11 @@ func createGenerationPayload(
 		setupMap = make(map[string]interface{}) // Provide empty map
 	}
 
-	// Extract language from configMap, default to "en"
-	languageCode := "en"
-	if lang, ok := configMap["ln"].(string); ok && lang != "" {
-		languageCode = lang
-	} else {
-		log.Printf("WARN: Language code ('ln') not found or invalid in config for StoryID %s. Defaulting to 'en'.", story.ID)
-	}
-
 	compressedInputData := make(map[string]interface{})
 
 	// --- Essential Data ---
-	compressedInputData["_ph"] = previousHash // Previous state hash
-	compressedInputData["cfg"] = configMap    // Story config (parsed JSON)
-	compressedInputData["stp"] = setupMap     // Story setup (parsed JSON)
+	compressedInputData["cfg"] = configMap // Story config (parsed JSON, БЕЗ core_stats)
+	compressedInputData["stp"] = setupMap  // Story setup (parsed JSON)
 
 	// --- Current State (before this choice) ---
 	if progress.CoreStats != nil {
@@ -758,17 +742,22 @@ func createGenerationPayload(
 	// Include info about the choice(s) the user just made
 	compressedInputData["uc"] = madeChoicesInfo
 
-	// --- Target State ---
-	// The state hash the new scene should correspond to is passed separately
+	// <<< ИЗМЕНЕНИЕ: Сериализуем всё в UserInput >>>
+	userInputBytes, errMarshal := json.Marshal(compressedInputData)
+	if errMarshal != nil {
+		log.Printf("ERROR: Failed to marshal compressedInputData for generation task StoryID %s: %v", story.ID, errMarshal)
+		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error marshaling input data: %w", errMarshal)
+	}
+	userInputJSON := string(userInputBytes)
+	// <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
 
 	payload := sharedMessaging.GenerationTaskPayload{
 		TaskID:           uuid.New().String(),
 		UserID:           userID.String(),
 		PublishedStoryID: story.ID.String(),
 		PromptType:       sharedMessaging.PromptTypeNovelCreator,
-		InputData:        compressedInputData,
-		Language:         languageCode,
-		StateHash:        nextStateHash, // The hash for the *next* scene
+		UserInput:        userInputJSON,    // <-- Передаем весь JSON сюда
+		StateHash:        currentStateHash, // <<< Используем переданный хеш
 	}
 
 	return payload, nil

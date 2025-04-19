@@ -123,3 +123,87 @@ func (h *GameplayHandler) listUserStoriesInternal(c *gin.Context) {
 
 	c.JSON(http.StatusOK, response)
 }
+
+// <<< ДОБАВЛЕНО: Обработчик для получения деталей черновика >>>
+func (h *GameplayHandler) getDraftDetailsInternal(c *gin.Context) {
+	log := h.logger.With(zap.String("handler", "getDraftDetailsInternal"))
+	draftIDStr := c.Param("draft_id")
+	draftID, err := uuid.Parse(draftIDStr)
+	if err != nil {
+		log.Warn("Invalid draft ID format", zap.String("draft_id", draftIDStr), zap.Error(err))
+		c.JSON(http.StatusBadRequest, sharedModels.ErrorResponse{Message: "Invalid draft ID format"})
+		return
+	}
+	log = log.With(zap.String("draftID", draftID.String()))
+	log.Info("Internal request for draft details")
+
+	// Вызываем новый метод сервиса (DraftService)
+	draft, err := h.service.GetDraftDetailsInternal(c.Request.Context(), draftID)
+	if err != nil {
+		// Обрабатываем ошибку (например, NotFound)
+		if errors.Is(err, sharedModels.ErrNotFound) {
+			log.Info("Draft not found")
+			c.JSON(http.StatusNotFound, sharedModels.ErrorResponse{Message: "Draft not found"})
+		} else {
+			log.Error("Failed to get draft details internally", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, sharedModels.ErrorResponse{Message: "Failed to retrieve draft details"})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, draft)
+}
+
+// <<< ДОБАВЛЕНО: Обработчик для получения деталей опубликованной истории >>>
+func (h *GameplayHandler) getPublishedStoryDetailsInternal(c *gin.Context) {
+	log := h.logger.With(zap.String("handler", "getPublishedStoryDetailsInternal"))
+	storyIDStr := c.Param("story_id")
+	storyID, err := uuid.Parse(storyIDStr)
+	if err != nil {
+		log.Warn("Invalid story ID format", zap.String("story_id", storyIDStr), zap.Error(err))
+		c.JSON(http.StatusBadRequest, sharedModels.ErrorResponse{Message: "Invalid story ID format"})
+		return
+	}
+	log = log.With(zap.String("storyID", storyID.String()))
+	log.Info("Internal request for published story details")
+
+	// Вызываем новый метод сервиса (StoryBrowsingService)
+	story, err := h.service.GetPublishedStoryDetailsInternal(c.Request.Context(), storyID)
+	if err != nil {
+		// Обрабатываем ошибку (например, NotFound)
+		if errors.Is(err, sharedModels.ErrNotFound) {
+			log.Info("Published story not found")
+			c.JSON(http.StatusNotFound, sharedModels.ErrorResponse{Message: "Published story not found"})
+		} else {
+			log.Error("Failed to get published story details internally", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, sharedModels.ErrorResponse{Message: "Failed to retrieve published story details"})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, story)
+}
+
+// <<< ДОБАВЛЕНО: Обработчик для получения списка сцен истории >>>
+func (h *GameplayHandler) listStoryScenesInternal(c *gin.Context) {
+	log := h.logger.With(zap.String("handler", "listStoryScenesInternal"))
+	storyIDStr := c.Param("story_id")
+	storyID, err := uuid.Parse(storyIDStr)
+	if err != nil {
+		log.Warn("Invalid story ID format", zap.String("story_id", storyIDStr), zap.Error(err))
+		c.JSON(http.StatusBadRequest, sharedModels.ErrorResponse{Message: "Invalid story ID format"})
+		return
+	}
+	log = log.With(zap.String("storyID", storyID.String()))
+	log.Info("Internal request for story scenes list")
+
+	// Вызываем новый метод сервиса (StoryBrowsingService)
+	scenes, err := h.service.ListStoryScenesInternal(c.Request.Context(), storyID)
+	if err != nil {
+		// Можно добавить обработку NotFound, если решено, что пустой список - это ошибка
+		log.Error("Failed to list story scenes internally", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, sharedModels.ErrorResponse{Message: "Failed to retrieve story scenes"})
+		return
+	}
+
+	// Возвращаем список сцен (может быть пустым)
+	c.JSON(http.StatusOK, scenes)
+}

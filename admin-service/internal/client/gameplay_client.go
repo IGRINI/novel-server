@@ -194,3 +194,166 @@ func (c *gameplayClient) ListUserPublishedStories(ctx context.Context, userID uu
 	log.Info("User stories retrieved successfully", zap.Int("count", len(resp.Data)), zap.Bool("hasMore", resp.HasMore))
 	return resp.Data, resp.HasMore, nil
 }
+
+// <<< ДОБАВЛЕНО: Реализация GetDraftDetails >>>
+func (c *gameplayClient) GetDraftDetails(ctx context.Context, userID, draftID uuid.UUID) (*models.StoryConfig, error) {
+	detailURL := fmt.Sprintf("%s/internal/users/%s/drafts/%s", c.baseURL, userID.String(), draftID.String())
+	log := c.logger.With(zap.String("url", detailURL), zap.String("userID", userID.String()), zap.String("draftID", draftID.String()))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, detailURL, nil)
+	if err != nil {
+		log.Error("Failed to create get draft details HTTP request", zap.Error(err))
+		return nil, fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Accept", "application/json")
+
+	c.mu.RLock()
+	token := c.interServiceToken
+	c.mu.RUnlock()
+	if token == "" {
+		log.Warn("Inter-service token is not set, API call might fail")
+	} else {
+		httpReq.Header.Set("X-Internal-Service-Token", token)
+	}
+
+	log.Debug("Sending get draft details request to gameplay-service")
+	httpResp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		log.Error("HTTP request for get draft details failed", zap.Error(err))
+		return nil, fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	respBodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		log.Error("Failed to read get draft details response body", zap.Int("status", httpResp.StatusCode), zap.Error(err))
+		return nil, fmt.Errorf("failed to read gameplay service response: %w", err)
+	}
+
+	if httpResp.StatusCode != http.StatusOK {
+		log.Warn("Received non-OK status for get draft details", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		// TODO: Parse error response from gameplay-service if available
+		if httpResp.StatusCode == http.StatusNotFound {
+			return nil, models.ErrNotFound // Возвращаем стандартную ошибку
+		}
+		return nil, fmt.Errorf("received unexpected status %d from gameplay service for get draft details", httpResp.StatusCode)
+	}
+
+	var resp models.StoryConfig
+	if err := json.Unmarshal(respBodyBytes, &resp); err != nil {
+		log.Error("Failed to unmarshal get draft details response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes), zap.Error(err))
+		return nil, fmt.Errorf("invalid draft details response format from gameplay service: %w", err)
+	}
+
+	log.Info("Draft details retrieved successfully")
+	return &resp, nil
+}
+
+// <<< ДОБАВЛЕНО: Реализация GetPublishedStoryDetails >>>
+func (c *gameplayClient) GetPublishedStoryDetails(ctx context.Context, userID, storyID uuid.UUID) (*models.PublishedStory, error) {
+	detailURL := fmt.Sprintf("%s/internal/users/%s/stories/%s", c.baseURL, userID.String(), storyID.String())
+	log := c.logger.With(zap.String("url", detailURL), zap.String("userID", userID.String()), zap.String("storyID", storyID.String()))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, detailURL, nil)
+	if err != nil {
+		log.Error("Failed to create get published story details HTTP request", zap.Error(err))
+		return nil, fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Accept", "application/json")
+
+	c.mu.RLock()
+	token := c.interServiceToken
+	c.mu.RUnlock()
+	if token == "" {
+		log.Warn("Inter-service token is not set, API call might fail")
+	} else {
+		httpReq.Header.Set("X-Internal-Service-Token", token)
+	}
+
+	log.Debug("Sending get published story details request to gameplay-service")
+	httpResp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		log.Error("HTTP request for get published story details failed", zap.Error(err))
+		return nil, fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	respBodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		log.Error("Failed to read get published story details response body", zap.Int("status", httpResp.StatusCode), zap.Error(err))
+		return nil, fmt.Errorf("failed to read gameplay service response: %w", err)
+	}
+
+	if httpResp.StatusCode != http.StatusOK {
+		log.Warn("Received non-OK status for get published story details", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		if httpResp.StatusCode == http.StatusNotFound {
+			return nil, models.ErrNotFound // Возвращаем стандартную ошибку
+		}
+		return nil, fmt.Errorf("received unexpected status %d from gameplay service for get published story details", httpResp.StatusCode)
+	}
+
+	var resp models.PublishedStory
+	if err := json.Unmarshal(respBodyBytes, &resp); err != nil {
+		log.Error("Failed to unmarshal get published story details response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes), zap.Error(err))
+		return nil, fmt.Errorf("invalid published story details response format from gameplay service: %w", err)
+	}
+
+	log.Info("Published story details retrieved successfully")
+	return &resp, nil
+}
+
+// <<< ДОБАВЛЕНО: Реализация ListStoryScenes >>>
+func (c *gameplayClient) ListStoryScenes(ctx context.Context, userID, storyID uuid.UUID) ([]models.StoryScene, error) {
+	scenesURL := fmt.Sprintf("%s/internal/users/%s/stories/%s/scenes", c.baseURL, userID.String(), storyID.String())
+	log := c.logger.With(zap.String("url", scenesURL), zap.String("userID", userID.String()), zap.String("storyID", storyID.String()))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, scenesURL, nil)
+	if err != nil {
+		log.Error("Failed to create list story scenes HTTP request", zap.Error(err))
+		return nil, fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Accept", "application/json")
+
+	c.mu.RLock()
+	token := c.interServiceToken
+	c.mu.RUnlock()
+	if token == "" {
+		log.Warn("Inter-service token is not set, API call might fail")
+	} else {
+		httpReq.Header.Set("X-Internal-Service-Token", token)
+	}
+
+	log.Debug("Sending list story scenes request to gameplay-service")
+	httpResp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		log.Error("HTTP request for list story scenes failed", zap.Error(err))
+		return nil, fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	respBodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		log.Error("Failed to read list story scenes response body", zap.Int("status", httpResp.StatusCode), zap.Error(err))
+		return nil, fmt.Errorf("failed to read gameplay service response: %w", err)
+	}
+
+	if httpResp.StatusCode != http.StatusOK {
+		log.Warn("Received non-OK status for list story scenes", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		// Не возвращаем NotFound, так как пустой список - валидный ответ
+		return nil, fmt.Errorf("received unexpected status %d from gameplay service for list story scenes", httpResp.StatusCode)
+	}
+
+	var resp []models.StoryScene
+	if err := json.Unmarshal(respBodyBytes, &resp); err != nil {
+		log.Error("Failed to unmarshal list story scenes response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes), zap.Error(err))
+		return nil, fmt.Errorf("invalid story scenes response format from gameplay service: %w", err)
+	}
+
+	// Пустой слайс - валидный ответ
+	if resp == nil {
+		resp = make([]models.StoryScene, 0)
+	}
+
+	log.Info("Story scenes retrieved successfully", zap.Int("count", len(resp)))
+	return resp, nil
+}

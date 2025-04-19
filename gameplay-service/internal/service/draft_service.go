@@ -31,6 +31,7 @@ type DraftService interface {
 	GetStoryConfig(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*sharedModels.StoryConfig, error)
 	ListUserDrafts(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.StoryConfig, string, error)
 	RetryDraftGeneration(ctx context.Context, draftID uuid.UUID, userID uuid.UUID) error
+	GetDraftDetailsInternal(ctx context.Context, draftID uuid.UUID) (*sharedModels.StoryConfig, error)
 }
 
 type draftServiceImpl struct {
@@ -101,9 +102,7 @@ func (s *draftServiceImpl) GenerateInitialStory(ctx context.Context, userID uuid
 		TaskID:        taskID,
 		UserID:        config.UserID.String(),
 		PromptType:    sharedMessaging.PromptTypeNarrator,
-		InputData:     make(map[string]interface{}),
 		UserInput:     initialPrompt,
-		Language:      language,
 		StoryConfigID: config.ID.String(),
 	}
 
@@ -173,24 +172,11 @@ func (s *draftServiceImpl) ReviseDraft(ctx context.Context, id uuid.UUID, userID
 	}
 
 	taskID := uuid.New().String()
-	var currentConfigData interface{}
-	if config.Config != nil {
-		// Try unmarshalling to validate it's JSON-like, but pass as string
-		var temp map[string]interface{}
-		if err := json.Unmarshal(config.Config, &temp); err == nil {
-			currentConfigData = string(config.Config)
-		} else {
-			log.Warn("Current config is not valid JSON, passing as nil", zap.Error(err))
-		}
-	}
-
 	generationPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:        taskID,
 		UserID:        config.UserID.String(),
 		PromptType:    sharedMessaging.PromptTypeNarrator,
-		InputData:     map[string]interface{}{"current_config": currentConfigData},
 		UserInput:     revisionPrompt,
-		Language:      config.Language,
 		StoryConfigID: config.ID.String(),
 	}
 
@@ -326,9 +312,7 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 		TaskID:        taskID,
 		UserID:        config.UserID.String(),
 		PromptType:    promptType,
-		InputData:     inputData,
 		UserInput:     lastUserInput,
-		Language:      config.Language,
 		StoryConfigID: config.ID.String(),
 	}
 
@@ -344,4 +328,21 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 
 	log.Info("Retry generation task published successfully", zap.String("taskID", taskID))
 	return nil
+}
+
+// GetDraftDetailsInternal retrieves the details of a story draft for internal API access.
+func (s *draftServiceImpl) GetDraftDetailsInternal(ctx context.Context, draftID uuid.UUID) (*sharedModels.StoryConfig, error) {
+	log := s.logger.With(zap.String("draftID", draftID.String()))
+	log.Info("GetDraftDetailsInternal called")
+
+	config, err := s.repo.GetByID(ctx, draftID, uuid.Nil)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			log.Warn("StoryConfig not found")
+			return nil, sharedModels.ErrNotFound // Use standard error
+		}
+		log.Error("Error getting StoryConfig", zap.Error(err))
+		return nil, fmt.Errorf("error getting StoryConfig: %w", err)
+	}
+	return config, nil
 }

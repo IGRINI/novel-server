@@ -1,9 +1,8 @@
 package worker
 
 import (
-	"bytes" // Для рендеринга шаблона
+	// Для рендеринга шаблона
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -14,8 +13,7 @@ import (
 	"novel-server/story-generator/internal/repository" // Добавляем репозиторий
 	"novel-server/story-generator/internal/service"
 	"os"
-	"path/filepath"
-	"text/template" // Для шаблонизации промтов
+	"path/filepath" // Для шаблонизации промтов
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -83,11 +81,8 @@ func NewTaskHandler(cfg *config.Config, aiClient service.AIClient, resultRepo re
 
 // Handle обрабатывает одну задачу генерации
 func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
-	// <<< Метрика: Счетчик полученных задач >>>
-	// (Перенесено в main.go, где задача фактически получается из очереди)
-
-	log.Printf("[TaskID: %s] Обработка задачи: UserID=%s, PromptType=%s, InputData=%v",
-		payload.TaskID, payload.UserID, payload.PromptType, payload.InputData)
+	log.Printf("[TaskID: %s] Обработка задачи: UserID=%s, PromptType=%s",
+		payload.TaskID, payload.UserID, payload.PromptType)
 
 	fullStartTime := time.Now()
 	createdAt := fullStartTime
@@ -100,32 +95,29 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 	var completedAt time.Time
 
 	// --- Этап 1-2: Загрузка и рендеринг промта ---
-	finalSystemPrompt, err = h.preparePrompt(payload)
+	finalSystemPrompt, err = h.preparePrompt(payload.TaskID, payload.PromptType)
 	if err != nil {
 		log.Printf("[TaskID: %s] Ошибка подготовки промта: %v", payload.TaskID, err)
 		completedAt = time.Now()
 		processingTime = completedAt.Sub(fullStartTime)
-		// <<< Метрика: Задача с ошибкой (подготовка промта) >>>
 		tasksFailedTotal.WithLabelValues("prompt_preparation").Inc()
-		// <<< Метрика: Время обработки задачи (ошибка) >>>
 		taskProcessingDuration.Observe(processingTime.Seconds())
-		// Сразу вызываем сохранение и уведомление с ошибкой
-		return h.saveAndNotifyResult(payload, "", err, createdAt, completedAt, processingTime)
+		return h.saveAndNotifyResult(payload.TaskID, payload.UserID, payload.PromptType, payload.StoryConfigID, payload.PublishedStoryID, payload.StateHash, "", err, createdAt, completedAt, processingTime)
 	}
 
 	// --- Этап 3: Вызов AI API с ретраями ---
 	userInput := payload.UserInput
+	log.Printf("[TaskID: %s] UserInput для AI API (длина: %d).", payload.TaskID, len(userInput))
 
-	// <<< ДОБАВЛЕНО: Формирование строки с языком >>>
-	if payload.Language != "" {
-		languageString := getLanguageString(payload.Language)
-		if languageString != "" {
-			// Добавляем строку с языком в начало userInput, разделяя новой строкой
-			userInput = languageString + "\n\n" + userInput
-			log.Printf("[TaskID: %s] Добавлена информация о языке ('%s') к userInput.", payload.TaskID, payload.Language)
-		}
+	if userInput == "" && payload.PromptType != "" {
+		err = fmt.Errorf("ошибка: userInput пуст для PromptType '%s'", payload.PromptType)
+		log.Printf("[TaskID: %s] %v", payload.TaskID, err)
+		completedAt = time.Now()
+		processingTime = completedAt.Sub(fullStartTime)
+		tasksFailedTotal.WithLabelValues("user_input_empty").Inc()
+		taskProcessingDuration.Observe(processingTime.Seconds())
+		return h.saveAndNotifyResult(payload.TaskID, payload.UserID, payload.PromptType, payload.StoryConfigID, payload.PublishedStoryID, payload.StateHash, "", err, createdAt, completedAt, processingTime)
 	}
-	// <<< КОНЕЦ ФОРМИРОВАНИЯ ЯЗЫКА >>>
 
 	baseDelay := h.baseRetryDelay
 
@@ -137,12 +129,10 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 		aiResponse, err = h.aiClient.GenerateText(ctx, payload.UserID, finalSystemPrompt, userInput, service.GenerationParams{})
 		cancel()
 
-		processingTime = time.Since(aiStartTime) // Обновляем время обработки последним вызовом
+		processingTime = time.Since(aiStartTime)
 
 		if err == nil {
 			log.Printf("[TaskID: %s] AI API успешно ответил (Попытка %d).", payload.TaskID, attempt)
-			// <<< Метрика: Успешная задача >>>
-			// (Инкрементируется в конце, после сохранения)
 			break
 		}
 
@@ -150,8 +140,6 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 
 		if attempt == h.maxAttempts {
 			log.Printf("[TaskID: %s] Достигнуто максимальное количество попыток (%d) вызова AI.", payload.TaskID, h.maxAttempts)
-			// <<< Метрика: Задача с ошибкой (ошибка AI после ретраев) >>>
-			// (Инкрементируется ниже, после цикла)
 			break
 		}
 
@@ -167,69 +155,52 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 		time.Sleep(waitDuration)
 	}
 	completedAt = time.Now()
-	totalDuration := completedAt.Sub(fullStartTime) // Общее время от начала до конца
-
-	// <<< Метрика: Время обработки задачи (общее) >>>
+	totalDuration := completedAt.Sub(fullStartTime)
 	taskProcessingDuration.Observe(totalDuration.Seconds())
-
-	// Проверяем, была ли ошибка AI после всех попыток
 	if err != nil {
-		// <<< Метрика: Задача с ошибкой (ошибка AI) >>>
 		tasksFailedTotal.WithLabelValues("ai_error").Inc()
 	}
 
 	// --- Этап 4-6: Сохранение и уведомление ---
-	saveErr := h.saveAndNotifyResult(payload, aiResponse, err, createdAt, completedAt, processingTime) // 'err' здесь - это ошибка AI или nil
+	saveErr := h.saveAndNotifyResult(payload.TaskID, payload.UserID, payload.PromptType, payload.StoryConfigID, payload.PublishedStoryID, payload.StateHash, aiResponse, err, createdAt, completedAt, processingTime)
 
-	// Определяем финальный статус задачи для метрик
 	if saveErr != nil {
-		// Ошибка сохранения - это отдельная категория ошибки задачи
 		tasksFailedTotal.WithLabelValues("save_error").Inc()
-		// Возвращаем ошибку сохранения, чтобы сообщение было nack-нуто
 		return saveErr
 	} else if err != nil {
-		// Ошибка была на этапе AI (уже посчитана выше), но сохранение прошло успешно.
-		// Возвращаем исходную ошибку AI, чтобы сообщение было nack-нуто.
 		return err
 	} else {
-		// Все прошло успешно (и AI, и сохранение)
 		tasksSucceededTotal.Inc()
-		return nil // Возвращаем nil для ack
+		return nil
 	}
 }
 
 // preparePrompt загружает и рендерит шаблон промта
-func (h *TaskHandler) preparePrompt(payload messaging.GenerationTaskPayload) (string, error) {
-	log.Printf("[TaskID: %s] Загрузка и рендеринг промта...", payload.TaskID)
-	promptFilePath := filepath.Join(h.PromptsDir, string(payload.PromptType)+".md")
+func (h *TaskHandler) preparePrompt(taskID string, promptType messaging.PromptType) (string, error) {
+	log.Printf("[TaskID: %s] Загрузка и рендеринг промта...", taskID)
+	promptFilePath := filepath.Join(h.PromptsDir, string(promptType)+".md")
 	systemPromptBytes, readErr := os.ReadFile(promptFilePath)
 	if readErr != nil {
 		return "", fmt.Errorf("ошибка чтения файла промта '%s': %w", promptFilePath, readErr)
 	}
 	systemPrompt := string(systemPromptBytes)
 
-	// <<< Логируем содержимое файла промта >>>
-	log.Printf("[TaskID: %s] Содержимое файла промта '%s':\n---\n%s\n---", payload.TaskID, promptFilePath, systemPrompt)
-	// <<< Конец логирования >>>
+	log.Printf("[TaskID: %s] Содержимое файла промта '%s':\n---\n%s\n---", taskID, promptFilePath, systemPrompt)
 
-	tmpl, parseErr := template.New("prompt").Parse(systemPrompt)
-	if parseErr != nil {
-		return "", fmt.Errorf("ошибка парсинга шаблона промта '%s': %w", payload.PromptType, parseErr)
-	}
-	var renderedPrompt bytes.Buffer
-	execErr := tmpl.Execute(&renderedPrompt, payload.InputData)
-	if execErr != nil {
-		return "", fmt.Errorf("ошибка выполнения шаблона промта '%s': %w", payload.PromptType, execErr)
-	}
-	finalSystemPrompt := renderedPrompt.String()
-	log.Printf("[TaskID: %s] Промт успешно подготовлен.", payload.TaskID)
+	finalSystemPrompt := systemPrompt
+	log.Printf("[TaskID: %s] Промт успешно подготовлен (без шаблонизации).", taskID)
 	return finalSystemPrompt, nil
 }
 
 // saveAndNotifyResult сохраняет результат (или ошибку) в БД и отправляет уведомление.
 // Возвращает ошибку, если задача должна быть nack-нута (ошибка AI/подготовки/сохранения).
 func (h *TaskHandler) saveAndNotifyResult(
-	payload messaging.GenerationTaskPayload,
+	taskID string,
+	userID string,
+	promptType messaging.PromptType,
+	storyConfigID string,
+	publishedStoryID string,
+	stateHash string,
 	aiResponse string,
 	processingErr error, // Ошибка от этапа подготовки или AI
 	createdAt time.Time,
@@ -246,25 +217,12 @@ func (h *TaskHandler) saveAndNotifyResult(
 	}
 	processedResult := aiResponse
 
-	log.Printf("[TaskID: %s] Сохранение результата в БД...", payload.TaskID)
-	inputDataJSON, jsonErr := json.Marshal(payload.InputData)
-	if jsonErr != nil {
-		log.Printf("[TaskID: %s] КРИТИЧЕСКАЯ ОШИБКА: Не удалось сериализовать InputData в JSON: %v", payload.TaskID, jsonErr)
-		// <<< Метрика: Задача с ошибкой (ошибка JSON) >>>
-		tasksFailedTotal.WithLabelValues("json_marshal_error").Inc()
-		if errorMsg != "" {
-			errorMsg = fmt.Sprintf("%s; КРИТИЧЕСКАЯ ОШИБКА: %v", errorMsg, jsonErr)
-		} else {
-			errorMsg = fmt.Sprintf("КРИТИЧЕСКАЯ ОШИБКА: %v", jsonErr)
-		}
-		inputDataJSON = []byte("null")
-	}
+	log.Printf("[TaskID: %s] Сохранение результата в БД...", taskID)
 
 	result := &model.GenerationResult{
-		ID:             payload.TaskID,
-		UserID:         payload.UserID,
-		PromptType:     payload.PromptType,
-		InputData:      inputDataJSON,
+		ID:             taskID,
+		UserID:         userID,
+		PromptType:     promptType,
 		GeneratedText:  processedResult,
 		ProcessingTime: processingTime,
 		CreatedAt:      createdAt,
@@ -276,29 +234,18 @@ func (h *TaskHandler) saveAndNotifyResult(
 	defer saveCancel()
 	saveErr := h.resultRepo.Save(saveCtx, result)
 	if saveErr != nil {
-		log.Printf("[TaskID: %s] Ошибка сохранения результата в БД: %v", payload.TaskID, saveErr)
-		// <<< Метрика: Задача с ошибкой (ошибка сохранения) >>>
-		// (Дублируется? Нет, здесь ошибка именно в *момент* сохранения)
-		// Мы уже инкрементировали save_error в Handle, если saveErr не nil.
-		// Поэтому здесь не инкрементируем, чтобы не задвоить.
-		if errorMsg != "" {
-			errorMsg = fmt.Sprintf("%s; Ошибка сохранения: %v", errorMsg, saveErr)
-		} else {
-			errorMsg = fmt.Sprintf("Ошибка сохранения: %v", saveErr)
-		}
-		// Возвращаем ошибку сохранения, т.к. она критична
-		// (Уведомление ниже не будет отправлено в этом случае)
+		log.Printf("[TaskID: %s] Ошибка сохранения результата в БД: %v", taskID, saveErr)
 		return fmt.Errorf("ошибка сохранения результата в БД: %w", saveErr)
 	}
 
-	log.Printf("[TaskID: %s] Отправка уведомления...", payload.TaskID)
+	log.Printf("[TaskID: %s] Отправка уведомления...", taskID)
 	notificationPayload := messaging.NotificationPayload{
-		TaskID:           payload.TaskID,
-		UserID:           payload.UserID,
-		PromptType:       payload.PromptType,
-		StoryConfigID:    payload.StoryConfigID,
-		PublishedStoryID: payload.PublishedStoryID,
-		StateHash:        payload.StateHash,
+		TaskID:           taskID,
+		UserID:           userID,
+		PromptType:       promptType,
+		StoryConfigID:    storyConfigID,
+		PublishedStoryID: publishedStoryID,
+		StateHash:        stateHash,
 	}
 	if errorMsg != "" {
 		notificationPayload.Status = messaging.NotificationStatusError
@@ -312,57 +259,14 @@ func (h *TaskHandler) saveAndNotifyResult(
 	defer notifyCancel()
 	notifyErr := h.notifier.Notify(notifyCtx, notificationPayload)
 	if notifyErr != nil {
-		log.Printf("[TaskID: %s] ВНИМАНИЕ: Не удалось отправить уведомление: %v", payload.TaskID, notifyErr)
+		log.Printf("[TaskID: %s] ВНИМАНИЕ: Не удалось отправить уведомление: %v", taskID, notifyErr)
 	}
 
-	// Если была ошибка AI, подготовки или JSON, но сохранение прошло успешно,
-	// возвращаем исходную ошибку, чтобы инициировать Nack.
-	// Метрики для этих ошибок уже инкрементированы в Handle.
 	if processingErr != nil {
-		// Логируем сырой ответ AI при ошибке
-		log.Printf("[TaskID: %s] Ошибка обработки (processingErr), сырой ответ AI перед отправкой уведомления: '%s'", payload.TaskID, aiResponse)
+		log.Printf("[TaskID: %s] Ошибка обработки (processingErr), сырой ответ AI перед отправкой уведомления: '%s'", taskID, aiResponse)
 		return fmt.Errorf("задача завершилась с ошибкой подготовки/AI (сохранено, уведомление отправлено/ошибка логирована): %w", processingErr)
 	}
-	if jsonErr != nil { // Ошибка была только при сериализации JSON
-		// Логируем сырой ответ AI при ошибке JSON
-		log.Printf("[TaskID: %s] Ошибка сериализации InputData (jsonErr), сырой ответ AI перед отправкой уведомления: '%s'", payload.TaskID, aiResponse)
-		// Метрика json_marshal_error уже инкрементирована выше
-		return fmt.Errorf("задача завершилась с критической ошибкой JSON (сохранено как null, уведомление отправлено/ошибка логирована): %w", jsonErr)
-	}
 
-	// Дополнительно логируем сырой ответ перед отправкой успешного уведомления (на всякий случай)
-	log.Printf("[TaskID: %s] Сырой ответ AI перед отправкой успешного уведомления: '%s'", payload.TaskID, aiResponse)
-
-	log.Printf("[TaskID: %s] Задача успешно обработана, сохранена и уведомление отправлено за %v.", payload.TaskID, completedAt.Sub(createdAt))
-	return nil // Успешное завершение
+	log.Printf("[TaskID: %s] Задача успешно обработана, сохранена и уведомление отправлено за %v.", taskID, completedAt.Sub(createdAt))
+	return nil
 }
-
-// <<< ДОБАВЛЕНО: Функция для получения строки языка >>>
-func getLanguageString(langCode string) string {
-	switch langCode {
-	case "ru":
-		return "Язык приложения игрока: Русский"
-	case "en":
-		return "Player's application language: English"
-	case "fr":
-		return "Langue de l'application du joueur : Français"
-	case "de":
-		return "Sprache der Spieleranwendung: Deutsch"
-	case "es":
-		return "Idioma de la aplicación del jugador: Español"
-	case "it":
-		return "Lingua dell'applicazione del giocatore: Italiano"
-	case "pt":
-		return "Idioma do aplicativo do jogador: Português"
-	case "zh":
-		return "玩家的应用语言: 中文"
-	case "ja":
-		return "プレイヤーのアプリケーション言語: 日本語"
-	default:
-		// Если язык не поддерживается или неизвестен, не добавляем строку
-		log.Printf("Неизвестный или неподдерживаемый код языка для добавления в промпт: %s", langCode)
-		return ""
-	}
-}
-
-// <<< КОНЕЦ ФУНКЦИИ ЯЗЫКА >>>

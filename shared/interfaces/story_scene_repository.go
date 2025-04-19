@@ -20,4 +20,8 @@ type StorySceneRepository interface {
 	// GetByID retrieves a story scene by its unique ID.
 	// Returns models.ErrNotFound if the scene is not found.
 	GetByID(ctx context.Context, id uuid.UUID) (*models.StoryScene, error)
+
+	// ListByStoryID retrieves all scenes for a given story.
+	// Returns models.ErrNotFound if no scenes exist for the story.
+	ListByStoryID(ctx context.Context, publishedStoryID uuid.UUID) ([]models.StoryScene, error)
 }

@@ -53,7 +53,9 @@ func (h *AdminHandler) RegisterRoutes(router *gin.Engine) {
 			userGroup.POST("/", h.handleUserUpdate)
 			userGroup.POST("/reset-password", h.handleResetPassword)
 			userGroup.GET("/drafts", h.listUserDrafts)
+			userGroup.GET("/drafts/:draft_id", h.showDraftDetailsPage)
 			userGroup.GET("/stories", h.listUserStories)
+			userGroup.GET("/stories/:story_id", h.showPublishedStoryDetailsPage)
 			userGroup.POST("/send-notification", h.handleSendUserNotification)
 		}
 

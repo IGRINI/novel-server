@@ -1,0 +1,160 @@
+{{ template "_layout.html" . }}
+
+{{ define "content" }}
+<div class="container mt-4">
+    <h2>{{ .PageTitle }}</h2>
+
+    {{ if .UserError }}
+        <div class="alert alert-warning">{{ .UserError }}</div>
+    {{ end }}
+    {{ if .StoryError }}
+        <div class="alert alert-danger">{{ .StoryError }}</div>
+    {{ end }}
+    {{ if .ScenesError }}
+        <div class="alert alert-warning">{{ .ScenesError }}</div>
+    {{ end }}
+
+    {{ if and (not .UserError) .TargetUser }}
+        <div class="card mb-3">
+            <div class="card-header">Пользователь</div>
+            <div class="card-body">
+                <p><strong>ID:</strong> {{ .TargetUser.ID }}</p>
+                <p><strong>Username:</strong> {{ .TargetUser.Username }}</p>
+                <p><strong>Email:</strong> {{ .TargetUser.Email }}</p>
+                <a href="/admin/users/{{.TargetUser.ID}}/edit" class="btn btn-sm btn-outline-primary">Редактировать пользователя</a>
+            </div>
+        </div>
+    {{ end }}
+
+    {{ if and (not .StoryError) .Story }}
+        <div class="card mb-3">
+            <div class="card-header">Детали опубликованной истории</div>
+            <div class="card-body">
+                <p><strong>ID Истории:</strong> {{ .Story.ID }}</p>
+                <p><strong>Заголовок:</strong> {{ .Story.Title | derefString | default "-" }}</p>
+                <p><strong>Описание:</strong> {{ .Story.Description | derefString | default "-" }}</p>
+                <p><strong>Статус:</strong> <span class="badge bg-{{ .Story.Status | statusBadge }}">{{ .Story.Status }}</span></p>
+                <p><strong>Публичная:</strong> {{ if .Story.IsPublic }}Да{{ else }}Нет{{ end }}</p>
+                <p><strong>18+:</strong> {{ if .Story.IsAdultContent }}Да{{ else }}Нет{{ end }}</p>
+                <p><strong>Создана (опубл.):</strong> {{ .Story.CreatedAt | formatAsDateTime }}</p>
+                <p><strong>Обновлена:</strong> {{ .Story.UpdatedAt | formatAsDateTime }}</p>
+                <p><strong>Лайки:</strong> {{ .Story.LikesCount }}</p>
+
+                <div class="mb-3">
+                    <label for="configJson" class="form-label"><strong>Config (JSON):</strong></label>
+                    <textarea id="configJson" class="form-control" rows="15" readonly>{{ .Story.Config | bytesToString }}</textarea>
+                </div>
+
+                <div class="mb-3">
+                    <label for="setupJson" class="form-label"><strong>Setup (JSON):</strong></label>
+                    <textarea id="setupJson" class="form-control" rows="15" readonly>{{ .Story.Setup | bytesToString }}</textarea>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header">Сцены истории ({{ len .Scenes }})</div>
+            <div class="card-body">
+                {{ if .ScenesError }}
+                    <div class="alert alert-warning">Не удалось загрузить сцены: {{ .ScenesError }}</div>
+                {{ else }}
+                    <table class="table table-sm table-striped">
+                        <thead>
+                            <tr>
+                                <th>ID Сцены</th>
+                                <th>Хеш состояния</th>
+                                <th>Дата создания</th>
+                                <th>Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {{ range .Scenes }}
+                                <tr>
+                                    <td><small>{{ .ID }}</small></td>
+                                    <td><small>{{ .StateHash }}</small></td>
+                                    <td><small>{{ .CreatedAt | formatAsDateTime }}</small></td>
+                                    <td>
+                                        <button class="btn btn-sm btn-outline-secondary" onclick="showSceneContent('{{ .ID }}')">Показать JSON</button>
+                                        <textarea id="scene-{{ .ID }}" style="display: none;">{{ .Content | bytesToString }}</textarea>
+                                    </td>
+                                </tr>
+                            {{ else }}
+                                <tr>
+                                    <td colspan="4">Сцены для этой истории еще не сгенерированы или не найдены.</td>
+                                </tr>
+                            {{ end }}
+                        </tbody>
+                    </table>
+                {{ end }}
+            </div>
+        </div>
+
+    {{ else if not .StoryError }}
+        <div class="alert alert-info">Информация об истории недоступна.</div>
+    {{ end }}
+
+    <!-- Модальное окно для показа JSON -->
+    <div class="modal fade" id="sceneJsonModal" tabindex="-1" aria-labelledby="sceneJsonModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="sceneJsonModalLabel">Содержимое сцены</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <pre><code id="sceneJsonContent" class="language-json"></code></pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <a href="/admin/users/{{ .TargetUser.ID }}/stories" class="btn btn-secondary mt-3">Назад к списку историй</a>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', (event) => {
+    function formatJsonTextarea(textareaId) {
+        const textarea = document.getElementById(textareaId);
+        if (textarea && textarea.value.trim()) {
+            try {
+                const jsonObject = JSON.parse(textarea.value);
+                textarea.value = JSON.stringify(jsonObject, null, 2); // Форматируем с отступом 2
+            } catch (e) {
+                console.warn(`Could not parse JSON in textarea #${textareaId}:`, e);
+            }
+        }
+    }
+
+    formatJsonTextarea('configJson');
+    formatJsonTextarea('setupJson');
+});
+
+function showSceneContent(sceneId) {
+    const textarea = document.getElementById(`scene-${sceneId}`);
+    const modalContent = document.getElementById('sceneJsonContent');
+    const modalTitle = document.getElementById('sceneJsonModalLabel');
+    const modal = new bootstrap.Modal(document.getElementById('sceneJsonModal'));
+
+    modalTitle.textContent = `Содержимое сцены ${sceneId}`;
+    modalContent.textContent = ''; // Очищаем перед показом
+
+    if (textarea && textarea.value.trim()) {
+        try {
+            const jsonObject = JSON.parse(textarea.value);
+            modalContent.textContent = JSON.stringify(jsonObject, null, 2);
+            // Подсветка синтаксиса, если используется Prism.js или подобное
+            if (typeof Prism !== 'undefined') {
+                Prism.highlightElement(modalContent);
+            }
+        } catch (e) {
+            console.warn(`Could not parse JSON for scene ${sceneId}:`, e);
+            modalContent.textContent = textarea.value; // Показываем как есть
+        }
+    } else {
+        modalContent.textContent = '(Нет данных)';
+    }
+    modal.show();
+}
+</script>
+
+{{ end }} 

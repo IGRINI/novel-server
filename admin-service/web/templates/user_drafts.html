@@ -27,6 +27,7 @@
                 <th>Название (если есть)</th>
                 <th>Статус</th>
                 <th>Дата создания</th>
+                <th>Дата обновления</th>
                 <th>Действия</th>
             </tr>
         </thead>
@@ -34,12 +35,13 @@
             {{ range .Drafts }}
                 <tr>
                     <td>{{ .ID }}</td>
-                    <td>{{ or .Title "(Нет названия)" }}</td>
-                    <td>{{ .Status }}</td>
-                    <td>{{ .CreatedAt.Format "2006-01-02 15:04" }}</td>
+                    <td>{{ .Title | default "-" }}</td>
+                    <td><span class="badge bg-{{ .Status | statusBadge }}">{{ .Status }}</span></td>
+                    <td>{{ .CreatedAt | formatAsDateTime }}</td>
+                    <td>{{ .UpdatedAt | formatAsDateTime }}</td>
                     <td>
-                        {{/* TODO: Добавить ссылки на просмотр/редактирование черновика, если нужно */}}
-                        <button disabled>Действий нет</button>
+                        <a href="/admin/users/{{$.TargetUser.ID}}/drafts/{{.ID}}" class="btn btn-sm btn-info">Детали</a>
+                        {{/* TODO: Добавить кнопки действий (удалить, перегенерировать?) */}}
                     </td>
                 </tr>
             {{ else }}

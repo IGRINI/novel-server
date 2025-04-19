@@ -31,19 +31,26 @@ func NewPgStorySceneRepository(db interfaces.DBTX, logger *zap.Logger) interface
 }
 
 const createStorySceneQuery = `
-INSERT INTO story_scenes (id, published_story_id, state_hash, content, created_at)
+INSERT INTO story_scenes (id, published_story_id, state_hash, scene_content, created_at)
 VALUES ($1, $2, $3, $4, $5)`
 
 const findStorySceneByHashQuery = `
-SELECT id, published_story_id, state_hash, content, created_at
+SELECT id, published_story_id, state_hash, scene_content, created_at
 FROM story_scenes
 WHERE published_story_id = $1 AND state_hash = $2`
 
 // Добавляем константу для запроса GetByID
 const getStorySceneByIDQuery = `
-SELECT id, published_story_id, state_hash, content, created_at
+SELECT id, published_story_id, state_hash, scene_content, created_at
 FROM story_scenes
 WHERE id = $1`
+
+// <<< ДОБАВЛЕНО: Константа для запроса ListByStoryID >>>
+const listStoryScenesByStoryIDQuery = `
+SELECT id, published_story_id, state_hash, scene_content, created_at
+FROM story_scenes
+WHERE published_story_id = $1
+ORDER BY created_at DESC` // Сортируем по убыванию даты создания
 
 // Create inserts a new story scene record.
 func (r *pgStorySceneRepository) Create(ctx context.Context, scene *models.StoryScene) error {
@@ -58,7 +65,7 @@ func (r *pgStorySceneRepository) Create(ctx context.Context, scene *models.Story
 		scene.ID,
 		scene.PublishedStoryID,
 		scene.StateHash,
-		scene.Content, // Передаем json.RawMessage напрямую
+		scene.Content, // Передаем json.RawMessage напрямую, имя колонки в SQL уже обновлено
 		scene.CreatedAt,
 	)
 	if err != nil {
@@ -80,7 +87,7 @@ func (r *pgStorySceneRepository) FindByStoryAndHash(ctx context.Context, publish
 		&scene.ID,
 		&scene.PublishedStoryID,
 		&scene.StateHash,
-		&scene.Content, // Сканируем напрямую в json.RawMessage
+		&scene.Content, // Сканируем напрямую в json.RawMessage, имя колонки в SQL уже обновлено
 		&scene.CreatedAt,
 	)
 	if err != nil {
@@ -104,7 +111,7 @@ func (r *pgStorySceneRepository) GetByID(ctx context.Context, id uuid.UUID) (*mo
 		&scene.ID,
 		&scene.PublishedStoryID,
 		&scene.StateHash,
-		&scene.Content, // Сканируем напрямую в json.RawMessage
+		&scene.Content, // Сканируем напрямую в json.RawMessage, имя колонки в SQL уже обновлено
 		&scene.CreatedAt,
 	)
 
@@ -119,4 +126,40 @@ func (r *pgStorySceneRepository) GetByID(ctx context.Context, id uuid.UUID) (*mo
 
 	r.logger.Debug("Story scene retrieved successfully by ID", logFields...)
 	return scene, nil
+}
+
+// <<< ДОБАВЛЕНО: Реализация метода ListByStoryID >>>
+func (r *pgStorySceneRepository) ListByStoryID(ctx context.Context, publishedStoryID uuid.UUID) ([]models.StoryScene, error) {
+	rows, err := r.db.Query(ctx, listStoryScenesByStoryIDQuery, publishedStoryID)
+	if err != nil {
+		r.logger.Error("Failed to query story scenes by story ID", zap.String("publishedStoryID", publishedStoryID.String()), zap.Error(err))
+		return nil, fmt.Errorf("ошибка запроса сцен истории: %w", err)
+	}
+	defer rows.Close()
+
+	scenes := make([]models.StoryScene, 0)
+	for rows.Next() {
+		var scene models.StoryScene
+		err := rows.Scan(
+			&scene.ID,
+			&scene.PublishedStoryID,
+			&scene.StateHash,
+			&scene.Content, // Сканируем напрямую в json.RawMessage, имя колонки в SQL уже обновлено
+			&scene.CreatedAt,
+		)
+		if err != nil {
+			r.logger.Error("Failed to scan story scene row", zap.String("publishedStoryID", publishedStoryID.String()), zap.Error(err))
+			return nil, fmt.Errorf("ошибка сканирования строки сцены: %w", err)
+		}
+		scenes = append(scenes, scene)
+	}
+
+	if err := rows.Err(); err != nil {
+		r.logger.Error("Error iterating over story scene rows", zap.String("publishedStoryID", publishedStoryID.String()), zap.Error(err))
+		return nil, fmt.Errorf("ошибка итерации по строкам сцен: %w", err)
+	}
+
+	// Не возвращаем ErrNotFound, если список пуст, просто пустой слайс.
+	r.logger.Debug("Successfully listed story scenes by story ID", zap.String("publishedStoryID", publishedStoryID.String()), zap.Int("count", len(scenes)))
+	return scenes, nil
 }

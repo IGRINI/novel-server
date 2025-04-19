@@ -130,6 +130,10 @@ type GameplayService interface {
 	// ListMyDrafts (duplicated?) - Keep for now, handled by DraftService
 	// ListMyDrafts(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.StoryConfig, string, error)
 
+	// <<< ДОБАВЛЕНО: Методы для внутреннего API админки >>>
+	GetDraftDetailsInternal(ctx context.Context, draftID uuid.UUID) (*sharedModels.StoryConfig, error)
+	GetPublishedStoryDetailsInternal(ctx context.Context, storyID uuid.UUID) (*sharedModels.PublishedStory, error)
+	ListStoryScenesInternal(ctx context.Context, storyID uuid.UUID) ([]sharedModels.StoryScene, error)
 }
 
 type gameplayServiceImpl struct {
@@ -165,7 +169,7 @@ func NewGameplayService(
 	// <<< СОЗДАЕМ LikeService >>>
 	likeSvc := NewLikeService(likeRepo, publishedRepo, logger)
 	// <<< СОЗДАЕМ StoryBrowsingService >>>
-	storyBrowsingSvc := NewStoryBrowsingService(publishedRepo, logger)
+	storyBrowsingSvc := NewStoryBrowsingService(publishedRepo, sceneRepo, logger)
 	// <<< СОЗДАЕМ GameLoopService >>>
 	gameLoopSvc := NewGameLoopService(publishedRepo, sceneRepo, playerProgressRepo, publisher, logger)
 
@@ -292,10 +296,26 @@ func (s *gameplayServiceImpl) DeletePlayerProgress(ctx context.Context, userID u
 
 // RetryStoryGeneration delegates to GameLoopService.
 func (s *gameplayServiceImpl) RetryStoryGeneration(ctx context.Context, storyID, userID uuid.UUID) error {
-	return s.gameLoopService.RetryStoryGeneration(ctx, storyID, userID)
+	return s.gameLoopService.RetrySceneGeneration(ctx, storyID, userID)
 }
 
 // === Конец делегированных методов GameLoopService ===
+
+// <<< ДОБАВЛЕНО: Методы для внутреннего API админки >>>
+func (s *gameplayServiceImpl) GetDraftDetailsInternal(ctx context.Context, draftID uuid.UUID) (*sharedModels.StoryConfig, error) {
+	// Implementation of GetDraftDetailsInternal method
+	return s.draftService.GetDraftDetailsInternal(ctx, draftID)
+}
+
+func (s *gameplayServiceImpl) GetPublishedStoryDetailsInternal(ctx context.Context, storyID uuid.UUID) (*sharedModels.PublishedStory, error) {
+	// Implementation of GetPublishedStoryDetailsInternal method
+	return s.storyBrowsingService.GetPublishedStoryDetailsInternal(ctx, storyID)
+}
+
+func (s *gameplayServiceImpl) ListStoryScenesInternal(ctx context.Context, storyID uuid.UUID) ([]sharedModels.StoryScene, error) {
+	// Implementation of ListStoryScenesInternal method
+	return s.storyBrowsingService.ListStoryScenesInternal(ctx, storyID)
+}
 
 // --- Helper Functions moved to game_loop_service.go ---
 /*

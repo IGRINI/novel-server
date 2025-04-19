@@ -25,7 +25,9 @@
             <tr>
                 <th>ID Истории</th>
                 <th>Название</th>
-                <th>Дата публикации</th> {{/* Или создания? */}}
+                <th>Дата создания</th>
+                <th>Статус</th>
+                <th>Дата создания</th>
                 <th>Действия</th>
             </tr>
         </thead>
@@ -33,16 +35,18 @@
             {{ range .Stories }}
                 <tr>
                     <td>{{ .ID }}</td>
-                    <td>{{ .Title }}</td>
-                    <td>{{ .PublishedAt.Format "2006-01-02 15:04" }}</td> {{/* Предполагаем поле PublishedAt */}}
+                    <td>{{ .Title | derefString | default "-" }}</td>
+                    <td>{{ .CreatedAt | formatAsDateTime }}</td>
+                    <td>{{ .Status }}</td>
+                    <td>{{ .CreatedAt | formatAsDateTime }}</td>
                     <td>
-                        {{/* TODO: Добавить ссылки на просмотр истории, если нужно */}}
-                        <button disabled>Действий нет</button>
+                        <a href="/admin/users/{{$.TargetUser.ID}}/stories/{{.ID}}" class="btn btn-sm btn-info">Детали</a>
+                        {{/* TODO: Добавить другие кнопки действий */}}
                     </td>
                 </tr>
             {{ else }}
                 <tr>
-                    <td colspan="4">Опубликованные истории у пользователя не найдены.</td>
+                    <td colspan="6">Опубликованные истории у пользователя не найдены.</td>
                 </tr>
             {{ end }}
         </tbody>

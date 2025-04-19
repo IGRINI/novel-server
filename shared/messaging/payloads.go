@@ -19,15 +19,15 @@ const (
 
 // GenerationTaskPayload - структура сообщения для задачи генерации
 type GenerationTaskPayload struct {
-	TaskID           string                 `json:"task_id"`                      // Уникальный ID задачи генерации
-	UserID           string                 `json:"user_id"`                      // ID пользователя
-	PromptType       PromptType             `json:"prompt_type"`                  // Тип запроса к AI
-	InputData        map[string]interface{} `json:"input_data"`                   // Данные для шаблонизации промпта (из StoryConfig.UserInput)
-	UserInput        string                 `json:"user_input"`                   // Основной ввод пользователя для AI (например, описание из StoryConfig или промт ревизии)
-	Language         string                 `json:"language,omitempty"`           // <<< ДОБАВЛЕНО: Язык пользователя (например, "ru", "en")
-	StoryConfigID    string                 `json:"story_config_id,omitempty"`    // Опционально: ID конфигурации истории для связи
-	PublishedStoryID string                 `json:"published_story_id,omitempty"` // Опционально: ID опубликованной истории (для Setup и т.д.)
-	StateHash        string                 `json:"state_hash,omitempty"`         // Опционально: Хеш состояния, для которого генерируется сцена (для NovelCreator)
+	TaskID     string     `json:"task_id"`     // Уникальный ID задачи
+	UserID     string     `json:"user_id"`     // ID пользователя
+	PromptType PromptType `json:"prompt_type"` // Тип промпта для AI
+	UserInput  string     `json:"user_input"`  // Входные данные для AI (например, запрос пользователя или JSON)
+	//InputData        map[string]interface{} `json:"input_data,omitempty"` // <<< УДАЛЕНО: Дополнительные данные для рендеринга/логики
+	//Language         string     `json:"language,omitempty"`   // <<< УДАЛЕНО: Язык для генерации (если не указан в UserInput/InputData)
+	StoryConfigID    string `json:"story_config_id,omitempty"`    // ID черновика (для Narrator)
+	PublishedStoryID string `json:"published_story_id,omitempty"` // ID опубликованной истории (для Setup, Creator, GameOver)
+	StateHash        string `json:"state_hash,omitempty"`         // Хеш состояния (для Creator, GameOver)
 }
 
 // NotificationStatus определяет статус уведомления

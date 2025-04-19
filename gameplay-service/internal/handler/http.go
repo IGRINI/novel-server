@@ -130,6 +130,21 @@ func (h *GameplayHandler) RegisterRoutes(router gin.IRouter) {
 	}
 
 	// Группа для внутренних маршрутов (если понадобится, ее можно будет добавить позже)
+	// --- Маршруты для внутреннего API (например, для admin-service) ---
+	// Middleware для проверки межсервисного токена
+	interServiceAuthMiddleware := sharedMiddleware.InterServiceAuthMiddlewareGin(h.interServiceTokenVerifier, h.logger)
+
+	internalGroup := router.Group("/internal")
+	internalGroup.Use(interServiceAuthMiddleware) // Применяем middleware к группе
+	{
+		internalGroup.GET("/users/:user_id/drafts", h.listUserDraftsInternal)
+		internalGroup.GET("/users/:user_id/stories", h.listUserStoriesInternal)
+		// Добавить другие внутренние маршруты здесь, если нужно
+		// <<< ДОБАВЛЕНО: Маршруты для деталей и сцен >>>
+		internalGroup.GET("/users/:user_id/drafts/:draft_id", h.getDraftDetailsInternal)
+		internalGroup.GET("/users/:user_id/stories/:story_id", h.getPublishedStoryDetailsInternal)
+		internalGroup.GET("/users/:user_id/stories/:story_id/scenes", h.listStoryScenesInternal)
+	}
 }
 
 // --- Вспомогательные функции --- //

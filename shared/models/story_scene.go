@@ -12,7 +12,7 @@ type StoryScene struct {
 	ID               uuid.UUID       `db:"id" json:"id"`
 	PublishedStoryID uuid.UUID       `db:"published_story_id" json:"publishedStoryId"`
 	StateHash        string          `db:"state_hash" json:"stateHash"`
-	Content          json.RawMessage `db:"content" json:"content"`
+	Content          json.RawMessage `db:"scene_content" json:"content"`
 	CreatedAt        time.Time       `db:"created_at" json:"createdAt"`
 }
 

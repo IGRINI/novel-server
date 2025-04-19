@@ -345,37 +345,55 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 				return nil // Не возвращаем ошибку наверх, Setup уже сохранен.
 			}
 
-			// <<< ДОБАВЛЕНО: Извлекаем язык из конфига опубликованной истории >>>
-			languageCode := "en" // Default
-			if len(publishedStory.Config) > 0 {
-				var tempConfig struct {
-					Ln string `json:"ln"` // Language code key
-				}
-				if errUnmarshal := json.Unmarshal(publishedStory.Config, &tempConfig); errUnmarshal == nil {
-					if tempConfig.Ln != "" {
-						languageCode = tempConfig.Ln
-					} else {
-						log.Printf("[processor][TaskID: %s] WARN: Language code ('ln') is empty in config for PublishedStory %s. Defaulting to 'en'.", taskID, publishedStoryID)
-					}
-				} else {
-					log.Printf("[processor][TaskID: %s] WARN: Failed to unmarshal config to get language for PublishedStory %s: %v. Defaulting to 'en'.", taskID, publishedStoryID, errUnmarshal)
-				}
-			} else {
-				log.Printf("[processor][TaskID: %s] WARN: Config is empty for PublishedStory %s. Cannot determine language, defaulting to 'en'.", taskID, publishedStoryID)
+			// <<< ДОБАВЛЕНО: Формирование объединенного JSON для UserInput >>>
+			var combinedInputJSON string
+			configMap := make(map[string]interface{})
+			setupMap := make(map[string]interface{})
+			combinedData := make(map[string]interface{})
+
+			// 1. Распарсить Config
+			if errUnmarshalConfig := json.Unmarshal(publishedStory.Config, &configMap); errUnmarshalConfig != nil {
+				log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось распарсрить Config JSON для PublishedStory %s: %v. Невозможно запустить генерацию первой сцены.", taskID, publishedStoryID, errUnmarshalConfig)
+				// Setup сохранен, но следующий шаг невозможен. Статус остается FirstScenePending.
+				return nil // Не возвращаем ошибку, Setup сохранен.
 			}
-			// <<< КОНЕЦ ИЗВЛЕЧЕНИЯ ЯЗЫКА >>>
+
+			// 2. Распарсить Setup
+			if errUnmarshalSetup := json.Unmarshal(setupJSON, &setupMap); errUnmarshalSetup != nil {
+				log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось распарсрить Setup JSON для PublishedStory %s: %v. Невозможно запустить генерацию первой сцены.", taskID, publishedStoryID, errUnmarshalSetup)
+				// Setup сохранен, но следующий шаг невозможен. Статус остается FirstScenePending.
+				return nil // Не возвращаем ошибку, Setup сохранен.
+			}
+
+			// 3. Удалить 'cs' из Config
+			delete(configMap, "cs")         // Предполагаем, что ключ 'cs'
+			delete(configMap, "core_stats") // На всякий случай, если ключ другой
+
+			// 4. Объединить данные (Setup перезаписывает Config при совпадении ключей)
+			for k, v := range configMap {
+				combinedData[k] = v
+			}
+			for k, v := range setupMap {
+				combinedData[k] = v
+			}
+
+			// 5. Запаковать обратно в JSON
+			combinedBytes, errMarshalCombined := json.Marshal(combinedData)
+			if errMarshalCombined != nil {
+				log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось запаковать объединенные данные в JSON для PublishedStory %s: %v. Невозможно запустить генерацию первой сцены.", taskID, publishedStoryID, errMarshalCombined)
+				// Setup сохранен, но следующий шаг невозможен. Статус остается FirstScenePending.
+				return nil // Не возвращаем ошибку, Setup сохранен.
+			}
+			combinedInputJSON = string(combinedBytes)
+			// <<< КОНЕЦ ФОРМИРОВАНИЯ UserInput >>>
 
 			nextTaskPayload := sharedMessaging.GenerationTaskPayload{
 				TaskID:           uuid.New().String(),
 				UserID:           publishedStory.UserID.String(),
 				PromptType:       sharedMessaging.PromptTypeNovelFirstSceneCreator,
 				PublishedStoryID: publishedStoryID.String(),
-				InputData: map[string]interface{}{
-					"config": string(publishedStory.Config),
-					"setup":  string(setupJSON), // Используем свежий setup
-				},
-				Language:  languageCode,                  // <<< ИСПРАВЛЕНО: Используем извлеченный язык
-				StateHash: sharedModels.InitialStateHash, // <<< Запускаем генерацию для начального хеша
+				UserInput:        combinedInputJSON,             // <<< Передаем объединенный JSON сюда
+				StateHash:        sharedModels.InitialStateHash, // <<< Запускаем генерацию для начального хеша
 			}
 
 			if errPub := p.taskPub.PublishGenerationTask(ctx, nextTaskPayload); errPub != nil {

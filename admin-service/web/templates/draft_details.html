@@ -1,0 +1,77 @@
+{{ template "_layout.html" . }}
+
+{{ define "content" }}
+<div class="container mt-4">
+    <h2>{{ .PageTitle }}</h2>
+
+    {{ if .UserError }}
+        <div class="alert alert-warning">{{ .UserError }}</div>
+    {{ end }}
+    {{ if .DraftError }}
+        <div class="alert alert-danger">{{ .DraftError }}</div>
+    {{ end }}
+
+    {{ if and (not .UserError) .TargetUser }}
+        <div class="card mb-3">
+            <div class="card-header">Пользователь</div>
+            <div class="card-body">
+                <p><strong>ID:</strong> {{ .TargetUser.ID }}</p>
+                <p><strong>Username:</strong> {{ .TargetUser.Username }}</p>
+                <p><strong>Email:</strong> {{ .TargetUser.Email }}</p>
+                <a href="/admin/users/{{.TargetUser.ID}}/edit" class="btn btn-sm btn-outline-primary">Редактировать пользователя</a>
+            </div>
+        </div>
+    {{ end }}
+
+    {{ if and (not .DraftError) .Draft }}
+        <div class="card mb-3">
+            <div class="card-header">Детали черновика</div>
+            <div class="card-body">
+                <p><strong>ID Черновика:</strong> {{ .Draft.ID }}</p>
+                <p><strong>Заголовок:</strong> {{ .Draft.Title | default "-" }}</p>
+                <p><strong>Описание:</strong> {{ .Draft.Description | default "-" }}</p>
+                <p><strong>Статус:</strong> <span class="badge bg-{{ .Draft.Status | statusBadge }}">{{ .Draft.Status }}</span></p>
+                <p><strong>Язык:</strong> {{ .Draft.Language | default "-" }}</p>
+                <p><strong>Создан:</strong> {{ .Draft.CreatedAt | formatAsDateTime }}</p>
+                <p><strong>Обновлен:</strong> {{ .Draft.UpdatedAt | formatAsDateTime }}</p>
+
+                <div class="mb-3">
+                    <label for="configJson" class="form-label"><strong>Config (JSON):</strong></label>
+                    <textarea id="configJson" class="form-control" rows="15" readonly>{{ .Draft.Config | bytesToString }}</textarea>
+                </div>
+
+                <div class="mb-3">
+                    <label for="userInputJson" class="form-label"><strong>User Input (JSON):</strong></label>
+                    <textarea id="userInputJson" class="form-control" rows="5" readonly>{{ .Draft.UserInput | bytesToString }}</textarea>
+                </div>
+
+            </div>
+        </div>
+    {{ else if not .DraftError }}
+        <div class="alert alert-info">Информация о черновике недоступна.</div>
+    {{ end }}
+
+    <a href="/admin/users/{{ .TargetUser.ID }}/drafts" class="btn btn-secondary mt-3">Назад к списку черновиков</a>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', (event) => {
+    function formatJsonTextarea(textareaId) {
+        const textarea = document.getElementById(textareaId);
+        if (textarea && textarea.value.trim()) {
+            try {
+                const jsonObject = JSON.parse(textarea.value);
+                textarea.value = JSON.stringify(jsonObject, null, 2); // Форматируем с отступом 2
+            } catch (e) {
+                console.warn(`Could not parse JSON in textarea #${textareaId}:`, e);
+                // Оставляем как есть, если невалидный JSON
+            }
+        }
+    }
+
+    formatJsonTextarea('configJson');
+    formatJsonTextarea('userInputJson');
+});
+</script>
+
+{{ end }} 

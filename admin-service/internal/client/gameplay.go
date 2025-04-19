@@ -16,4 +16,9 @@ type GameplayServiceClient interface {
 
 	// SetInterServiceToken устанавливает межсервисный JWT токен для клиента.
 	SetInterServiceToken(token string)
+
+	// <<< ДОБАВЛЕНО: Методы для получения деталей и сцен >>>
+	GetDraftDetails(ctx context.Context, userID, draftID uuid.UUID) (*models.StoryConfig, error)
+	GetPublishedStoryDetails(ctx context.Context, userID, storyID uuid.UUID) (*models.PublishedStory, error)
+	ListStoryScenes(ctx context.Context, userID, storyID uuid.UUID) ([]models.StoryScene, error)
 }
