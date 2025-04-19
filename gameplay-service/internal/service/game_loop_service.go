@@ -497,17 +497,42 @@ func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID,
 		// Get player progress to determine which scene to retry
 		progress, err := s.playerProgressRepo.GetByUserIDAndStoryID(ctx, userID, storyID)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				log.Error("Player progress not found for scene retry, cannot determine state", zap.String("userID", userID.String()))
-				// If progress is missing, we can't know what scene to generate.
-				// Maybe default to retrying the first scene?
-				// For now, return error.
-				return sharedModels.ErrPlayerProgressNotFound
+			if errors.Is(err, sharedModels.ErrNotFound) {
+				log.Warn("Player progress not found for scene retry. Assuming retry for initial scene.")
+				// <<< НАЧАЛО ИЗМЕНЕНИЯ: Вызываем createInitialSceneGenerationPayload >>>
+				generationPayload, errPayload := createInitialSceneGenerationPayload(userID, story)
+				if errPayload != nil {
+					log.Error("Failed to create initial generation payload for scene retry", zap.Error(errPayload))
+					// Пытаемся откатить статус обратно в Error
+					if rollbackErr := s.publishedRepo.UpdateStatusDetails(context.Background(), storyID, sharedModels.StatusError, nil, nil, nil, nil); rollbackErr != nil {
+						log.Error("CRITICAL: Failed to roll back status to Error after initial payload creation error", zap.Error(rollbackErr))
+					}
+					return sharedModels.ErrInternalServer
+				}
+				// Статус уже должен быть Error, меняем на GeneratingScene перед публикацией
+				if err := s.publishedRepo.UpdateStatusDetails(ctx, storyID, sharedModels.StatusGeneratingScene, nil, nil, nil, nil); err != nil {
+					log.Error("Failed to update story status to GeneratingScene before initial retry task publish", zap.Error(err))
+					return sharedModels.ErrInternalServer
+				}
+				// Публикуем задачу для начальной сцены
+				if errPub := s.publisher.PublishGenerationTask(ctx, generationPayload); errPub != nil {
+					log.Error("Error publishing initial scene retry generation task. Rolling back status...", zap.Error(errPub))
+					if rollbackErr := s.publishedRepo.UpdateStatusDetails(context.Background(), storyID, sharedModels.StatusError, nil, nil, nil, nil); rollbackErr != nil {
+						log.Error("CRITICAL: Failed to roll back status to Error after initial scene retry publish error", zap.Error(rollbackErr))
+					}
+					return sharedModels.ErrInternalServer
+				}
+				log.Info("Initial scene retry generation task published successfully", zap.String("taskID", generationPayload.TaskID), zap.String("stateHash", generationPayload.StateHash))
+				return nil // Задача для начальной сцены отправлена
+				// <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
+			} else {
+				// Другая ошибка при получении прогресса - это фатально
+				log.Error("Failed to get player progress for scene retry", zap.Error(err))
+				return sharedModels.ErrInternalServer
 			}
-			log.Error("Failed to get player progress for scene retry", zap.Error(err))
-			return sharedModels.ErrInternalServer
 		}
 
+		// Прогресс найден, продолжаем стандартную логику Retry для существующего progress
 		// Update status back to GeneratingScene
 		if err := s.publishedRepo.UpdateStatusDetails(ctx, storyID, sharedModels.StatusGeneratingScene, nil, nil, nil, nil); err != nil {
 			log.Error("Failed to update story status to GeneratingScene before retry task publish", zap.Error(err))
@@ -844,4 +869,81 @@ func clearTransientFlags(flags []string) []string {
 		}
 	}
 	return newFlags
+}
+
+// createInitialSceneGenerationPayload создает payload для генерации *первой* сцены истории.
+// Она использует только Config и Setup истории, без PlayerProgress.
+func createInitialSceneGenerationPayload(
+	userID uuid.UUID,
+	story *sharedModels.PublishedStory,
+) (sharedMessaging.GenerationTaskPayload, error) {
+
+	// Парсинг Config
+	var configMap map[string]interface{}
+	if len(story.Config) > 0 {
+		if err := json.Unmarshal(story.Config, &configMap); err != nil {
+			log.Printf("WARN: Failed to parse Config JSON for initial scene generation task StoryID %s: %v", story.ID, err)
+			configMap = make(map[string]interface{}) // Пустая карта при ошибке
+		}
+	} else {
+		log.Printf("WARN: Missing Config in PublishedStory ID %s for initial scene generation task", story.ID)
+		configMap = make(map[string]interface{}) // Пустая карта
+	}
+
+	// Парсинг Setup и извлечение начальных статов
+	var setupMap map[string]interface{}
+	initialCoreStats := make(map[string]int)
+	if len(story.Setup) > 0 {
+		var setupContent sharedModels.NovelSetupContent
+		if err := json.Unmarshal(story.Setup, &setupContent); err != nil {
+			log.Printf("WARN: Failed to parse Setup JSON for initial scene generation task StoryID %s: %v", story.ID, err)
+			setupMap = make(map[string]interface{}) // Пустая карта при ошибке
+		} else {
+			// Успешно распарсили Setup, извлекаем начальные статы
+			setupMap = make(map[string]interface{}) // Создаем setupMap для передачи
+			errMarshal := json.Unmarshal(story.Setup, &setupMap)
+			if errMarshal != nil { // Доп. проверка на маршалинг в map
+				log.Printf("WARN: Failed to marshal parsed Setup back to map for initial scene generation task StoryID %s: %v", story.ID, errMarshal)
+				setupMap = make(map[string]interface{})
+			}
+
+			if setupContent.CoreStatsDefinition != nil {
+				for statName, definition := range setupContent.CoreStatsDefinition {
+					initialCoreStats[statName] = definition.Initial // Используем начальное значение из Setup
+				}
+			}
+		}
+	} else {
+		log.Printf("WARN: Missing Setup in PublishedStory ID %s for initial scene generation task", story.ID)
+		setupMap = make(map[string]interface{}) // Пустая карта
+	}
+
+	compressedInputData := make(map[string]interface{})
+	compressedInputData["cfg"] = configMap
+	compressedInputData["stp"] = setupMap
+	compressedInputData["cs"] = initialCoreStats             // Начальные статы
+	compressedInputData["sv"] = make(map[string]interface{}) // Пусто
+	compressedInputData["gf"] = []string{}                   // Пусто
+	compressedInputData["uc"] = []userChoiceInfo{}           // Пусто
+	compressedInputData["pss"] = ""                          // Пусто
+	compressedInputData["pfd"] = ""                          // Пусто
+	compressedInputData["pvis"] = ""                         // Пусто
+
+	userInputBytes, errMarshal := json.Marshal(compressedInputData)
+	if errMarshal != nil {
+		log.Printf("ERROR: Failed to marshal compressedInputData for initial scene generation task StoryID %s: %v", story.ID, errMarshal)
+		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error marshaling input data: %w", errMarshal)
+	}
+	userInputJSON := string(userInputBytes)
+
+	payload := sharedMessaging.GenerationTaskPayload{
+		TaskID:           uuid.New().String(),
+		UserID:           userID.String(), // UserID все еще нужен для идентификации задачи
+		PublishedStoryID: story.ID.String(),
+		PromptType:       sharedMessaging.PromptTypeNovelCreator, // Первая сцена тоже генерируется им
+		UserInput:        userInputJSON,
+		StateHash:        sharedModels.InitialStateHash, // Явно указываем хеш начальной сцены
+	}
+
+	return payload, nil
 }

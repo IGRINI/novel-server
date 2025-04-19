@@ -97,7 +97,7 @@ func main() {
 	}
 
 	gameplayService := service.NewGameplayService(storyConfigRepo, publishedRepo, sceneRepo, playerProgressRepo, likeRepo, taskPublisher, dbPool, logger)
-	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret)
+	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret, storyConfigRepo)
 
 	// <<< УДАЛЕНО: Перезапуск зависших задач при старте >>>
 	// go requeueStuckTasks(storyConfigRepo, taskPublisher, logger)

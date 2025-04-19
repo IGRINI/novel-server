@@ -43,4 +43,7 @@ type StoryConfigRepository interface {
 
 	// UpdateConfigAndInput updates the config and user input of a story config.
 	UpdateConfigAndInput(ctx context.Context, id uuid.UUID, config, userInput []byte) error
+
+	// UpdateConfigAndInputAndStatus updates the config, user input and status of a story config.
+	UpdateConfigAndInputAndStatus(ctx context.Context, id uuid.UUID, configJSON, userInputJSON json.RawMessage, status models.StoryStatus) error
 }

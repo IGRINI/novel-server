@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"novel-server/gameplay-service/internal/service"
 	"novel-server/shared/authutils"
+	interfaces "novel-server/shared/interfaces"
 	sharedMiddleware "novel-server/shared/middleware"
 	sharedModels "novel-server/shared/models"
 	"time"
@@ -73,10 +74,11 @@ type GameplayHandler struct {
 	logger                    *zap.Logger
 	userTokenVerifier         *authutils.JWTVerifier
 	interServiceTokenVerifier *authutils.JWTVerifier
+	storyConfigRepo           interfaces.StoryConfigRepository
 }
 
 // NewGameplayHandler создает новый GameplayHandler.
-func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret, interServiceSecret string) *GameplayHandler {
+func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret, interServiceSecret string, storyConfigRepo interfaces.StoryConfigRepository) *GameplayHandler {
 	userVerifier, err := authutils.NewJWTVerifier(jwtSecret, logger)
 	if err != nil {
 		logger.Fatal("Failed to create User JWT Verifier", zap.Error(err))
@@ -92,6 +94,7 @@ func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret
 		logger:                    logger.Named("GameplayHandler"),
 		userTokenVerifier:         userVerifier,
 		interServiceTokenVerifier: interServiceVerifier,
+		storyConfigRepo:           storyConfigRepo,
 	}
 }
 
@@ -139,15 +142,29 @@ func (h *GameplayHandler) RegisterRoutes(router gin.IRouter) {
 	{
 		// Маршруты для чтения данных админкой
 		internalGroup.GET("/users/:user_id/drafts", h.listUserDraftsInternal)
-		internalGroup.GET("/users/:user_id/drafts/:draft_id", h.getDraftDetailsInternal)
 		internalGroup.GET("/users/:user_id/stories", h.listUserStoriesInternal)
 		internalGroup.GET("/users/:user_id/stories/:story_id", h.getPublishedStoryDetailsInternal)
 		internalGroup.GET("/users/:user_id/stories/:story_id/scenes", h.listStoryScenesInternal)
 
 		// <<< ДОБАВЛЕНО: Маршруты для обновления данных админкой >>>
-		internalGroup.POST("/users/:user_id/drafts/:draft_id", h.updateDraftInternal)                   // Обновление черновика
-		internalGroup.POST("/users/:user_id/stories/:story_id", h.updateStoryInternal)                  // Обновление истории (Config/Setup)
-		internalGroup.POST("/users/:user_id/stories/:story_id/scenes/:scene_id", h.updateSceneInternal) // Обновление контента сцены
+		// internalGroup.POST("/users/:user_id/drafts/:draft_id", h.updateDraftInternal)                   // Обновление черновика
+		// internalGroup.POST("/users/:user_id/stories/:story_id", h.updateStoryInternal)                  // Обновление истории (Config/Setup)
+		// internalGroup.POST("/users/:user_id/stories/:story_id/scenes/:scene_id", h.updateSceneInternal) // Обновление контента сцены
+
+		// <<< НАЧАЛО ИСПРАВЛЕНИЯ МАРШРУТОВ >>>
+		// Правильные маршруты для внутреннего API (без user_id в пути, т.к. это внутренний вызов без привязки к конкретному пользователю API)
+
+		// Чтение деталей
+		internalGroup.GET("/drafts/:draft_id", h.getDraftDetailsInternal)           // GET /internal/drafts/{id}
+		internalGroup.GET("/stories/:story_id", h.getPublishedStoryDetailsInternal) // GET /internal/stories/{id}
+		internalGroup.GET("/stories/:story_id/scenes", h.listStoryScenesInternal)   // GET /internal/stories/{id}/scenes
+
+		// Обновление данных
+		internalGroup.POST("/drafts/:draft_id", h.updateDraftInternal)  // POST /internal/drafts/{id}
+		internalGroup.POST("/stories/:story_id", h.updateStoryInternal) // POST /internal/stories/{id}
+		internalGroup.POST("/scenes/:scene_id", h.updateSceneInternal)  // POST /internal/scenes/{id}
+
+		// <<< КОНЕЦ ИСПРАВЛЕНИЯ МАРШРУТОВ >>>
 	}
 }
 

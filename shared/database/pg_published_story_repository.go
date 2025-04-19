@@ -481,31 +481,51 @@ func (r *pgPublishedStoryRepository) ListByIDs(ctx context.Context, ids []uuid.U
 	return stories, nil
 }
 
-// <<< ДОБАВЛЕНО: Реализация UpdateConfigAndSetup >>>
-const updateConfigAndSetupQuery = `
-UPDATE published_stories
-SET config = $2, setup = $3, updated_at = NOW()
-WHERE id = $1`
-
+// UpdateConfigAndSetup updates the config and setup JSON for a published story.
 func (r *pgPublishedStoryRepository) UpdateConfigAndSetup(ctx context.Context, id uuid.UUID, config, setup []byte) error {
-	logFields := []zap.Field{
-		zap.String("publishedStoryID", id.String()),
-		zap.Int("configSize", len(config)),
-		zap.Int("setupSize", len(setup)),
-	}
+	query := `
+        UPDATE published_stories
+        SET config = $1, setup = $2, updated_at = NOW()
+        WHERE id = $3
+    `
+	logFields := []zap.Field{zap.String("publishedStoryID", id.String())}
 	r.logger.Debug("Updating published story config and setup", logFields...)
 
-	commandTag, err := r.db.Exec(ctx, updateConfigAndSetupQuery, id, config, setup)
+	commandTag, err := r.db.Exec(ctx, query, config, setup, id)
 	if err != nil {
 		r.logger.Error("Failed to update published story config and setup", append(logFields, zap.Error(err))...)
-		return fmt.Errorf("ошибка обновления конфига и сетапа для истории %s: %w", id, err)
+		return fmt.Errorf("failed to update config/setup for story %s: %w", id, err)
 	}
-
 	if commandTag.RowsAffected() == 0 {
-		r.logger.Warn("Published story not found for update (config/setup)", logFields...)
-		return models.ErrNotFound // Используем стандартную ошибку
+		r.logger.Warn("Attempted to update config/setup for non-existent published story", logFields...)
+		return models.ErrNotFound
 	}
-
 	r.logger.Info("Published story config and setup updated successfully", logFields...)
+	return nil
+}
+
+// UpdateConfigAndSetupAndStatus updates config, setup and status for a published story.
+func (r *pgPublishedStoryRepository) UpdateConfigAndSetupAndStatus(ctx context.Context, id uuid.UUID, config, setup json.RawMessage, status models.StoryStatus) error {
+	query := `
+        UPDATE published_stories
+        SET config = $1, setup = $2, status = $3::story_status, updated_at = NOW()
+        WHERE id = $4
+    `
+	logFields := []zap.Field{
+		zap.String("publishedStoryID", id.String()),
+		zap.String("newStatus", string(status)),
+	}
+	r.logger.Debug("Updating published story config/setup/status", logFields...)
+
+	commandTag, err := r.db.Exec(ctx, query, config, setup, status, id)
+	if err != nil {
+		r.logger.Error("Failed to update published story config/setup/status", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("failed to update config/setup/status for story %s: %w", id, err)
+	}
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("Attempted to update config/setup/status for non-existent published story", logFields...)
+		return models.ErrNotFound
+	}
+	r.logger.Info("Published story config/setup/status updated successfully", logFields...)
 	return nil
 }

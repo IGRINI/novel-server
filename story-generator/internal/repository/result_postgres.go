@@ -24,12 +24,11 @@ func NewPostgresResultRepository(db *pgxpool.Pool) ResultRepository {
 func (r *postgresResultRepository) Save(ctx context.Context, result *model.GenerationResult) error {
 	query := `
         INSERT INTO generation_results 
-        (id, user_id, prompt_type, input_data, generated_text, processing_time_ms, created_at, completed_at, error)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        (id, user_id, prompt_type, generated_text, processing_time_ms, created_at, completed_at, error)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (id) DO UPDATE SET
             user_id = EXCLUDED.user_id,
             prompt_type = EXCLUDED.prompt_type,
-            input_data = EXCLUDED.input_data,
             generated_text = EXCLUDED.generated_text,
             processing_time_ms = EXCLUDED.processing_time_ms,
             completed_at = EXCLUDED.completed_at,
@@ -42,7 +41,6 @@ func (r *postgresResultRepository) Save(ctx context.Context, result *model.Gener
 		result.ID,
 		result.UserID,
 		result.PromptType,
-		result.InputData,
 		result.GeneratedText,
 		processingTimeMs,
 		result.CreatedAt,

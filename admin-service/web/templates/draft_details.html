@@ -37,7 +37,16 @@
                     <p><strong>ID Черновика:</strong> {{ .Draft.ID }}</p>
                     <p><strong>Заголовок:</strong> {{ .Draft.Title | default "-" }}</p>
                     <p><strong>Описание:</strong> {{ .Draft.Description | default "-" }}</p>
-                    <p><strong>Статус:</strong> <span class="badge bg-{{ .Draft.Status | statusBadge }}">{{ .Draft.Status }}</span></p>
+                    <div class="mb-3">
+                        <label for="status" class="form-label"><strong>Статус:</strong></label>
+                        <select class="form-select" id="status" name="status">
+                            {{ range .AvailableStatuses }} 
+                                <option value="{{ . }}" {{ if eq . $.Draft.Status }}selected{{ end }}>{{ . }}</option>
+                            {{ else }}
+                                <option value="{{ $.Draft.Status }}" selected>{{ $.Draft.Status }} (нет доступных)</option>
+                            {{ end }}
+                        </select>
+                    </div>
                     <p><strong>Язык:</strong> {{ .Draft.Language | default "-" }}</p>
                     <p><strong>Создан:</strong> {{ .Draft.CreatedAt | formatAsDateTime }}</p>
                     <p><strong>Обновлен:</strong> {{ .Draft.UpdatedAt | formatAsDateTime }}</p>

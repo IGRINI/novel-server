@@ -46,17 +46,17 @@ func NewPgPlayerProgressRepository(pool *pgxpool.Pool, logger *zap.Logger) inter
 // }
 
 const getPlayerProgressQuery = `
-SELECT id, user_id, published_story_id, core_stats, story_variables, global_flags, current_state_hash, created_at, updated_at
+SELECT user_id, published_story_id, current_core_stats, current_story_variables, current_global_flags, current_state_hash, updated_at
 FROM player_progress
 WHERE user_id = $1 AND published_story_id = $2`
 
 const upsertPlayerProgressQuery = `
-INSERT INTO player_progress (id, user_id, published_story_id, core_stats, story_variables, global_flags, current_state_hash, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO player_progress (user_id, published_story_id, current_core_stats, current_story_variables, current_global_flags, current_state_hash, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (user_id, published_story_id) DO UPDATE SET
-    core_stats = EXCLUDED.core_stats,
-    story_variables = EXCLUDED.story_variables,
-    global_flags = EXCLUDED.global_flags,
+    current_core_stats = EXCLUDED.current_core_stats,
+    current_story_variables = EXCLUDED.current_story_variables,
+    current_global_flags = EXCLUDED.current_global_flags,
     current_state_hash = EXCLUDED.current_state_hash,
     updated_at = EXCLUDED.updated_at
 `
@@ -73,14 +73,12 @@ func (r *pgPlayerProgressRepository) GetByUserIDAndStoryID(ctx context.Context, 
 	logFields := []zap.Field{zap.Stringer("userID", userID), zap.String("publishedStoryID", publishedStoryID.String())} // Log UUID
 
 	err := r.pool.QueryRow(ctx, getPlayerProgressQuery, userID, publishedStoryID).Scan(
-		&progress.ID,
 		&progress.UserID, // This should now scan a UUID correctly
 		&progress.PublishedStoryID,
 		&coreStatsJSON,
 		&storyVarsJSON,
 		&globalFlags,
 		&progress.CurrentStateHash,
-		&progress.CreatedAt,
 		&progress.UpdatedAt,
 	)
 
@@ -113,49 +111,40 @@ func (r *pgPlayerProgressRepository) GetByUserIDAndStoryID(ctx context.Context, 
 
 // CreateOrUpdate still accepts *models.PlayerProgress, which now has UserID as uuid.UUID
 func (r *pgPlayerProgressRepository) CreateOrUpdate(ctx context.Context, progress *models.PlayerProgress) error {
-	if progress.ID == uuid.Nil {
-		progress.ID = uuid.New()
-	}
 	now := time.Now()
-	if progress.CreatedAt.IsZero() {
-		progress.CreatedAt = now
-	}
+	// if progress.CreatedAt.IsZero() {
+	// 	progress.CreatedAt = now
+	// }
 	progress.UpdatedAt = now
 	logFields := []zap.Field{zap.Stringer("userID", progress.UserID), zap.String("publishedStoryID", progress.PublishedStoryID.String()), zap.String("stateHash", progress.CurrentStateHash)} // Log UUID
 
 	// Marshal map fields to JSON
 	coreStatsJSON, err := utils.MarshalMap(progress.CoreStats)
 	if err != nil {
-		r.logger.Error("Failed to marshal core stats for upsert", zap.Error(err), zap.String("progressID", progress.ID.String()))
+		r.logger.Error("Failed to marshal core stats for upsert", append(logFields, zap.Error(err))...)
 		return err
 	}
 	storyVarsJSON, err := utils.MarshalMap(progress.StoryVariables)
 	if err != nil {
-		r.logger.Error("Failed to marshal story variables for upsert", zap.Error(err), zap.String("progressID", progress.ID.String()))
+		r.logger.Error("Failed to marshal story variables for upsert", append(logFields, zap.Error(err))...)
 		return err
 	}
 
 	_, err = r.pool.Exec(ctx, upsertPlayerProgressQuery,
-		progress.ID,
-		progress.UserID, // Pass UUID directly
+		progress.UserID,
 		progress.PublishedStoryID,
 		coreStatsJSON,
 		storyVarsJSON,
 		pq.Array(progress.GlobalFlags),
 		progress.CurrentStateHash,
-		progress.CreatedAt,
 		progress.UpdatedAt,
 	)
 
 	if err != nil {
-		// r.logger.Error("Failed to upsert player progress", zap.Error(err),
-		// 	zap.Uint64("userID", progress.UserID.String()),
-		// 	zap.String("publishedStoryID", progress.PublishedStoryID.String()))
 		r.logger.Error("Failed to upsert player progress", append(logFields, zap.Error(err))...)
 		return err // Return generic error after logging
 	}
 
-	// r.logger.Debug("Upserted player progress", zap.Uint64("userID", progress.UserID), zap.String("stateHash", progress.CurrentStateHash))
 	r.logger.Debug("Upserted player progress", logFields...)
 	return nil
 }

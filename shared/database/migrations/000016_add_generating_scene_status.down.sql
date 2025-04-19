@@ -1,0 +1,3 @@
+-- Down-миграции для удаления значения из ENUM могут быть опасными и требуют ручного анализа данных.
+-- Оставляем пустой или комментируем.
+-- ALTER TYPE story_status RENAME VALUE 'generating_scene' TO 'generating_scene_old'; -- Пример обходного пути, но не удаление 

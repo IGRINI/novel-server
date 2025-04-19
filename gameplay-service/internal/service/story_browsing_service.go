@@ -63,7 +63,7 @@ type StoryBrowsingService interface {
 	ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error)
 	GetPublishedStoryDetailsInternal(ctx context.Context, storyID uuid.UUID) (*sharedModels.PublishedStory, error)
 	ListStoryScenesInternal(ctx context.Context, storyID uuid.UUID) ([]sharedModels.StoryScene, error)
-	UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON string) error
+	UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON json.RawMessage, status sharedModels.StoryStatus) error
 	GetPublishedStoryDetailsWithProgress(ctx context.Context, userID, publishedStoryID uuid.UUID) (*PublishedStoryDetailWithProgressDTO, error)
 }
 
@@ -314,47 +314,36 @@ func (s *storyBrowsingServiceImpl) ListStoryScenesInternal(ctx context.Context, 
 	return scenes, nil
 }
 
-// UpdateStoryInternal updates the story configuration and setup for internal use.
-func (s *storyBrowsingServiceImpl) UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON string) error {
-	log := s.logger.With(zap.String("storyID", storyID.String()))
+// UpdateStoryInternal updates the Config and Setup JSON fields of a published story. (Admin only)
+// <<< ИЗМЕНЕНО: Принимает json.RawMessage >>>
+func (s *storyBrowsingServiceImpl) UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON json.RawMessage, status sharedModels.StoryStatus) error {
+	log := s.logger.With(zap.String("storyID", storyID.String()), zap.String("newStatus", string(status)))
 	log.Info("UpdateStoryInternal called")
 
-	// Validate JSON
-	var configBytes, setupBytes []byte
-	var err error
+	// <<< УДАЛЕНО: Валидация JSON (теперь делается в клиенте/обработчике) >>>
+	// var rawConfig, rawSetup json.RawMessage
+	// if err := json.Unmarshal([]byte(configJSON), &rawConfig); err != nil {
+	// 	log.Error("Invalid config JSON in internal story update", zap.Error(err))
+	// 	return fmt.Errorf("invalid config JSON provided internally: %w", err)
+	// }
+	// if err := json.Unmarshal([]byte(setupJSON), &rawSetup); err != nil {
+	// 	log.Error("Invalid setup JSON in internal story update", zap.Error(err))
+	// 	return fmt.Errorf("invalid setup JSON provided internally: %w", err)
+	// }
 
-	if configJSON != "" {
-		if !json.Valid([]byte(configJSON)) {
-			log.Warn("Invalid JSON received for config")
-			return fmt.Errorf("%w: invalid config JSON format", sharedModels.ErrBadRequest)
-		}
-		configBytes = []byte(configJSON)
-	} else {
-		configBytes = nil
-	}
-
-	if setupJSON != "" {
-		if !json.Valid([]byte(setupJSON)) {
-			log.Warn("Invalid JSON received for setup")
-			return fmt.Errorf("%w: invalid setup JSON format", sharedModels.ErrBadRequest)
-		}
-		setupBytes = []byte(setupJSON)
-	} else {
-		setupBytes = nil
-	}
-
-	// Call the repository method
-	err = s.publishedRepo.UpdateConfigAndSetup(ctx, storyID, configBytes, setupBytes)
+	// 2. Вызов репозитория для обновления полей
+	// Передаем полученные json.RawMessage напрямую
+	err := s.publishedRepo.UpdateConfigAndSetupAndStatus(ctx, storyID, configJSON, setupJSON, status)
 	if err != nil {
-		if errors.Is(err, sharedModels.ErrNotFound) {
-			log.Warn("Published story not found for update")
+		if errors.Is(err, pgx.ErrNoRows) { // Используем pgx.ErrNoRows
+			log.Warn("Published story not found for internal update")
 			return sharedModels.ErrNotFound
 		}
-		log.Error("Failed to update published story config and setup in repository", zap.Error(err))
-		return ErrInternal
+		log.Error("Failed to update published story internally in repository", zap.Error(err))
+		return fmt.Errorf("repository update failed: %w", err)
 	}
 
-	log.Info("Published story updated successfully by internal request")
+	log.Info("Published story updated successfully internally")
 	return nil
 }
 

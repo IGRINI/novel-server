@@ -5,10 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	sharedModels "novel-server/shared/models"
 	"strconv"
-
-	"net/url"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -116,10 +115,18 @@ func (h *AdminHandler) showDraftDetailsPage(c *gin.Context) {
 	}
 
 	// Получаем детали черновика
-	draft, draftErr := h.gameplayClient.GetDraftDetails(ctx, targetUserID, draftID)
+	draft, draftErr := h.gameplayClient.GetDraftDetailsInternal(ctx, draftID)
 	if draftErr != nil {
 		log.Error("Failed to get draft details from gameplay service", zap.Error(draftErr))
 		// Не прерываем, просто покажем ошибку на странице
+	}
+
+	// Определяем доступные статусы для черновика
+	availableDraftStatuses := []sharedModels.StoryStatus{
+		sharedModels.StatusDraft,
+		sharedModels.StatusGenerating,
+		sharedModels.StatusRevising,
+		sharedModels.StatusError,
 	}
 
 	// Готовим данные для шаблона
@@ -138,10 +145,11 @@ func (h *AdminHandler) showDraftDetailsPage(c *gin.Context) {
 	}
 
 	data := gin.H{
-		"PageTitle":  pageTitle,
-		"TargetUser": targetUser,
-		"Draft":      draft,
-		"IsLoggedIn": true, // Предполагаем, что middleware гарантирует это
+		"PageTitle":         pageTitle,
+		"TargetUser":        targetUser,
+		"Draft":             draft,
+		"AvailableStatuses": availableDraftStatuses,
+		"IsLoggedIn":        true,
 	}
 	if userErr != nil {
 		if errors.Is(userErr, sharedModels.ErrUserNotFound) {
@@ -251,7 +259,7 @@ func (h *AdminHandler) showPublishedStoryDetailsPage(c *gin.Context) {
 	var userErr error
 	users, _, listUsersErr := h.authClient.ListUsers(ctx, 1, fmt.Sprintf("id:%s", targetUserID.String()))
 	if listUsersErr != nil {
-		userErr = fmt.Errorf("failed to list users to find target: %w", listUsersErr)
+		userErr = fmt.Errorf("failed to list users: %w", listUsersErr)
 		log.Error("Failed to get target user details via ListUsers", zap.Error(userErr))
 	} else if len(users) == 0 {
 		userErr = sharedModels.ErrUserNotFound
@@ -260,33 +268,42 @@ func (h *AdminHandler) showPublishedStoryDetailsPage(c *gin.Context) {
 	}
 
 	// Получаем детали истории
-	story, storyErr := h.gameplayClient.GetPublishedStoryDetails(ctx, targetUserID, storyID)
+	story, storyErr := h.gameplayClient.GetPublishedStoryDetailsInternal(ctx, storyID)
 	if storyErr != nil {
 		log.Error("Failed to get published story details from gameplay service", zap.Error(storyErr))
-		// Не прерываем, просто покажем ошибку на странице
+		// Не прерываем
 	}
 
-	// Получаем список сцен истории
+	// Получаем сцены истории
 	var scenes []sharedModels.StoryScene
 	var scenesErr error
-	if storyErr == nil && story != nil { // Запрашиваем сцены, только если история найдена
-		scenes, scenesErr = h.gameplayClient.ListStoryScenes(ctx, targetUserID, storyID)
+	if storyErr == nil {
+		scenes, scenesErr = h.gameplayClient.ListStoryScenesInternal(ctx, storyID)
 		if scenesErr != nil {
-			log.Error("Failed to list story scenes from gameplay service", zap.Error(scenesErr))
-			// Не прерываем, просто покажем ошибку на странице
+			log.Warn("Failed to get story scenes", zap.Error(scenesErr))
+			// Не прерываем, просто покажем предупреждение
 		}
-	} else {
-		// Если история не найдена, сцены тоже не загружаем
-		scenes = make([]sharedModels.StoryScene, 0)
+	}
+
+	// Определяем доступные статусы для опубликованной истории
+	availableStoryStatuses := []sharedModels.StoryStatus{
+		sharedModels.StatusSetupPending,
+		sharedModels.StatusFirstScenePending,
+		sharedModels.StatusGeneratingScene,
+		sharedModels.StatusReady,
+		sharedModels.StatusGameOverPending,
+		sharedModels.StatusCompleted,
+		sharedModels.StatusError,
+		// sharedModels.StatusSetupGenerating, // Не используется?
 	}
 
 	// Готовим данные для шаблона
-	pageTitle := "Детали истории"
+	pageTitle := "Детали опубликованной истории"
 	if story != nil {
 		if story.Title != nil && *story.Title != "" {
 			pageTitle = fmt.Sprintf("История: %s", *story.Title)
 		} else {
-			pageTitle = fmt.Sprintf("История: %s", story.ID.String())
+			pageTitle = fmt.Sprintf("История ID: %s", story.ID.String())
 		}
 	} else {
 		pageTitle = fmt.Sprintf("История ID: %s", storyID.String())
@@ -296,11 +313,13 @@ func (h *AdminHandler) showPublishedStoryDetailsPage(c *gin.Context) {
 	}
 
 	data := gin.H{
-		"PageTitle":  pageTitle,
-		"TargetUser": targetUser,
-		"Story":      story,
-		"Scenes":     scenes,
-		"IsLoggedIn": true,
+		"PageTitle":         pageTitle,
+		"TargetUser":        targetUser,
+		"Story":             story,
+		"Scenes":            scenes,
+		"AvailableStatuses": availableStoryStatuses,
+		"IsLoggedIn":        true,
+		"URLQuery":          c.Request.URL.Query(),
 	}
 	if userErr != nil {
 		if errors.Is(userErr, sharedModels.ErrUserNotFound) {
@@ -317,7 +336,7 @@ func (h *AdminHandler) showPublishedStoryDetailsPage(c *gin.Context) {
 		}
 	}
 	if scenesErr != nil {
-		data["ScenesError"] = "Не удалось загрузить список сцен: " + scenesErr.Error()
+		data["ScenesError"] = "Не удалось загрузить сцены: " + scenesErr.Error()
 	}
 
 	c.HTML(http.StatusOK, "story_details.html", data)
@@ -330,54 +349,56 @@ func (h *AdminHandler) handleUpdateDraft(c *gin.Context) {
 
 	// Получаем ID пользователя и черновика из URL
 	targetUserIDStr := c.Param("user_id")
-	targetUserID, err := uuid.Parse(targetUserIDStr)
+	_, err := uuid.Parse(targetUserIDStr)
 	if err != nil {
 		log.Error("Invalid target user ID format", zap.String("user_id", targetUserIDStr), zap.Error(err))
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID пользователя"})
+		c.Redirect(http.StatusSeeOther, c.Request.Referer())
 		return
 	}
 	draftIDStr := c.Param("draft_id")
 	draftID, err := uuid.Parse(draftIDStr)
 	if err != nil {
 		log.Error("Invalid draft ID format", zap.String("draft_id", draftIDStr), zap.Error(err))
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID черновика"})
+		c.Redirect(http.StatusSeeOther, c.Request.Referer())
 		return
 	}
-	log = log.With(zap.String("targetUserID", targetUserID.String()), zap.String("draftID", draftID.String()))
+	log = log.With(zap.String("draftID", draftID.String()))
 
-	// Получаем данные из формы
-	configJson := c.PostForm("configJson")
-	userInputJson := c.PostForm("userInputJson")
+	// Читаем данные из формы
+	configJsonStr := c.PostForm("configJson")
+	userInputJsonStr := c.PostForm("userInputJson")
+	statusStr := c.PostForm("status")
 
-	// Валидация JSON на стороне клиента
-	if configJson != "" && !json.Valid([]byte(configJson)) {
-		log.Warn("Invalid config JSON submitted")
-		// Перенаправляем обратно с сообщением об ошибке
-		c.Redirect(http.StatusFound, fmt.Sprintf("/admin/users/%s/drafts/%s?error=Invalid+config+JSON+format", targetUserIDStr, draftIDStr))
+	// Валидация статуса
+	status := sharedModels.StoryStatus(statusStr)
+	isValidStatus := false
+	for _, validStatus := range []sharedModels.StoryStatus{
+		sharedModels.StatusDraft,
+		sharedModels.StatusGenerating,
+		sharedModels.StatusRevising,
+		sharedModels.StatusError,
+	} {
+		if status == validStatus {
+			isValidStatus = true
+			break
+		}
+	}
+	if !isValidStatus {
+		log.Error("Invalid status value submitted", zap.String("status", statusStr))
+		c.Redirect(http.StatusSeeOther, c.Request.Referer())
 		return
 	}
-	if userInputJson != "" && !json.Valid([]byte(userInputJson)) {
-		log.Warn("Invalid user input JSON submitted")
-		c.Redirect(http.StatusFound, fmt.Sprintf("/admin/users/%s/drafts/%s?error=Invalid+user+input+JSON+format", targetUserIDStr, draftIDStr))
-		return
-	}
+	log = log.With(zap.String("newStatus", string(status)))
 
-	log.Info("Attempting to update draft via gameplay service")
-
-	// Вызов метода gameplayClient
-	err = h.gameplayClient.UpdateDraft(ctx, targetUserID, draftID, configJson, userInputJson)
-
-	// Обработка ошибки клиента
-	redirectURL := fmt.Sprintf("/admin/users/%s/drafts/%s", targetUserIDStr, draftIDStr)
+	// Вызываем Gameplay Service для обновления
+	err = h.gameplayClient.UpdateDraftInternal(ctx, draftID, configJsonStr, userInputJsonStr, status)
 	if err != nil {
 		log.Error("Failed to update draft via gameplay service", zap.Error(err))
-		redirectURL += fmt.Sprintf("?error=Failed+to+update+draft:+%s", url.QueryEscape(err.Error()))
 	} else {
 		log.Info("Draft updated successfully")
-		redirectURL += "?success=Draft+updated+successfully"
 	}
 
-	c.Redirect(http.StatusFound, redirectURL)
+	c.Redirect(http.StatusSeeOther, c.Request.Referer())
 }
 
 // handleUpdateStory обрабатывает POST-запрос для обновления опубликованной истории.
@@ -387,53 +408,71 @@ func (h *AdminHandler) handleUpdateStory(c *gin.Context) {
 
 	// Получаем ID пользователя и истории из URL
 	targetUserIDStr := c.Param("user_id")
-	targetUserID, err := uuid.Parse(targetUserIDStr)
+	_, err := uuid.Parse(targetUserIDStr)
 	if err != nil {
 		log.Error("Invalid target user ID format", zap.String("user_id", targetUserIDStr), zap.Error(err))
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID пользователя"})
+		c.Redirect(http.StatusSeeOther, c.Request.Referer())
 		return
 	}
 	storyIDStr := c.Param("story_id")
 	storyID, err := uuid.Parse(storyIDStr)
 	if err != nil {
 		log.Error("Invalid story ID format", zap.String("story_id", storyIDStr), zap.Error(err))
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID истории"})
+		c.Redirect(http.StatusSeeOther, c.Request.Referer())
 		return
 	}
-	log = log.With(zap.String("targetUserID", targetUserID.String()), zap.String("storyID", storyID.String()))
+	log = log.With(zap.String("storyID", storyID.String()))
 
-	// Получаем данные из формы
-	configJson := c.PostForm("configJson")
-	setupJson := c.PostForm("setupJson")
+	// Читаем данные из формы
+	configJsonStr := c.PostForm("configJson")
+	setupJsonStr := c.PostForm("setupJson")
+	statusStr := c.PostForm("status")
 
-	// Валидация JSON
-	if configJson != "" && !json.Valid([]byte(configJson)) {
-		log.Warn("Invalid config JSON submitted")
-		c.Redirect(http.StatusFound, fmt.Sprintf("/admin/users/%s/stories/%s?error=Invalid+config+JSON+format", targetUserIDStr, storyIDStr))
+	// Валидация статуса
+	status := sharedModels.StoryStatus(statusStr)
+	isValidStatus := false
+	for _, validStatus := range []sharedModels.StoryStatus{
+		sharedModels.StatusSetupPending,
+		sharedModels.StatusFirstScenePending,
+		sharedModels.StatusGeneratingScene,
+		sharedModels.StatusReady,
+		sharedModels.StatusGameOverPending,
+		sharedModels.StatusCompleted,
+		sharedModels.StatusError,
+	} {
+		if status == validStatus {
+			isValidStatus = true
+			break
+		}
+	}
+	if !isValidStatus {
+		log.Error("Invalid status value submitted", zap.String("status", statusStr))
+		c.Redirect(http.StatusSeeOther, c.Request.Referer())
 		return
 	}
-	if setupJson != "" && !json.Valid([]byte(setupJson)) {
-		log.Warn("Invalid setup JSON submitted")
-		c.Redirect(http.StatusFound, fmt.Sprintf("/admin/users/%s/stories/%s?error=Invalid+setup+JSON+format", targetUserIDStr, storyIDStr))
-		return
+	log = log.With(zap.String("newStatus", string(status)))
+
+	// Вызываем Gameplay Service для обновления
+	err = h.gameplayClient.UpdateStoryInternal(ctx, storyID, configJsonStr, setupJsonStr, status)
+
+	// Добавляем параметры к редиректу
+	redirectURL := c.Request.Referer() // Базовый URL для редиректа
+	if redirectURL == "" {
+		// Fallback, если Referer не доступен
+		redirectURL = fmt.Sprintf("/admin/users/%s/stories/%s", c.Param("user_id"), storyID.String())
 	}
 
-	log.Info("Attempting to update story via gameplay service")
-
-	// Вызов метода gameplayClient
-	err = h.gameplayClient.UpdateStory(ctx, targetUserID, storyID, configJson, setupJson)
-
-	// Обработка ошибки клиента
-	redirectURL := fmt.Sprintf("/admin/users/%s/stories/%s", targetUserIDStr, storyIDStr)
 	if err != nil {
 		log.Error("Failed to update story via gameplay service", zap.Error(err))
-		redirectURL += fmt.Sprintf("?error=Failed+to+update+story:+%s", url.QueryEscape(err.Error()))
+		// Добавляем параметр ошибки к URL
+		redirectURL += "?error=update_failed&msg=" + url.QueryEscape(err.Error())
 	} else {
 		log.Info("Story updated successfully")
-		redirectURL += "?success=Story+updated+successfully"
+		// Добавляем параметр успеха к URL
+		redirectURL += "?success=updated"
 	}
 
-	c.Redirect(http.StatusFound, redirectURL)
+	c.Redirect(http.StatusSeeOther, redirectURL)
 }
 
 // handleUpdateScene обрабатывает POST-запрос для обновления контента сцены.
@@ -443,14 +482,14 @@ func (h *AdminHandler) handleUpdateScene(c *gin.Context) {
 
 	// Получаем ID пользователя, истории и сцены из URL
 	targetUserIDStr := c.Param("user_id")
-	targetUserID, err := uuid.Parse(targetUserIDStr)
+	_, err := uuid.Parse(targetUserIDStr)
 	if err != nil {
 		log.Error("Invalid target user ID format", zap.String("user_id", targetUserIDStr), zap.Error(err))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID пользователя"})
 		return
 	}
 	storyIDStr := c.Param("story_id")
-	storyID, err := uuid.Parse(storyIDStr)
+	_, err = uuid.Parse(storyIDStr)
 	if err != nil {
 		log.Error("Invalid story ID format", zap.String("story_id", storyIDStr), zap.Error(err))
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID истории"})
@@ -463,7 +502,7 @@ func (h *AdminHandler) handleUpdateScene(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID сцены"})
 		return
 	}
-	log = log.With(zap.String("targetUserID", targetUserID.String()), zap.String("storyID", storyID.String()), zap.String("sceneID", sceneID.String()))
+	log = log.With(zap.String("sceneID", sceneID.String()))
 
 	// Структура для парсинга JSON из тела запроса
 	type updateSceneRequest struct {
@@ -488,7 +527,7 @@ func (h *AdminHandler) handleUpdateScene(c *gin.Context) {
 	log.Info("Attempting to update scene via gameplay service")
 
 	// Вызов метода gameplayClient
-	err = h.gameplayClient.UpdateScene(ctx, targetUserID, storyID, sceneID, contentJson)
+	err = h.gameplayClient.UpdateSceneInternal(ctx, sceneID, contentJson)
 
 	// Обработка ошибки клиента и возврат JSON
 	if err != nil {

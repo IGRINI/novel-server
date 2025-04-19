@@ -4,6 +4,13 @@
 <div class="container mt-4">
     <h2>{{ .PageTitle }}</h2>
 
+    {{ if .URLQuery.Get "success" }}
+        <div class="alert alert-success">{{ if eq (.URLQuery.Get "success") "updated" }}История успешно обновлена!{{ else }}Операция успешна!{{ end }}</div>
+    {{ end }}
+    {{ if .URLQuery.Get "error" }}
+        <div class="alert alert-danger">{{ if eq (.URLQuery.Get "error") "update_failed" }}Ошибка обновления истории: {{ .URLQuery.Get "msg" | default "Неизвестная ошибка." }}{{ else }}Произошла ошибка.{{ end }}</div>
+    {{ end }}
+
     {{ if .UserError }}
         <div class="alert alert-warning">{{ .UserError }}</div>
     {{ end }}
@@ -40,7 +47,16 @@
                     <p><strong>ID Истории:</strong> {{ .Story.ID }}</p>
                     <p><strong>Заголовок:</strong> {{ .Story.Title | derefString | default "-" }}</p>
                     <p><strong>Описание:</strong> {{ .Story.Description | derefString | default "-" }}</p>
-                    <p><strong>Статус:</strong> <span class="badge bg-{{ .Story.Status | statusBadge }}">{{ .Story.Status }}</span></p>
+                    <div class="mb-3">
+                        <label for="status" class="form-label"><strong>Статус:</strong></label>
+                        <select class="form-select" id="status" name="status">
+                            {{ range .AvailableStatuses }}
+                                <option value="{{ . }}" {{ if eq . $.Story.Status }}selected{{ end }}>{{ . }}</option>
+                            {{ else }}
+                                <option value="{{ $.Story.Status }}" selected>{{ $.Story.Status }} (нет доступных)</option>
+                            {{ end }}
+                        </select>
+                    </div>
                     <p><strong>Публичная:</strong> {{ if .Story.IsPublic }}Да{{ else }}Нет{{ end }}</p>
                     <p><strong>18+:</strong> {{ if .Story.IsAdultContent }}Да{{ else }}Нет{{ end }}</p>
                     <p><strong>Создана (опубл.):</strong> {{ .Story.CreatedAt | formatAsDateTime }}</p>

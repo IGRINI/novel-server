@@ -55,11 +55,12 @@ type NovelSetupContent struct {
 
 // StatDefinition defines the properties of a core stat, including its boundaries.
 type StatDefinition struct {
-	Name        string `json:"nm"`  // name
-	Description string `json:"d"`   // description
-	Visible     bool   `json:"v"`   // visible
-	Min         int    `json:"min"` // minimum_value
-	Max         int    `json:"max"` // maximum_value
+	Name        string `json:"nm"`   // name
+	Description string `json:"d"`    // description
+	Visible     bool   `json:"v"`    // visible
+	Min         int    `json:"min"`  // minimum_value
+	Max         int    `json:"max"`  // maximum_value
+	Initial     int    `json:"init"` // initial_value
 }
 
 // Config defines the structure expected within PublishedStory.Config (JSONB).

@@ -424,35 +424,63 @@ func (r *pgStoryConfigRepository) FindGeneratingOlderThan(ctx context.Context, t
 
 // <<< ДОБАВЛЕНО: Реализация UpdateConfigAndInput >>>
 func (r *pgStoryConfigRepository) UpdateConfigAndInput(ctx context.Context, id uuid.UUID, config, userInput []byte) error {
-	logFields := []zap.Field{
-		zap.String("storyConfigID", id.String()),
-		zap.Int("configSize", len(config)),
-		zap.Int("userInputSize", len(userInput)),
-	}
-	r.logger.Debug("Updating story config and user input", logFields...)
+	query := `
+        UPDATE story_configs SET
+            config = $1, user_input = $2, updated_at = $3
+        WHERE id = $4
+    `
+	logFields := []zap.Field{zap.String("storyConfigID", id.String())}
+	r.logger.Debug("Updating story config config/userInput", logFields...)
 
-	commandTag, err := r.db.Exec(ctx, updateConfigAndInputQuery, id, config, userInput)
+	commandTag, err := r.db.Exec(ctx, query, config, userInput, time.Now().UTC(), id)
 	if err != nil {
-		r.logger.Error("Failed to update story config and user input", append(logFields, zap.Error(err))...)
-		return fmt.Errorf("ошибка обновления конфига и ввода пользователя для черновика %s: %w", id, err)
+		r.logger.Error("Failed to update story config config/userInput", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления config/input для story config %s: %w", id, err)
 	}
-
 	if commandTag.RowsAffected() == 0 {
-		r.logger.Warn("Story config not found for update (config/input)", logFields...)
-		return sharedModels.ErrNotFound // Используем стандартную ошибку
+		r.logger.Warn("Attempted to update config/userInput for non-existent story config", logFields...)
+		return sharedModels.ErrNotFound
 	}
-
-	r.logger.Info("Story config and user input updated successfully", logFields...)
+	r.logger.Info("Story config config/userInput updated successfully", logFields...)
 	return nil
 }
 
-// <<< ДОБАВЛЕНО: Реализация UpdateStatusAndConfig >>>
-const updateStatusAndConfigQuery = `
-UPDATE story_configs
-SET status = $2, config = $3, title = $4, description = $5, updated_at = NOW()
-WHERE id = $1`
+// <<< НАЧАЛО НОВОГО МЕТОДА >>>
+// UpdateConfigAndInputAndStatus обновляет поля config, user_input и status.
+func (r *pgStoryConfigRepository) UpdateConfigAndInputAndStatus(ctx context.Context, id uuid.UUID, configJSON, userInputJSON json.RawMessage, status sharedModels.StoryStatus) error {
+	query := `
+        UPDATE story_configs SET
+            config = $1, user_input = $2, status = $3, updated_at = $4
+        WHERE id = $5
+    `
+	logFields := []zap.Field{
+		zap.String("storyConfigID", id.String()),
+		zap.String("newStatus", string(status)),
+	}
+	r.logger.Debug("Updating story config config/userInput/status", logFields...)
 
+	commandTag, err := r.db.Exec(ctx, query, configJSON, userInputJSON, status, time.Now().UTC(), id)
+	if err != nil {
+		r.logger.Error("Failed to update story config config/userInput/status", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления config/input/status для story config %s: %w", id, err)
+	}
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("Attempted to update config/userInput/status for non-existent story config", logFields...)
+		return sharedModels.ErrNotFound
+	}
+	r.logger.Info("Story config config/userInput/status updated successfully", logFields...)
+	return nil
+}
+
+// <<< КОНЕЦ НОВОГО МЕТОДА >>>
+
+// UpdateStatusAndConfig обновляет статус, конфиг, заголовок и описание черновика.
 func (r *pgStoryConfigRepository) UpdateStatusAndConfig(ctx context.Context, id uuid.UUID, status models.StoryStatus, config json.RawMessage, title, description string) error {
+	query := `
+        UPDATE story_configs SET
+            status = $1, config = $2, title = $3, description = $4, updated_at = $5
+        WHERE id = $6
+    `
 	logFields := []zap.Field{
 		zap.String("storyConfigID", id.String()),
 		zap.String("newStatus", string(status)),
@@ -462,7 +490,7 @@ func (r *pgStoryConfigRepository) UpdateStatusAndConfig(ctx context.Context, id 
 	}
 	r.logger.Debug("Updating story config status and config data", logFields...)
 
-	commandTag, err := r.db.Exec(ctx, updateStatusAndConfigQuery, id, status, config, title, description)
+	commandTag, err := r.db.Exec(ctx, query, status, config, title, description, time.Now().UTC(), id)
 	if err != nil {
 		r.logger.Error("Failed to update story config status and config data", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка обновления статуса и конфига черновика %s: %w", id, err)

@@ -17,13 +17,13 @@ type GameplayServiceClient interface {
 	// SetInterServiceToken устанавливает межсервисный JWT токен для клиента.
 	SetInterServiceToken(token string)
 
-	// <<< ДОБАВЛЕНО: Методы для получения деталей и сцен >>>
-	GetDraftDetails(ctx context.Context, userID, draftID uuid.UUID) (*models.StoryConfig, error)
-	GetPublishedStoryDetails(ctx context.Context, userID, storyID uuid.UUID) (*models.PublishedStory, error)
-	ListStoryScenes(ctx context.Context, userID, storyID uuid.UUID) ([]models.StoryScene, error)
+	// <<< ОБНОВЛЕНО: Методы для внутреннего API >>>
+	GetDraftDetailsInternal(ctx context.Context, draftID uuid.UUID) (*models.StoryConfig, error)
+	GetPublishedStoryDetailsInternal(ctx context.Context, storyID uuid.UUID) (*models.PublishedStory, error)
+	ListStoryScenesInternal(ctx context.Context, storyID uuid.UUID) ([]models.StoryScene, error)
 
-	// <<< ДОБАВЛЕНО: Методы для обновления >>>
-	UpdateDraft(ctx context.Context, userID, draftID uuid.UUID, configJSON, userInputJSON string) error
-	UpdateStory(ctx context.Context, userID, storyID uuid.UUID, configJSON, setupJSON string) error
-	UpdateScene(ctx context.Context, userID, storyID, sceneID uuid.UUID, contentJSON string) error
+	// <<< ОБНОВЛЕНО: Методы для обновления через внутреннее API >>>
+	UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string, status models.StoryStatus) error
+	UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON string, status models.StoryStatus) error
+	UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error
 }

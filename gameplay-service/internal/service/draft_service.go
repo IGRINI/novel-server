@@ -32,7 +32,7 @@ type DraftService interface {
 	ListUserDrafts(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.StoryConfig, string, error)
 	RetryDraftGeneration(ctx context.Context, draftID uuid.UUID, userID uuid.UUID) error
 	GetDraftDetailsInternal(ctx context.Context, draftID uuid.UUID) (*sharedModels.StoryConfig, error)
-	UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string) error
+	UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string, status sharedModels.StoryStatus) error
 }
 
 type draftServiceImpl struct {
@@ -336,58 +336,48 @@ func (s *draftServiceImpl) GetDraftDetailsInternal(ctx context.Context, draftID 
 	log := s.logger.With(zap.String("draftID", draftID.String()))
 	log.Info("GetDraftDetailsInternal called")
 
-	config, err := s.repo.GetByID(ctx, draftID, uuid.Nil)
+	config, err := s.repo.GetByIDInternal(ctx, draftID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			log.Warn("StoryConfig not found")
+			log.Warn("StoryConfig not found by internal call")
 			return nil, sharedModels.ErrNotFound // Use standard error
 		}
-		log.Error("Error getting StoryConfig", zap.Error(err))
-		return nil, fmt.Errorf("error getting StoryConfig: %w", err)
+		log.Error("Error getting StoryConfig via internal call", zap.Error(err))
+		return nil, fmt.Errorf("error getting StoryConfig internally: %w", err)
 	}
 	return config, nil
 }
 
-// UpdateDraftInternal updates a story draft with new config and user input.
-func (s *draftServiceImpl) UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string) error {
+// UpdateDraftInternal updates the Config and UserInput JSON fields of a draft. (Admin only)
+func (s *draftServiceImpl) UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string, status sharedModels.StoryStatus) error {
 	log := s.logger.With(zap.String("draftID", draftID.String()))
-	log.Info("UpdateDraftInternal called")
+	log.Info("UpdateDraftInternal called", zap.String("newStatus", string(status)))
 
-	// Валидация JSON
-	var configBytes, userInputBytes []byte
-	var err error
-
-	if configJSON != "" {
-		if !json.Valid([]byte(configJSON)) {
-			log.Warn("Invalid JSON received for config")
-			return fmt.Errorf("%w: invalid config JSON format", sharedModels.ErrBadRequest)
-		}
-		configBytes = []byte(configJSON)
-	} else {
-		configBytes = nil // Разрешаем обнулять поле
+	// 1. Валидация JSON (достаточно базовой проверки в обработчике, здесь доверяем)
+	var rawConfig, rawUserInput json.RawMessage
+	if err := json.Unmarshal([]byte(configJSON), &rawConfig); err != nil {
+		log.Error("Invalid config JSON in internal update", zap.Error(err))
+		// Эта ошибка не должна происходить, если валидация была в handler
+		return fmt.Errorf("invalid config JSON provided internally: %w", err)
+	}
+	if err := json.Unmarshal([]byte(userInputJSON), &rawUserInput); err != nil {
+		log.Error("Invalid user input JSON in internal update", zap.Error(err))
+		return fmt.Errorf("invalid user input JSON provided internally: %w", err)
 	}
 
-	if userInputJSON != "" {
-		if !json.Valid([]byte(userInputJSON)) {
-			log.Warn("Invalid JSON received for user input")
-			return fmt.Errorf("%w: invalid user input JSON format", sharedModels.ErrBadRequest)
-		}
-		userInputBytes = []byte(userInputJSON)
-	} else {
-		userInputBytes = nil // Разрешаем обнулять поле
-	}
-
-	// Вызов репозитория
-	err = s.repo.UpdateConfigAndInput(ctx, draftID, configBytes, userInputBytes)
+	// 2. Вызов репозитория для обновления полей
+	// Используем существующий GetByID для получения userID, если нужно будет валидировать.
+	// Но для внутреннего метода, возможно, это избыточно.
+	err := s.repo.UpdateConfigAndInputAndStatus(ctx, draftID, rawConfig, rawUserInput, status) // <<< ОБНОВЛЕН вызов репо
 	if err != nil {
-		if errors.Is(err, sharedModels.ErrNotFound) {
-			log.Warn("Draft not found for update")
-			return sharedModels.ErrNotFound // Пробрасываем ошибку
+		if errors.Is(err, pgx.ErrNoRows) {
+			log.Warn("Draft not found for internal update")
+			return sharedModels.ErrNotFound
 		}
-		log.Error("Failed to update draft config and input in repository", zap.Error(err))
-		return ErrInternal // Возвращаем общую ошибку
+		log.Error("Failed to update draft internally in repository", zap.Error(err))
+		return fmt.Errorf("repository update failed: %w", err)
 	}
 
-	log.Info("Draft updated successfully by internal request")
+	log.Info("Draft updated successfully internally")
 	return nil
 }

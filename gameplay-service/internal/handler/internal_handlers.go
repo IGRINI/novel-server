@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -226,8 +227,9 @@ func (h *GameplayHandler) updateDraftInternal(c *gin.Context) {
 
 	// Парсим тело запроса
 	type updateRequest struct {
-		ConfigJson    string `json:"configJson"`
-		UserInputJson string `json:"userInputJson"`
+		ConfigJson    string                   `json:"configJson"`
+		UserInputJson string                   `json:"userInputJson"`
+		Status        sharedModels.StoryStatus `json:"status"`
 	}
 	var req updateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -236,10 +238,10 @@ func (h *GameplayHandler) updateDraftInternal(c *gin.Context) {
 		return
 	}
 
-	log.Info("Handling internal draft update request")
+	log.Info("Handling internal draft update request", zap.String("newStatus", string(req.Status)))
 
 	// Вызываем сервис
-	err = h.service.UpdateDraftInternal(c.Request.Context(), draftID, req.ConfigJson, req.UserInputJson)
+	err = h.service.UpdateDraftInternal(c.Request.Context(), draftID, req.ConfigJson, req.UserInputJson, req.Status)
 	if err != nil {
 		log.Error("Error updating draft internally", zap.Error(err))
 		handleServiceError(c, err, h.logger) // Передаем ошибку для стандартизированной обработки
@@ -267,8 +269,9 @@ func (h *GameplayHandler) updateStoryInternal(c *gin.Context) {
 
 	// Парсим тело запроса
 	type updateRequest struct {
-		ConfigJson string `json:"configJson"`
-		SetupJson  string `json:"setupJson"`
+		ConfigJson json.RawMessage          `json:"configJson"`
+		SetupJson  json.RawMessage          `json:"setupJson"`
+		Status     sharedModels.StoryStatus `json:"status"`
 	}
 	var req updateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -277,10 +280,10 @@ func (h *GameplayHandler) updateStoryInternal(c *gin.Context) {
 		return
 	}
 
-	log.Info("Handling internal story update request")
+	log.Info("Handling internal story update request", zap.String("newStatus", string(req.Status)))
 
-	// Вызываем сервис
-	err = h.service.UpdateStoryInternal(c.Request.Context(), storyID, req.ConfigJson, req.SetupJson)
+	// Вызываем сервис, передавая json.RawMessage напрямую
+	err = h.service.UpdateStoryInternal(c.Request.Context(), storyID, req.ConfigJson, req.SetupJson, req.Status)
 	if err != nil {
 		log.Error("Error updating story internally", zap.Error(err))
 		handleServiceError(c, err, h.logger)

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"novel-server/gameplay-service/internal/messaging"
 	interfaces "novel-server/shared/interfaces"
@@ -136,8 +137,8 @@ type GameplayService interface {
 	GetPublishedStoryDetailsInternal(ctx context.Context, storyID uuid.UUID) (*sharedModels.PublishedStory, error)
 	ListStoryScenesInternal(ctx context.Context, storyID uuid.UUID) ([]sharedModels.StoryScene, error)
 	// <<< ДОБАВЛЕНО: Методы обновления для внутреннего API админки >>>
-	UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string) error
-	UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON string) error
+	UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string, status sharedModels.StoryStatus) error
+	UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON json.RawMessage, status sharedModels.StoryStatus) error
 	UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error
 }
 
@@ -329,18 +330,18 @@ func (s *gameplayServiceImpl) ListStoryScenesInternal(ctx context.Context, story
 
 // <<< ДОБАВЛЕНО: Делегаты для методов обновления внутреннего API админки >>>
 
-func (s *gameplayServiceImpl) UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string) error {
-	return s.draftService.UpdateDraftInternal(ctx, draftID, configJSON, userInputJSON)
+// UpdateDraftInternal delegates to DraftService.
+func (s *gameplayServiceImpl) UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string, status sharedModels.StoryStatus) error {
+	return s.draftService.UpdateDraftInternal(ctx, draftID, configJSON, userInputJSON, status)
 }
 
-func (s *gameplayServiceImpl) UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON string) error {
-	// Делегируем StoryBrowsingService, так как он уже работает с PublishedStoryRepository
-	// (Хотя, возможно, логичнее было бы создать отдельный сервис для этого)
-	return s.storyBrowsingService.UpdateStoryInternal(ctx, storyID, configJSON, setupJSON)
+// UpdateStoryInternal delegates to StoryBrowsingService.
+func (s *gameplayServiceImpl) UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON json.RawMessage, status sharedModels.StoryStatus) error {
+	return s.storyBrowsingService.UpdateStoryInternal(ctx, storyID, configJSON, setupJSON, status)
 }
 
+// UpdateSceneInternal delegates to GameLoopService.
 func (s *gameplayServiceImpl) UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error {
-	// Делегируем GameLoopService, так как он работает со сценами
 	return s.gameLoopService.UpdateSceneInternal(ctx, sceneID, contentJSON)
 }
 

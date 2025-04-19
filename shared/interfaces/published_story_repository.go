@@ -47,4 +47,7 @@ type PublishedStoryRepository interface {
 
 	// UpdateConfigAndSetup updates the config and setup of a story.
 	UpdateConfigAndSetup(ctx context.Context, id uuid.UUID, config, setup []byte) error
+
+	// UpdateConfigAndSetupAndStatus updates config, setup and status for a published story.
+	UpdateConfigAndSetupAndStatus(ctx context.Context, id uuid.UUID, config, setup json.RawMessage, status models.StoryStatus) error
 }

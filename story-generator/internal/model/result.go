@@ -1,7 +1,6 @@
 package model
 
 import (
-	"encoding/json"
 	"time"
 
 	"novel-server/shared/messaging"
@@ -13,7 +12,6 @@ type GenerationResult struct {
 	ID             string               `db:"id"`                 // Обычно совпадает с TaskID
 	UserID         string               `db:"user_id"`            // ID пользователя
 	PromptType     messaging.PromptType `db:"prompt_type"`        // Тип использованного промта
-	InputData      json.RawMessage      `db:"input_data"`         // Входные данные (JSON)
 	GeneratedText  string               `db:"generated_text"`     // Сгенерированный AI текст
 	ProcessingTime time.Duration        `db:"processing_time_ms"` // Время обработки в мс
 	CreatedAt      time.Time            `db:"created_at"`         // Время создания записи (получения задачи)
