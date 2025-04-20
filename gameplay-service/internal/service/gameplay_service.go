@@ -140,6 +140,15 @@ type GameplayService interface {
 	UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string, status sharedModels.StoryStatus) error
 	UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON json.RawMessage, status sharedModels.StoryStatus) error
 	UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error
+
+	// <<< Новый метод для удаления черновика >>>
+	DeleteDraft(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
+
+	// <<< ДОБАВЛЯЕМ МЕТОД >>>
+	DeletePublishedStory(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
+
+	// <<< Методы StoryBrowsingService >>>
+	ListPublishedStoriesPublic(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.PublishedStorySummaryWithProgress, string, error)
 }
 
 type gameplayServiceImpl struct {
@@ -156,6 +165,7 @@ type gameplayServiceImpl struct {
 	publisher            messaging.TaskPublisher
 	pool                 *pgxpool.Pool
 	logger               *zap.Logger
+	authClient           interfaces.AuthServiceClient
 }
 
 func NewGameplayService(
@@ -167,15 +177,16 @@ func NewGameplayService(
 	publisher messaging.TaskPublisher,
 	pool *pgxpool.Pool,
 	logger *zap.Logger,
+	authClient interfaces.AuthServiceClient,
 ) GameplayService {
 	// <<< СОЗДАЕМ DraftService >>>
 	draftSvc := NewDraftService(configRepo, publisher, logger)
 	// <<< СОЗДАЕМ PublishingService >>>
 	publishingSvc := NewPublishingService(configRepo, publishedRepo, publisher, pool, logger)
 	// <<< СОЗДАЕМ LikeService >>>
-	likeSvc := NewLikeService(likeRepo, publishedRepo, playerProgressRepo, logger)
+	likeSvc := NewLikeService(likeRepo, publishedRepo, playerProgressRepo, authClient, logger)
 	// <<< СОЗДАЕМ StoryBrowsingService >>>
-	storyBrowsingSvc := NewStoryBrowsingService(publishedRepo, sceneRepo, playerProgressRepo, logger)
+	storyBrowsingSvc := NewStoryBrowsingService(publishedRepo, sceneRepo, playerProgressRepo, authClient, logger)
 	// <<< СОЗДАЕМ GameLoopService >>>
 	gameLoopSvc := NewGameLoopService(publishedRepo, sceneRepo, playerProgressRepo, publisher, configRepo, logger)
 
@@ -193,6 +204,7 @@ func NewGameplayService(
 		publisher:            publisher,
 		pool:                 pool,
 		logger:               logger.Named("GameplayService"),
+		authClient:           authClient,
 	}
 }
 
@@ -344,6 +356,73 @@ func (s *gameplayServiceImpl) UpdateStoryInternal(ctx context.Context, storyID u
 func (s *gameplayServiceImpl) UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error {
 	return s.gameLoopService.UpdateSceneInternal(ctx, sceneID, contentJSON)
 }
+
+// <<< Новый метод для удаления черновика >>>
+func (s *gameplayServiceImpl) DeleteDraft(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
+	// Implementation of DeleteDraft method
+	return s.draftService.DeleteDraft(ctx, id, userID)
+}
+
+// <<< ДОБАВЛЯЕМ МЕТОД >>>
+func (s *gameplayServiceImpl) DeletePublishedStory(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
+	// Implementation of DeletePublishedStory method
+	return s.publishingService.DeletePublishedStory(ctx, id, userID)
+}
+
+// <<< Методы StoryBrowsingService >>>
+func (s *gameplayServiceImpl) ListPublishedStoriesPublic(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.PublishedStorySummaryWithProgress, string, error) {
+	log := s.logger.With(zap.String("method", "ListPublishedStoriesPublic"), zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
+	log.Debug("Listing public published stories")
+
+	// Delegate the call to the story browsing service which handles the core logic and pagination.
+	storiesDTO, nextCursor, err := s.storyBrowsingService.ListPublicStories(ctx, userID, cursor, limit)
+	if err != nil {
+		log.Error("Failed to list public stories via story browsing service", zap.Error(err))
+		// Assuming ListPublicStories returns appropriate shared errors like ErrInternalServer
+		return nil, "", err
+	}
+
+	// Convert []*PublishedStoryDetailWithProgressDTO to []sharedModels.PublishedStorySummaryWithProgress
+	results := make([]sharedModels.PublishedStorySummaryWithProgress, 0, len(storiesDTO))
+	for _, dto := range storiesDTO {
+		if dto == nil { // Safety check
+			log.Warn("Received nil DTO in ListPublicStories")
+			continue
+		}
+
+		title := ""
+		if dto.PublishedStory.Title != nil {
+			title = *dto.PublishedStory.Title
+		}
+		shortDescription := ""
+		if dto.PublishedStory.Description != nil { // Assuming Description maps to ShortDescription
+			shortDescription = *dto.PublishedStory.Description
+		}
+
+		summary := sharedModels.PublishedStorySummary{
+			ID:               dto.PublishedStory.ID,
+			Title:            title,
+			ShortDescription: shortDescription,
+			AuthorID:         dto.PublishedStory.UserID,
+			PublishedAt:      dto.PublishedStory.CreatedAt, // Assuming CreatedAt is the publish time
+			IsAdultContent:   dto.PublishedStory.IsAdultContent,
+			LikesCount:       dto.PublishedStory.LikesCount, // Assuming LikesCount is present
+			IsLiked:          dto.PublishedStory.IsLiked,    // Assuming IsLiked is present
+		}
+
+		results = append(results, sharedModels.PublishedStorySummaryWithProgress{
+			PublishedStorySummary: summary,
+			HasPlayerProgress:     dto.HasPlayerProgress,
+		})
+	}
+
+	log.Info("Successfully listed public published stories", zap.Int("count", len(results)), zap.Bool("hasNext", nextCursor != ""))
+	// Return the converted results
+	return results, nextCursor, nil
+}
+
+// ListMyPublishedStories retrieves a list of stories published by the user.
+// ... existing code ...
 
 // --- Helper Functions moved to game_loop_service.go ---
 /*

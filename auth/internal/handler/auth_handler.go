@@ -48,8 +48,11 @@ func (h *AuthHandler) RegisterRoutes(router *gin.Engine) {
 	protectedGroup := router.Group("/")    // Группа от корня
 	protectedGroup.Use(h.AuthMiddleware()) // Применяем middleware ко всей группе
 	{
-		protectedGroup.GET("/me", h.getMe)       // /me
-		protectedGroup.POST("/logout", h.logout) // /logout ТЕПЕРЬ ЗДЕСЬ
+		zap.L().Info("Registering protected routes")   // Добавим общий лог для группы
+		zap.L().Info("Registering GET /me route")      // Лог перед /me
+		protectedGroup.GET("/me", h.getMe)             // /me
+		zap.L().Info("Registering POST /logout route") // Лог перед /logout
+		protectedGroup.POST("/logout", h.logout)       // /logout ТЕПЕРЬ ЗДЕСЬ
 
 		deviceTokenRoutes := protectedGroup.Group("/device-tokens") // /device-tokens
 		{
@@ -59,8 +62,16 @@ func (h *AuthHandler) RegisterRoutes(router *gin.Engine) {
 		}
 	}
 
+	// <<< Переносим validateToken ИЗ защищенной группы internalAuthGroup >>>
+	// Этот эндпоинт используется другими сервисами для валидации ПОЛЬЗОВАТЕЛЬСКОГО токена,
+	// он сам не должен требовать ВАЛИДНОГО межсервисного токена.
+	// Middleware для межсервисного токена может быть добавлено индивидуально,
+	// если нужно логировать вызывающий сервис, но не блокировать запрос.
+	internalAuthGroupStandalone := router.Group("/internal/auth")
+	internalAuthGroupStandalone.POST("/token/validate", h.validateToken)
+
 	internalAuthGroup := router.Group("/internal/auth")
-	internalAuthGroup.Use(h.InternalAuthMiddleware())
+	internalAuthGroup.Use(h.InternalAuthMiddleware()) // Применяется к ОСТАЛЬНЫМ внутренним роутам
 	{
 		internalAuthGroup.POST("/token/generate", h.generateInterServiceToken)
 		internalAuthGroup.POST("/token/verify", h.verifyInterServiceToken)
@@ -68,7 +79,6 @@ func (h *AuthHandler) RegisterRoutes(router *gin.Engine) {
 		internalAuthGroup.GET("/users", h.listUsers)
 		internalAuthGroup.POST("/users/:user_id/ban", h.banUser)
 		internalAuthGroup.DELETE("/users/:user_id/ban", h.unbanUser)
-		internalAuthGroup.POST("/token/validate", h.validateToken)
 		internalAuthGroup.GET("/users/:user_id", h.getUserDetails)
 		internalAuthGroup.PUT("/users/:user_id", h.updateUser)
 		internalAuthGroup.PUT("/users/:user_id/password", h.updatePassword)

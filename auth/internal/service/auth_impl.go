@@ -801,3 +801,20 @@ func (s *authServiceImpl) RefreshAdminToken(ctx context.Context, refreshTokenStr
 	log.Info("Admin token refreshed successfully")
 	return newTd, newClaims, nil
 }
+
+// GetUsersByIDs retrieves multiple users by their IDs using the user repository.
+func (s *authServiceImpl) GetUsersByIDs(ctx context.Context, ids []uuid.UUID) ([]models.User, error) {
+	log := s.logger.With(zap.String("method", "GetUsersByIDs"))
+	log.Debug("Fetching users by IDs", zap.Any("ids", ids))
+
+	users, err := s.userRepo.GetUsersByIDs(ctx, ids)
+	if err != nil {
+		// Ошибка уже должна быть залогирована репозиторием
+		log.Error("Failed to get users by IDs from repository", zap.Error(err))
+		// Возвращаем ошибку как есть
+		return nil, err
+	}
+
+	log.Debug("Successfully fetched users by IDs", zap.Int("count", len(users)))
+	return users, nil
+}

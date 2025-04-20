@@ -157,8 +157,14 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 	completedAt = time.Now()
 	totalDuration := completedAt.Sub(fullStartTime)
 	taskProcessingDuration.Observe(totalDuration.Seconds())
+
+	// Логируем финальный ответ AI или ошибку
 	if err != nil {
-		tasksFailedTotal.WithLabelValues("ai_error").Inc()
+		log.Printf("[TaskID: %s] Финальная ошибка после всех попыток AI: %v", payload.TaskID, err)
+		tasksFailedTotal.WithLabelValues("ai_error").Inc() // Регистрируем ошибку AI
+	} else {
+		// Вот сюда добавим лог
+		log.Printf("[TaskID: %s] Финальный ответ от AI (длина: %d): %s", payload.TaskID, len(aiResponse), aiResponse)
 	}
 
 	// --- Этап 4-6: Сохранение и уведомление ---
@@ -184,8 +190,6 @@ func (h *TaskHandler) preparePrompt(taskID string, promptType messaging.PromptTy
 		return "", fmt.Errorf("ошибка чтения файла промта '%s': %w", promptFilePath, readErr)
 	}
 	systemPrompt := string(systemPromptBytes)
-
-	log.Printf("[TaskID: %s] Содержимое файла промта '%s':\n---\n%s\n---", taskID, promptFilePath, systemPrompt)
 
 	finalSystemPrompt := systemPrompt
 	log.Printf("[TaskID: %s] Промт успешно подготовлен (без шаблонизации).", taskID)

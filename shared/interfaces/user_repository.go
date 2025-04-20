@@ -41,4 +41,8 @@ type UserRepository interface {
 
 	// UpdatePasswordHash обновляет хеш пароля пользователя.
 	UpdatePasswordHash(ctx context.Context, userID uuid.UUID, passwordHash string) error
+
+	// GetUsersByIDs retrieves multiple users by their IDs.
+	// Returns an empty slice and nil error if no users are found for the given IDs.
+	GetUsersByIDs(ctx context.Context, ids []uuid.UUID) ([]models.User, error)
 }

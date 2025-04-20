@@ -22,6 +22,8 @@ import (
 	"syscall"
 	"time"
 
+	"novel-server/gameplay-service/internal/clients"
+
 	"github.com/gin-contrib/cors" // <<< Импортируем Gin CORS
 	"github.com/gin-gonic/gin"    // <<< Импортируем Gin
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -97,8 +99,16 @@ func main() {
 		logger.Fatal("Не удалось создать PushNotificationPublisher", zap.Error(err))
 	}
 
-	// <<< ИЗМЕНЕНО: Передаем logger в NewGameplayService >>>
-	gameplayService := service.NewGameplayService(storyConfigRepo, publishedRepo, sceneRepo, playerProgressRepo, likeRepo, taskPublisher, dbPool, logger)
+	// <<< Создаем HTTP клиент для Auth Service >>>
+	authServiceClient := clients.NewHTTPAuthServiceClient(
+		cfg.AuthServiceURL,     // URL из конфига
+		cfg.InterServiceSecret, // Секрет из конфига
+		logger,                 // Логгер
+	)
+	logger.Info("Auth Service client initialized")
+
+	// <<< ИЗМЕНЕНО: Передаем logger И authServiceClient в NewGameplayService >>>
+	gameplayService := service.NewGameplayService(storyConfigRepo, publishedRepo, sceneRepo, playerProgressRepo, likeRepo, taskPublisher, dbPool, logger, authServiceClient)
 	// <<< ИЗМЕНЕНО: Передаем logger, publishedRepo и cfg в NewGameplayHandler >>>
 	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret, storyConfigRepo, publishedRepo, cfg)
 
@@ -141,6 +151,7 @@ func main() {
 	}
 
 	router := gin.New()
+	router.RedirectTrailingSlash = true // Добавляем автоматическое перенаправление для слешей
 
 	// <<< Используем Gin логгер запросов (предполагаем, что он есть в sharedMiddleware) >>>
 	router.Use(sharedMiddleware.GinZapLogger(logger))

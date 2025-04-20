@@ -30,11 +30,13 @@ const (
 
 // <<< Регулярное выражение для извлечения JSON из ```json ... ``` блока >>>
 // (?s) - флаг: '.' совпадает с символом новой строки
-// \x60 - символ `
-// (?:json)? - опциональная группа "json" (незахватывающая)
-// \s* - ноль или более пробельных символов
-// (\{.*\}) - Захватывающая группа 1: сам JSON объект (от { до })
-var jsonBlockRegex = regexp.MustCompile("(?s)\\x60\\x60\\x60(?:json)?\\s*(\\{.*\\})\\s*\\x60\\x60\\x60")
+// \x60\x60\x60 - открывающие ```
+// (?:\w+)? - опциональный идентификатор языка (json, yaml и т.д.), незахватываемый
+// \s* - пробелы
+// (.*?) - НЕЖАДНАЯ захватывающая группа 1: любой текст (минимально возможный)
+// \s* - пробелы
+// \x60\x60\x60 - закрывающие ```
+var jsonBlockRegex = regexp.MustCompile(`(?s)` + "```" + `(?:\w+)?\s*(.*?)\s*` + "```")
 
 // --- NotificationProcessor ---
 
@@ -140,30 +142,27 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 
 			log.Printf("[processor][TaskID: %s] Уведомление Narrator Success для StoryConfig %s.", taskID, storyConfigID)
 
-			// <<< Извлекаем чистый JSON перед парсингом >>>
+			// <<< Улучшенное извлечение JSON >>>
 			rawGeneratedText := notification.GeneratedText
-			jsonToParse := rawGeneratedText // По умолчанию используем исходный текст
+			jsonToParse := "" // Инициализируем пустой строкой
 
 			matches := jsonBlockRegex.FindStringSubmatch(rawGeneratedText)
 			if len(matches) > 1 {
-				// Если нашли блок ```json {...} ```, берем содержимое группы 1
-				jsonToParse = matches[1]
-				log.Printf("[processor][TaskID: %s] Извлечен JSON из блока ```json для StoryConfig %s.", taskID, storyConfigID)
+				// Если нашли блок ```...```, берем содержимое группы 1 (нежадно)
+				jsonToParse = strings.TrimSpace(matches[1])
+				log.Printf("[processor][TaskID: %s] Извлечен контент из блока ``` для StoryConfig %s.", taskID, storyConfigID)
 			} else {
-				// Если блок не найден, просто обрезаем пробелы
-				trimmedText := strings.TrimSpace(rawGeneratedText)
-				if strings.HasPrefix(trimmedText, "{") && strings.HasSuffix(trimmedText, "}") {
-					jsonToParse = trimmedText // Используем обрезанный, если он похож на JSON
-				} else {
-					// Оставляем jsonToParse = rawGeneratedText, если обрезка не помогла
-					log.Printf("[processor][TaskID: %s] Блок ```json не найден, попытка парсинга исходного/обрезанного текста для StoryConfig %s.", taskID, storyConfigID)
-				}
+				// Если блок не найден, используем исходный текст (обрезав пробелы)
+				jsonToParse = strings.TrimSpace(rawGeneratedText)
+				log.Printf("[processor][TaskID: %s] Блок ``` не найден, попытка парсинга исходного/обрезанного текста для StoryConfig %s.", taskID, storyConfigID)
 			}
 
-			configBytes := []byte(jsonToParse) // <<< Используем очищенный текст для парсинга
-			// <<< Конец извлечения JSON >>>
+			// <<< Убрали fallback проверку на '{' и '}' >>>
 
-			// Сначала парсим JSON, и только если успешно - обновляем поля
+			configBytes := []byte(jsonToParse) // Используем извлеченный или исходный текст для парсинга
+			// <<< Конец улучшенного извлечения JSON >>>
+
+			// Пытаемся распарсить JSON
 			var generatedConfig map[string]interface{}
 			parseErr = json.Unmarshal(configBytes, &generatedConfig)
 
@@ -320,7 +319,21 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 
 		if notification.Status == sharedMessaging.NotificationStatusSuccess {
 			log.Printf("[processor][TaskID: %s] Уведомление Setup Success для PublishedStory %s.", taskID, publishedStoryID)
-			setupJSON := json.RawMessage(notification.GeneratedText)
+
+			// <<< Добавляем извлечение JSON для Setup >>>
+			rawGeneratedText := notification.GeneratedText
+			jsonToParse := ""
+			matches := jsonBlockRegex.FindStringSubmatch(rawGeneratedText)
+			if len(matches) > 1 {
+				jsonToParse = strings.TrimSpace(matches[1])
+				log.Printf("[processor][TaskID: %s] Извлечен контент из блока ``` для Setup PublishedStory %s.", taskID, publishedStoryID)
+			} else {
+				jsonToParse = strings.TrimSpace(rawGeneratedText)
+				log.Printf("[processor][TaskID: %s] Блок ``` не найден для Setup PublishedStory %s, используется исходный/обрезанный текст.", taskID, publishedStoryID)
+			}
+			setupJSON := json.RawMessage(jsonToParse) // Используем очищенный JSON
+			// <<< Конец извлечения JSON для Setup >>>
+
 			newStatus := sharedModels.StatusFirstScenePending
 			// Обновляем Setup и Status, используя новый метод
 			if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, newStatus, setupJSON, nil, nil, nil); err != nil {
@@ -435,7 +448,20 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 			log.Printf("[processor][TaskID: %s] Уведомление %s Success для PublishedStory %s, StateHash %s.",
 				taskID, notification.PromptType, publishedStoryID, notification.StateHash)
 
-			sceneContentJSON := json.RawMessage(notification.GeneratedText)
+			// <<< Добавляем извлечение JSON для Scene/GameOver >>>
+			rawGeneratedText := notification.GeneratedText
+			jsonToParse := ""
+			matches := jsonBlockRegex.FindStringSubmatch(rawGeneratedText)
+			if len(matches) > 1 {
+				jsonToParse = strings.TrimSpace(matches[1])
+				log.Printf("[processor][TaskID: %s] Извлечен контент из блока ``` для %s PublishedStory %s.", taskID, notification.PromptType, publishedStoryID)
+			} else {
+				jsonToParse = strings.TrimSpace(rawGeneratedText)
+				log.Printf("[processor][TaskID: %s] Блок ``` не найден для %s PublishedStory %s, используется исходный/обрезанный текст.", taskID, notification.PromptType, publishedStoryID)
+			}
+			sceneContentJSON := json.RawMessage(jsonToParse) // Используем очищенный JSON
+			// <<< Конец извлечения JSON для Scene/GameOver >>>
+
 			newStatus := sharedModels.StatusReady
 			var endingText *string
 
@@ -445,6 +471,7 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 				var endingContent struct {
 					EndingText string `json:"et"`
 				}
+				// <<< Парсим из уже очищенного sceneContentJSON >>>
 				if err := json.Unmarshal(sceneContentJSON, &endingContent); err != nil {
 					log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось распарсить JSON концовки для PublishedStory %s: %v", taskID, publishedStoryID, err)
 					// Продолжаем, но EndingText не будет сохранен
@@ -459,7 +486,7 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 				ID:               uuid.New(),
 				PublishedStoryID: publishedStoryID,
 				StateHash:        notification.StateHash,
-				Content:          sceneContentJSON,
+				Content:          sceneContentJSON, // <<< Сохраняем очищенный JSON
 				CreatedAt:        time.Now().UTC(),
 			}
 

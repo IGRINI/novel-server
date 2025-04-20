@@ -63,32 +63,6 @@ type MakeChoicesRequest struct {
 	SelectedOptionIndices []int `json:"selected_option_indices" binding:"required,dive,min=0,max=1"`
 }
 
-// <<< ИЗМЕНЕНО: Старая структура summary, оставляем для справки >>>
-/*
-type PublishedStorySummary struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	AuthorID    string    `json:"author_id"`
-	PublishedAt time.Time `json:"published_at"`
-	LikesCount  int64     `json:"likes_count"`
-	IsLiked     bool      `json:"is_liked"`
-}
-*/
-
-// <<< ДОБАВЛЕНО: Новая структура summary с флагом прогресса >>>
-type PublishedStorySummaryWithProgress struct {
-	ID                string    `json:"id"`
-	Title             string    `json:"title"`
-	Description       string    `json:"description"`
-	AuthorID          string    `json:"author_id"`
-	PublishedAt       time.Time `json:"published_at"`
-	LikesCount        int64     `json:"likes_count"`
-	IsLiked           bool      `json:"is_liked"`
-	HasPlayerProgress bool      `json:"hasPlayerProgress"` // Флаг наличия прогресса
-	Status            string    `json:"status"`            // <<< ДОБАВЛЕНО: Статус истории
-}
-
 type publishedCoreStatDetail struct {
 	Description        string                        `json:"description"`
 	InitialValue       int                           `json:"initial_value"`
@@ -155,7 +129,7 @@ func (h *GameplayHandler) listMyPublishedStories(c *gin.Context) {
 	)
 	log.Debug("Fetching my published stories")
 
-	// <<< ИЗМЕНЕНО: Вызываем обновленный метод сервиса >>>
+	// Вызываем метод сервиса, который возвращает []*PublishedStoryDetailWithProgressDTO
 	storiesDTO, nextCursor, err := h.service.ListMyPublishedStories(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
 		log.Error("Error listing my published stories", zap.Error(err))
@@ -163,37 +137,44 @@ func (h *GameplayHandler) listMyPublishedStories(c *gin.Context) {
 		return
 	}
 
-	// <<< ИЗМЕНЕНО: Преобразуем DTO в SummaryWithProgress >>>
-	storySummaries := make([]PublishedStorySummaryWithProgress, len(storiesDTO))
-	for i, storyDTO := range storiesDTO {
+	// <<< ДОБАВЛЕНО: Конвертация из DTO сервиса в sharedModels >>>
+	storySummaries := make([]sharedModels.PublishedStorySummaryWithProgress, len(storiesDTO))
+	for i, dto := range storiesDTO {
+		if dto == nil { // Safety check
+			log.Warn("Received nil PublishedStoryDetailWithProgressDTO in listMyPublishedStories")
+			continue
+		}
 		title := ""
-		if storyDTO.Title != nil {
-			title = *storyDTO.Title
+		if dto.Title != nil {
+			title = *dto.Title
 		}
 		description := ""
-		if storyDTO.Description != nil {
-			description = *storyDTO.Description
+		if dto.Description != nil {
+			description = *dto.Description
 		}
-		storySummaries[i] = PublishedStorySummaryWithProgress{
-			ID:                storyDTO.ID.String(),
-			Title:             title,
-			Description:       description,
-			AuthorID:          storyDTO.UserID.String(),
-			PublishedAt:       storyDTO.CreatedAt,
-			LikesCount:        storyDTO.LikesCount,
-			IsLiked:           storyDTO.IsLiked,
-			HasPlayerProgress: storyDTO.HasPlayerProgress, // <<< Используем флаг из DTO
-			Status:            string(storyDTO.Status),    // <<< ДОБАВЛЕНО: Заполняем статус
+		storySummaries[i] = sharedModels.PublishedStorySummaryWithProgress{
+			PublishedStorySummary: sharedModels.PublishedStorySummary{
+				ID:               dto.ID,
+				Title:            title,
+				ShortDescription: description, // Map description to ShortDescription
+				AuthorID:         dto.UserID,
+				AuthorName:       dto.AuthorName, // <-- Исправлено: Используем поле из DTO
+				PublishedAt:      dto.CreatedAt,
+				IsAdultContent:   dto.IsAdultContent,
+				LikesCount:       dto.LikesCount,
+				IsLiked:          dto.IsLiked,
+			},
+			HasPlayerProgress: dto.HasPlayerProgress,
 		}
 	}
 
 	resp := PaginatedResponse{
-		Data:       storySummaries,
+		Data:       storySummaries, // <<< Используем сконвертированные данные
 		NextCursor: nextCursor,
 	}
 
 	log.Debug("Successfully fetched my published stories",
-		zap.Int("count", len(storySummaries)),
+		zap.Int("count", len(storySummaries)), // <<< Используем сконвертированные данные
 		zap.Bool("hasNext", nextCursor != ""),
 	)
 	c.JSON(http.StatusOK, resp)
@@ -229,44 +210,21 @@ func (h *GameplayHandler) listPublicPublishedStories(c *gin.Context) {
 	}
 	log.Debug("Fetching public published stories")
 
-	// <<< ИЗМЕНЕНО: Вызываем обновленный метод сервиса >>>
-	storiesDTO, nextCursor, err := h.service.ListPublicStories(c.Request.Context(), userID, cursor, limit)
+	// <<< ИЗМЕНЕНО: Вызываем обновленный метод сервиса, который возвращает []sharedModels.PublishedStorySummaryWithProgress >>>
+	stories, nextCursor, err := h.service.ListPublishedStoriesPublic(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
 		log.Error("Error listing public published stories", zap.Error(err))
 		handleServiceError(c, err, h.logger)
 		return
 	}
 
-	// <<< ИЗМЕНЕНО: Преобразуем DTO в SummaryWithProgress >>>
-	storySummaries := make([]PublishedStorySummaryWithProgress, len(storiesDTO))
-	for i, storyDTO := range storiesDTO {
-		title := ""
-		if storyDTO.Title != nil {
-			title = *storyDTO.Title
-		}
-		description := ""
-		if storyDTO.Description != nil {
-			description = *storyDTO.Description
-		}
-		storySummaries[i] = PublishedStorySummaryWithProgress{
-			ID:                storyDTO.ID.String(),
-			Title:             title,
-			Description:       description,
-			AuthorID:          storyDTO.UserID.String(),
-			PublishedAt:       storyDTO.CreatedAt,
-			LikesCount:        storyDTO.LikesCount,
-			IsLiked:           storyDTO.IsLiked,
-			HasPlayerProgress: storyDTO.HasPlayerProgress, // <<< Используем флаг из DTO
-		}
-	}
-
 	resp := PaginatedResponse{
-		Data:       storySummaries,
+		Data:       stories, // <<< Используем stories напрямую
 		NextCursor: nextCursor,
 	}
 
 	log.Debug("Successfully fetched public published stories",
-		zap.Int("count", len(storySummaries)),
+		zap.Int("count", len(stories)), // <<< Используем stories
 		zap.Bool("hasNext", nextCursor != ""),
 	)
 	c.JSON(http.StatusOK, resp)
@@ -569,39 +527,49 @@ func (h *GameplayHandler) listLikedStories(c *gin.Context) {
 	)
 	log.Debug("Fetching liked stories")
 
-	// <<< ИЗМЕНЕНО: Вызываем обновленный сервис, получаем DTO >>>
-	storiesDTO, nextCursor, err := h.service.ListLikedStories(c.Request.Context(), userID, cursor, limit)
+	// <<< ИЗМЕНЕНО: Вызываем обновленный сервис, получаем DTO - теперь это []*service.LikedStoryDetailDTO >>>
+	// Важно: ListLikedStories *не* возвращает []sharedModels.PublishedStorySummaryWithProgress
+	// Он возвращает []*service.LikedStoryDetailDTO, который нужно преобразовать в sharedModels.PublishedStorySummaryWithProgress
+	likedStoriesDetails, nextCursor, err := h.service.ListLikedStories(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
 		log.Error("Error listing liked stories", zap.Error(err))
 		handleServiceError(c, err, h.logger)
 		return
 	}
 
-	// <<< ИЗМЕНЕНО: Преобразуем DTO в SummaryWithProgress >>>
-	storySummaries := make([]PublishedStorySummaryWithProgress, len(storiesDTO))
-	for i, storyDTO := range storiesDTO {
+	// <<< ОСТАВЛЯЕМ ПРЕОБРАЗОВАНИЕ, т.к. сервис возвращает другой тип DTO >>>
+	storySummaries := make([]sharedModels.PublishedStorySummaryWithProgress, len(likedStoriesDetails))
+	for i, detail := range likedStoriesDetails {
+		if detail == nil { // Safety check
+			log.Warn("Received nil LikedStoryDetailDTO in listLikedStories")
+			continue
+		}
 		title := ""
-		if storyDTO.Title != nil {
-			title = *storyDTO.Title
+		if detail.Title != nil {
+			title = *detail.Title
 		}
 		description := ""
-		if storyDTO.Description != nil {
-			description = *storyDTO.Description
+		if detail.Description != nil {
+			description = *detail.Description
 		}
-		storySummaries[i] = PublishedStorySummaryWithProgress{
-			ID:                storyDTO.ID.String(),
-			Title:             title,
-			Description:       description,
-			AuthorID:          storyDTO.UserID.String(),
-			PublishedAt:       storyDTO.CreatedAt,
-			LikesCount:        storyDTO.LikesCount,
-			IsLiked:           true,                       // Всегда true для этого эндпоинта
-			HasPlayerProgress: storyDTO.HasPlayerProgress, // <<< Используем флаг из DTO
+		storySummaries[i] = sharedModels.PublishedStorySummaryWithProgress{
+			PublishedStorySummary: sharedModels.PublishedStorySummary{
+				ID:               detail.ID,
+				Title:            title,
+				ShortDescription: description, // Map description to ShortDescription
+				AuthorID:         detail.UserID,
+				AuthorName:       detail.AuthorName, // <-- Исправлено: Используем поле из DTO
+				PublishedAt:      detail.CreatedAt,
+				IsAdultContent:   detail.IsAdultContent, // Assuming this field exists in LikedStoryDetailDTO
+				LikesCount:       detail.LikesCount,     // Assuming this field exists
+				IsLiked:          true,                  // Always true for liked stories endpoint
+			},
+			HasPlayerProgress: detail.HasPlayerProgress, // Assuming this field exists
 		}
 	}
 
 	resp := PaginatedResponse{
-		Data:       storySummaries,
+		Data:       storySummaries, // Используем преобразованные данные
 		NextCursor: nextCursor,
 	}
 
@@ -683,7 +651,8 @@ func (h *GameplayHandler) retryPublishedStoryGeneration(c *gin.Context) {
 		handleServiceError(c, fmt.Errorf("error checking generation status: %w", err), h.logger)
 		return
 	}
-	generationLimit := h.config.Generation.LimitPerUser // Используем лимит из конфига
+	// <<< ИЗМЕНЕНО: Используем GenerationLimitPerUser из config >>>
+	generationLimit := h.config.GenerationLimitPerUser // Используем лимит из конфига
 	if activeCount >= generationLimit {
 		log.Warn("User reached active generation limit, retry rejected", zap.Int("limit", generationLimit), zap.Int("count", activeCount))
 		handleServiceError(c, sharedModels.ErrUserHasActiveGeneration, h.logger)
@@ -702,3 +671,32 @@ func (h *GameplayHandler) retryPublishedStoryGeneration(c *gin.Context) {
 	log.Info("Published story retry request accepted")
 	c.Status(http.StatusAccepted)
 }
+
+// <<<<< НАЧАЛО ОБРАБОТЧИКА УДАЛЕНИЯ ОПУБЛИКОВАННОЙ ИСТОРИИ >>>>>
+func (h *GameplayHandler) deletePublishedStory(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		return // Abort already called
+	}
+
+	idStr := c.Param("id")
+	storyID, err := uuid.Parse(idStr)
+	if err != nil {
+		h.logger.Warn("Invalid published story ID format in deletePublishedStory", zap.String("id", idStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		return
+	}
+
+	// Вызываем метод сервиса (GameplayService)
+	err = h.service.DeletePublishedStory(c.Request.Context(), storyID, userID)
+	if err != nil {
+		h.logger.Error("Error deleting published story", zap.String("userID", userID.String()), zap.String("storyID", storyID.String()), zap.Error(err))
+		handleServiceError(c, err, h.logger) // Обрабатываем стандартные ошибки, включая ErrNotFound и ErrForbidden
+		return
+	}
+
+	// При успехе возвращаем 204 No Content
+	c.Status(http.StatusNoContent)
+}
+
+// <<<<< КОНЕЦ ОБРАБОТЧИКА УДАЛЕНИЯ ОПУБЛИКОВАННОЙ ИСТОРИИ >>>>>

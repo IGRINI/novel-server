@@ -45,3 +45,26 @@ type updateUserRequest struct {
 type updatePasswordRequest struct {
 	NewPassword string `json:"new_password" binding:"required"`
 }
+
+// --- Структуры для эндпоинта /internal/users/batch-info ---
+
+// BatchGetUsersInfoRequest - структура запроса для пакетного получения информации о пользователях.
+type BatchGetUsersInfoRequest struct {
+	UserIDs []string `json:"userIds" binding:"required,dive,uuid"`
+}
+
+// UserInfoForBatch - структура с информацией о пользователе для ответа batch-info.
+// (Используем meResponse, так как она содержит нужные поля)
+type UserInfoForBatch struct {
+	ID          string   `json:"id"`
+	Username    string   `json:"username"`
+	DisplayName *string  `json:"displayName"`
+	Email       *string  `json:"email"`
+	Roles       []string `json:"roles"`
+	IsBanned    bool     `json:"isBanned"`
+}
+
+// BatchGetUsersInfoResponse - структура ответа для пакетного получения информации о пользователях.
+type BatchGetUsersInfoResponse struct {
+	Data []UserInfoForBatch `json:"data"`
+}

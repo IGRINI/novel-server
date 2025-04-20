@@ -65,4 +65,8 @@ type PublishedStoryRepository interface {
 
 	// ListLikedByUser retrieves a paginated list of stories liked by a specific user using cursor pagination.
 	ListLikedByUser(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*models.PublishedStory, string, error)
+
+	// Delete удаляет опубликованную историю и все связанные с ней данные (сцены, прогресс, лайки).
+	// Требует ID истории и ID пользователя для проверки владения.
+	Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
 }

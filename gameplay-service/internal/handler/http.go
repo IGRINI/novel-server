@@ -119,6 +119,7 @@ func (h *GameplayHandler) RegisterRoutes(router gin.IRouter) {
 		storiesGroup.POST("/:id/revise", h.reviseStoryConfig)
 		storiesGroup.POST("/:id/publish", h.publishStoryDraft)
 		storiesGroup.POST("/drafts/:draft_id/retry", h.retryDraftGeneration)
+		storiesGroup.DELETE("/:id", h.deleteDraft)
 	}
 
 	// --- Маршруты для опубликованных историй (API для пользователей) ---
@@ -136,6 +137,7 @@ func (h *GameplayHandler) RegisterRoutes(router gin.IRouter) {
 		publishedGroup.GET("/users/me/likes", h.listLikedStories)
 		publishedGroup.PATCH("/:id/visibility", h.setStoryVisibility)
 		publishedGroup.POST("/:id/retry", h.retryPublishedStoryGeneration)
+		publishedGroup.DELETE("/:id", h.deletePublishedStory)
 	}
 
 	// --- Маршруты для внутреннего API (межсервисное взаимодействие) ---

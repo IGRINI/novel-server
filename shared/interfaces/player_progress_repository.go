@@ -30,4 +30,8 @@ type PlayerProgressRepository interface {
 	// Delete removes the player progress record for a specific user and story.
 	// Returns nil if the record was deleted or did not exist.
 	Delete(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
+
+	// CheckProgressExistsForStories checks if player progress exists for a given user and a list of story IDs.
+	// Returns a map where keys are story IDs and values are booleans indicating progress existence.
+	CheckProgressExistsForStories(ctx context.Context, userID uuid.UUID, storyIDs []uuid.UUID) (map[uuid.UUID]bool, error)
 }

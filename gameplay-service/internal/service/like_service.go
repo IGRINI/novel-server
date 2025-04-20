@@ -3,11 +3,11 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	interfaces "novel-server/shared/interfaces"
 	sharedModels "novel-server/shared/models"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
 )
 
@@ -18,10 +18,11 @@ var (
 	// ErrStoryNotFound will be returned directly from the repo or checked explicitly if needed
 )
 
-// <<< ДОБАВЛЕНО: DTO для ответа с флагом прогресса >>>
+// LikedStoryDetailDTO structure for returning liked story details
 type LikedStoryDetailDTO struct {
-	sharedModels.PublishedStory
-	HasPlayerProgress bool `json:"hasPlayerProgress"`
+	sharedModels.PublishedStory        // Embed base story details
+	HasPlayerProgress           bool   `json:"-"`           // Internal flag, not marshalled directly
+	AuthorName                  string `json:"author_name"` // <<< ДОБАВЛЕНО: Поле для имени автора
 }
 
 // LikeService defines the interface for managing story likes.
@@ -35,7 +36,9 @@ type likeServiceImpl struct {
 	likeRepo      interfaces.LikeRepository
 	publishedRepo interfaces.PublishedStoryRepository
 	progressRepo  interfaces.PlayerProgressRepository // <<< ДОБАВЛЕНО
-	logger        *zap.Logger
+	// <<< ДОБАВЛЕНО: Клиент для взаимодействия с auth-service >>>
+	authClient interfaces.AuthServiceClient // Используем интерфейс
+	logger     *zap.Logger
 }
 
 // NewLikeService creates a new instance of LikeService.
@@ -43,12 +46,14 @@ func NewLikeService(
 	likeRepo interfaces.LikeRepository,
 	publishedRepo interfaces.PublishedStoryRepository,
 	progressRepo interfaces.PlayerProgressRepository, // <<< ДОБАВЛЕНО
+	authClient interfaces.AuthServiceClient, // <<< ДОБАВЛЕНО: Инъекция клиента
 	logger *zap.Logger,
 ) LikeService {
 	return &likeServiceImpl{
 		likeRepo:      likeRepo,
 		publishedRepo: publishedRepo,
 		progressRepo:  progressRepo, // <<< ДОБАВЛЕНО
+		authClient:    authClient,   // <<< ДОБАВЛЕНО
 		logger:        logger.Named("LikeService"),
 	}
 }
@@ -134,72 +139,103 @@ func (s *likeServiceImpl) UnlikeStory(ctx context.Context, userID uuid.UUID, pub
 
 // ListLikedStories retrieves a paginated list of stories liked by a user, with progress flag.
 func (s *likeServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*LikedStoryDetailDTO, string, error) {
-	log := s.logger.With(zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
-	log.Info("ListLikedStories called")
+	log := s.logger.With(zap.String("method", "ListLikedStories"), zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
+	log.Debug("Listing liked stories for user")
 
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 
-	// 1. Get the IDs of liked stories from the like repository
-	log.Debug("Fetching liked story IDs from like repository")
-	likedStoryIDs, nextCursor, err := s.likeRepo.ListLikedStoryIDsByUserID(ctx, userID, cursor, limit+1) // Fetch one extra to check for next page
+	// 1. Get liked story IDs and next cursor from LikeRepository
+	likedStoryIDs, nextCursor, err := s.likeRepo.ListLikedStoryIDsByUserID(ctx, userID, cursor, limit)
 	if err != nil {
-		if errors.Is(err, interfaces.ErrInvalidCursor) {
-			log.Warn("Invalid cursor provided for ListLikedStories")
-			return nil, "", err
-		}
-		log.Error("Error listing liked story IDs from like repository", zap.Error(err))
-		return nil, "", sharedModels.ErrInternalServer
+		log.Error("Failed to list liked story IDs", zap.Error(err))
+		return nil, "", fmt.Errorf("failed to get liked stories: %w", err)
 	}
-
-	// 2. Check if there's a next page
-	hasNextPage := len(likedStoryIDs) > limit
-	if hasNextPage {
-		likedStoryIDs = likedStoryIDs[:limit]
-	} else {
-		nextCursor = "" // No next page if we didn't fetch extra
-	}
-
 	if len(likedStoryIDs) == 0 {
-		log.Info("No liked stories found for user")
+		log.Debug("No liked stories found for user")
 		return []*LikedStoryDetailDTO{}, "", nil // Return empty list
 	}
 
-	// 3. Fetch the actual PublishedStory details using the IDs
-	log.Debug("Fetching published story details for liked IDs", zap.Int("id_count", len(likedStoryIDs)))
-	likedStories, err := s.publishedRepo.ListByIDs(ctx, likedStoryIDs)
+	// 2. Fetch details for the liked stories using the correct repository method
+	stories, err := s.publishedRepo.ListByIDs(ctx, likedStoryIDs) // <-- Исправлено имя метода
 	if err != nil {
-		log.Error("Error fetching published stories by IDs", zap.Error(err))
-		return nil, "", sharedModels.ErrInternalServer
+		log.Error("Failed to fetch published story details for liked stories", zap.Error(err))
+		return nil, "", fmt.Errorf("failed to fetch story details: %w", err)
 	}
 
-	// 4. Check progress for each story and create DTOs
-	// We need a map to efficiently match stories to IDs if order isn't guaranteed
-	storyMap := make(map[uuid.UUID]*sharedModels.PublishedStory, len(likedStories))
-	for _, story := range likedStories {
-		storyMap[story.ID] = story
+	// --- Начало получения данных об авторах ---
+	// TODO: Реализовать получение DisplayName авторов из auth-service
+	// 1. Собрать уникальные UserID авторов из 'stories'
+	authorIDs := make(map[uuid.UUID]struct{})
+	for _, story := range stories {
+		if story != nil {
+			authorIDs[story.UserID] = struct{}{}
+		}
+	}
+	uniqueAuthorIDs := make([]uuid.UUID, 0, len(authorIDs))
+	for id := range authorIDs {
+		uniqueAuthorIDs = append(uniqueAuthorIDs, id)
+	}
+
+	// 2. Сделать запрос к auth-service (например, через gRPC клиент или HTTP)
+	//    Предположим, есть метод GetUserDetails(ctx, userIDs) -> map[uuid.UUID]UserInfo, где UserInfo содержит DisplayName
+	authorNames := make(map[uuid.UUID]string) // Карта для хранения имен авторов
+	if len(uniqueAuthorIDs) > 0 {
+		// Вызываем метод клиента auth-service
+		authorInfos, err := s.authClient.GetUsersInfo(ctx, uniqueAuthorIDs)
+		if err != nil {
+			log.Warn("Failed to fetch author details from auth-service, names will be empty", zap.Error(err))
+			// Не прерываем выполнение, просто имена будут пустые
+			// Можно добавить метрику или более серьезное оповещение
+		} else {
+			// Заполняем карту authorNames
+			for userID, info := range authorInfos {
+				authorNames[userID] = info.DisplayName
+			}
+		}
+		// log.Warn("Author name fetching not implemented yet. Names will be empty.") // Убираем временное предупреждение
+	}
+	// --- Конец получения данных об авторах ---
+
+	// 3. Check progress existence for all liked stories in one go
+	progressExistsMap := make(map[uuid.UUID]bool)
+	var errProgress error
+	if len(likedStoryIDs) > 0 { // Only check if there are stories
+		progressExistsMap, errProgress = s.progressRepo.CheckProgressExistsForStories(ctx, userID, likedStoryIDs)
+		if errProgress != nil {
+			log.Error("Failed to check player progress for liked stories (batch)", zap.Error(errProgress))
+			// Decide how to handle: return error or proceed with progress as false?
+			// Proceeding with false might be acceptable for this read-only list.
+			progressExistsMap = make(map[uuid.UUID]bool) // Reset to empty map (all false) on error
+		}
+	}
+
+	// 4. Combine data into DTOs, maintaining the original order from likedStoryIDs
+	// Build a map for quick lookup of story details
+	storyMap := make(map[uuid.UUID]*sharedModels.PublishedStory)
+	for _, story := range stories {
+		if story != nil {
+			storyMap[story.ID] = story
+		}
 	}
 
 	results := make([]*LikedStoryDetailDTO, 0, len(likedStoryIDs)) // Use original ID list for order
 	for _, storyID := range likedStoryIDs {
-		story, ok := storyMap[storyID]
-		if !ok {
-			log.Warn("Story details not found for liked story ID, skipping", zap.String("storyID", storyID.String()))
-			continue // Skip if story details weren't returned
-		}
+		if story, ok := storyMap[storyID]; ok {
+			// Get progress status from the pre-fetched map
+			hasProgress := progressExistsMap[storyID] // Defaults to false if not found
 
-		_, errProgress := s.progressRepo.GetByUserIDAndStoryID(ctx, userID, story.ID)
-		hasProgress := errProgress == nil || !errors.Is(errProgress, pgx.ErrNoRows)
-		if errProgress != nil && !errors.Is(errProgress, pgx.ErrNoRows) {
-			log.Error("Error checking progress for liked story in list", zap.String("storyID", story.ID.String()), zap.Error(errProgress))
+			results = append(results, &LikedStoryDetailDTO{
+				PublishedStory:    *story,
+				HasPlayerProgress: hasProgress,
+				AuthorName:        authorNames[story.UserID], // Используем полученное имя (или пустое, если не получено)
+			})
+		} else {
+			log.Warn("Liked story details not found after fetch", zap.String("storyID", storyID.String()))
 		}
-		results = append(results, &LikedStoryDetailDTO{
-			PublishedStory:    *story,
-			HasPlayerProgress: hasProgress,
-		})
 	}
 
-	log.Debug("Successfully listed liked stories with progress", zap.Int("count", len(results)), zap.Bool("hasNext", hasNextPage))
+	log.Debug("Successfully listed liked stories", zap.Int("count", len(results)), zap.Bool("hasNext", nextCursor != ""))
 	return results, nextCursor, nil
 }

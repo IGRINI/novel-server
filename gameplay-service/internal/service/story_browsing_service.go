@@ -27,7 +27,8 @@ var (
 
 type PublishedStoryDetailWithProgressDTO struct {
 	sharedModels.PublishedStory
-	HasPlayerProgress bool `json:"hasPlayerProgress"`
+	AuthorName        string `json:"author_name"`
+	HasPlayerProgress bool   `json:"hasPlayerProgress"`
 }
 
 type PublishedStoryDetailDTO struct {
@@ -71,6 +72,7 @@ type storyBrowsingServiceImpl struct {
 	publishedRepo interfaces.PublishedStoryRepository
 	sceneRepo     interfaces.StorySceneRepository
 	progressRepo  interfaces.PlayerProgressRepository
+	authClient    interfaces.AuthServiceClient
 	logger        *zap.Logger
 }
 
@@ -79,12 +81,14 @@ func NewStoryBrowsingService(
 	publishedRepo interfaces.PublishedStoryRepository,
 	sceneRepo interfaces.StorySceneRepository,
 	progressRepo interfaces.PlayerProgressRepository,
+	authClient interfaces.AuthServiceClient,
 	logger *zap.Logger,
 ) StoryBrowsingService {
 	return &storyBrowsingServiceImpl{
 		publishedRepo: publishedRepo,
 		sceneRepo:     sceneRepo,
 		progressRepo:  progressRepo,
+		authClient:    authClient,
 		logger:        logger.Named("StoryBrowsingService"),
 	}
 }
@@ -104,24 +108,30 @@ func (s *storyBrowsingServiceImpl) ListMyPublishedStories(ctx context.Context, u
 		return nil, "", sharedModels.ErrInternalServer
 	}
 
-	// <<< ДОБАВЛЕНО: Проверка прогресса для каждой истории >>>
+	// <<< ДОБАВЛЕНО: Получение имен авторов >>>
+	authorNames := s.fetchAuthorNames(ctx, stories)
+	// <<< КОНЕЦ: Получение имен авторов >>>
+
+	// Проверка прогресса для каждой истории
 	results := make([]*PublishedStoryDetailWithProgressDTO, 0, len(stories))
 	for _, story := range stories {
+		// Check progress (similar to ListPublicStories, adapting error handling if needed)
 		_, errProgress := s.progressRepo.GetByUserIDAndStoryID(ctx, userID, story.ID)
-		hasProgress := errProgress == nil || !errors.Is(errProgress, pgx.ErrNoRows)
-		if errProgress != nil && !errors.Is(errProgress, pgx.ErrNoRows) {
-			// Логируем неожиданную ошибку, но продолжаем, считая что прогресса нет
-			log.Error("Error checking progress for story in list", zap.String("storyID", story.ID.String()), zap.Error(errProgress))
+		hasProgress := errProgress == nil || !errors.Is(errProgress, sharedModels.ErrNotFound) // Check against shared error
+		if errProgress != nil && !errors.Is(errProgress, sharedModels.ErrNotFound) {
+			log.Error("Error checking progress for my story in list", zap.String("storyID", story.ID.String()), zap.Error(errProgress))
+			hasProgress = false // Default to false on error
 		}
+
 		results = append(results, &PublishedStoryDetailWithProgressDTO{
 			PublishedStory:    *story,
+			AuthorName:        authorNames[story.UserID], // <<< ДОБАВЛЕНО: Заполняем имя автора
 			HasPlayerProgress: hasProgress,
 		})
 	}
-	// <<< КОНЕЦ: Проверка прогресса >>>
 
 	log.Debug("Successfully listed user published stories with progress", zap.Int("count", len(results)), zap.Bool("hasNext", nextCursor != ""))
-	return results, nextCursor, nil // <<< Возвращаем новый тип
+	return results, nextCursor, nil
 }
 
 // ListPublicStories returns a list of public published stories with progress flag for the requesting user.
@@ -139,26 +149,66 @@ func (s *storyBrowsingServiceImpl) ListPublicStories(ctx context.Context, userID
 		return nil, "", sharedModels.ErrInternalServer
 	}
 
-	// <<< ДОБАВЛЕНО: Проверка прогресса для каждой истории (если userID есть) >>>
+	// <<< ДОБАВЛЕНО: Получение имен авторов >>>
+	authorNames := s.fetchAuthorNames(ctx, stories)
+	// <<< КОНЕЦ: Получение имен авторов >>>
+
+	// <<< ДОБАВЛЕНО: Пакетная проверка прогресса >>>
+	progressExistsMap := make(map[uuid.UUID]bool)
+	if userID != uuid.Nil && len(stories) > 0 {
+		storyIDs := make([]uuid.UUID, len(stories))
+		for i, story := range stories {
+			storyIDs[i] = story.ID
+		}
+		var errProgress error
+		progressExistsMap, errProgress = s.progressRepo.CheckProgressExistsForStories(ctx, userID, storyIDs)
+		if errProgress != nil {
+			log.Error("Failed to check player progress for public stories (batch)", zap.Error(errProgress))
+			// Proceed with progress as false for all
+			progressExistsMap = make(map[uuid.UUID]bool)
+		}
+	}
+	// <<< КОНЕЦ: Пакетная проверка прогресса >>>
+
 	results := make([]*PublishedStoryDetailWithProgressDTO, 0, len(stories))
 	for _, story := range stories {
-		hasProgress := false
-		if userID != uuid.Nil { // Проверяем прогресс только если пользователь аутентифицирован
-			_, errProgress := s.progressRepo.GetByUserIDAndStoryID(ctx, userID, story.ID)
-			hasProgress = errProgress == nil || !errors.Is(errProgress, pgx.ErrNoRows)
-			if errProgress != nil && !errors.Is(errProgress, pgx.ErrNoRows) {
-				log.Error("Error checking progress for public story in list", zap.String("storyID", story.ID.String()), zap.Error(errProgress))
-			}
-		}
+		hasProgress := progressExistsMap[story.ID] // Defaults to false
 		results = append(results, &PublishedStoryDetailWithProgressDTO{
 			PublishedStory:    *story,
+			AuthorName:        authorNames[story.UserID], // <<< ДОБАВЛЕНО: Заполняем имя автора
 			HasPlayerProgress: hasProgress,
 		})
 	}
-	// <<< КОНЕЦ: Проверка прогресса >>>
 
 	log.Debug("Successfully listed public stories with progress", zap.Int("count", len(results)), zap.Bool("hasNext", nextCursor != ""))
-	return results, nextCursor, nil // <<< Возвращаем новый тип
+	return results, nextCursor, nil
+}
+
+// <<< ДОБАВЛЕНО: Вспомогательная функция для получения имен авторов >>>
+func (s *storyBrowsingServiceImpl) fetchAuthorNames(ctx context.Context, stories []*sharedModels.PublishedStory) map[uuid.UUID]string {
+	authorIDs := make(map[uuid.UUID]struct{})
+	for _, story := range stories {
+		if story != nil {
+			authorIDs[story.UserID] = struct{}{}
+		}
+	}
+	uniqueAuthorIDs := make([]uuid.UUID, 0, len(authorIDs))
+	for id := range authorIDs {
+		uniqueAuthorIDs = append(uniqueAuthorIDs, id)
+	}
+
+	authorNames := make(map[uuid.UUID]string)
+	if len(uniqueAuthorIDs) > 0 {
+		authorInfos, err := s.authClient.GetUsersInfo(ctx, uniqueAuthorIDs)
+		if err != nil {
+			s.logger.Warn("Failed to fetch author details from auth-service, names will be empty", zap.Error(err))
+		} else {
+			for userID, info := range authorInfos {
+				authorNames[userID] = info.DisplayName
+			}
+		}
+	}
+	return authorNames
 }
 
 // GetPublishedStoryDetails retrieves the details of a published story.

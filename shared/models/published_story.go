@@ -78,3 +78,25 @@ type Config struct {
 }
 
 // TODO: Define PlayerPreferences struct if needed
+
+// PublishedStorySummary provides a concise view of a published story, often used in lists.
+type PublishedStorySummary struct {
+	ID               uuid.UUID `json:"id"`
+	Title            string    `json:"title"`
+	ShortDescription string    `json:"short_description"` // Changed from Description
+	AuthorID         uuid.UUID `json:"author_id"`
+	AuthorName       string    `json:"author_name"`
+	PublishedAt      time.Time `json:"published_at"`
+	IsAdultContent   bool      `json:"is_adult_content"`
+	LikesCount       int64     `json:"likes_count"` // Added LikesCount
+	IsLiked          bool      `json:"is_liked"`    // Added IsLiked (specific to user context)
+}
+
+// PublishedStorySummaryWithProgress extends PublishedStorySummary with player progress info.
+type PublishedStorySummaryWithProgress struct {
+	PublishedStorySummary
+	HasPlayerProgress bool `json:"hasPlayerProgress"`
+}
+
+// StatRule defines conditions for game over based on core stats.
+// DEPRECATED: Use StatDefinition instead.

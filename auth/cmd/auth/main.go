@@ -84,6 +84,7 @@ func main() {
 	}
 
 	router := gin.New()
+	router.RedirectTrailingSlash = true
 	router.Use(sharedMiddleware.GinZapLogger(logger))
 	router.Use(gin.Recovery())
 

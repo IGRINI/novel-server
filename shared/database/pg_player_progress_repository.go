@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"novel-server/shared/interfaces"
@@ -175,4 +176,53 @@ func (r *pgPlayerProgressRepository) Delete(ctx context.Context, userID uuid.UUI
 	}
 
 	return nil
+}
+
+// CheckProgressExistsForStories checks if player progress exists for a given user and multiple story IDs.
+func (r *pgPlayerProgressRepository) CheckProgressExistsForStories(ctx context.Context, userID uuid.UUID, storyIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	logFields := []zap.Field{zap.Stringer("userID", userID), zap.Int("storyIDCount", len(storyIDs))}
+	r.logger.Debug("Checking progress existence for multiple stories", logFields...)
+
+	if len(storyIDs) == 0 {
+		return make(map[uuid.UUID]bool), nil // Return empty map if no IDs provided
+	}
+
+	query := `
+		SELECT DISTINCT published_story_id
+		FROM player_progress
+		WHERE user_id = $1 AND published_story_id = ANY($2::uuid[])
+	`
+
+	rows, err := r.pool.Query(ctx, query, userID, storyIDs)
+	if err != nil {
+		r.logger.Error("Failed to query progress existence for stories", append(logFields, zap.Error(err))...)
+		return nil, fmt.Errorf("error checking progress existence: %w", err)
+	}
+	defer rows.Close()
+
+	// Initialize the map with all requested IDs set to false
+	progressExistsMap := make(map[uuid.UUID]bool, len(storyIDs))
+	for _, id := range storyIDs {
+		progressExistsMap[id] = false
+	}
+
+	// Iterate through the results and mark existing progress as true
+	for rows.Next() {
+		var foundStoryID uuid.UUID
+		if err := rows.Scan(&foundStoryID); err != nil {
+			r.logger.Error("Failed to scan existing progress story ID", append(logFields, zap.Error(err))...)
+			// Decide how to handle scan error: return error or just skip this ID?
+			// Returning error is safer to signal potential data inconsistency.
+			return nil, fmt.Errorf("error scanning progress existence results: %w", err)
+		}
+		progressExistsMap[foundStoryID] = true
+	}
+
+	if err := rows.Err(); err != nil {
+		r.logger.Error("Error iterating progress existence results", append(logFields, zap.Error(err))...)
+		return nil, fmt.Errorf("error iterating progress existence results: %w", err)
+	}
+
+	r.logger.Debug("Successfully checked progress existence", logFields...)
+	return progressExistsMap, nil
 }

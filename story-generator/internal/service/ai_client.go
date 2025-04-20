@@ -172,6 +172,7 @@ func (c *openAIClient) GenerateText(ctx context.Context, userID string, systemPr
 	log.Printf("Ответ от AI API получен за %v. Длина ответа: %d символов. (userID: %s)", duration, len(generatedText), userID)
 
 	// Дополнительно можно логировать Usage info: resp.Usage
+	log.Printf("[DEBUG] AI Usage received (userID: %s): %+v", userID, resp.Usage)
 	if resp.Usage.TotalTokens > 0 {
 		log.Printf("AI Usage (userID: %s): PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
 			userID, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
@@ -181,6 +182,7 @@ func (c *openAIClient) GenerateText(ctx context.Context, userID string, systemPr
 		aiTotalTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(resp.Usage.TotalTokens))
 		// <<< Рассчитываем и обновляем стоимость >>>
 		cost := calculateCost(c.model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+		log.Printf("[DEBUG] Calculated cost (userID: %s, model: %s): %.8f", userID, c.model, cost)
 		if cost > 0 {
 			aiEstimatedCostUSD.With(prometheus.Labels{"model": c.model, "user_id": userID}).Add(cost)
 			log.Printf("AI Usage Cost (estimated, userID: %s): $%.6f", userID, cost)
@@ -328,11 +330,17 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 	return nil
 }
 
-// <<< Новая функция для расчета стоимости >>>
 // calculateCost рассчитывает стоимость на основе модели и количества токенов
 func calculateCost(modelName string, promptTokens, completionTokens int) float64 {
-	// Используем цены "nano", если модель содержит "gpt-4.1-nano"
-	// Можно расширить логику для других моделей
+	// Убрали проверку: if strings.Contains(modelName, "gpt-4.1-nano")
+	// Теперь расчет применяется ко всем моделям, используя константы nano
+	// TODO: Рассмотреть добавление конфигурации цен для разных моделей в будущем
+	log.Printf("[DEBUG] Calculating cost using nano prices for model: %s", modelName) // Добавим лог для ясности
+	promptCost := float64(promptTokens) * pricePerMillionInputTokensNano / 1_000_000
+	completionCost := float64(completionTokens) * pricePerMillionOutputTokensNano / 1_000_000
+	return promptCost + completionCost
+
+	/* <<< Старая логика с проверкой >>>
 	if strings.Contains(modelName, "gpt-4.1-nano") {
 		promptCost := float64(promptTokens) * pricePerMillionInputTokensNano / 1_000_000
 		completionCost := float64(completionTokens) * pricePerMillionOutputTokensNano / 1_000_000
@@ -340,6 +348,7 @@ func calculateCost(modelName string, promptTokens, completionTokens int) float64
 	}
 	// Возвращаем 0, если для модели нет цены
 	return 0.0
+	*/
 }
 
 // --- Вспомогательная функция для конвертации *float64 в float32 ---

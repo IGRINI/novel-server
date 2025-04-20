@@ -44,6 +44,12 @@ type Config struct {
 
 	// <<< Добавляем секрет для межсервисных токенов >>>
 	InterServiceSecret string
+
+	// <<< Добавляем URL для auth-service >>>
+	AuthServiceURL string `envconfig:"AUTH_SERVICE_URL" required:"true"`
+
+	// <<< ДОБАВЛЕНО: Настройки генерации >>>
+	GenerationLimitPerUser int `envconfig:"GENERATION_LIMIT_PER_USER" default:"1"` // Лимит одновременных генераций на пользователя
 }
 
 // GetDSN возвращает строку подключения (DSN) для PostgreSQL
@@ -106,7 +112,9 @@ func LoadConfig() (*Config, error) {
 	log.Printf("  Client Updates Queue Name: %s", cfg.ClientUpdatesQueueName)
 	log.Printf("  Push Notification Queue Name: %s", cfg.PushNotificationQueueName)
 	log.Println("  JWT Secret: [ЗАГРУЖЕН]")
-	log.Println("  Inter-Service Secret: [ЗАГРУЖЕН]") // <<< Логируем загрузку
+	log.Println("  Inter-Service Secret: [ЗАГРУЖЕН]")                         // <<< Логируем загрузку
+	log.Printf("  Generation Limit Per User: %d", cfg.GenerationLimitPerUser) // <<< ДОБАВЛЕНО ЛОГИРОВАНИЕ >>>
+	log.Printf("  Auth Service URL: %s", cfg.AuthServiceURL)                  // <<< Логируем URL
 
 	cfg.DBMaxConns = maxConns
 	cfg.DBIdleTimeout = time.Duration(idleTimeoutSec) * time.Second

@@ -176,3 +176,59 @@ func (h *AuthHandler) refreshAdminToken(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, resp)
 }
+
+// handleBatchGetUsersInfo - обработчик для POST /internal/users/batch-info
+func (h *AuthHandler) handleBatchGetUsersInfo(c *gin.Context) {
+	zap.L().Info("Received batch get users info request")
+
+	var req BatchGetUsersInfoRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		zap.L().Error("Failed to bind JSON for batch get users info", zap.Error(err))
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{
+			Code:    models.ErrCodeBadRequest,
+			Message: "Invalid request body: " + err.Error(),
+		})
+		return
+	}
+
+	userIDs := make([]uuid.UUID, 0, len(req.UserIDs))
+	for _, idStr := range req.UserIDs {
+		id, err := uuid.Parse(idStr)
+		if err != nil {
+			zap.L().Warn("Failed to parse user ID", zap.String("id", idStr), zap.Error(err))
+			c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{
+				Code:    models.ErrCodeBadRequest,
+				Message: "Invalid user ID format: " + idStr,
+			})
+			return
+		}
+		userIDs = append(userIDs, id)
+	}
+
+	if len(userIDs) == 0 {
+		c.JSON(http.StatusOK, BatchGetUsersInfoResponse{Data: []UserInfoForBatch{}})
+		return
+	}
+
+	users, err := h.authService.GetUsersByIDs(c.Request.Context(), userIDs)
+	if err != nil {
+		zap.L().Error("Failed to get users by IDs from service", zap.Error(err))
+		handleServiceError(c, err)
+		return
+	}
+
+	respData := make([]UserInfoForBatch, len(users))
+	for i, user := range users {
+		respData[i] = UserInfoForBatch{
+			ID:          user.ID.String(),
+			Username:    user.Username,
+			DisplayName: &user.DisplayName,
+			Email:       &user.Email,
+			Roles:       user.Roles,
+			IsBanned:    user.IsBanned,
+		}
+	}
+
+	zap.L().Info("Successfully retrieved batch user info", zap.Int("count", len(respData)))
+	c.JSON(http.StatusOK, BatchGetUsersInfoResponse{Data: respData})
+}

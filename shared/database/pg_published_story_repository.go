@@ -537,11 +537,10 @@ func (r *pgPublishedStoryRepository) UpdateConfigAndSetupAndStatus(ctx context.C
 func (r *pgPublishedStoryRepository) CountActiveGenerationsForUser(ctx context.Context, userID uuid.UUID) (int, error) {
 	activeStatuses := []string{
 		string(models.StatusSetupPending),
-		string(models.StatusSetupGenerating),
-		string(models.StatusFirstScenePending),
 		string(models.StatusGeneratingScene),
+		string(models.StatusFirstScenePending),
 		string(models.StatusGameOverPending),
-		string(models.StatusGenerating), // Assuming this is a general generating status
+		string(models.StatusGenerating),
 		string(models.StatusRevising),
 	}
 
@@ -807,3 +806,95 @@ func (r *pgPublishedStoryRepository) MarkStoryAsUnliked(ctx context.Context, sto
 
 // Ensure pgPublishedStoryRepository implements PublishedStoryRepository
 var _ interfaces.PublishedStoryRepository = (*pgPublishedStoryRepository)(nil)
+
+// Delete удаляет опубликованную историю и все связанные с ней данные.
+func (r *pgPublishedStoryRepository) Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
+	logFields := []zap.Field{
+		zap.String("publishedStoryID", id.String()),
+		zap.String("userID", userID.String()),
+	}
+	r.logger.Info("Attempting to delete published story and related data", logFields...)
+
+	// Используем транзакцию для атомарности
+	pool, ok := r.db.(*pgxpool.Pool)
+	if !ok {
+		r.logger.Error("r.db is not *pgxpool.Pool, cannot begin transaction for delete", logFields...)
+		return fmt.Errorf("внутренняя ошибка: невозможно начать транзакцию (неверный тип DBTX)")
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		r.logger.Error("Failed to begin transaction for deleting story", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка начала транзакции для удаления истории: %w", err)
+	}
+	defer tx.Rollback(ctx) // Откат по умолчанию
+
+	// 1. Проверка владения и существования истории
+	var ownerID uuid.UUID
+	checkQuery := `SELECT user_id FROM published_stories WHERE id = $1`
+	err = tx.QueryRow(ctx, checkQuery, id).Scan(&ownerID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			r.logger.Warn("Published story not found for deletion", logFields...)
+			return models.ErrNotFound // История не найдена
+		}
+		r.logger.Error("Failed to check story ownership before deletion", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка проверки владения историей %s: %w", id, err)
+	}
+	if ownerID != userID {
+		r.logger.Warn("User does not own the story attempted for deletion", logFields...)
+		return models.ErrForbidden // Пользователь не владелец
+	}
+
+	// 2. Удаление связанных данных (можно объединить в CTE или выполнять последовательно)
+	// Порядок: лайки -> прогресс -> сцены -> сама история (из-за внешних ключей)
+
+	// 2a. Удаление лайков
+	deleteLikesQuery := `DELETE FROM user_story_likes WHERE published_story_id = $1`
+	_, err = tx.Exec(ctx, deleteLikesQuery, id)
+	if err != nil {
+		r.logger.Error("Failed to delete user_story_likes during story deletion", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка удаления лайков для истории %s: %w", id, err)
+	}
+	r.logger.Debug("Deleted related likes", logFields...)
+
+	// 2b. Удаление прогресса игроков
+	deleteProgressQuery := `DELETE FROM player_progress WHERE published_story_id = $1`
+	_, err = tx.Exec(ctx, deleteProgressQuery, id)
+	if err != nil {
+		r.logger.Error("Failed to delete player_progress during story deletion", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка удаления прогресса игроков для истории %s: %w", id, err)
+	}
+	r.logger.Debug("Deleted related player progress", logFields...)
+
+	// 2c. Удаление сцен
+	deleteScenesQuery := `DELETE FROM story_scenes WHERE published_story_id = $1`
+	_, err = tx.Exec(ctx, deleteScenesQuery, id)
+	if err != nil {
+		r.logger.Error("Failed to delete story_scenes during story deletion", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка удаления сцен для истории %s: %w", id, err)
+	}
+	r.logger.Debug("Deleted related scenes", logFields...)
+
+	// 3. Удаление самой истории
+	deleteStoryQuery := `DELETE FROM published_stories WHERE id = $1` // Условие `AND user_id = $2` уже не нужно, проверили выше
+	commandTag, err := tx.Exec(ctx, deleteStoryQuery, id)
+	if err != nil {
+		r.logger.Error("Failed to delete published_stories record", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка удаления основной записи истории %s: %w", id, err)
+	}
+	if commandTag.RowsAffected() == 0 {
+		// Это не должно произойти, т.к. мы проверили существование ранее
+		r.logger.Error("Published story disappeared during deletion transaction", logFields...)
+		return models.ErrNotFound // Или другая ошибка несогласованности
+	}
+	r.logger.Debug("Deleted published_stories record", logFields...)
+
+	// Коммит транзакции
+	if err := tx.Commit(ctx); err != nil {
+		r.logger.Error("Failed to commit transaction for deleting story", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка коммита транзакции при удалении истории %s: %w", id, err)
+	}
+
+	r.logger.Info("Published story and related data deleted successfully", logFields...)
+	return nil
+}

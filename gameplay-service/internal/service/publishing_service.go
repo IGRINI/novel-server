@@ -31,6 +31,7 @@ var (
 type PublishingService interface {
 	PublishDraft(ctx context.Context, draftID uuid.UUID, userID uuid.UUID) (publishedStoryID uuid.UUID, err error)
 	SetStoryVisibility(ctx context.Context, storyID, userID uuid.UUID, isPublic bool) error
+	DeletePublishedStory(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
 }
 
 type publishingServiceImpl struct {
@@ -233,5 +234,26 @@ func (s *publishingServiceImpl) SetStoryVisibility(ctx context.Context, storyID,
 	}
 
 	s.logger.Info("Story visibility updated successfully", logFields...)
+	return nil
+}
+
+// DeletePublishedStory удаляет историю для пользователя.
+func (s *publishingServiceImpl) DeletePublishedStory(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
+	log := s.logger.With(zap.String("publishedStoryID", id.String()), zap.String("userID", userID.String()))
+	log.Info("DeletePublishedStory called")
+
+	// Вызываем метод Delete репозитория
+	err := s.publishedRepo.Delete(ctx, id, userID)
+	if err != nil {
+		log.Error("Error deleting published story from repository", zap.Error(err))
+		// Возвращаем стандартные ошибки, если это возможно
+		if errors.Is(err, sharedModels.ErrNotFound) || errors.Is(err, sharedModels.ErrForbidden) {
+			return err
+		}
+		// В остальных случаях возвращаем обобщенную ошибку
+		return fmt.Errorf("error deleting published story: %w", err)
+	}
+
+	log.Info("Published story deleted successfully")
 	return nil
 }

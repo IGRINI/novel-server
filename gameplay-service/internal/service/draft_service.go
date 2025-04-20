@@ -33,6 +33,7 @@ type DraftService interface {
 	RetryDraftGeneration(ctx context.Context, draftID uuid.UUID, userID uuid.UUID) error
 	GetDraftDetailsInternal(ctx context.Context, draftID uuid.UUID) (*sharedModels.StoryConfig, error)
 	UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string, status sharedModels.StoryStatus) error
+	DeleteDraft(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
 }
 
 type draftServiceImpl struct {
@@ -379,5 +380,27 @@ func (s *draftServiceImpl) UpdateDraftInternal(ctx context.Context, draftID uuid
 	}
 
 	log.Info("Draft updated successfully internally")
+	return nil
+}
+
+func (s *draftServiceImpl) DeleteDraft(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
+	log := s.logger.With(zap.String("draftID", id.String()), zap.String("userID", userID.String()))
+	log.Info("DeleteDraft called")
+
+	// Вызываем метод Delete репозитория
+	err := s.repo.Delete(ctx, id, userID)
+	if err != nil {
+		// Логируем ошибку
+		log.Error("Error deleting draft from repository", zap.Error(err))
+
+		// Возвращаем стандартные ошибки, если это возможно
+		if errors.Is(err, sharedModels.ErrNotFound) {
+			return err
+		}
+		// В остальных случаях возвращаем обобщенную ошибку
+		return fmt.Errorf("error deleting draft: %w", err)
+	}
+
+	log.Info("Draft deleted successfully")
 	return nil
 }

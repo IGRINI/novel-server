@@ -265,6 +265,43 @@ func (r *pgUserRepository) UpdatePasswordHash(ctx context.Context, userID uuid.U
 	return nil
 }
 
+// GetUsersByIDs retrieves multiple users by their IDs.
+func (r *pgUserRepository) GetUsersByIDs(ctx context.Context, ids []uuid.UUID) ([]models.User, error) {
+	// Если список ID пуст, возвращаем пустой срез без запроса к БД
+	if len(ids) == 0 {
+		return []models.User{}, nil
+	}
+
+	query := `SELECT id, username, display_name, email, roles, is_banned FROM users WHERE id = ANY($1)`
+	r.logger.Debug("Executing query", zap.String("query", query), zap.Any("ids", ids))
+
+	rows, err := r.db.Query(ctx, query, ids)
+	if err != nil {
+		r.logger.Error("Failed to query users by IDs from postgres", zap.Error(err), zap.Any("ids", ids))
+		return nil, fmt.Errorf("failed to query users by IDs: %w", err)
+	}
+	defer rows.Close()
+
+	users := make([]models.User, 0, len(ids)) // Предполагаем, что найдем всех
+	for rows.Next() {
+		var user models.User
+		if err := rows.Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Roles, &user.IsBanned); err != nil {
+			r.logger.Error("Failed to scan user row in GetUsersByIDs", zap.Error(err))
+			// Не прерываем цикл, но логируем ошибку
+			continue
+		}
+		users = append(users, user)
+	}
+
+	if err = rows.Err(); err != nil {
+		r.logger.Error("Error iterating user rows in GetUsersByIDs", zap.Error(err))
+		return nil, fmt.Errorf("error iterating user rows in GetUsersByIDs: %w", err)
+	}
+
+	r.logger.Debug("Successfully retrieved users by IDs", zap.Int("foundCount", len(users)), zap.Int("requestedCount", len(ids)))
+	return users, nil
+}
+
 // --- Database Schema ---
 // Ensure the following table exists in your PostgreSQL database.
 // It's recommended to use a migration tool (e.g., goose, migrate) to manage schema changes.

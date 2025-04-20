@@ -24,4 +24,7 @@ type AuthService interface {
 	// RefreshAdminToken validates an admin's refresh token, checks admin role,
 	// generates new tokens, and returns them along with user claims.
 	RefreshAdminToken(ctx context.Context, refreshToken string) (*models.TokenDetails, *models.Claims, error)
+
+	// GetUsersByIDs retrieves multiple users by their IDs.
+	GetUsersByIDs(ctx context.Context, ids []uuid.UUID) ([]models.User, error)
 }

@@ -333,3 +333,33 @@ func (h *GameplayHandler) retryDraftGeneration(c *gin.Context) { // <<< *gin.Con
 	log.Info("Draft retry request accepted")
 	c.Status(http.StatusAccepted)
 }
+
+// <<<<< НАЧАЛО ОБРАБОТЧИКА УДАЛЕНИЯ ЧЕРНОВИКА >>>>>
+func (h *GameplayHandler) deleteDraft(c *gin.Context) { // <<< *gin.Context
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		// getUserIDFromContext уже вызвал Abort
+		return
+	}
+
+	idStr := c.Param("id")
+	draftID, err := uuid.Parse(idStr)
+	if err != nil {
+		h.logger.Warn("Invalid draft ID format in deleteDraft", zap.String("id", idStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid draft ID format", sharedModels.ErrBadRequest), h.logger)
+		return
+	}
+
+	// Вызываем метод сервиса
+	err = h.service.DeleteDraft(c.Request.Context(), draftID, userID)
+	if err != nil {
+		h.logger.Error("Error deleting draft", zap.String("userID", userID.String()), zap.String("draftID", draftID.String()), zap.Error(err))
+		handleServiceError(c, err, h.logger) // Обрабатываем стандартные ошибки, включая ErrNotFound
+		return
+	}
+
+	// При успехе возвращаем 204 No Content
+	c.Status(http.StatusNoContent)
+}
+
+// <<<<< КОНЕЦ ОБРАБОТЧИКА УДАЛЕНИЯ ЧЕРНОВИКА >>>>>

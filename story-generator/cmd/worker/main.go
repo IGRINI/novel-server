@@ -201,8 +201,6 @@ func main() {
 			// <<< Метрика: Счетчик полученных задач >>>
 			worker.IncrementTasksReceived()
 
-			log.Printf("[TaskID: %s] Получена задача (DeliveryTag: %d): %s", "N/A", msg.DeliveryTag, msg.Body)
-
 			var payload messaging.GenerationTaskPayload
 			err := json.Unmarshal(msg.Body, &payload)
 			if err != nil {

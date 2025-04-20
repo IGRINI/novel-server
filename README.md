@@ -191,7 +191,7 @@
         *   `404 Not Found` (`{"code": 40402, "message": "User not found"}`): Пользователь, связанный с токеном, не найден в БД.
         *   `500 Internal Server Error` (`{"code": 50001, "message": "..."}`): Внутренняя ошибка сервера.
 
-*   **`POST /api/v1/device-tokens`**
+*   **`POST /api/device-tokens`**
     *   Описание: Регистрирует токен устройства для текущего аутентифицированного пользователя, чтобы получать push-уведомления. Если токен для этого пользователя уже существует, обновляет платформу и время последнего использования.
     *   Аутентификация: **Требуется** (`Authorization: Bearer <access_token>`).
     *   Тело запроса (`application/json`):
@@ -212,7 +212,7 @@
         *   `401 Unauthorized`: Невалидный access токен.
         *   `500 Internal Server Error`: Ошибка базы данных при сохранении токена.
 
-*   **`DELETE /api/v1/device-tokens`**
+*   **`DELETE /api/device-tokens`**
     *   Описание: Удаляет указанный токен устройства из системы. Пользователь больше не будет получать push-уведомления на это устройство.
     *   Аутентификация: **Требуется** (`Authorization: Bearer <access_token>`).
     *   Тело запроса (`application/json`):
@@ -391,26 +391,41 @@
         *   `409 Conflict` (`{"message": "Story config is not in error state" | "User already has an active generation task"}`): Черновик не в статусе ошибки или у пользователя уже есть задача.
         *   `500 Internal Server Error`: Ошибка при обновлении БД или постановке задачи.
 
+*   **`DELETE /api/stories/drafts/:draft_id`**
+    *   Описание: Удаление **своего** черновика истории.
+    *   Аутентификация: **Требуется.**
+    *   Параметр пути: `:draft_id` - UUID черновика (`StoryConfig`).
+    *   Тело запроса: Нет.
+    *   Ответ при успехе (`204 No Content`): Черновик успешно удален.
+    *   Ответ при ошибке:
+        *   `400 Bad Request`: Невалидный UUID.
+        *   `401 Unauthorized`: Невалидный токен.
+        *   `403 Forbidden`: Попытка доступа к чужому черновику.
+        *   `404 Not Found`: Черновик не найден.
+        *   `500 Internal Server Error`: Внутренняя ошибка сервера при удалении.
+
 ##### Опубликованные истории (`/api/published-stories`)
 
 *   **`GET /api/published-stories/me`**
     *   Описание: Получение списка **своих** опубликованных историй. Поддерживает курсорную пагинацию.
     *   Аутентификация: **Требуется.**
     *   Query параметры: `limit`, `cursor` (аналогично `/api/stories`).
-    *   Ответ при успехе (`200 OK`): Пагинированный список `PublishedStorySummaryWithProgress`.
+    *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`.
         ```json
         {
           "data": [
             {
               "id": "uuid-string",
               "title": "string",
-              "description": "string",
+              "short_description": "string", // <-- Обновлено поле
+              "author_id": "uuid-string",
+              "author_name": "string", // <-- Добавлено имя автора
               "published_at": "timestamp",
+              "is_adult_content": false, // <-- Обновлено поле
               "likes_count": 123,
               "is_liked": true,
-              "author_id": "uuid-string",
-              "hasPlayerProgress": false, // Есть ли прогресс у текущего пользователя
-              "status": "ready | completed | error | generating_scene | ..."
+              "hasPlayerProgress": false // Есть ли прогресс у текущего пользователя
+              // "status": "..." // Статус больше не возвращается в Summary
             }
             /* ... */
           ],
@@ -426,19 +441,22 @@
     *   Описание: Получение списка **публичных** опубликованных историй (доступных всем). Поддерживает курсорную пагинацию.
     *   Аутентификация: **Требуется** (проверяется токен, но доступ не ограничивается автором).
     *   Query параметры: `limit`, `cursor`.
-    *   Ответ при успехе (`200 OK`): Пагинированный список `PublishedStorySummaryWithProgress`.
+    *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`.
         ```json
         {
           "data": [
             {
               "id": "uuid-string",
               "title": "string",
-              "description": "string",
-              "published_at": "timestamp",
-              "likes_count": 123,
-              "is_liked": false,
+              "short_description": "string", // <-- Обновлено поле
               "author_id": "uuid-string",
+              "author_name": "string", // <-- Добавлено имя автора
+              "published_at": "timestamp",
+              "is_adult_content": false, // <-- Обновлено поле
+              "likes_count": 123,
+              "is_liked": false, // Лайкнул ли текущий пользователь
               "hasPlayerProgress": true // Есть ли прогресс у текущего пользователя
+              // "status": "..." // Статус больше не возвращается в Summary
             }
             /* ... */
           ],
@@ -583,6 +601,19 @@
         *   `404 Not Found` (`{"message": "story not liked by this user yet"}`): Пользователь не лайкал эту историю.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
+*   **`DELETE /api/published-stories/:id`**
+    *   Описание: Удаление **своей** опубликованной истории.
+    *   Аутентификация: **Требуется.**
+    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
+    *   Тело запроса: Нет.
+    *   Ответ при успехе (`204 No Content`): История успешно удалена.
+    *   Ответ при ошибке:
+        *   `400 Bad Request`: Невалидный UUID.
+        *   `401 Unauthorized`: Невалидный токен.
+        *   `403 Forbidden`: Попытка доступа к чужой истории.
+        *   `404 Not Found`: История не найдена.
+        *   `500 Internal Server Error`: Внутренняя ошибка сервера при удалении.
+
 *   **`POST /api/published-stories/:id/retry`**
     *   Описание: Повторный запуск задачи генерации (Setup или Scene) для опубликованной истории, которая завершилась с ошибкой (`status: "error"`).
     *   Аутентификация: **Требуется.**
@@ -600,18 +631,20 @@
     *   Описание: Получение списка историй, которые лайкнул пользователь.
     *   Аутентификация: **Требуется.**
     *   Query параметры: `limit`, `cursor`.
-    *   Ответ при успехе (`200 OK`): Пагинированный список `PublishedStorySummaryWithProgress`.
+    *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`.
         ```json
         {
           "data": [
             {
               "id": "uuid-string",
               "title": "string",
-              "description": "string",
+              "short_description": "string", // <-- Обновлено поле
+              "author_id": "uuid-string",
+              "author_name": "string", // <-- Добавлено имя автора
               "published_at": "timestamp",
+              "is_adult_content": false, // <-- Обновлено поле
               "likes_count": 123,
               "is_liked": true, // Всегда true для этого эндпоинта
-              "author_id": "uuid-string",
               "hasPlayerProgress": false // Есть ли прогресс у текущего пользователя
             }
             /* ... */
