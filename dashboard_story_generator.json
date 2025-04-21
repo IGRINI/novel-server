@@ -300,6 +300,99 @@
       ],
       "title": "Goroutines - Story Generator",
       "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "tokens/sec", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "normal" }, "thresholdsStyle": { "mode": "off" } },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "unit": "tps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 32 },
+      "id": 23,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+          "expr": "sum by (prompt_type, token_type) (rate(story_generator_task_tokens_total{job=\"story-generator\"}[$Interval]))",
+          "legendFormat": "{{prompt_type}} - {{token_type}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Token Rate by Prompt Type (tokens/sec)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "tokens", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 32 },
+      "id": 24,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+          "expr": "sum by (prompt_type) (rate(story_generator_task_tokens_per_task_sum{job=\"story-generator\", token_type=\"prompt\"}[$Interval])) / sum by (prompt_type) (rate(story_generator_task_tokens_per_task_count{job=\"story-generator\", token_type=\"prompt\"}[$Interval]))",
+          "legendFormat": "Avg Prompt Tokens - {{prompt_type}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+          "expr": "sum by (prompt_type) (rate(story_generator_task_tokens_per_task_sum{job=\"story-generator\", token_type=\"completion\"}[$Interval])) / sum by (prompt_type) (rate(story_generator_task_tokens_per_task_count{job=\"story-generator\", token_type=\"completion\"}[$Interval]))",
+          "legendFormat": "Avg Completion Tokens - {{prompt_type}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Average Tokens per Task by Prompt Type",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "tokens", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 32 },
+      "id": 25,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+          "expr": "histogram_quantile(0.95, sum by (le, prompt_type, token_type) (rate(story_generator_task_tokens_per_task_bucket{job=\"story-generator\"}[$Interval])))",
+          "legendFormat": "P95 Tokens - {{prompt_type}} - {{token_type}}",
+          "refId": "A"
+        }
+      ],
+      "title": "P95 Tokens per Task by Prompt Type",
+      "type": "timeseries"
     }
   ],
   "refresh": "1m",

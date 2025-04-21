@@ -439,6 +439,133 @@
       "title": "Avg Cost per User (Daily)",
       "description": "Average estimated cost per user who had activity in the last 24 hours. Requires a time range of at least 24h.",
       "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "USD/hour", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 5, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "id": 6,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+          "editorMode": "code",
+          "expr": "sum by (prompt_type) (rate(story_generator_task_estimated_cost_usd_total{job=\"story-generator\"}[5m])) * 3600",
+          "legendFormat": "{{prompt_type}} - USD/hour",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Estimated Cost Rate by Prompt Type (USD/hour)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "hideFrom": { "legend": false, "tooltip": false, "viz": false } },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 16 },
+      "id": 7,
+      "options": {
+        "displayLabels": [ "name", "percent", "value" ],
+        "legend": { "displayMode": "list", "placement": "right", "showLegend": true },
+        "pieType": "pie",
+        "reduceOptions": { "calcs": [ "sum" ], "fields": "/^prompt_type$/", "values": true },
+        "sortBy": "value",
+        "sortOrder": "desc"
+      },
+      "pluginVersion": "9.0.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+          "editorMode": "code",
+          "expr": "sum(increase(story_generator_task_estimated_cost_usd_total{job=\"story-generator\"}[$__range])) by (prompt_type)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "{{prompt_type}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Cost Distribution by Prompt Type",
+      "type": "piechart"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "USD", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "id": 8,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+          "expr": "sum by (prompt_type) (rate(story_generator_task_estimated_cost_usd_per_task_sum{job=\"story-generator\"}[$Interval])) / sum by (prompt_type) (rate(story_generator_task_estimated_cost_usd_per_task_count{job=\"story-generator\"}[$Interval]))",
+          "legendFormat": "Avg Cost - {{prompt_type}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Average Cost per Task by Prompt Type",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "USD", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "id": 9,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
+          "expr": "histogram_quantile(0.95, sum by (le, prompt_type) (rate(story_generator_task_estimated_cost_usd_per_task_bucket{job=\"story-generator\"}[$Interval])))",
+          "legendFormat": "P95 Cost - {{prompt_type}}",
+          "refId": "A"
+        }
+      ],
+      "title": "P95 Cost per Task by Prompt Type",
+      "type": "timeseries"
     }
   ],
   "refresh": "1m",

@@ -43,6 +43,29 @@ var (
 		Help:    "Total duration of task processing.",
 		Buckets: prometheus.ExponentialBuckets(0.5, 2, 10), // Базовые бакеты: 0.5s, 1s, 2s ... ~4 min
 	})
+
+	// --- НОВЫЕ МЕТРИКИ: Токены и стоимость по типу задачи --- //
+	taskTokensTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "story_generator_task_tokens_total",
+		Help: "Total number of tokens processed by AI, labeled by prompt type and token type (prompt/completion).",
+	}, []string{"prompt_type", "token_type"})
+
+	taskEstimatedCostUSDTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "story_generator_task_estimated_cost_usd_total",
+		Help: "Total estimated cost of AI tasks in USD, labeled by prompt type.",
+	}, []string{"prompt_type"})
+
+	taskTokensPerTask = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "story_generator_task_tokens_per_task",
+		Help:    "Distribution of tokens per task, labeled by prompt type and token type.",
+		Buckets: prometheus.ExponentialBuckets(100, 2, 12), // Бакеты: 100, 200, 400, ..., ~200k
+	}, []string{"prompt_type", "token_type"})
+
+	taskEstimatedCostUSDPerTask = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "story_generator_task_estimated_cost_usd_per_task",
+		Help:    "Distribution of estimated cost per task in USD, labeled by prompt type.",
+		Buckets: prometheus.ExponentialBuckets(0.0001, 4, 10), // Бакеты: $0.0001, $0.0004, $0.0016, ..., ~$26
+	}, []string{"prompt_type"})
 )
 
 // IncrementTasksReceived инкрементирует счетчик полученных задач.
@@ -84,6 +107,9 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 	log.Printf("[TaskID: %s] Обработка задачи: UserID=%s, PromptType=%s",
 		payload.TaskID, payload.UserID, payload.PromptType)
 
+	// Метка для прометеуса
+	promptTypeLabel := string(payload.PromptType)
+
 	fullStartTime := time.Now()
 	createdAt := fullStartTime
 
@@ -93,6 +119,7 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 	var err error
 	var processingTime time.Duration
 	var completedAt time.Time
+	var usageInfo service.UsageInfo // <<< Для хранения информации о токенах/стоимости
 
 	// --- Этап 1-2: Загрузка и рендеринг промта ---
 	finalSystemPrompt, err = h.preparePrompt(payload.TaskID, payload.PromptType)
@@ -102,7 +129,7 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 		processingTime = completedAt.Sub(fullStartTime)
 		tasksFailedTotal.WithLabelValues("prompt_preparation").Inc()
 		taskProcessingDuration.Observe(processingTime.Seconds())
-		return h.saveAndNotifyResult(payload.TaskID, payload.UserID, payload.PromptType, payload.StoryConfigID, payload.PublishedStoryID, payload.StateHash, "", err, createdAt, completedAt, processingTime)
+		return fmt.Errorf("ошибка подготовки промта: %w", err)
 	}
 
 	// --- Этап 3: Вызов AI API с ретраями ---
@@ -116,7 +143,7 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 		processingTime = completedAt.Sub(fullStartTime)
 		tasksFailedTotal.WithLabelValues("user_input_empty").Inc()
 		taskProcessingDuration.Observe(processingTime.Seconds())
-		return h.saveAndNotifyResult(payload.TaskID, payload.UserID, payload.PromptType, payload.StoryConfigID, payload.PublishedStoryID, payload.StateHash, "", err, createdAt, completedAt, processingTime)
+		return fmt.Errorf("ошибка валидации: %w", err)
 	}
 
 	baseDelay := h.baseRetryDelay
@@ -132,17 +159,29 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 ------------------------------`,
 			payload.TaskID, attempt, len(userInput), userInput)
 
-		aiResponse, err = h.aiClient.GenerateText(ctx, payload.UserID, finalSystemPrompt, userInput, service.GenerationParams{})
+		aiResponse, usageInfo, err = h.aiClient.GenerateText(ctx, payload.UserID, finalSystemPrompt, userInput, service.GenerationParams{})
 		cancel()
 
 		processingTime = time.Since(aiStartTime)
 
 		if err == nil {
-			log.Printf("[TaskID: %s] AI API успешно ответил (Попытка %d).", payload.TaskID, attempt)
+			log.Printf("[TaskID: %s] AI API успешно ответил (Попытка %d). Время ответа: %v", payload.TaskID, attempt, processingTime)
+			if usageInfo.TotalTokens > 0 {
+				taskTokensTotal.WithLabelValues(promptTypeLabel, "prompt").Add(float64(usageInfo.PromptTokens))
+				taskTokensTotal.WithLabelValues(promptTypeLabel, "completion").Add(float64(usageInfo.CompletionTokens))
+				taskTokensPerTask.WithLabelValues(promptTypeLabel, "prompt").Observe(float64(usageInfo.PromptTokens))
+				taskTokensPerTask.WithLabelValues(promptTypeLabel, "completion").Observe(float64(usageInfo.CompletionTokens))
+				log.Printf("[TaskID: %s][Metrics] Tokens: Prompt=%d, Completion=%d", payload.TaskID, usageInfo.PromptTokens, usageInfo.CompletionTokens)
+			}
+			if usageInfo.EstimatedCostUSD > 0 {
+				taskEstimatedCostUSDTotal.WithLabelValues(promptTypeLabel).Add(usageInfo.EstimatedCostUSD)
+				taskEstimatedCostUSDPerTask.WithLabelValues(promptTypeLabel).Observe(usageInfo.EstimatedCostUSD)
+				log.Printf("[TaskID: %s][Metrics] Estimated Cost: %.6f USD", payload.TaskID, usageInfo.EstimatedCostUSD)
+			}
 			break
 		}
 
-		log.Printf("[TaskID: %s] Ошибка вызова AI API (Попытка %d/%d): %v", payload.TaskID, attempt, h.maxAttempts, err)
+		log.Printf("[TaskID: %s] Ошибка вызова AI API (Попытка %d/%d, время: %v): %v", payload.TaskID, attempt, h.maxAttempts, processingTime, err)
 
 		if attempt == h.maxAttempts {
 			log.Printf("[TaskID: %s] Достигнуто максимальное количество попыток (%d) вызова AI.", payload.TaskID, h.maxAttempts)
@@ -169,8 +208,9 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 		log.Printf("[TaskID: %s] Финальная ошибка после всех попыток AI: %v", payload.TaskID, err)
 		tasksFailedTotal.WithLabelValues("ai_error").Inc() // Регистрируем ошибку AI
 	} else {
-		// Вот сюда добавим лог
+		// Успешный ответ AI (возможно, после ретраев)
 		log.Printf("[TaskID: %s] Финальный ответ от AI (длина: %d): %s", payload.TaskID, len(aiResponse), aiResponse)
+		tasksSucceededTotal.Inc() // <<< Инкрементируем успех здесь, ПОСЛЕ цикла ретраев
 	}
 
 	// --- Этап 4-6: Сохранение и уведомление ---
@@ -178,12 +218,18 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 
 	if saveErr != nil {
 		tasksFailedTotal.WithLabelValues("save_error").Inc()
+		// Если была ошибка AI, возвращаем её, иначе возвращаем ошибку сохранения
+		if err != nil {
+			return err // Ошибка AI имеет приоритет для nack/DLQ
+		}
 		return saveErr
 	} else if err != nil {
-		return err
+		// Ошибки AI (после ретраев) или подготовки промта/валидации
+		return err // Возвращаем ошибку для nack/DLQ
 	} else {
-		tasksSucceededTotal.Inc()
-		return nil
+		// Успешная обработка AI и успешное сохранение/уведомление
+		// tasksSucceededTotal инкрементирован выше
+		return nil // Возвращаем nil для ack сообщения
 	}
 }
 
