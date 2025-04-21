@@ -1,6 +1,6 @@
 {{ template "layout.html" . }}
 
-{{ define "title" }}Пользователи - Админ-панель{{ end }}
+{{ define "title" }}Пользователи{{ end }}
 
 {{ define "content" }}
     <!-- <nav aria-label="breadcrumb">
@@ -14,10 +14,10 @@
     <h1>{{ .PageTitle }}</h1>
 
     {{ if .Error }}
-        <p class="error">{{ .Error }}</p>
+        <p class="system-message system-message--error">{{ .Error }}</p>
     {{ end }}
 
-    <table>
+    <table class="data-table">
         <thead>
             <tr>
                 <th>ID</th>
@@ -43,10 +43,10 @@
                         {{ end }}
                     </td>
                     <td>
-                        <a href="/admin/users/{{ .ID }}/edit" role="button" class="outline contrast">Редакт.</a>
+                        <a href="/admin/users/{{ .ID }}/edit" role="button" class="cta-button cta-button--secondary" style="margin-right: 0.5em;">Редакт.</a>
                         {{/* Кнопка бана/разбана с HTMX */}}
                         {{ if .IsBanned }}
-                            <button class="secondary" 
+                            <button class="cta-button cta-button--secondary" 
                                     hx-delete="/admin/users/{{ .ID }}/ban" 
                                     hx-confirm="Вы уверены, что хотите разбанить пользователя {{ .Username }}?"
                                     hx-target="closest tr" {{/* Можно заменить на hx-target="body" если используем HX-Refresh */}}
@@ -54,7 +54,7 @@
                                 Разбанить
                             </button>
                         {{ else }}
-                            <button class="secondary" 
+                            <button class="cta-button cta-button--secondary" 
                                     hx-post="/admin/users/{{ .ID }}/ban" 
                                     hx-confirm="Вы уверены, что хотите забанить пользователя {{ .Username }}?"
                                     hx-target="closest tr" {{/* Можно заменить на hx-target="body" если используем HX-Refresh */}}
@@ -77,9 +77,9 @@
         <ul>
             <li>
                 {{ if .NextCursor }}
-                    <a href="/admin/users?limit={{ .Limit }}&after={{ .NextCursor }}" role="button">Следующая страница →</a>
+                    <a href="/admin/users?limit={{ .Limit }}&after={{ .NextCursor }}" role="button" class="cta-button">Следующая страница →</a>
                 {{ else }}
-                    <button disabled aria-disabled="true">Следующая страница →</button>
+                    <button disabled aria-disabled="true" class="cta-button" style="opacity: 0.6; cursor: not-allowed;">Следующая страница →</button>
                 {{ end }}
             </li>
             {{/* TODO: Добавить кнопку "Предыдущая страница", если нужна пагинация назад */}}

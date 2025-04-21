@@ -1,55 +1,55 @@
 {{ template "_layout.html" . }}
 
 {{ define "content" }}
-<div class="container mt-4">
+<div class="app-container">
     <h2>{{ .PageTitle }}</h2>
 
     {{ if .URLQuery.Get "success" }}
-        <div class="alert alert-success">{{ if eq (.URLQuery.Get "success") "updated" }}История успешно обновлена!{{ else }}Операция успешна!{{ end }}</div>
+        <div class="system-message system-message--success">{{ if eq (.URLQuery.Get "success") "updated" }}История успешно обновлена!{{ else }}Операция успешна!{{ end }}</div>
     {{ end }}
     {{ if .URLQuery.Get "error" }}
-        <div class="alert alert-danger">{{ if eq (.URLQuery.Get "error") "update_failed" }}Ошибка обновления истории: {{ .URLQuery.Get "msg" | default "Неизвестная ошибка." }}{{ else }}Произошла ошибка.{{ end }}</div>
+        <div class="system-message system-message--error">{{ if eq (.URLQuery.Get "error") "update_failed" }}Ошибка обновления истории: {{ .URLQuery.Get "msg" | default "Неизвестная ошибка." }}{{ else }}Произошла ошибка.{{ end }}</div>
     {{ end }}
 
     {{ if .UserError }}
-        <div class="alert alert-warning">{{ .UserError }}</div>
+        <div class="system-message system-message--warning">{{ .UserError }}</div>
     {{ end }}
     {{ if .StoryError }}
-        <div class="alert alert-danger">{{ .StoryError }}</div>
+        <div class="system-message system-message--error">{{ .StoryError }}</div>
     {{ end }}
     {{ if .ScenesError }}
-        <div class="alert alert-warning">{{ .ScenesError }}</div>
+        <div class="system-message system-message--warning">{{ .ScenesError }}</div>
     {{ end }}
     {{ if .SuccessMessage }}
-        <div class="alert alert-success">{{ .SuccessMessage }}</div>
+        <div class="system-message system-message--success">{{ .SuccessMessage }}</div>
     {{ end }}
     {{ if .ErrorMessage }}
-        <div class="alert alert-danger">{{ .ErrorMessage }}</div>
+        <div class="system-message system-message--error">{{ .ErrorMessage }}</div>
     {{ end }}
 
     {{ if and (not .UserError) .TargetUser }}
-        <div class="card mb-3">
-            <div class="card-header">Пользователь</div>
-            <div class="card-body">
+        <div class="content-card mb-3">
+            <div class="content-card-header">Пользователь</div>
+            <div class="content-card-body">
                 <p><strong>ID:</strong> {{ .TargetUser.ID }}</p>
                 <p><strong>Username:</strong> {{ .TargetUser.Username }}</p>
                 <p><strong>Email:</strong> {{ .TargetUser.Email }}</p>
-                <a href="/admin/users/{{.TargetUser.ID}}/edit" class="btn btn-sm btn-outline-primary">Редактировать пользователя</a>
+                <a href="/admin/users/{{.TargetUser.ID}}/edit" class="cta-button cta-button--secondary btn-sm">Редактировать пользователя</a>
             </div>
         </div>
     {{ end }}
 
     {{ if and (not .StoryError) .Story }}
-        <form method="POST" action="/admin/users/{{ .TargetUser.ID }}/stories/{{ .Story.ID }}">
-            <div class="card mb-3">
-                <div class="card-header">Детали опубликованной истории</div>
-                <div class="card-body">
+        <form method="POST" action="/admin/users/{{ .TargetUser.ID }}/stories/{{ .Story.ID }}" class="data-form">
+            <div class="content-card mb-3">
+                <div class="content-card-header">Детали опубликованной истории</div>
+                <div class="content-card-body">
                     <p><strong>ID Истории:</strong> {{ .Story.ID }}</p>
                     <p><strong>Заголовок:</strong> {{ .Story.Title | derefString | default "-" }}</p>
                     <p><strong>Описание:</strong> {{ .Story.Description | derefString | default "-" }}</p>
                     <div class="mb-3">
                         <label for="status" class="form-label"><strong>Статус:</strong></label>
-                        <select class="form-select" id="status" name="status">
+                        <select id="status" name="status">
                             {{ range .AvailableStatuses }}
                                 <option value="{{ . }}" {{ if eq . $.Story.Status }}selected{{ end }}>{{ . }}</option>
                             {{ else }}
@@ -65,29 +65,29 @@
 
                     <div class="mb-3">
                         <label for="configJson" class="form-label"><strong>Config (JSON):</strong></label>
-                        <textarea id="configJson" name="configJson" class="form-control" rows="15">{{ .Story.Config | bytesToString }}</textarea>
+                        <textarea id="configJson" name="configJson" rows="15">{{ .Story.Config | bytesToString }}</textarea>
                     </div>
 
                     <div class="mb-3">
                         <label for="setupJson" class="form-label"><strong>Setup (JSON):</strong></label>
-                        <textarea id="setupJson" name="setupJson" class="form-control" rows="15">{{ .Story.Setup | bytesToString }}</textarea>
+                        <textarea id="setupJson" name="setupJson" rows="15">{{ .Story.Setup | bytesToString }}</textarea>
                     </div>
                 </div>
-                <div class="card-footer">
-                    <button type="submit" class="btn btn-primary">Сохранить изменения истории (Config/Setup)</button>
-                    <button type="button" class="btn btn-secondary" onclick="formatJsonTextarea('configJson')">Форматировать Config</button>
-                    <button type="button" class="btn btn-secondary" onclick="formatJsonTextarea('setupJson')">Форматировать Setup</button>
+                <div class="content-card-footer">
+                    <button type="submit" class="cta-button cta-button--primary">Сохранить изменения (Config/Setup)</button>
+                    <button type="button" class="cta-button cta-button--secondary" onclick="formatJsonTextarea('configJson')">Форматировать Config</button>
+                    <button type="button" class="cta-button cta-button--secondary" onclick="formatJsonTextarea('setupJson')">Форматировать Setup</button>
                 </div>
             </div>
         </form>
 
-        <div class="card mb-3">
-            <div class="card-header">Сцены истории ({{ len .Scenes }})</div>
-            <div class="card-body">
+        <div class="content-card mb-3">
+            <div class="content-card-header">Сцены истории ({{ len .Scenes }})</div>
+            <div class="content-card-body">
                 {{ if .ScenesError }}
-                    <div class="alert alert-warning">Не удалось загрузить сцены: {{ .ScenesError }}</div>
+                    <div class="system-message system-message--warning">Не удалось загрузить сцены: {{ .ScenesError }}</div>
                 {{ else }}
-                    <table class="table table-sm table-striped">
+                    <table class="data-table table-sm table-striped">
                         <thead>
                             <tr>
                                 <th>ID Сцены</th>
@@ -103,7 +103,7 @@
                                     <td><small>{{ .StateHash }}</small></td>
                                     <td><small>{{ .CreatedAt | formatAsDateTime }}</small></td>
                                     <td>
-                                        <button class="btn btn-sm btn-outline-secondary" onclick="showSceneContent('{{ .ID }}')">Показать/Редактировать JSON</button>
+                                        <button class="cta-button cta-button--secondary btn-sm" onclick="showSceneContent('{{ .ID }}')">Показать/Редактировать JSON</button>
                                         <textarea id="scene-{{ .ID }}" style="display: none;">{{ .Content | bytesToString }}</textarea>
                                     </td>
                                 </tr>
@@ -119,32 +119,32 @@
         </div>
 
     {{ else if not .StoryError }}
-        <div class="alert alert-info">Информация об истории недоступна.</div>
+        <div class="system-message system-message--info">Информация об истории недоступна.</div>
     {{ end }}
 
     <!-- Модальное окно для показа/редактирования JSON сцены -->
     <div class="modal fade" id="sceneJsonModal" tabindex="-1" aria-labelledby="sceneJsonModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg modal-dialog-scrollable">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="sceneJsonModalLabel">Содержимое сцены</h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            <div class="modal-content" style="background-color: var(--card-background); border: 1px solid rgba(0, 195, 253, 0.2);">
+                <div class="modal-header" style="border-bottom: 1px solid rgba(0, 195, 253, 0.15);">
+                    <h5 class="modal-title" id="sceneJsonModalLabel" style="color: var(--primary-color);">Содержимое сцены</h5>
+                    <button type="button" class="cta-button cta-button--secondary" data-bs-dismiss="modal" aria-label="Close" style="padding: 0.2em 0.5em; font-size: 1.2rem; line-height: 1;">X</button>
                 </div>
-                <div class="modal-body">
+                <div class="modal-body data-form" style="color: var(--text-color);">
                     <input type="hidden" id="currentSceneId">
-                    <textarea id="sceneJsonContentEditable" class="form-control" rows="20"></textarea>
+                    <textarea id="sceneJsonContentEditable" rows="20"></textarea>
                     <div id="sceneSaveStatus" class="mt-2"></div>
                 </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Закрыть</button>
-                    <button type="button" class="btn btn-info" onclick="formatSceneJson()">Форматировать</button>
-                    <button type="button" class="btn btn-primary" onclick="saveSceneContent()">Сохранить контент сцены</button>
+                <div class="modal-footer" style="border-top: 1px solid rgba(0, 195, 253, 0.15); display: flex; gap: 0.5rem;">
+                    <button type="button" class="cta-button cta-button--secondary" data-bs-dismiss="modal">Закрыть</button>
+                    <button type="button" class="cta-button cta-button--secondary" onclick="formatSceneJson()">Форматировать</button>
+                    <button type="button" class="cta-button cta-button--primary" onclick="saveSceneContent()">Сохранить контент</button>
                 </div>
             </div>
         </div>
     </div>
 
-    <a href="/admin/users/{{ .TargetUser.ID }}/stories" class="btn btn-secondary mt-3">Назад к списку историй</a>
+    <a href="/admin/users/{{ .TargetUser.ID }}/stories" class="cta-button cta-button--secondary mt-3">Назад к списку историй</a>
 </div>
 
 <script>
@@ -156,7 +156,7 @@ function formatJsonTextarea(textareaId) {
             textarea.value = JSON.stringify(jsonObject, null, 2);
         } catch (e) {
             console.warn(`Could not parse JSON in textarea #${textareaId}:`, e);
-            alert(`Невалидный JSON в поле ${textareaId}! Пожалуйста, исправьте перед сохранением.`);
+            alert(`Некорректный JSON в поле ${textareaId}! Пожалуйста, исправьте перед сохранением.`);
         }
     }
 }
@@ -169,8 +169,10 @@ document.addEventListener('DOMContentLoaded', (event) => {
 let sceneModalInstance = null;
 
 function getSceneModalInstance() {
-    if (!sceneModalInstance) {
+    if (!sceneModalInstance && window.bootstrap) {
         sceneModalInstance = new bootstrap.Modal(document.getElementById('sceneJsonModal'));
+    } else if (!window.bootstrap) {
+        console.error('Bootstrap JS not found for modal functionality.');
     }
     return sceneModalInstance;
 }
@@ -183,7 +185,7 @@ function formatSceneJson() {
             textarea.value = JSON.stringify(jsonObject, null, 2);
         } catch (e) {
             console.warn(`Could not parse JSON in scene modal:`, e);
-            alert('Невалидный JSON! Пожалуйста, исправьте.');
+            alert('Некорректный JSON! Пожалуйста, исправьте.');
         }
     }
 }
@@ -196,13 +198,19 @@ function showSceneContent(sceneId) {
     const saveStatusDiv = document.getElementById('sceneSaveStatus');
 
     modalTitle.textContent = `Содержимое сцены ${sceneId}`;
-    editableTextarea.value = originalTextarea.value;
+    editableTextarea.value = originalTextarea ? originalTextarea.value : '';
     currentSceneIdInput.value = sceneId;
     saveStatusDiv.innerHTML = '';
 
     formatSceneJson();
 
-    getSceneModalInstance().show();
+    const modal = getSceneModalInstance();
+    if (modal) {
+        modal.show();
+    } else {
+        const modalElement = document.getElementById('sceneJsonModal');
+        if (modalElement) modalElement.style.display = 'block';
+    }
 }
 
 function saveSceneContent() {
@@ -214,7 +222,7 @@ function saveSceneContent() {
     try {
         JSON.parse(contentJson);
     } catch (e) {
-        saveStatusDiv.innerHTML = '<span class="text-danger">Ошибка: Невалидный JSON!</span>';
+        saveStatusDiv.innerHTML = '<span class="text-danger">Ошибка: Некорректный JSON!</span>';
         return;
     }
 
@@ -234,6 +242,8 @@ function saveSceneContent() {
         if (!response.ok) {
             return response.json().then(errData => {
                 throw new Error(errData.error || `Ошибка сети: ${response.status}`);
+            }).catch(() => {
+                throw new Error(`Ошибка сети: ${response.status}`);
             });
         }
         return response.json(); 
@@ -244,7 +254,13 @@ function saveSceneContent() {
         if(originalTextarea) {
             originalTextarea.value = contentJson; 
         }
-        setTimeout(() => getSceneModalInstance().hide(), 1500);
+        const modal = getSceneModalInstance();
+        if (modal) {
+            setTimeout(() => modal.hide(), 1500);
+        } else {
+            const modalElement = document.getElementById('sceneJsonModal');
+            if (modalElement) modalElement.style.display = 'none';
+        }
     })
     .catch(error => {
         console.error('Error saving scene content:', error);

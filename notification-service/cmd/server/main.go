@@ -47,8 +47,13 @@ func main() {
 	sugar.Info("Успешно подключено к RabbitMQ")
 
 	// --- Инициализация зависимостей ---
-	httpClient := &http.Client{Timeout: 10 * time.Second}
-	tokenProvider := service.NewHTTPTokenProvider(httpClient, cfg.TokenService.URL, logger)
+	// Используем общий таймаут для HTTP клиента
+	httpClient := &http.Client{
+		Timeout: 10 * time.Second, // Общий таймаут для запроса
+		// ReadTimeout и WriteTimeout настраиваются через http.Transport, если нужно более тонко
+	}
+	// Передаем interServiceSecret в конструктор
+	tokenProvider := service.NewHTTPTokenProvider(httpClient, cfg.TokenService.URL, logger, cfg.InterServiceSecret)
 
 	// Инициализируем отправителей
 	var fcmSender service.PlatformSender

@@ -1,6 +1,6 @@
 {{ template "layout.html" . }}
 
-{{ define "title" }}Дашборд - Админ-панель{{ end }}
+{{ define "title" }}Дашборд{{ end }}
 
 {{ define "content" }}
     <!-- <nav aria-label="breadcrumb"> -->
@@ -14,20 +14,18 @@
     <h1>{{ .PageTitle }}</h1>
     <p>{{ .WelcomeMessage }} (Роли: {{ range .UserRoles }}{{ . }} {{ end }})</p>
 
-    <article>
-        {{ if .UserCountError }}
-            <p class="error">Не удалось загрузить статистику пользователей.</p>
-        {{ else }}
-            <ul>
-                <li>Всего пользователей: {{ .Stats.totalUsers }}</li>
-                <li>Активных историй: {{ .Stats.activeStories }}</li>
-                <!-- Добавить другие метрики -->
-            </ul>
-        {{ end }}
-        <footer>
-            <!-- Можно добавить кнопку для обновления через HTMX -->
-            <!-- <button hx-get="/dashboard/stats" hx-target="#stats-list">Обновить</button> -->
-        </footer>
-    </article>
+    <div class="content-card">
+        <div class="content-card-body">
+            {{ if .UserCountError }}
+                <p class="system-message system-message--error">Не удалось загрузить статистику пользователей.</p>
+            {{ else }}
+                <ul>
+                    <li>Всего пользователей: {{ .Stats.totalUsers }}</li>
+                    <li>Активных историй: {{ .Stats.activeStories }}</li>
+                    <!-- Добавить другие метрики -->
+                </ul>
+            {{ end }}
+        </div>
+    </div>
 
 {{ end }} 

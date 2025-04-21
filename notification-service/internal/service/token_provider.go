@@ -28,22 +28,24 @@ type httpTokenProvider struct {
 	client HTTPClient // Интерфейс для HTTP клиента (для тестируемости)
 	url    string     // Базовый URL сервиса токенов (например, http://auth-service:8081)
 	logger *zap.Logger
-	// secret string     // Опционально: секрет для inter-service аутентификации
+	secret string // Добавлено поле для секрета
 }
 
 // NewHTTPTokenProvider создает новый экземпляр провайдера токенов через HTTP.
-// func NewHTTPTokenProvider(client HTTPClient, url string, secret string, logger *zap.Logger) TokenProvider {
-func NewHTTPTokenProvider(client HTTPClient, url string, logger *zap.Logger) TokenProvider {
+func NewHTTPTokenProvider(client HTTPClient, url string, logger *zap.Logger, interServiceSecret string) TokenProvider {
 	if url == "" {
 		logger.Warn("URL для TokenService не указан, используется заглушка TokenProvider")
 		return &stubTokenProvider{logger: logger}
 	}
-	logger.Info("Инициализация HTTP Token Provider", zap.String("url", url))
+	if interServiceSecret == "" {
+		logger.Warn("InterServiceSecret не установлен для HTTPTokenProvider, запросы к внутренним API Auth Service могут быть отклонены")
+	}
+	logger.Info("Инициализация HTTP Token Provider", zap.String("url", url), zap.Bool("secretLoaded", interServiceSecret != ""))
 	return &httpTokenProvider{
 		client: client,
 		url:    url,
 		logger: logger.Named("http_token_provider"),
-		// secret: secret,
+		secret: interServiceSecret,
 	}
 }
 
@@ -58,10 +60,13 @@ func (p *httpTokenProvider) GetUserDeviceTokens(ctx context.Context, userID uuid
 		return nil, fmt.Errorf("ошибка создания запроса к token service: %w", err)
 	}
 
-	// TODO: Добавить заголовок с inter-service secret, если он настроен
-	// if p.secret != "" {
-	// 	req.Header.Set("X-Internal-Secret", p.secret)
-	// }
+	if p.secret != "" {
+		req.Header.Set("X-Internal-Service-Token", p.secret)
+		log.Debug("X-Internal-Service-Token header added")
+	} else {
+		log.Warn("Inter-service secret is empty, X-Internal-Service-Token header not added")
+	}
+
 	req.Header.Set("Accept", "application/json")
 
 	// Используем переданный http.Client (который может иметь таймауты)

@@ -567,7 +567,7 @@ func (r *pgPublishedStoryRepository) CountActiveGenerationsForUser(ctx context.C
 
 // IsStoryLikedByUser проверяет, лайкнул ли пользователь указанную историю.
 func (r *pgPublishedStoryRepository) IsStoryLikedByUser(ctx context.Context, storyID uuid.UUID, userID uuid.UUID) (bool, error) {
-	query := `SELECT EXISTS(SELECT 1 FROM user_story_likes WHERE user_id = $1 AND published_story_id = $2)`
+	query := `SELECT EXISTS(SELECT 1 FROM story_likes WHERE user_id = $1 AND published_story_id = $2)`
 	var exists bool
 	logFields := []zap.Field{zap.String("storyID", storyID.String()), zap.String("userID", userID.String())}
 	r.logger.Debug("Checking if story is liked by user", logFields...)
@@ -602,7 +602,7 @@ func (r *pgPublishedStoryRepository) ListLikedByUser(ctx context.Context, userID
             p.title, p.description, p.error_details, p.likes_count, p.created_at, p.updated_at,
             l.created_at AS like_created_at
         FROM published_stories p
-        JOIN user_story_likes l ON p.id = l.published_story_id
+        JOIN story_likes l ON p.id = l.published_story_id
         WHERE l.user_id = $1 `
 
 	args := []interface{}{userID}
@@ -712,11 +712,11 @@ func (r *pgPublishedStoryRepository) MarkStoryAsLiked(ctx context.Context, story
 
 	// 1. Вставить запись в user_story_likes
 	// ON CONFLICT DO NOTHING - если лайк уже есть, ничего не делаем, но и ошибку не возвращаем
-	insertLikeQuery := `INSERT INTO user_story_likes (user_id, published_story_id, created_at) VALUES ($1, $2, NOW()) ON CONFLICT (user_id, published_story_id) DO NOTHING`
+	insertLikeQuery := `INSERT INTO story_likes (user_id, published_story_id, created_at) VALUES ($1, $2, NOW()) ON CONFLICT (user_id, published_story_id) DO NOTHING`
 	result, err := tx.Exec(ctx, insertLikeQuery, userID, storyID)
 	if err != nil {
-		r.logger.Error("Failed to insert into user_story_likes", append(logFields, zap.Error(err))...)
-		return fmt.Errorf("ошибка добавления лайка в user_story_likes: %w", err)
+		r.logger.Error("Failed to insert into story_likes", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка добавления лайка в story_likes: %w", err)
 	}
 
 	// 2. Если запись была успешно вставлена (RowsAffected > 0), инкрементировать счетчик
@@ -767,11 +767,11 @@ func (r *pgPublishedStoryRepository) MarkStoryAsUnliked(ctx context.Context, sto
 	defer tx.Rollback(ctx) // Откат по умолчанию
 
 	// 1. Удалить запись из user_story_likes
-	deleteLikeQuery := `DELETE FROM user_story_likes WHERE user_id = $1 AND published_story_id = $2`
+	deleteLikeQuery := `DELETE FROM story_likes WHERE user_id = $1 AND published_story_id = $2`
 	result, err := tx.Exec(ctx, deleteLikeQuery, userID, storyID)
 	if err != nil {
-		r.logger.Error("Failed to delete from user_story_likes", append(logFields, zap.Error(err))...)
-		return fmt.Errorf("ошибка удаления лайка из user_story_likes: %w", err)
+		r.logger.Error("Failed to delete from story_likes", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка удаления лайка из story_likes: %w", err)
 	}
 
 	// 2. Если запись была успешно удалена (RowsAffected > 0), декрементировать счетчик
@@ -849,10 +849,10 @@ func (r *pgPublishedStoryRepository) Delete(ctx context.Context, id uuid.UUID, u
 	// Порядок: лайки -> прогресс -> сцены -> сама история (из-за внешних ключей)
 
 	// 2a. Удаление лайков
-	deleteLikesQuery := `DELETE FROM user_story_likes WHERE published_story_id = $1`
+	deleteLikesQuery := `DELETE FROM story_likes WHERE published_story_id = $1`
 	_, err = tx.Exec(ctx, deleteLikesQuery, id)
 	if err != nil {
-		r.logger.Error("Failed to delete user_story_likes during story deletion", append(logFields, zap.Error(err))...)
+		r.logger.Error("Failed to delete story_likes during story deletion", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка удаления лайков для истории %s: %w", id, err)
 	}
 	r.logger.Debug("Deleted related likes", logFields...)

@@ -174,11 +174,45 @@ func (s *draftServiceImpl) ReviseDraft(ctx context.Context, id uuid.UUID, userID
 	}
 
 	taskID := uuid.New().String()
+
+	// <<< Новая логика формирования UserInput для ревизии >>>
+	var userInputForTask string
+	if config.Config == nil || len(config.Config) == 0 {
+		// Если нет предыдущего конфига, ревизия невозможна по новой логике промпта
+		log.Error("Cannot revise draft: previous config is missing or empty", zap.String("draftID", config.ID.String()))
+		// Возвращаем ошибку, т.к. AI ожидает JSON с 'ur' для ревизии
+		// Можно откатить статус обратно, но пока просто возвращаем ошибку
+		return fmt.Errorf("cannot revise draft %s: previous config is missing", config.ID.String())
+	}
+
+	// Распарсиваем текущий конфиг
+	var currentConfigMap map[string]interface{}
+	if errUnmarshal := json.Unmarshal(config.Config, &currentConfigMap); errUnmarshal != nil {
+		log.Error("Cannot revise draft: failed to unmarshal existing config JSON",
+			zap.String("draftID", config.ID.String()),
+			zap.Error(errUnmarshal))
+		return fmt.Errorf("cannot revise draft %s: invalid existing config JSON: %w", config.ID.String(), errUnmarshal)
+	}
+
+	// Добавляем поле ur с текстом ревизии
+	currentConfigMap["ur"] = revisionPrompt
+
+	// Запарсиваем обратно в JSON для UserInput
+	userInputBytes, errMarshal := json.Marshal(currentConfigMap)
+	if errMarshal != nil {
+		log.Error("Cannot revise draft: failed to marshal updated config JSON for UserInput",
+			zap.String("draftID", config.ID.String()),
+			zap.Error(errMarshal))
+		return fmt.Errorf("cannot revise draft %s: failed to prepare input for AI: %w", config.ID.String(), errMarshal)
+	}
+	userInputForTask = string(userInputBytes)
+	// <<< Конец новой логики >>>
+
 	generationPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:        taskID,
 		UserID:        config.UserID.String(),
-		PromptType:    sharedMessaging.PromptTypeNarrator,
-		UserInput:     revisionPrompt,
+		PromptType:    sharedMessaging.PromptTypeNarrator, // Тип остается Narrator, AI сам разберется по UserInput
+		UserInput:     userInputForTask,
 		StoryConfigID: config.ID.String(),
 	}
 
@@ -278,7 +312,6 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 	var userInputs []string
 	var lastUserInput string
 	var promptType sharedMessaging.PromptType
-	inputData := make(map[string]interface{})
 
 	if config.UserInput != nil {
 		if err := json.Unmarshal(config.UserInput, &userInputs); err == nil && len(userInputs) > 0 {
@@ -287,11 +320,6 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 				promptType = sharedMessaging.PromptTypeNarrator
 			} else {
 				promptType = sharedMessaging.PromptTypeNarrator
-				if config.Config != nil {
-					inputData["current_config"] = string(config.Config)
-				} else {
-					log.Warn("Config is missing for a presumed revision retry")
-				}
 			}
 		} else {
 			log.Error("Failed to unmarshal UserInput or UserInput is empty for retry", zap.Error(err))

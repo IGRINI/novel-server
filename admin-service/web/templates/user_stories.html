@@ -1,9 +1,9 @@
 {{ template "layout.html" . }}
 
-{{ define "title" }}{{ .PageTitle }} - Админ-панель{{ end }}
+{{ define "title" }}{{ .PageTitle }}{{ end }}
 
 {{ define "content" }}
-    <nav aria-label="breadcrumb">
+    <nav class="breadcrumbs">
         <ul>
             <li><a href="/admin/dashboard">Дашборд</a></li>
             <li><a href="/admin/users">Пользователи</a></li>
@@ -15,12 +15,10 @@
     <h1>{{ .PageTitle }}</h1>
 
     {{ if .Error }}
-        <article aria-invalid="true">
-            {{ .Error }}
-        </article>
+        <div class="system-message system-message--error">{{ .Error }}</div>
     {{ end }}
 
-    <table>
+    <table class="data-table">
         <thead>
             <tr>
                 <th>ID Истории</th>
@@ -40,7 +38,7 @@
                     <td>{{ .Status }}</td>
                     <td>{{ .CreatedAt | formatAsDateTime }}</td>
                     <td>
-                        <a href="/admin/users/{{$.TargetUser.ID}}/stories/{{.ID}}" class="btn btn-sm btn-info">Детали</a>
+                        <a href="/admin/users/{{$.TargetUser.ID}}/stories/{{.ID}}" class="cta-button cta-button--secondary btn-sm">Детали</a>
                         {{/* TODO: Добавить другие кнопки действий */}}
                     </td>
                 </tr>
@@ -59,18 +57,18 @@
                 {{/* Кнопка Назад */}}
                 {{ $prevOffset := max 0 (sub .Offset .Limit) }}
                 {{ if gt .Offset 0 }}
-                    <a href="/admin/users/{{ .TargetUser.ID }}/stories?limit={{ .Limit }}&offset={{ $prevOffset }}" role="button">← Предыдущая страница</a>
+                    <a href="/admin/users/{{ .TargetUser.ID }}/stories?limit={{ .Limit }}&offset={{ $prevOffset }}" role="button" class="cta-button">← Предыдущая страница</a>
                 {{ else }}
-                    <button disabled aria-disabled="true">← Предыдущая страница</button>
+                    <button disabled aria-disabled="true" class="cta-button" style="opacity: 0.6; cursor: not-allowed;">← Предыдущая страница</button>
                 {{ end }}
             </li>
             <li>
                 {{/* Кнопка Вперед */}}
                 {{ $nextOffset := add .Offset .Limit }}
                 {{ if .HasMore }}
-                    <a href="/admin/users/{{ .TargetUser.ID }}/stories?limit={{ .Limit }}&offset={{ $nextOffset }}" role="button">Следующая страница →</a>
+                    <a href="/admin/users/{{ .TargetUser.ID }}/stories?limit={{ .Limit }}&offset={{ $nextOffset }}" role="button" class="cta-button">Следующая страница →</a>
                 {{ else }}
-                    <button disabled aria-disabled="true">Следующая страница →</button>
+                    <button disabled aria-disabled="true" class="cta-button" style="opacity: 0.6; cursor: not-allowed;">Следующая страница →</button>
                 {{ end }}
             </li>
         </ul>

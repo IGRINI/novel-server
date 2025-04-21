@@ -1,9 +1,9 @@
 {{ template "layout.html" . }}
 
-{{ define "title" }}Редактирование пользователя {{ .User.Username }} - Админ-панель{{ end }}
+{{ define "title" }}Редактирование пользователя {{ .User.Username }}{{ end }}
 
 {{ define "content" }}
-    <nav aria-label="breadcrumb">
+    <nav class="breadcrumbs">
         <ul>
             <li><a href="/admin/dashboard">Дашборд</a></li>
             <li><a href="/admin/users">Пользователи</a></li>
@@ -14,26 +14,24 @@
     <h1>Редактирование пользователя #{{ .User.ID }} - {{ .User.Username }}</h1>
 
     {{ if .Error }}
-        <article aria-invalid="true">
-            {{ .Error }}
-        </article>
+        <div class="system-message system-message--error">{{ .Error }}</div>
     {{ end }}
     {{ if .Success }}
-        <article style="background-color: var(--pico-color-green-150); border-color: var(--pico-color-green-400);">
-            {{ .Success }}
-        </article>
+        <div class="system-message system-message--success">{{ .Success }}</div>
     {{ end }}
 
-    <form method="post" action="/admin/users/{{ .User.ID }}"> 
-        <div class="grid">
+    <form method="post" action="/admin/users/{{ .User.ID }}" class="data-form">
+        <div>
             <label for="username">
                 Имя пользователя (Username)
-                <input type="text" id="username" name="username" value="{{ .User.Username }}" readonly disabled>
             </label>
+            <input type="text" id="username" name="username" value="{{ .User.Username }}" readonly disabled>
+        </div>
+        <div>
             <label for="email">
                 Email
-                <input type="email" id="email" name="email" value="{{ .User.Email }}" required>
             </label>
+            <input type="email" id="email" name="email" value="{{ .User.Email }}" required>
         </div>
         
         <label for="roles">Роли</label>
@@ -47,22 +45,24 @@
 
         <fieldset>
             <legend>Статус</legend>
-            <label for="is_banned">
+            <label for="is_banned" style="display: inline-flex; align-items: center;">
                 <input type="checkbox" id="is_banned" name="is_banned" value="true" {{ if .User.IsBanned }}checked{{ end }}>
                 Забанен
             </label>
         </fieldset>
 
-        <button type="submit">Сохранить изменения</button>
-        <a href="/admin/users" role="button" class="secondary">Отмена</a>
+        <div class="button-group">
+            <button type="submit" class="cta-button cta-button--primary">Сохранить изменения</button>
+            <a href="/admin/users" role="button" class="cta-button cta-button--secondary">Отмена</a>
+        </div>
     </form>
 
     <hr>
 
     <h2>Контент пользователя</h2>
-    <div class="grid">
-        <a href="/admin/users/{{ .User.ID }}/drafts" role="button" class="outline">Черновики пользователя</a>
-        <a href="/admin/users/{{ .User.ID }}/stories" role="button" class="outline">Опубликованные истории</a>
+    <div class="button-group">
+        <a href="/admin/users/{{ .User.ID }}/drafts" role="button" class="cta-button cta-button--secondary">Черновики пользователя</a>
+        <a href="/admin/users/{{ .User.ID }}/stories" role="button" class="cta-button cta-button--secondary">Опубликованные истории</a>
     </div>
 
     <hr>
@@ -72,51 +72,48 @@
     <strong>Внимание:</strong> Текущий пароль будет утерян, а все активные сессии пользователя будут завершены.
     </p>
     
-    {{/* Кнопка для сброса пароля через HTMX */}}
     <button 
         hx-post="/admin/users/{{ .User.ID }}/reset-password" 
         hx-target="#password-reset-status" 
         hx-swap="innerHTML" 
         hx-confirm="Вы уверены, что хотите сбросить пароль для пользователя {{ .User.Username }}? Это действие необратимо."
-        class="secondary">
+        class="cta-button cta-button--secondary">
         Сбросить пароль
     </button>
 
-    {{/* Див для отображения результата сброса пароля */}}
     <div id="password-reset-status" style="margin-top: 1em;"></div>
 
     <hr>
 
-    <!-- <<< Форма отправки уведомления >>> -->
     <h2>Отправить уведомление</h2>
 
-    {{/* <<< Блок отображения статуса отправки >>> */}}
     {{ if eq .NotificationStatus "success" }}
-        <article style="background-color: var(--pico-color-green-150); border-color: var(--pico-color-green-400); margin-bottom: 1em;">
+        <div class="system-message system-message--success" style="margin-bottom: 1em;">
             Уведомление успешно отправлено в очередь!
-        </article>
+        </div>
     {{ else if eq .NotificationStatus "error" }}
-        <article aria-invalid="true" style="margin-bottom: 1em;">
+        <div class="system-message system-message--error" style="margin-bottom: 1em;">
             Ошибка при отправке уведомления в очередь.
-        </article>
+        </div>
     {{ end }}
-    {{/* <<< Конец блока статуса >>> */}}
 
-    <div id="notification-section">
+    <div id="notification-section" class="data-form">
         <div class="mb-3">
             <label for="notificationMessage" class="form-label">Текст уведомления:</label>
-            <textarea class="form-control" id="notificationMessage" rows="3"></textarea>
+            <textarea id="notificationMessage" rows="3"></textarea>
         </div>
-        <button type="button" class="btn btn-info" id="sendNotificationBtn" data-user-id="{{.User.ID}}">Отправить уведомление</button>
+        <button type="button" class="cta-button cta-button--secondary" id="sendNotificationBtn" data-user-id="{{.User.ID}}">Отправить уведомление</button>
+        <div id="notificationStatus" class="mt-2"></div>
     </div>
 
     <hr>
 
-    <a href="/admin/users" class="btn btn-secondary">Назад к списку пользователей</a>
-    <a href="/admin/users/{{.User.ID}}/stories" class="btn btn-outline-primary ms-2">Истории пользователя</a>
-    <a href="/admin/users/{{.User.ID}}/drafts" class="btn btn-outline-secondary ms-2">Черновики пользователя</a>
+    <div class="button-group">
+        <a href="/admin/users" class="cta-button cta-button--secondary">Назад к списку пользователей</a>
+        <a href="/admin/users/{{.User.ID}}/stories" class="cta-button cta-button--secondary">Истории пользователя</a>
+        <a href="/admin/users/{{.User.ID}}/drafts" class="cta-button cta-button--secondary">Черновики пользователя</a>
+    </div>
 
-    <!-- <<< JavaScript для отправки уведомления >>> -->
     <script>
     document.getElementById('sendNotificationBtn').addEventListener('click', function() {
         const userId = this.getAttribute('data-user-id');
@@ -133,12 +130,12 @@
         statusDiv.textContent = 'Отправка...';
         statusDiv.className = 'mt-2 text-info';
         sendButton.disabled = true;
+        sendButton.style.opacity = '0.7';
 
         fetch(`/admin/users/${userId}/send-notification`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                // Добавить 'Authorization': 'Bearer ' + token, если используется
             },
             body: JSON.stringify({ message: message })
         })
@@ -151,7 +148,7 @@
         .then(data => {
             statusDiv.textContent = 'Уведомление успешно отправлено в очередь!';
             statusDiv.className = 'mt-2 text-success';
-            document.getElementById('notificationMessage').value = ''; // Очистить поле
+            document.getElementById('notificationMessage').value = '';
         })
         .catch(error => {
             console.error('Ошибка отправки уведомления:', error);
@@ -160,6 +157,7 @@
         })
         .finally(() => {
             sendButton.disabled = false;
+            sendButton.style.opacity = '1';
         });
     });
     </script>

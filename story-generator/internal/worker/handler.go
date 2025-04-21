@@ -126,6 +126,12 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 		aiStartTime := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), h.aiTimeout)
 
+		log.Printf(`[TaskID: %s][Attempt: %d] Отправка запроса в AI:
+--- User Input (длина: %d) ---
+%s
+------------------------------`,
+			payload.TaskID, attempt, len(userInput), userInput)
+
 		aiResponse, err = h.aiClient.GenerateText(ctx, payload.UserID, finalSystemPrompt, userInput, service.GenerationParams{})
 		cancel()
 

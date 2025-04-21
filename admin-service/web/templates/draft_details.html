@@ -1,45 +1,45 @@
 {{ template "_layout.html" . }}
 
 {{ define "content" }}
-<div class="container mt-4">
+<div class="app-container">
     <h2>{{ .PageTitle }}</h2>
 
     {{ if .UserError }}
-        <div class="alert alert-warning">{{ .UserError }}</div>
+        <div class="system-message system-message--warning">{{ .UserError }}</div>
     {{ end }}
     {{ if .DraftError }}
-        <div class="alert alert-danger">{{ .DraftError }}</div>
+        <div class="system-message system-message--error">{{ .DraftError }}</div>
     {{ end }}
     {{ if .SuccessMessage }}
-        <div class="alert alert-success">{{ .SuccessMessage }}</div>
+        <div class="system-message system-message--success">{{ .SuccessMessage }}</div>
     {{ end }}
     {{ if .ErrorMessage }}
-        <div class="alert alert-danger">{{ .ErrorMessage }}</div>
+        <div class="system-message system-message--error">{{ .ErrorMessage }}</div>
     {{ end }}
 
     {{ if and (not .UserError) .TargetUser }}
-        <div class="card mb-3">
-            <div class="card-header">Пользователь</div>
-            <div class="card-body">
+        <div class="content-card mb-3">
+            <div class="content-card-header">Пользователь</div>
+            <div class="content-card-body">
                 <p><strong>ID:</strong> {{ .TargetUser.ID }}</p>
                 <p><strong>Username:</strong> {{ .TargetUser.Username }}</p>
                 <p><strong>Email:</strong> {{ .TargetUser.Email }}</p>
-                <a href="/admin/users/{{.TargetUser.ID}}/edit" class="btn btn-sm btn-outline-primary">Редактировать пользователя</a>
+                <a href="/admin/users/{{.TargetUser.ID}}/edit" class="cta-button cta-button--secondary btn-sm">Редактировать пользователя</a>
             </div>
         </div>
     {{ end }}
 
     {{ if and (not .DraftError) .Draft }}
-        <form method="POST" action="/admin/users/{{ .TargetUser.ID }}/drafts/{{ .Draft.ID }}">
-            <div class="card mb-3">
-                <div class="card-header">Детали черновика</div>
-                <div class="card-body">
+        <form method="POST" action="/admin/users/{{ .TargetUser.ID }}/drafts/{{ .Draft.ID }}" class="data-form">
+            <div class="content-card mb-3">
+                <div class="content-card-header">Детали черновика</div>
+                <div class="content-card-body">
                     <p><strong>ID Черновика:</strong> {{ .Draft.ID }}</p>
                     <p><strong>Заголовок:</strong> {{ .Draft.Title | default "-" }}</p>
                     <p><strong>Описание:</strong> {{ .Draft.Description | default "-" }}</p>
                     <div class="mb-3">
                         <label for="status" class="form-label"><strong>Статус:</strong></label>
-                        <select class="form-select" id="status" name="status">
+                        <select id="status" name="status">
                             {{ range .AvailableStatuses }} 
                                 <option value="{{ . }}" {{ if eq . $.Draft.Status }}selected{{ end }}>{{ . }}</option>
                             {{ else }}
@@ -53,27 +53,27 @@
 
                     <div class="mb-3">
                         <label for="configJson" class="form-label"><strong>Config (JSON):</strong></label>
-                        <textarea id="configJson" name="configJson" class="form-control" rows="15">{{ .Draft.Config | bytesToString }}</textarea>
+                        <textarea id="configJson" name="configJson" rows="15">{{ .Draft.Config | bytesToString }}</textarea>
                     </div>
 
                     <div class="mb-3">
                         <label for="userInputJson" class="form-label"><strong>User Input (JSON):</strong></label>
-                        <textarea id="userInputJson" name="userInputJson" class="form-control" rows="5">{{ .Draft.UserInput | bytesToString }}</textarea>
+                        <textarea id="userInputJson" name="userInputJson" rows="5">{{ .Draft.UserInput | bytesToString }}</textarea>
                     </div>
 
                 </div>
-                <div class="card-footer">
-                    <button type="submit" class="btn btn-primary">Сохранить изменения черновика</button>
-                    <button type="button" class="btn btn-secondary" onclick="formatJsonTextarea('configJson')">Форматировать Config</button>
-                    <button type="button" class="btn btn-secondary" onclick="formatJsonTextarea('userInputJson')">Форматировать User Input</button>
+                <div class="content-card-footer">
+                    <button type="submit" class="cta-button cta-button--primary">Сохранить изменения</button>
+                    <button type="button" class="cta-button cta-button--secondary" onclick="formatJsonTextarea('configJson')">Форматировать Config</button>
+                    <button type="button" class="cta-button cta-button--secondary" onclick="formatJsonTextarea('userInputJson')">Форматировать User Input</button>
                 </div>
             </div>
         </form>
     {{ else if not .DraftError }}
-        <div class="alert alert-info">Информация о черновике недоступна.</div>
+        <div class="system-message system-message--info">Информация о черновике недоступна.</div>
     {{ end }}
 
-    <a href="/admin/users/{{ .TargetUser.ID }}/drafts" class="btn btn-secondary mt-3">Назад к списку черновиков</a>
+    <a href="/admin/users/{{ .TargetUser.ID }}/drafts" class="cta-button cta-button--secondary mt-3">Назад к списку черновиков</a>
 </div>
 
 <script>
@@ -85,7 +85,7 @@ function formatJsonTextarea(textareaId) {
             textarea.value = JSON.stringify(jsonObject, null, 2);
         } catch (e) {
             console.warn(`Could not parse JSON in textarea #${textareaId}:`, e);
-            alert(`Невалидный JSON в поле ${textareaId}! Пожалуйста, исправьте перед сохранением.`);
+            alert(`Некорректный JSON в поле ${textareaId}! Пожалуйста, исправьте перед сохранением.`);
         }
     }
 }

@@ -19,15 +19,13 @@ const (
 
 // GenerationTaskPayload - структура сообщения для задачи генерации
 type GenerationTaskPayload struct {
-	TaskID     string     `json:"task_id"`     // Уникальный ID задачи
-	UserID     string     `json:"user_id"`     // ID пользователя
-	PromptType PromptType `json:"prompt_type"` // Тип промпта для AI
-	UserInput  string     `json:"user_input"`  // Входные данные для AI (например, запрос пользователя или JSON)
-	//InputData        map[string]interface{} `json:"input_data,omitempty"` // <<< УДАЛЕНО: Дополнительные данные для рендеринга/логики
-	//Language         string     `json:"language,omitempty"`   // <<< УДАЛЕНО: Язык для генерации (если не указан в UserInput/InputData)
-	StoryConfigID    string `json:"story_config_id,omitempty"`    // ID черновика (для Narrator)
-	PublishedStoryID string `json:"published_story_id,omitempty"` // ID опубликованной истории (для Setup, Creator, GameOver)
-	StateHash        string `json:"state_hash,omitempty"`         // Хеш состояния (для Creator, GameOver)
+	TaskID           string     `json:"taskId"`                     // Уникальный ID задачи
+	UserID           string     `json:"userId"`                     // ID пользователя
+	PromptType       PromptType `json:"promptType"`                 // Тип промпта для AI
+	UserInput        string     `json:"userInput"`                  // Входные данные для AI (например, запрос пользователя или JSON)
+	StoryConfigID    string     `json:"storyConfigId"`              // ID черновика (для Narrator)
+	PublishedStoryID string     `json:"publishedStoryId,omitempty"` // ID опубликованной истории (для Setup, Creator, GameOver)
+	StateHash        string     `json:"state_hash,omitempty"`       // Хеш состояния (для Creator, GameOver)
 }
 
 // NotificationStatus определяет статус уведомления

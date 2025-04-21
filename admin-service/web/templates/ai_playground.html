@@ -5,39 +5,47 @@
     <h2>{{.PageTitle}}</h2>
     <p>Экспериментальная площадка для взаимодействия с AI генератором.</p>
 
-    <form id="ai-form">
-        <div class="grid">
-            <label for="system_prompt">
-                Системный промпт
-                <textarea id="system_prompt" name="system_prompt" rows="5" placeholder="Например: Ты полезный ассистент."></textarea>
-            </label>
-            <label for="user_prompt">
-                Пользовательский промпт
-                <textarea id="user_prompt" name="user_prompt" rows="10" required placeholder="Например: Напиши короткую историю о космосе."></textarea>
-            </label>
-        </div>
+    <form id="ai-form" class="data-form">
+        <label for="system_prompt">
+            Системный промпт
+        </label>
+        <textarea id="system_prompt" name="system_prompt" rows="5" placeholder="Например: Ты полезный ассистент."></textarea>
         
-        <div class="grid"> <!-- Новый grid для настроек -->
-            <label for="temperature">
-                Temperature (0.0 - 2.0)
-                <input type="number" id="temperature" name="temperature" min="0" max="2" step="0.1" value="0.7">
-            </label>
-            <label for="max_tokens">
-                Max Tokens
-                <input type="number" id="max_tokens" name="max_tokens" min="1" step="1" value="512">
-            </label>
-            <label for="top_p">
-                Top P (0.0 - 1.0)
-                <input type="number" id="top_p" name="top_p" min="0" max="1" step="0.1" value="1.0">
-            </label>
-        </div>
+        <label for="user_prompt">
+            Пользовательский промпт
+        </label>
+        <textarea id="user_prompt" name="user_prompt" rows="10" required placeholder="Например: Напиши короткую историю о космосе."></textarea>
+        
+        <fieldset>
+            <legend>Настройки генерации</legend>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem;">
+                <div>
+                    <label for="temperature">
+                        Temperature (0.0 - 2.0)
+                    </label>
+                    <input type="number" id="temperature" name="temperature" min="0" max="2" step="0.1" value="0.7">
+                </div>
+                <div>
+                    <label for="max_tokens">
+                        Max Tokens
+                    </label>
+                    <input type="number" id="max_tokens" name="max_tokens" min="1" step="1" value="512">
+                </div>
+                <div>
+                    <label for="top_p">
+                        Top P (0.0 - 1.0)
+                    </label>
+                    <input type="number" id="top_p" name="top_p" min="0" max="1" step="0.1" value="1.0">
+                </div>
+            </div>
+        </fieldset>
 
-        <button type="submit" id="generate-btn">Сгенерировать</button>
+        <button type="submit" id="generate-btn" class="cta-button cta-button--primary" style="margin-top: 1rem;">Сгенерировать</button>
     </form>
 
-    <div id="result-container" style="margin-top: 1rem;">
+    <div id="result-container" style="margin-top: 2rem;">
         <h6>Результат генерации:</h6>
-        <pre id="ai-result" style="white-space: pre-wrap; word-wrap: break-word; background-color: #f5f5f5; padding: 10px; border-radius: 4px; min-height: 50px;"></pre>
+        <pre id="ai-result" style="white-space: pre-wrap; word-wrap: break-word; background-color: var(--card-background); border: 1px solid rgba(0, 195, 253, 0.2); color: var(--text-color); padding: 15px; border-radius: 5px; min-height: 100px; font-family: monospace;"></pre>
     </div>
 </div>
 
@@ -47,12 +55,15 @@
     const userPromptInput = document.getElementById('user_prompt');
     const resultPre = document.getElementById('ai-result');
     const generateBtn = document.getElementById('generate-btn');
+    const generateBtnOriginalText = generateBtn.textContent;
 
     form.addEventListener('submit', async (event) => {
         event.preventDefault();
         resultPre.textContent = 'Генерация...';
-        generateBtn.setAttribute('aria-busy', 'true');
+        generateBtn.textContent = 'Генерация...';
         generateBtn.disabled = true;
+        generateBtn.style.opacity = '0.7';
+        generateBtn.style.cursor = 'wait';
 
         const formData = new FormData(form);
 
@@ -78,20 +89,20 @@
 
             if (!response.ok) {
                 console.error('Server error:', response.status, responseText);
-                resultPre.textContent = `[Ошибка сервера ${response.status}: ${responseText}]`;
+                resultPre.innerHTML = `<span style="color: #ff8a8a;">[Ошибка сервера ${response.status}]</span><br>${responseText}`;
             } else {
                 resultPre.textContent = responseText;
             }
 
         } catch (error) {
             console.error('Fetch failed:', error);
-            resultPre.textContent = '[Ошибка сети или соединения]';
+            resultPre.innerHTML = '<span style="color: #ff8a8a;">[Ошибка сети или соединения]</span>';
         } finally {
-            generateBtn.removeAttribute('aria-busy');
+            generateBtn.textContent = generateBtnOriginalText;
             generateBtn.disabled = false;
+            generateBtn.style.opacity = '1';
+            generateBtn.style.cursor = 'pointer';
         }
-
     });
-
 </script>
 {{end}} 

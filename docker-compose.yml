@@ -357,7 +357,7 @@ services:
       # Переменные конфигурации notification-service
       PUSH_QUEUE_NAME: ${PUSH_QUEUE_NAME:-push_notifications}
       WORKER_CONCURRENCY: ${NOTIFICATION_WORKER_CONCURRENCY:-10}
-      TOKEN_SERVICE_URL: ${TOKEN_SERVICE_URL:-} # URL сервиса токенов (если есть)
+      AUTH_SERVICE_URL: http://auth-service:8081 # <<< Используем AUTH_SERVICE_URL для URL сервиса токенов
       # --- Пути к секретам ВНУТРИ контейнера --- 
       FCM_CREDENTIALS_PATH: /run/secrets/firebase_credentials # <<< Путь к секрету FCM
       APNS_KEY_ID: ${APNS_KEY_ID:-}

@@ -82,18 +82,31 @@ func NewRabbitMQTaskPublisher(conn *amqp.Connection, queueName string) (TaskPubl
 	if err != nil {
 		return nil, fmt.Errorf("task publisher: не удалось открыть канал: %w", err)
 	}
-	// <<< ИЗМЕНЕНО: Используем QueueDeclarePassive вместо QueueDeclare >>>
-	// Паблишер не должен создавать или изменять очередь, только проверять её существование (пассивно).
-	// Ответственность за создание с правильными DLX-аргументами лежит на консьюмере (story-generator).
-	_, err = ch.QueueDeclarePassive(queueName, true, false, false, false, nil) // nil - не проверяем аргументы здесь
-	if err != nil {
-		// Ошибка может означать, что очередь не существует. Это нормально, если консьюмер её создаст.
-		// Или что параметры не совпадают (тоже проблема консьюмера).
-		// Логируем как Warning, но не падаем.
-		log.Printf("TaskPublisher WARN: Пассивная проверка очереди '%s' не удалась (возможно, еще не создана консьюмером): %v", queueName, err)
-		// Не закрываем канал и не возвращаем ошибку здесь, продолжаем работу.
+	// <<< ИЗМЕНЕНО: Используем QueueDeclare вместо QueueDeclarePassive >>>
+	// Паблишер ТЕПЕРЬ будет создавать очередь, если она не существует.
+	// Это делает систему более устойчивой к порядку запуска сервисов.
+	// Важно, чтобы параметры очереди совпадали с теми, что у консьюмера!
+	// <<< ДОБАВЛЕНО: Аргументы DLX, как у консьюмера (story-generator) >>>
+	args := amqp.Table{
+		"x-queue-mode":              "lazy",
+		"x-dead-letter-exchange":    "story_generation_tasks_dlx", // Должно совпадать с DLX в story-generator
+		"x-dead-letter-routing-key": "dlq",                        // Должно совпадать с DLQ routing key в story-generator
 	}
-	log.Printf("TaskPublisher: Пассивная проверка очереди '%s' выполнена.", queueName)
+	_, err = ch.QueueDeclare(
+		queueName, // name
+		true,      // durable
+		false,     // delete when unused
+		false,     // exclusive
+		false,     // no-wait
+		args,      // <<< Используем аргументы DLX >>>
+	)
+	if err != nil {
+		// Если объявление очереди не удалось, это серьезная проблема.
+		log.Printf("TaskPublisher ERROR: Не удалось объявить очередь '%s': %v", queueName, err)
+		ch.Close() // Закрываем канал при ошибке
+		return nil, fmt.Errorf("task publisher: не удалось объявить очередь '%s': %w", queueName, err)
+	}
+	log.Printf("TaskPublisher: Очередь '%s' успешно объявлена/найдена.", queueName)
 	// Канал не закрываем здесь, он должен управляться извне или при остановке приложения
 	return &rabbitMQPublisher{channel: ch, queueName: queueName}, nil
 }
