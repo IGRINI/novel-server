@@ -107,8 +107,11 @@ type PublishedStoryParsedDetailDTO struct {
 	Characters []ParsedCharacterDTO         `json:"characters,omitempty"` // Parsed characters from setup (NEW)
 
 	// Player Progress Info
-	HasPlayerProgress bool       `json:"hasPlayerProgress"`
-	LastPlayedAt      *time.Time `json:"lastPlayedAt,omitempty"`
+	HasPlayerProgress   bool           `json:"hasPlayerProgress"`
+	LastPlayedAt        *time.Time     `json:"lastPlayedAt,omitempty"`
+	CurrentSceneIndex   *int           `json:"currentSceneIndex,omitempty"`
+	CurrentPlayerStats  map[string]int `json:"currentPlayerStats,omitempty"`
+	CurrentSceneSummary *string        `json:"currentSceneSummary,omitempty"`
 }
 
 // ParsedCoreStatDTO represents a core stat with its details, parsed for client use.
@@ -403,11 +406,43 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 	// 6. Check Player Progress
 	hasProgress := false
 	var lastPlayedAt *time.Time
+	var currentSceneIndex *int
+	var currentPlayerStats map[string]int
+	var currentSceneSummary *string
 	if userID != uuid.Nil {
 		progress, errProgress := s.progressRepo.GetByUserIDAndStoryID(ctx, userID, storyID)
 		if errProgress == nil {
 			hasProgress = true
 			lastPlayedAt = &progress.UpdatedAt
+			currentPlayerStats = progress.CoreStats
+			currentSceneIndex = &progress.SceneIndex
+
+			// Логика получения currentSceneSummary остается прежней
+			if progress.CurrentStateHash != "" && progress.CurrentStateHash != sharedModels.InitialStateHash {
+				log.Debug("Player has progress, attempting to fetch current scene for summary", zap.String("stateHash", progress.CurrentStateHash))
+				currentScene, errScene := s.sceneRepo.FindByStoryAndHash(ctx, storyID, progress.CurrentStateHash)
+				if errScene == nil {
+					// <<< Парсим Content сцены и извлекаем sssf >>>
+					var sceneContent map[string]interface{}
+					if errUnmarshal := json.Unmarshal(currentScene.Content, &sceneContent); errUnmarshal == nil {
+						if sssfVal, ok := sceneContent["sssf"]; ok {
+							if sssfStr, okStr := sssfVal.(string); okStr {
+								currentSceneSummary = &sssfStr
+								log.Debug("Found sssf in current scene content")
+							} else {
+								log.Warn("'sssf' field found in scene content, but it's not a string", zap.Any("sssfValue", sssfVal))
+							}
+						} else {
+							log.Debug("'sssf' key not found in current scene content")
+						}
+					} else {
+						log.Warn("Failed to unmarshal current scene content to extract sssf", zap.String("sceneID", currentScene.ID.String()), zap.Error(errUnmarshal))
+					}
+				} else if !errors.Is(errScene, sharedModels.ErrNotFound) {
+					// Логгируем ошибку только если это не ErrNotFound (ожидаемая ситуация, если сцена еще не сгенерирована)
+					log.Error("Error fetching current scene by hash for summary", zap.Error(errScene))
+				}
+			}
 		} else if !errors.Is(errProgress, sharedModels.ErrNotFound) {
 			log.Error("Failed to get player progress for story detail", zap.Error(errProgress))
 		}
@@ -461,30 +496,28 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 	likesCount := int(story.LikesCount)
 
 	resultDTO := &PublishedStoryParsedDetailDTO{
-		ID:                story.ID,
-		AuthorID:          story.UserID,
-		AuthorName:        authorName,
-		PublishedAt:       story.CreatedAt, // Using CreatedAt as PublishedAt
-		LikesCount:        likesCount,
-		IsLiked:           isLiked,
-		IsAuthor:          isAuthor,
-		IsPublic:          story.IsPublic,
-		IsAdultContent:    novelConfig.IsAdultContent, // From Config
-		Status:            string(story.Status),
-		Title:             novelConfig.Title,            // From Config
-		ShortDescription:  novelConfig.ShortDescription, // From Config
-		Genre:             novelConfig.Genre,            // From Config
-		Language:          novelConfig.Language,         // From Config
-		PlayerName:        novelConfig.PlayerName,       // From Config
-		CoreStats:         parsedStats,                  // From Setup
-		Characters:        parsedCharacters,             // Assign parsed characters
-		HasPlayerProgress: hasProgress,
-		LastPlayedAt:      lastPlayedAt,
-		// Закомментированные поля - не найдены в Config/Setup
-		// Franchise: novelConfig.Franchise, // ???
-		// PlayerDescription: novelConfig.PlayerDescription, // ???
-		// WorldContext: novelConfig.WorldContext, // ???
-		// StorySummary: novelSetup.StorySummary, // ???
+		ID:                  story.ID,
+		AuthorID:            story.UserID,
+		AuthorName:          authorName,
+		PublishedAt:         story.CreatedAt, // Using CreatedAt as PublishedAt
+		LikesCount:          likesCount,
+		IsLiked:             isLiked,
+		IsAuthor:            isAuthor,
+		IsPublic:            story.IsPublic,
+		IsAdultContent:      novelConfig.IsAdultContent, // From Config
+		Status:              string(story.Status),
+		Title:               novelConfig.Title,            // From Config
+		ShortDescription:    novelConfig.ShortDescription, // From Config
+		Genre:               novelConfig.Genre,            // From Config
+		Language:            novelConfig.Language,         // From Config
+		PlayerName:          novelConfig.PlayerName,       // From Config
+		CoreStats:           parsedStats,                  // From Setup
+		Characters:          parsedCharacters,             // Assign parsed characters
+		HasPlayerProgress:   hasProgress,
+		LastPlayedAt:        lastPlayedAt,
+		CurrentSceneIndex:   currentSceneIndex,
+		CurrentPlayerStats:  currentPlayerStats,
+		CurrentSceneSummary: currentSceneSummary,
 	}
 
 	log.Info("Successfully retrieved published story details with parsed config/setup")

@@ -515,8 +515,14 @@
             // ... другие персонажи
           ],
           // Информация о прогрессе:
-          "hasPlayerProgress": boolean, // Есть ли прогресс игры у текущего пользователя
-          "lastPlayedAt": "timestamp-string | null" // Время последнего обновления прогресса
+          "hasPlayerProgress": true,
+          "lastPlayedAt": "2024-03-10T15:30:00Z",
+          "currentSceneIndex": 3,
+          "currentSceneSummary": "You stand before the ancient gates...",
+          "currentPlayerStats": {
+            "strength": 12,
+            "mana": 5
+          }
         }
         ```
     *   Ответ при ошибке:

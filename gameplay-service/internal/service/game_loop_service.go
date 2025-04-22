@@ -141,6 +141,14 @@ func (s *gameLoopServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUI
 		}
 	}
 
+	// <<< ДОБАВЛЕНО: Установка SceneIndex в 1 для нового прогресса >>>
+	if playerProgress.SceneIndex == 0 { // Проверяем, что это действительно новый прогресс (индекс еще не установлен)
+		log.Info("Setting initial scene index to 1")
+		playerProgress.SceneIndex = 1
+		// Не сохраняем здесь, так как CreateOrUpdate выше уже сохранил (или Get вернул существующий)
+		// Если Get вернул существующий, у него уже будет индекс > 0.
+	}
+
 	// 4. Get scene by hash
 	scene, err := s.sceneRepo.FindByStoryAndHash(ctx, publishedStoryID, playerProgress.CurrentStateHash)
 	if err != nil {
@@ -333,6 +341,10 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	progress.CurrentStateHash = newStateHash
 	progress.UpdatedAt = time.Now().UTC()
 
+	// <<< ДОБАВЛЕНО: Увеличиваем индекс сцены >>>
+	progress.SceneIndex++
+	s.logger.Info("Incremented scene index", append(logFields, zap.Int("newSceneIndex", progress.SceneIndex))...)
+
 	// 10. Check if the next scene already exists
 	nextScene, err := s.sceneRepo.FindByStoryAndHash(ctx, publishedStoryID, newStateHash)
 	if err != nil {
@@ -393,9 +405,9 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 			append(logFields, zap.String("nextSceneID", nextScene.ID.String()), zap.Error(errUnmarshal))...)
 		// Proceed without updating summaries if unmarshal fails
 	} else {
-		progress.LastStorySummary = sceneOutput.Sssf
-		progress.LastFutureDirection = sceneOutput.Fd
-		progress.LastVarImpactSummary = sceneOutput.Vis
+		progress.LastStorySummary = &sceneOutput.Sssf
+		progress.LastFutureDirection = &sceneOutput.Fd
+		progress.LastVarImpactSummary = &sceneOutput.Vis
 	}
 
 	s.logger.Debug("Clearing StoryVariables and GlobalFlags before saving progress after next scene found", logFields...)
