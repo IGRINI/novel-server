@@ -50,11 +50,11 @@ func (c *HTTPAuthServiceClient) GetUsersInfo(ctx context.Context, userIDs []uuid
 	}
 
 	// Используем предполагаемый внутренний эндпоинт для пакетного получения
-	endpointURL := c.baseURL + "/internal/users/batch-info"
+	endpointURL := c.baseURL + "/internal/auth/users/batch-info"
 
 	// Формируем тело запроса
 	requestBody := struct {
-		UserIDs []uuid.UUID `json:"user_ids"`
+		UserIDs []uuid.UUID `json:"userIds"`
 	}{
 		UserIDs: userIDs,
 	}

@@ -75,6 +75,7 @@ func (h *AuthHandler) RegisterRoutes(router *gin.Engine) {
 	{
 		internalAuthGroup.POST("/token/generate", h.generateInterServiceToken)
 		internalAuthGroup.POST("/token/verify", h.verifyInterServiceToken)
+		internalAuthGroup.POST("/users/batch-info", h.handleBatchGetUsersInfo)
 		internalAuthGroup.GET("/users/count", h.getUserCount)
 		internalAuthGroup.GET("/users", h.listUsers)
 		internalAuthGroup.POST("/users/:user_id/ban", h.banUser)

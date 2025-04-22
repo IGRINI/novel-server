@@ -40,6 +40,7 @@ type GameSceneContent struct {
 // GameChoiceBlock - Блок выбора для клиента
 type GameChoiceBlock struct {
 	Shuffleable int               `json:"sh"`   // Можно ли перемешивать
+	Char        string            `json:"char"` // <<< ДОБАВЛЕНО ПОЛЕ ДЛЯ ПАРСИНГА
 	Description string            `json:"desc"` // Описание ситуации
 	Options     []GameSceneOption `json:"opts"` // Опции выбора
 }
@@ -225,93 +226,190 @@ func (h *GameplayHandler) listPublicPublishedStories(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// getPublishedStoryScene получает текущую игровую сцену для опубликованной истории.
+// getPublishedStoryScene получает текущую игровую сцену для опубликованной истории
+// и возвращает ее в структурированном виде для клиента.
 func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
-	userID, err := getUserIDFromContext(c) // <<< Меняем 'ok' на 'err'
-	if err != nil {                        // <<< Проверяем 'err != nil'
-		// Ошибка уже обработана в getUserIDFromContext
+	userID, err := getUserIDFromContext(c) // Используем getUserIDFromContext из http.go
+	if err != nil {
+		// Ошибка уже обработана и ответ отправлен в getUserIDFromContext
 		return
 	}
 
 	idStr := c.Param("id")
-	id, err := uuid.Parse(idStr)
+	storyID, err := uuid.Parse(idStr)
 	if err != nil {
 		h.logger.Warn("Invalid story ID format in getPublishedStoryScene", zap.String("id", idStr), zap.Error(err))
 		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
 		return
 	}
 
-	log := h.logger.With(zap.String("storyID", id.String()))
-	if userID != uuid.Nil { // Используем userID, так как он нужен для сервиса
-		log = log.With(zap.String("userID", userID.String()))
-	}
-	log.Info("Fetching story scene")
+	log := h.logger.With(zap.String("storyID", storyID.String()), zap.String("userID", userID.String()))
+	log.Info("getPublishedStoryScene called")
 
-	scene, err := h.service.GetStoryScene(c.Request.Context(), userID, id)
+	scene, err := h.service.GetStoryScene(c.Request.Context(), userID, storyID)
 	if err != nil {
-		// Логируем только если это НЕ стандартная ошибка (NotFound, NeedsGeneration, NotReadyYet)
-		// Проверяем на ошибки сервиса и общие ошибки
-		if !errors.Is(err, sharedModels.ErrNotFound) &&
-			!errors.Is(err, sharedModels.ErrSceneNeedsGeneration) &&
-			!errors.Is(err, sharedModels.ErrStoryNotReadyYet) &&
-			!errors.Is(err, service.ErrStoryNotFound) && // Добавим проверку на ошибку сервиса
-			!errors.Is(err, service.ErrSceneNotFound) { // Добавим проверку на ошибку сервиса
-			log.Error("Error getting story scene (unhandled)", zap.Error(err))
-		}
-		handleServiceError(c, err, h.logger) // Используем общий обработчик
+		log.Error("Error calling GetStoryScene service", zap.Error(err))
+		handleServiceError(c, err, h.logger)
 		return
 	}
 
-	// <<< НАЧАЛО ПРЕОБРАЗОВАНИЯ В DTO >>>
-	// Десериализуем Content из json.RawMessage в структуру SceneContent
-	var sceneContent sharedModels.SceneContent
-	if err := json.Unmarshal(scene.Content, &sceneContent); err != nil {
+	// Парсим json.RawMessage из scene.Content
+	var rawContent map[string]json.RawMessage // Используем map для гибкого парсинга
+	if scene.Content == nil || len(scene.Content) == 0 || string(scene.Content) == "null" {
+		log.Error("Scene content is empty or null", zap.String("sceneID", scene.ID.String()))
+		handleServiceError(c, fmt.Errorf("internal error: scene content is missing"), h.logger)
+		return
+	}
+	if err := json.Unmarshal(scene.Content, &rawContent); err != nil {
 		log.Error("Failed to unmarshal scene content", zap.String("sceneID", scene.ID.String()), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("internal error processing scene data"), h.logger) // Не отдаем детали ошибки клиенту
+		handleServiceError(c, fmt.Errorf("internal error: failed to parse scene content"), h.logger)
 		return
 	}
 
-	// Создаем DTO для ответа
-	responseDTO := GameSceneResponse{
-		ID:               scene.ID.String(),
-		PublishedStoryID: scene.PublishedStoryID.String(),
-		Content: GameSceneContent{
-			Type:                   sceneContent.Type,
-			EndingText:             sceneContent.EndingText, // Копируем поля концовок
-			NewPlayerDescription:   sceneContent.NewPlayerDescription,
-			CoreStatsReset:         sceneContent.CoreStatsReset,
-			EndingTextPreviousChar: sceneContent.EndingTextPreviousChar,
-		},
-	}
-
-	// Если тип контента - выборы, то конвертируем их
-	if sceneContent.Type == "choices" || sceneContent.Type == "continuation" {
-		responseDTO.Content.Choices = make([]GameChoiceBlock, 0, len(sceneContent.Choices))
-		for _, choiceBlock := range sceneContent.Choices {
-			gameChoiceBlock := GameChoiceBlock{
-				Shuffleable: choiceBlock.Shuffleable,
-				Description: choiceBlock.Description,
-				Options:     make([]GameSceneOption, 0, len(choiceBlock.Options)),
-			}
-			for _, option := range choiceBlock.Options {
-				gameSceneOption := GameSceneOption{
-					Text: option.Text,
-					Consequences: GameConsequences{
-						CoreStatsChange: option.Consequences.CoreStatsChange, // Копируем только изменения статов
-						ResponseText:    option.Consequences.ResponseText,    // и текст-реакцию
-					},
-				}
-				gameChoiceBlock.Options = append(gameChoiceBlock.Options, gameSceneOption)
-			}
-			responseDTO.Content.Choices = append(responseDTO.Content.Choices, gameChoiceBlock)
+	// Определяем тип сцены
+	var sceneType string
+	if typeJSON, ok := rawContent["type"]; ok {
+		if err := json.Unmarshal(typeJSON, &sceneType); err != nil {
+			log.Error("Failed to unmarshal scene type", zap.String("sceneID", scene.ID.String()), zap.Error(err))
+			sceneType = "unknown" // Устанавливаем неизвестный тип при ошибке
 		}
+	} else {
+		log.Warn("Scene content missing 'type' field", zap.String("sceneID", scene.ID.String()))
+		sceneType = "unknown"
 	}
-	// <<< КОНЕЦ ПРЕОБРАЗОВАНИЯ В DTO >>>
 
-	log.Info("Successfully fetched and formatted story scene",
-		zap.String("sceneID", scene.ID.String()),
-	)
-	// <<< ОТПРАВЛЯЕМ DTO >>>
+	// Формируем DTO ответа на основе типа сцены
+	responseDTO := GameSceneResponseDTO{
+		ID:               scene.ID,
+		PublishedStoryID: scene.PublishedStoryID,
+		Type:             sceneType,
+	}
+
+	switch sceneType {
+	case "choices", "continuation":
+		// Парсим блок 'ch'
+		if chJSON, ok := rawContent["ch"]; ok {
+			// Временная структура для парсинга блока 'ch'
+			type rawChoiceBlock struct {
+				Shuffleable int    `json:"sh"`
+				Char        string `json:"char"` // <<< ДОБАВЛЕНО ПОЛЕ ДЛЯ ПАРСИНГА
+				Description string `json:"desc"`
+				Options     []struct {
+					Text         string          `json:"txt"`
+					Consequences json.RawMessage `json:"cons"`
+				} `json:"opts"`
+			}
+			var rawChoices []rawChoiceBlock
+			if err := json.Unmarshal(chJSON, &rawChoices); err != nil {
+				log.Error("Failed to unmarshal choices block ('ch')", zap.String("sceneID", scene.ID.String()), zap.Error(err))
+			} else {
+				responseDTO.Choices = make([]ChoiceBlockDTO, len(rawChoices))
+				for i, rawChoice := range rawChoices {
+					choiceDTO := ChoiceBlockDTO{
+						Shuffleable:   rawChoice.Shuffleable == 1,
+						CharacterName: rawChoice.Char, // <<< КОПИРУЕМ ИМЯ ПЕРСОНАЖА
+						Description:   rawChoice.Description,
+						Options:       make([]ChoiceOptionDTO, len(rawChoice.Options)),
+					}
+					for j, rawOpt := range rawChoice.Options {
+						optionDTO := ChoiceOptionDTO{
+							Text: rawOpt.Text,
+						}
+						// Парсим последствия ('cons') для извлечения 'resp_txt' и 'cs_chg'
+						if rawOpt.Consequences != nil && len(rawOpt.Consequences) > 2 { // Проверяем, что не пустое {}
+							var consMap map[string]json.RawMessage // Используем RawMessage для гибкости парсинга cs_chg
+							if err := json.Unmarshal(rawOpt.Consequences, &consMap); err == nil {
+								preview := ConsequencePreviewDTO{}
+								hasData := false
+
+								// Извлекаем resp_txt
+								if respTxtJSON, ok := consMap["resp_txt"]; ok {
+									var respTxtStr string
+									if errUnmarshal := json.Unmarshal(respTxtJSON, &respTxtStr); errUnmarshal == nil && respTxtStr != "" {
+										preview.ResponseText = &respTxtStr
+										hasData = true
+									}
+								}
+
+								// Извлекаем cs_chg
+								if csChgJSON, ok := consMap["cs_chg"]; ok {
+									var statChanges map[string]int
+									if errUnmarshal := json.Unmarshal(csChgJSON, &statChanges); errUnmarshal == nil && len(statChanges) > 0 {
+										preview.StatChanges = statChanges
+										hasData = true
+									} else if errUnmarshal != nil {
+										log.Warn("Failed to unmarshal cs_chg content", zap.String("sceneID", scene.ID.String()), zap.Error(errUnmarshal))
+									}
+								}
+
+								// Присваиваем preview только если есть какие-то данные
+								if hasData {
+									optionDTO.Consequences = &preview
+								}
+							} else {
+								log.Warn("Failed to unmarshal consequences map", zap.String("sceneID", scene.ID.String()), zap.Error(err))
+							}
+						}
+						choiceDTO.Options[j] = optionDTO
+					}
+					responseDTO.Choices[i] = choiceDTO
+				}
+			}
+		}
+		if sceneType == "continuation" {
+			continuationData := ContinuationDTO{}
+			parseError := false
+			if npdJSON, ok := rawContent["npd"]; ok {
+				if err := json.Unmarshal(npdJSON, &continuationData.NewPlayerDescription); err != nil {
+					parseError = true
+				}
+			} else {
+				parseError = true
+			}
+			if etpJSON, ok := rawContent["etp"]; ok {
+				if err := json.Unmarshal(etpJSON, &continuationData.EndingTextPrevious); err != nil {
+					parseError = true
+				}
+			} else {
+				parseError = true
+			}
+			if csrJSON, ok := rawContent["csr"]; ok {
+				if err := json.Unmarshal(csrJSON, &continuationData.CoreStatsReset); err != nil {
+					parseError = true
+				}
+			} else {
+				parseError = true
+			}
+
+			if !parseError {
+				responseDTO.Continuation = &continuationData
+			} else {
+				log.Error("Failed to parse required fields for 'continuation' type scene", zap.String("sceneID", scene.ID.String()))
+				// Отправляем ошибку, т.к. данные неполные для этого типа
+				handleServiceError(c, fmt.Errorf("internal error: failed to parse continuation scene data"), h.logger)
+				return
+			}
+		}
+
+	case "game_over":
+		if etJSON, ok := rawContent["et"]; ok {
+			var endingText string
+			if err := json.Unmarshal(etJSON, &endingText); err == nil {
+				responseDTO.EndingText = &endingText
+			} else {
+				log.Error("Failed to unmarshal game_over 'et' field", zap.String("sceneID", scene.ID.String()), zap.Error(err))
+				// Отправляем ошибку, т.к. данные неполные для этого типа
+				handleServiceError(c, fmt.Errorf("internal error: failed to parse game over scene data"), h.logger)
+				return
+			}
+		}
+	default:
+		log.Error("Unknown or missing scene type in content", zap.String("sceneID", scene.ID.String()), zap.String("type", sceneType))
+		handleServiceError(c, fmt.Errorf("internal error: unknown scene type '%s'", sceneType), h.logger)
+		return
+	}
+
+	log.Info("Successfully fetched and formatted story scene", zap.String("sceneID", scene.ID.String()))
 	c.JSON(http.StatusOK, responseDTO)
 }
 

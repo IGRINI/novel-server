@@ -47,13 +47,13 @@ func NewPgPlayerProgressRepository(pool *pgxpool.Pool, logger *zap.Logger) inter
 // }
 
 const getPlayerProgressQuery = `
-SELECT user_id, published_story_id, current_core_stats, current_story_variables, current_global_flags, current_state_hash, scene_index, updated_at, created_at, last_story_summary, last_future_direction, last_var_impact_summary
+SELECT user_id, published_story_id, current_core_stats, current_story_variables, current_global_flags, current_state_hash, scene_index, updated_at, last_story_summary, last_future_direction, last_var_impact_summary
 FROM player_progress
 WHERE user_id = $1 AND published_story_id = $2`
 
 const upsertPlayerProgressQuery = `
-INSERT INTO player_progress (user_id, published_story_id, current_core_stats, current_story_variables, current_global_flags, current_state_hash, scene_index, updated_at, created_at, last_story_summary, last_future_direction, last_var_impact_summary)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+INSERT INTO player_progress (user_id, published_story_id, current_core_stats, current_story_variables, current_global_flags, current_state_hash, scene_index, updated_at, last_story_summary, last_future_direction, last_var_impact_summary)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 ON CONFLICT (user_id, published_story_id) DO UPDATE SET
     current_core_stats = EXCLUDED.current_core_stats,
     current_story_variables = EXCLUDED.current_story_variables,
@@ -61,7 +61,7 @@ ON CONFLICT (user_id, published_story_id) DO UPDATE SET
     current_state_hash = EXCLUDED.current_state_hash,
     scene_index = EXCLUDED.scene_index,
     updated_at = EXCLUDED.updated_at,
-    -- created_at не обновляется при конфликте
+    -- created_at не обновляется при конфликте (и столбца нет)
     last_story_summary = EXCLUDED.last_story_summary,
     last_future_direction = EXCLUDED.last_future_direction,
     last_var_impact_summary = EXCLUDED.last_var_impact_summary
@@ -87,7 +87,6 @@ func (r *pgPlayerProgressRepository) GetByUserIDAndStoryID(ctx context.Context, 
 		&progress.CurrentStateHash,
 		&progress.SceneIndex,
 		&progress.UpdatedAt,
-		&progress.CreatedAt,
 		&progress.LastStorySummary,
 		&progress.LastFutureDirection,
 		&progress.LastVarImpactSummary,
@@ -123,9 +122,9 @@ func (r *pgPlayerProgressRepository) GetByUserIDAndStoryID(ctx context.Context, 
 // CreateOrUpdate still accepts *models.PlayerProgress, which now has UserID as uuid.UUID
 func (r *pgPlayerProgressRepository) CreateOrUpdate(ctx context.Context, progress *models.PlayerProgress) error {
 	now := time.Now()
-	if progress.CreatedAt.IsZero() { // Устанавливаем CreatedAt только если его нет (при первой вставке)
-		progress.CreatedAt = now
-	}
+	// if progress.CreatedAt.IsZero() { // Убираем логику с CreatedAt
+	// 	progress.CreatedAt = now
+	// }
 	progress.UpdatedAt = now
 	logFields := []zap.Field{
 		zap.Stringer("userID", progress.UserID),
@@ -155,7 +154,7 @@ func (r *pgPlayerProgressRepository) CreateOrUpdate(ctx context.Context, progres
 		progress.CurrentStateHash,
 		progress.SceneIndex,
 		progress.UpdatedAt,
-		progress.CreatedAt,
+		// progress.CreatedAt, // Removed parameter for created_at
 		progress.LastStorySummary,
 		progress.LastFutureDirection,
 		progress.LastVarImpactSummary,
