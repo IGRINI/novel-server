@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -25,16 +25,16 @@ type generateRequest struct {
 }
 
 type storyGeneratorClient struct {
-	baseURL    string
-	httpClient *http.Client
-	logger     *zap.Logger
-	// Добавить межсервисный токен, если story-generator его требует
-	// interServiceToken string
-	// mu sync.RWMutex
+	baseURL           string
+	httpClient        *http.Client
+	logger            *zap.Logger
+	interServiceToken string
+	mu                sync.RWMutex
+	authClient        AuthServiceHttpClient
 }
 
 // NewStoryGeneratorClient создает новый клиент для story-generator.
-func NewStoryGeneratorClient(baseURL string, timeout time.Duration, logger *zap.Logger) (StoryGeneratorClient, error) {
+func NewStoryGeneratorClient(baseURL string, timeout time.Duration, logger *zap.Logger, authClient AuthServiceHttpClient) (StoryGeneratorClient, error) {
 	_, err := url.ParseRequestURI(baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid base URL for story generator service: %w", err)
@@ -44,150 +44,163 @@ func NewStoryGeneratorClient(baseURL string, timeout time.Duration, logger *zap.
 		logger = zap.NewNop()
 	}
 
+	if authClient == nil {
+		return nil, fmt.Errorf("auth client cannot be nil")
+	}
+
 	return &storyGeneratorClient{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: timeout, // Таймаут на весь запрос, для стриминга может потребоваться отдельная настройка
+			Timeout: timeout,
 		},
-		logger: logger.Named("StoryGeneratorClient"),
+		logger:     logger.Named("StoryGeneratorClient"),
+		authClient: authClient,
 	}, nil
 }
 
-// GenerateStream отправляет запрос на генерацию и возвращает тело ответа для стриминга.
+// doRequestWithTokenRefresh выполняет HTTP запрос с автоматическим обновлением токена при получении 401
+func (c *storyGeneratorClient) doRequestWithTokenRefresh(ctx context.Context, req *http.Request) (*http.Response, error) {
+	// Добавляем текущий токен в запрос
+	c.mu.RLock()
+	token := c.interServiceToken
+	c.mu.RUnlock()
+
+	if token != "" {
+		req.Header.Set("X-Internal-Service-Token", token)
+	} else {
+		c.logger.Warn("Inter-service token is not set, request might fail")
+	}
+
+	// Выполняем запрос
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute request: %w", err)
+	}
+
+	// Если получили 401, пробуем обновить токен и повторить запрос
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close() // Закрываем тело первого ответа
+
+		// Пробуем получить новый токен через authClient
+		newToken, err := c.authClient.GenerateInterServiceToken(ctx, "admin-service")
+		if err != nil {
+			return nil, fmt.Errorf("failed to refresh inter-service token: %w", err)
+		}
+
+		// Устанавливаем новый токен
+		c.SetInterServiceToken(newToken)
+
+		// Создаем новый запрос с тем же контекстом и телом
+		newReq := req.Clone(ctx)
+		newReq.Header.Set("X-Internal-Service-Token", newToken)
+
+		// Повторяем запрос с новым токеном
+		return c.httpClient.Do(newReq)
+	}
+
+	return resp, nil
+}
+
+// GenerateStream генерирует историю в потоковом режиме.
 func (c *storyGeneratorClient) GenerateStream(ctx context.Context, systemPrompt, userPrompt string, params GenerationParams) (io.ReadCloser, error) {
-	generateURL := c.baseURL + "/generate/stream" // Предполагаемый эндпоинт
-	log := c.logger.With(
-		zap.String("url", generateURL),
-		zap.String("systemPromptLength", fmt.Sprintf("%d chars", len(systemPrompt))),
-		zap.String("userPromptLength", fmt.Sprintf("%d chars", len(userPrompt))),
-		// Логируем переданные параметры (если они не nil)
-		zap.Any("params", params),
-	)
+	generateURL := fmt.Sprintf("%s/generate/stream", c.baseURL)
+	log := c.logger.With(zap.String("url", generateURL))
 
-	reqPayload := generateRequest{
-		SystemPrompt: systemPrompt,
-		UserPrompt:   userPrompt,
-		// Добавляем параметры в тело запроса
-		Temperature: params.Temperature,
-		MaxTokens:   params.MaxTokens,
-		TopP:        params.TopP,
+	body := map[string]interface{}{
+		"systemPrompt": systemPrompt,
+		"userPrompt":   userPrompt,
+		"params":       params,
 	}
-	reqBody, err := json.Marshal(reqPayload)
+	bodyBytes, err := json.Marshal(body)
 	if err != nil {
-		log.Error("Failed to marshal story generation request payload", zap.Error(err))
-		return nil, fmt.Errorf("internal error marshalling request: %w", err)
+		log.Error("Failed to marshal generate stream request body", zap.Error(err))
+		return nil, fmt.Errorf("internal error marshaling request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, generateURL, bytes.NewBuffer(reqBody))
+	bodyReader := bytes.NewReader(bodyBytes)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, generateURL, bodyReader)
 	if err != nil {
-		log.Error("Failed to create story generation HTTP request", zap.Error(err))
+		log.Error("Failed to create generate stream HTTP request", zap.Error(err))
 		return nil, fmt.Errorf("internal error creating request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/plain") // Ожидаем простой текст
-	// TODO: Добавить заголовок авторизации, если story-generator требует (например, X-Internal-Service-Token)
-	// c.mu.RLock()
-	// token := c.interServiceToken
-	// c.mu.RUnlock()
-	// if token != "" {
-	// 	httpReq.Header.Set("X-Internal-Service-Token", token)
-	// } else {
-	// 	log.Warn("Inter-service token is not set for story-generator call")
-	// }
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
 
-	log.Debug("Sending story generation request to story-generator")
-	httpResp, err := c.httpClient.Do(httpReq)
+	log.Debug("Sending generate stream request to story-generator-service")
+	resp, err := c.doRequestWithTokenRefresh(ctx, req)
 	if err != nil {
-		// Не используем errors.Is(err, context.DeadlineExceeded) здесь,
-		// так как для стриминга соединение может быть долгим.
-		// Обработка таймаутов должна быть на уровне чтения/записи потока.
-		log.Error("HTTP request to story-generator failed", zap.Error(err))
+		log.Error("HTTP request for generate stream failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to communicate with story generator service: %w", err)
 	}
 
-	// Проверяем статус ответа. Ожидаем 200 OK для успешного начала стриминга.
-	if httpResp.StatusCode != http.StatusOK {
-		defer httpResp.Body.Close()
-		respBodyBytes, _ := io.ReadAll(httpResp.Body) // Читаем тело для логирования ошибки
-		log.Error("Story generator returned non-OK status",
-			zap.Int("status", httpResp.StatusCode),
-			zap.ByteString("body", respBodyBytes),
-		)
-		// TODO: Разобрать структуру ошибки от story-generator, если она есть
-		return nil, fmt.Errorf("story generator service returned status %d", httpResp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		log.Warn("Received non-OK status for generate stream", zap.Int("status", resp.StatusCode))
+		return nil, fmt.Errorf("received unexpected status %d from story generator service for generate stream", resp.StatusCode)
 	}
 
-	log.Info("Successfully initiated stream connection with story-generator")
-	// Возвращаем тело ответа как io.ReadCloser. Вызывающая сторона должна его закрыть.
-	return httpResp.Body, nil
+	return resp.Body, nil
 }
 
-// GenerateText отправляет запрос на генерацию и возвращает полный текст ответа.
+// GenerateText генерирует историю в текстовом режиме.
 func (c *storyGeneratorClient) GenerateText(ctx context.Context, systemPrompt, userPrompt string, params GenerationParams) (string, error) {
-	generateURL := c.baseURL + "/generate" // <<< Новый эндпоинт
-	log := c.logger.With(
-		zap.String("url", generateURL),
-		zap.String("systemPromptLength", fmt.Sprintf("%d chars", len(systemPrompt))),
-		zap.String("userPromptLength", fmt.Sprintf("%d chars", len(userPrompt))),
-		zap.Any("params", params),
-	)
+	generateURL := fmt.Sprintf("%s/generate/text", c.baseURL)
+	log := c.logger.With(zap.String("url", generateURL))
 
-	reqPayload := generateRequest{
-		SystemPrompt: systemPrompt,
-		UserPrompt:   userPrompt,
-		Temperature:  params.Temperature,
-		MaxTokens:    params.MaxTokens,
-		TopP:         params.TopP,
+	body := map[string]interface{}{
+		"systemPrompt": systemPrompt,
+		"userPrompt":   userPrompt,
+		"params":       params,
 	}
-	reqBody, err := json.Marshal(reqPayload)
+	bodyBytes, err := json.Marshal(body)
 	if err != nil {
-		log.Error("Failed to marshal story generation request payload", zap.Error(err))
-		return "", fmt.Errorf("internal error marshalling request: %w", err)
+		log.Error("Failed to marshal generate text request body", zap.Error(err))
+		return "", fmt.Errorf("internal error marshaling request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, generateURL, bytes.NewBuffer(reqBody))
+	bodyReader := bytes.NewReader(bodyBytes)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, generateURL, bodyReader)
 	if err != nil {
-		log.Error("Failed to create story generation HTTP request", zap.Error(err))
+		log.Error("Failed to create generate text HTTP request", zap.Error(err))
 		return "", fmt.Errorf("internal error creating request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/plain") // <<< Ожидаем простой текст
-	// TODO: Добавить заголовок авторизации, если нужно
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 
-	log.Debug("Sending story generation request (non-streaming) to story-generator")
-	httpResp, err := c.httpClient.Do(httpReq)
+	log.Debug("Sending generate text request to story-generator-service")
+	resp, err := c.doRequestWithTokenRefresh(ctx, req)
 	if err != nil {
-		log.Error("HTTP request to story-generator failed", zap.Error(err))
-		if errors.Is(err, context.DeadlineExceeded) {
-			return "", fmt.Errorf("request to story generator service timed out: %w", err)
-		}
+		log.Error("HTTP request for generate text failed", zap.Error(err))
 		return "", fmt.Errorf("failed to communicate with story generator service: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer resp.Body.Close()
 
-	respBodyBytes, err := io.ReadAll(httpResp.Body)
+	respBodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Error("Failed to read response body from story-generator", zap.Int("status", httpResp.StatusCode), zap.Error(err))
-		return "", fmt.Errorf("failed to read story generator response: %w", err)
+		log.Error("Failed to read generate text response body", zap.Int("status", resp.StatusCode), zap.Error(err))
+		return "", fmt.Errorf("failed to read story generator service response: %w", err)
 	}
 
-	// Проверяем статус ответа. Ожидаем 200 OK.
-	if httpResp.StatusCode != http.StatusOK {
-		log.Error("Story generator returned non-OK status",
-			zap.Int("status", httpResp.StatusCode),
-			zap.ByteString("body", respBodyBytes), // Логируем тело ошибки
-		)
-		return "", fmt.Errorf("story generator service returned status %d: %s", httpResp.StatusCode, string(respBodyBytes))
+	if resp.StatusCode != http.StatusOK {
+		log.Warn("Received non-OK status for generate text", zap.Int("status", resp.StatusCode), zap.ByteString("body", respBodyBytes))
+		return "", fmt.Errorf("received unexpected status %d from story generator service for generate text", resp.StatusCode)
 	}
 
-	log.Info("Successfully received response from story-generator")
-	return string(respBodyBytes), nil // Возвращаем текст
+	var result struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(respBodyBytes, &result); err != nil {
+		log.Error("Failed to unmarshal generate text response", zap.Int("status", resp.StatusCode), zap.ByteString("body", respBodyBytes), zap.Error(err))
+		return "", fmt.Errorf("invalid generate text response format from story generator service: %w", err)
+	}
+
+	log.Info("Text generated successfully", zap.Int("length", len(result.Text)))
+	return result.Text, nil
 }
 
-// TODO: Добавить метод SetInterServiceToken, если требуется аутентификация
-// func (c *storyGeneratorClient) SetInterServiceToken(token string) {
-// 	c.mu.Lock()
-// 	defer c.mu.Unlock()
-// 	c.logger.Info("Inter-service token for story-generator has been set")
-// 	c.interServiceToken = token
-// }
+// SetInterServiceToken устанавливает межсервисный токен
+func (c *storyGeneratorClient) SetInterServiceToken(token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.interServiceToken = token
+}

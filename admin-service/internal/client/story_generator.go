@@ -22,4 +22,7 @@ type StoryGeneratorClient interface {
 
 	// GenerateText отправляет промпты и параметры и возвращает полный сгенерированный текст.
 	GenerateText(ctx context.Context, systemPrompt, userPrompt string, params GenerationParams) (string, error)
+
+	// SetInterServiceToken устанавливает межсервисный токен для клиента.
+	SetInterServiceToken(token string)
 }

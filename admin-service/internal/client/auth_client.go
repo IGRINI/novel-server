@@ -65,7 +65,7 @@ type loginRequest struct {
 
 // Login отправляет запрос на вход в auth-service.
 func (c *authClient) Login(ctx context.Context, username, password string) (*models.TokenDetails, error) {
-	loginURL := c.baseURL + "/auth/login" // Собираем полный URL
+	loginURL := c.baseURL + "/auth/login"
 	log := c.logger.With(zap.String("url", loginURL), zap.String("username", username))
 
 	reqPayload := loginRequest{
@@ -86,11 +86,10 @@ func (c *authClient) Login(ctx context.Context, username, password string) (*mod
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
 
-	log.Debug("Sending login request to auth-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	// Используем универсальный метод для выполнения запроса
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
 	if err != nil {
 		log.Error("HTTP request to auth-service failed", zap.Error(err))
-		// Проверяем ошибки контекста (например, таймаут)
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, fmt.Errorf("request to auth service timed out: %w", err)
 		}
@@ -104,7 +103,6 @@ func (c *authClient) Login(ctx context.Context, username, password string) (*mod
 		return nil, fmt.Errorf("failed to read auth service response: %w", err)
 	}
 
-	// Обрабатываем ответ
 	if httpResp.StatusCode == http.StatusOK {
 		var tokenDetails models.TokenDetails
 		if err := json.Unmarshal(respBodyBytes, &tokenDetails); err != nil {
@@ -115,26 +113,20 @@ func (c *authClient) Login(ctx context.Context, username, password string) (*mod
 		return &tokenDetails, nil
 	}
 
-	// Обрабатываем ошибки от auth-service
 	log.Warn("Received error response from auth-service", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
 
-	// Пытаемся распарсить тело ошибки (предполагаем формат ErrorResponse из auth/handler)
 	type authErrorResponse struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 	}
 	var errResp authErrorResponse
 	if err := json.Unmarshal(respBodyBytes, &errResp); err == nil {
-		// Сопоставляем код ошибки auth-service с нашими ошибками (если нужно)
-		// Например, коды 401xx должны мапиться в models.ErrInvalidCredentials
 		if httpResp.StatusCode == http.StatusUnauthorized || httpResp.StatusCode == http.StatusNotFound {
 			return nil, fmt.Errorf("%w: %s (code: %d)", models.ErrInvalidCredentials, errResp.Message, errResp.Code)
 		}
-		// Для других ошибок можно вернуть общее сообщение
 		return nil, fmt.Errorf("auth service error: %s (status: %d, code: %d)", errResp.Message, httpResp.StatusCode, errResp.Code)
 	}
 
-	// Если не удалось распарсить ошибку, возвращаем общую ошибку на основе статуса
 	if httpResp.StatusCode == http.StatusUnauthorized || httpResp.StatusCode == http.StatusNotFound {
 		return nil, models.ErrInvalidCredentials
 	}
@@ -155,15 +147,9 @@ func (c *authClient) GetUserCount(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("internal error creating request: %w", err)
 	}
 	httpReq.Header.Set("Accept", "application/json")
-	// Используем JWT токен
-	if c.interServiceToken != "" {
-		httpReq.Header.Set("X-Internal-Service-Token", c.interServiceToken)
-	} else {
-		log.Warn("Inter-service token is not set, internal API call might fail")
-	}
 
-	log.Debug("Sending user count request to auth-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	// Используем универсальный метод для выполнения запроса
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
 	if err != nil {
 		log.Error("HTTP request for user count failed", zap.Error(err))
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -181,12 +167,9 @@ func (c *authClient) GetUserCount(ctx context.Context) (int, error) {
 
 	if httpResp.StatusCode != http.StatusOK {
 		log.Warn("Received non-OK status for user count", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
-		// Пытаемся разобрать ошибку, как в Login
-		// ... (можно добавить парсинг authErrorResponse)
 		return 0, fmt.Errorf("received unexpected status %d from auth service for user count", httpResp.StatusCode)
 	}
 
-	// Ожидаем ответ типа: {"count": 123}
 	type countResponse struct {
 		Count int `json:"count"`
 	}
@@ -205,7 +188,6 @@ func (c *authClient) ListUsers(ctx context.Context, limit int, afterCursor strin
 	listURL := c.baseURL + "/internal/auth/users"
 	log := c.logger.With(zap.String("url", listURL), zap.Int("limit", limit), zap.String("after", afterCursor))
 
-	// Добавляем query параметры
 	u, err := url.Parse(listURL)
 	if err != nil {
 		log.Error("Failed to parse base URL for user list", zap.Error(err))
@@ -226,15 +208,9 @@ func (c *authClient) ListUsers(ctx context.Context, limit int, afterCursor strin
 		return nil, "", fmt.Errorf("internal error creating request: %w", err)
 	}
 	httpReq.Header.Set("Accept", "application/json")
-	// Используем JWT токен
-	if c.interServiceToken != "" {
-		httpReq.Header.Set("X-Internal-Service-Token", c.interServiceToken)
-	} else {
-		log.Warn("Inter-service token is not set, internal API call might fail")
-	}
 
-	log.Debug("Sending user list request to auth-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	// Используем универсальный метод для выполнения запроса
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
 	if err != nil {
 		log.Error("HTTP request for user list failed", zap.Error(err))
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -252,25 +228,56 @@ func (c *authClient) ListUsers(ctx context.Context, limit int, afterCursor strin
 
 	if httpResp.StatusCode != http.StatusOK {
 		log.Warn("Received non-OK status for user list", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
-		// ... (можно добавить парсинг authErrorResponse)
 		return nil, "", fmt.Errorf("received unexpected status %d from auth service for user list", httpResp.StatusCode)
 	}
 
-	// <<< ИЗМЕНЕНИЕ: Ожидаем ответ типа []models.User >>>
-	// type listUsersResponse struct {
-	// 	Users      []models.User `json:"users"`
-	// 	NextCursor string        `json:"next_cursor"`
-	// }
-	// var resp listUsersResponse
-	var users []models.User // <<< Анмаршалим напрямую в слайс пользователей
+	var users []models.User
 	if err := json.Unmarshal(respBodyBytes, &users); err != nil {
 		log.Error("Failed to unmarshal user list response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes), zap.Error(err))
 		return nil, "", fmt.Errorf("invalid user list response format from auth service: %w", err)
 	}
 
-	// <<< Возвращаем пустой курсор, так как его нет в ответе >>>
 	log.Info("User list retrieved successfully", zap.Int("userCount", len(users)))
 	return users, "", nil
+}
+
+// doRequestWithTokenRefresh выполняет HTTP запрос с автоматическим обновлением токена при получении 401
+func (c *authClient) doRequestWithTokenRefresh(ctx context.Context, req *http.Request) (*http.Response, error) {
+	// Добавляем текущий токен в запрос
+	if c.interServiceToken != "" {
+		req.Header.Set("X-Internal-Service-Token", c.interServiceToken)
+	} else {
+		c.logger.Warn("Inter-service token is not set, request might fail")
+	}
+
+	// Выполняем запрос
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute request: %w", err)
+	}
+
+	// Если получили 401, пробуем обновить токен и повторить запрос
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close() // Закрываем тело первого ответа
+
+		// Пробуем получить новый токен
+		newToken, err := c.GenerateInterServiceToken(ctx, "admin-service")
+		if err != nil {
+			return nil, fmt.Errorf("failed to refresh inter-service token: %w", err)
+		}
+
+		// Устанавливаем новый токен
+		c.SetInterServiceToken(newToken)
+
+		// Создаем новый запрос с тем же контекстом и телом
+		newReq := req.Clone(ctx)
+		newReq.Header.Set("X-Internal-Service-Token", newToken)
+
+		// Повторяем запрос с новым токеном
+		return c.httpClient.Do(newReq)
+	}
+
+	return resp, nil
 }
 
 // --- Новый метод ---
@@ -306,15 +313,14 @@ func (c *authClient) GenerateInterServiceToken(ctx context.Context, serviceName 
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
-	// --- Используем статичный секрет для запроса ГЕНЕРАЦИИ токена ---
-	if c.staticSecret != "" { // Используем поле staticSecret
+	if c.staticSecret != "" {
 		httpReq.Header.Set("X-Internal-Service-Token", c.staticSecret)
 	} else {
 		log.Warn("Static Inter-service secret is not set for token generation request")
 	}
 
-	log.Debug("Sending inter-service token generation request to auth-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	// Используем универсальный метод для выполнения запроса
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
 	if err != nil {
 		log.Error("HTTP request for inter-service token generation failed", zap.Error(err))
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -354,23 +360,17 @@ func (c *authClient) BanUser(ctx context.Context, userID uuid.UUID) error {
 	banURL := fmt.Sprintf("%s/internal/auth/users/%s/ban", c.baseURL, userID.String())
 	log := c.logger.With(zap.String("url", banURL), zap.String("userID", userID.String()))
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, banURL, nil) // Используем POST
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, banURL, nil)
 	if err != nil {
 		log.Error("Failed to create ban user HTTP request", zap.Error(err))
 		return fmt.Errorf("internal error creating request: %w", err)
 	}
-	// Используем JWT токен для межсервисного взаимодействия
-	if c.interServiceToken == "" {
-		log.Warn("Inter-service token is not set, ban user API call might fail")
-		// Возможно, стоит вернуть ошибку, т.к. без токена запрос обречен?
-		return fmt.Errorf("inter-service token not available")
-	}
-	httpReq.Header.Set("X-Internal-Service-Token", c.interServiceToken)
+	httpReq.Header.Set("Accept", "application/json")
 
-	log.Debug("Sending ban user request to auth-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	// Используем универсальный метод для выполнения запроса
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
 	if err != nil {
-		log.Error("HTTP request to ban user failed", zap.Error(err))
+		log.Error("HTTP request for ban user failed", zap.Error(err))
 		if errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("request to auth service timed out: %w", err)
 		}
@@ -380,16 +380,14 @@ func (c *authClient) BanUser(ctx context.Context, userID uuid.UUID) error {
 
 	if httpResp.StatusCode == http.StatusNoContent {
 		log.Info("User banned successfully")
-		return nil // Успех
+		return nil
 	}
 
-	// Обрабатываем ошибки
-	respBodyBytes, _ := io.ReadAll(httpResp.Body) // Читаем тело для логирования
+	respBodyBytes, _ := io.ReadAll(httpResp.Body)
 	log.Warn("Received non-204 status for ban user", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
 	if httpResp.StatusCode == http.StatusNotFound {
 		return models.ErrUserNotFound
 	}
-	// TODO: Разобрать другие возможные ошибки из auth-service (например, 401 - невалидный токен)
 	return fmt.Errorf("received unexpected status %d from auth service for ban user", httpResp.StatusCode)
 }
 
@@ -398,22 +396,17 @@ func (c *authClient) UnbanUser(ctx context.Context, userID uuid.UUID) error {
 	unbanURL := fmt.Sprintf("%s/internal/auth/users/%s/ban", c.baseURL, userID.String())
 	log := c.logger.With(zap.String("url", unbanURL), zap.String("userID", userID.String()))
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, unbanURL, nil) // Используем DELETE
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, unbanURL, nil)
 	if err != nil {
 		log.Error("Failed to create unban user HTTP request", zap.Error(err))
 		return fmt.Errorf("internal error creating request: %w", err)
 	}
-	// Используем JWT токен для межсервисного взаимодействия
-	if c.interServiceToken == "" {
-		log.Warn("Inter-service token is not set, unban user API call might fail")
-		return fmt.Errorf("inter-service token not available")
-	}
-	httpReq.Header.Set("X-Internal-Service-Token", c.interServiceToken)
+	httpReq.Header.Set("Accept", "application/json")
 
-	log.Debug("Sending unban user request to auth-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	// Используем универсальный метод для выполнения запроса
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
 	if err != nil {
-		log.Error("HTTP request to unban user failed", zap.Error(err))
+		log.Error("HTTP request for unban user failed", zap.Error(err))
 		if errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("request to auth service timed out: %w", err)
 		}
@@ -423,21 +416,19 @@ func (c *authClient) UnbanUser(ctx context.Context, userID uuid.UUID) error {
 
 	if httpResp.StatusCode == http.StatusNoContent {
 		log.Info("User unbanned successfully")
-		return nil // Успех
+		return nil
 	}
 
-	// Обрабатываем ошибки
-	respBodyBytes, _ := io.ReadAll(httpResp.Body) // Читаем тело для логирования
+	respBodyBytes, _ := io.ReadAll(httpResp.Body)
 	log.Warn("Received non-204 status for unban user", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
 	if httpResp.StatusCode == http.StatusNotFound {
 		return models.ErrUserNotFound
 	}
-	// TODO: Разобрать другие возможные ошибки из auth-service
 	return fmt.Errorf("received unexpected status %d from auth service for unban user", httpResp.StatusCode)
 }
 
 // ValidateAdminToken sends a token to auth-service for full validation.
-type validateTokenRequest struct { // Внутренняя структура для запроса
+type validateTokenRequest struct {
 	Token string `json:"token"`
 }
 
@@ -459,16 +450,9 @@ func (c *authClient) ValidateAdminToken(ctx context.Context, token string) (*mod
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
-	// <<< Добавляем межсервисный токен, т.к. обращаемся к /internal эндпоинту >>>
-	if c.interServiceToken != "" {
-		httpReq.Header.Set("X-Internal-Service-Token", c.interServiceToken)
-	} else {
-		log.Warn("Inter-service token is not set, internal validation call might fail")
-		// Возможно, здесь стоит вернуть ошибку, если токен обязателен?
-	}
 
-	log.Debug("Sending token validation request to auth-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	// Используем универсальный метод для выполнения запроса
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
 	if err != nil {
 		log.Error("HTTP request for token validation failed", zap.Error(err))
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -494,27 +478,20 @@ func (c *authClient) ValidateAdminToken(ctx context.Context, token string) (*mod
 		return &claims, nil
 	}
 
-	// Обрабатываем ошибки валидации от auth-service
 	log.Warn("Received error response from auth-service for token validation", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
 
-	// --- Исправленная обработка ошибок ---
 	if httpResp.StatusCode == http.StatusUnauthorized {
-		// Пытаемся понять, протух ли токен или просто невалиден/отозван/юзер забанен
 		type authErrorResponse struct {
 			Code    int    `json:"code"`
 			Message string `json:"message"`
 		}
 		var errResp authErrorResponse
-		// Проверяем код ошибки из тела ответа auth-service, если он есть
-		if err := json.Unmarshal(respBodyBytes, &errResp); err == nil && errResp.Code == 40103 { // Используем литерал 40103, т.к. константа недоступна
-			return nil, models.ErrTokenExpired // Если код = ExpiredToken, возвращаем нужную ошибку
+		if err := json.Unmarshal(respBodyBytes, &errResp); err == nil && errResp.Code == 40103 {
+			return nil, models.ErrTokenExpired
 		}
-		// Во всех остальных случаях 401 (невалидный, отозван, пользователь забанен) возвращаем общую ошибку
 		return nil, models.ErrTokenInvalid
 	}
-	// --- Конец исправленной обработки ---
 
-	// Другие ошибки (500 и т.д.)
 	return nil, fmt.Errorf("auth service validation returned status %d", httpResp.StatusCode)
 }
 
@@ -545,15 +522,9 @@ func (c *authClient) UpdateUser(ctx context.Context, userID uuid.UUID, payload U
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
-	// Используем JWT токен
-	if c.interServiceToken != "" {
-		httpReq.Header.Set("X-Internal-Service-Token", c.interServiceToken)
-	} else {
-		log.Warn("Inter-service token is not set, internal API call might fail")
-	}
 
-	log.Debug("Sending user update request to auth-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	// Используем универсальный метод для выполнения запроса
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
 	if err != nil {
 		log.Error("HTTP request for user update failed", zap.Error(err))
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -563,39 +534,31 @@ func (c *authClient) UpdateUser(ctx context.Context, userID uuid.UUID, payload U
 	}
 	defer httpResp.Body.Close()
 
-	// Проверяем статус ответа
 	if httpResp.StatusCode == http.StatusNoContent {
 		log.Info("User updated successfully")
-		return nil // Успех, ожидаем 204 No Content
+		return nil
 	}
 
-	// Если статус не 204, пытаемся прочитать и разобрать тело ошибки
 	respBodyBytes, readErr := io.ReadAll(httpResp.Body)
 	if readErr != nil {
 		log.Error("Failed to read error response body for user update", zap.Int("status", httpResp.StatusCode), zap.Error(readErr))
-		// Возвращаем ошибку на основе статуса, т.к. тело не смогли прочитать
 		return fmt.Errorf("received unexpected status %d and failed to read body from auth service for user update", httpResp.StatusCode)
 	}
 
 	log.Warn("Received non-204 status for user update", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
 
-	// Пытаемся разобрать ошибку auth-service (authErrorResponse)
 	type authErrorResponse struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 	}
 	var errResp authErrorResponse
 	if err := json.Unmarshal(respBodyBytes, &errResp); err == nil {
-		// Сопоставляем код ошибки auth-service с нашими ошибками (если нужно)
-		// Например, коды 401xx должны мапиться в models.ErrInvalidCredentials
 		if httpResp.StatusCode == http.StatusUnauthorized || httpResp.StatusCode == http.StatusNotFound {
 			return fmt.Errorf("%w: %s (code: %d)", models.ErrInvalidCredentials, errResp.Message, errResp.Code)
 		}
-		// Для других ошибок можно вернуть общее сообщение
 		return fmt.Errorf("auth service error: %s (status: %d, code: %d)", errResp.Message, httpResp.StatusCode, errResp.Code)
 	}
 
-	// Если не удалось распарсить ошибку, возвращаем общую ошибку на основе статуса
 	if httpResp.StatusCode == http.StatusUnauthorized || httpResp.StatusCode == http.StatusNotFound {
 		return models.ErrInvalidCredentials
 	}
@@ -637,7 +600,7 @@ func (c *authClient) ResetPassword(ctx context.Context, userID uuid.UUID) (strin
 		log.Error("Failed to generate random password", zap.Error(err))
 		return "", fmt.Errorf("internal error generating password: %w", err)
 	}
-	log.Debug("Generated new random password for reset") // Не логируем сам пароль!
+	log.Debug("Generated new random password for reset")
 
 	// 2. Отправляем запрос на обновление пароля в auth-service
 	resetURL := fmt.Sprintf("%s/internal/auth/users/%s/password", c.baseURL, userID.String())
@@ -656,15 +619,10 @@ func (c *authClient) ResetPassword(ctx context.Context, userID uuid.UUID) (strin
 		return "", fmt.Errorf("internal error creating request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	// Используем JWT токен
-	if c.interServiceToken == "" {
-		log.Warn("Inter-service token is not set, reset password call might fail")
-		return "", fmt.Errorf("inter-service token not available")
-	}
-	httpReq.Header.Set("X-Internal-Service-Token", c.interServiceToken)
+	httpReq.Header.Set("Accept", "application/json")
 
-	log.Debug("Sending reset password request to auth-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	// Используем универсальный метод для выполнения запроса
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
 	if err != nil {
 		log.Error("HTTP request for reset password failed", zap.Error(err))
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -674,19 +632,16 @@ func (c *authClient) ResetPassword(ctx context.Context, userID uuid.UUID) (strin
 	}
 	defer httpResp.Body.Close()
 
-	// Проверяем статус ответа
 	if httpResp.StatusCode == http.StatusNoContent {
 		log.Info("Password reset successfully via auth-service")
-		return newPassword, nil // Возвращаем сгенерированный пароль
+		return newPassword, nil
 	}
 
-	// Обрабатываем ошибки
 	respBodyBytes, _ := io.ReadAll(httpResp.Body)
 	log.Warn("Received non-204 status for reset password", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
 	if httpResp.StatusCode == http.StatusNotFound {
 		return "", models.ErrUserNotFound
 	}
-	// TODO: Разобрать другие возможные ошибки из auth-service (400, 401, 500)
 	return "", fmt.Errorf("received unexpected status %d from auth service for reset password", httpResp.StatusCode)
 }
 
@@ -723,16 +678,8 @@ func (c *authClient) RefreshAdminToken(ctx context.Context, refreshToken string)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
-	// Используем JWT токен для межсервисного взаимодействия
-	if c.interServiceToken == "" {
-		log.Warn("Inter-service token is not set, refresh token call might fail")
-		// Можно вернуть ошибку, т.к. без токена запрос скорее всего не пройдет
-		// return nil, nil, fmt.Errorf("inter-service token not available")
-	} else {
-		httpReq.Header.Set("X-Internal-Service-Token", c.interServiceToken)
-	}
 
-	log.Debug("Sending refresh token request to auth-service")
+	// Для обновления токена используем прямой вызов, чтобы избежать рекурсии
 	httpResp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		log.Error("HTTP request for refresh token failed", zap.Error(err))
@@ -755,7 +702,6 @@ func (c *authClient) RefreshAdminToken(ctx context.Context, refreshToken string)
 			log.Error("Failed to unmarshal successful refresh token response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes), zap.Error(err))
 			return nil, nil, fmt.Errorf("invalid success response format from auth service: %w", err)
 		}
-		// Проверяем, что токены и клеймы не пустые (минимальная валидация)
 		if resp.Tokens.AccessToken == "" || resp.Tokens.RefreshToken == "" || resp.Claims.UserID == uuid.Nil {
 			log.Error("Received incomplete data in successful refresh token response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
 			return nil, nil, fmt.Errorf("incomplete data received from auth service")
@@ -764,20 +710,12 @@ func (c *authClient) RefreshAdminToken(ctx context.Context, refreshToken string)
 		return &resp.Tokens, &resp.Claims, nil
 	}
 
-	// Обрабатываем ошибки
 	log.Warn("Received error response from auth-service for token refresh", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
 
-	// Обрабатываем специфичные ошибки, если auth-service их возвращает
-	// Например, 401 Unauthorized может означать, что Refresh Token невалиден или истек
 	if httpResp.StatusCode == http.StatusUnauthorized {
-		// Можно попытаться распарсить тело ошибки, как в ValidateAdminToken, если auth-service предоставляет коды ошибок
-		// type authErrorResponse struct { Code int `json:"code"` Message string `json:"message"` } ...
-		// Если код = InvalidRefreshToken или ExpiredRefreshToken, вернуть models.ErrInvalidCredentials или похожую ошибку?
-		// Пока возвращаем общую ошибку для простоты
-		return nil, nil, models.ErrInvalidCredentials // Или другая ошибка, указывающая на невалидный рефреш токен
+		return nil, nil, models.ErrInvalidCredentials
 	}
 
-	// Другие ошибки (400 Bad Request, 403 Forbidden, 500 Internal Server Error и т.д.)
 	return nil, nil, fmt.Errorf("auth service token refresh returned status %d", httpResp.StatusCode)
 }
 

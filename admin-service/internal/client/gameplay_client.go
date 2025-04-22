@@ -24,10 +24,11 @@ type gameplayClient struct {
 	logger            *zap.Logger
 	mu                sync.RWMutex
 	interServiceToken string
+	authClient        AuthServiceHttpClient
 }
 
 // NewGameplayServiceClient создает новый клиент для gameplay-service.
-func NewGameplayServiceClient(baseURL string, timeout time.Duration, logger *zap.Logger) (GameplayServiceClient, error) {
+func NewGameplayServiceClient(baseURL string, timeout time.Duration, logger *zap.Logger, authClient AuthServiceHttpClient) (GameplayServiceClient, error) {
 	_, err := url.ParseRequestURI(baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid base URL for gameplay service: %w", err)
@@ -37,12 +38,17 @@ func NewGameplayServiceClient(baseURL string, timeout time.Duration, logger *zap
 		logger = zap.NewNop()
 	}
 
+	if authClient == nil {
+		return nil, fmt.Errorf("auth client cannot be nil")
+	}
+
 	return &gameplayClient{
 		baseURL: baseURL,
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},
-		logger: logger.Named("GameplayServiceClient"),
+		logger:     logger.Named("GameplayServiceClient"),
+		authClient: authClient,
 	}, nil
 }
 
@@ -52,6 +58,49 @@ func (c *gameplayClient) SetInterServiceToken(token string) {
 	defer c.mu.Unlock()
 	c.logger.Debug("Inter-service token set for GameplayServiceClient")
 	c.interServiceToken = token
+}
+
+// doRequestWithTokenRefresh выполняет HTTP запрос с автоматическим обновлением токена при получении 401
+func (c *gameplayClient) doRequestWithTokenRefresh(ctx context.Context, req *http.Request) (*http.Response, error) {
+	// Добавляем текущий токен в запрос
+	c.mu.RLock()
+	token := c.interServiceToken
+	c.mu.RUnlock()
+
+	if token != "" {
+		req.Header.Set("X-Internal-Service-Token", token)
+	} else {
+		c.logger.Warn("Inter-service token is not set, request might fail")
+	}
+
+	// Выполняем запрос
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute request: %w", err)
+	}
+
+	// Если получили 401, пробуем обновить токен и повторить запрос
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close() // Закрываем тело первого ответа
+
+		// Пробуем получить новый токен через authClient
+		newToken, err := c.authClient.GenerateInterServiceToken(ctx, "admin-service")
+		if err != nil {
+			return nil, fmt.Errorf("failed to refresh inter-service token: %w", err)
+		}
+
+		// Устанавливаем новый токен
+		c.SetInterServiceToken(newToken)
+
+		// Создаем новый запрос с тем же контекстом и телом
+		newReq := req.Clone(ctx)
+		newReq.Header.Set("X-Internal-Service-Token", newToken)
+
+		// Повторяем запрос с новым токеном
+		return c.httpClient.Do(newReq)
+	}
+
+	return resp, nil
 }
 
 // --- Реализация методов интерфейса --- //
@@ -87,19 +136,9 @@ func (c *gameplayClient) ListUserDrafts(ctx context.Context, userID uuid.UUID, l
 	}
 	httpReq.Header.Set("Accept", "application/json")
 
-	c.mu.RLock()
-	token := c.interServiceToken
-	c.mu.RUnlock()
-	if token == "" {
-		log.Warn("Inter-service token is not set, API call might fail")
-	} else {
-		httpReq.Header.Set("X-Internal-Service-Token", token)
-	}
-
 	log.Debug("Sending list drafts request to gameplay-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
 	if err != nil {
-		// TODO: Handle context errors (timeout, cancellation)
 		log.Error("HTTP request for list drafts failed", zap.Error(err))
 		return nil, "", fmt.Errorf("failed to communicate with gameplay service: %w", err)
 	}
@@ -113,7 +152,6 @@ func (c *gameplayClient) ListUserDrafts(ctx context.Context, userID uuid.UUID, l
 
 	if httpResp.StatusCode != http.StatusOK {
 		log.Warn("Received non-OK status for list drafts", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
-		// TODO: Parse error response from gameplay-service if available
 		return nil, "", fmt.Errorf("received unexpected status %d from gameplay service for list drafts", httpResp.StatusCode)
 	}
 
@@ -156,19 +194,9 @@ func (c *gameplayClient) ListUserPublishedStories(ctx context.Context, userID uu
 	}
 	httpReq.Header.Set("Accept", "application/json")
 
-	c.mu.RLock()
-	token := c.interServiceToken
-	c.mu.RUnlock()
-	if token == "" {
-		log.Warn("Inter-service token is not set, API call might fail")
-	} else {
-		httpReq.Header.Set("X-Internal-Service-Token", token)
-	}
-
 	log.Debug("Sending list stories request to gameplay-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
 	if err != nil {
-		// TODO: Handle context errors
 		log.Error("HTTP request for list stories failed", zap.Error(err))
 		return nil, false, fmt.Errorf("failed to communicate with gameplay service: %w", err)
 	}
@@ -182,7 +210,6 @@ func (c *gameplayClient) ListUserPublishedStories(ctx context.Context, userID uu
 
 	if httpResp.StatusCode != http.StatusOK {
 		log.Warn("Received non-OK status for list stories", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
-		// TODO: Parse error response
 		return nil, false, fmt.Errorf("received unexpected status %d from gameplay service for list stories", httpResp.StatusCode)
 	}
 
@@ -196,7 +223,7 @@ func (c *gameplayClient) ListUserPublishedStories(ctx context.Context, userID uu
 	return resp.Data, resp.HasMore, nil
 }
 
-// <<< ОБНОВЛЕНО: Реализация GetDraftDetailsInternal >>>
+// GetDraftDetailsInternal получает детали черновика.
 func (c *gameplayClient) GetDraftDetailsInternal(ctx context.Context, draftID uuid.UUID) (*models.StoryConfig, error) {
 	detailURL := fmt.Sprintf("%s/internal/drafts/%s", c.baseURL, draftID.String())
 	log := c.logger.With(zap.String("url", detailURL), zap.String("draftID", draftID.String()))
@@ -208,17 +235,8 @@ func (c *gameplayClient) GetDraftDetailsInternal(ctx context.Context, draftID uu
 	}
 	httpReq.Header.Set("Accept", "application/json")
 
-	c.mu.RLock()
-	token := c.interServiceToken
-	c.mu.RUnlock()
-	if token == "" {
-		log.Warn("Inter-service token is not set, API call might fail")
-	} else {
-		httpReq.Header.Set("X-Internal-Service-Token", token)
-	}
-
 	log.Debug("Sending get draft details internal request to gameplay-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
 	if err != nil {
 		log.Error("HTTP request for get draft details internal failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -249,7 +267,7 @@ func (c *gameplayClient) GetDraftDetailsInternal(ctx context.Context, draftID uu
 	return &resp, nil
 }
 
-// <<< ОБНОВЛЕНО: Реализация GetPublishedStoryDetailsInternal >>>
+// GetPublishedStoryDetailsInternal получает детали опубликованной истории.
 func (c *gameplayClient) GetPublishedStoryDetailsInternal(ctx context.Context, storyID uuid.UUID) (*models.PublishedStory, error) {
 	detailURL := fmt.Sprintf("%s/internal/stories/%s", c.baseURL, storyID.String())
 	log := c.logger.With(zap.String("url", detailURL), zap.String("storyID", storyID.String()))
@@ -261,17 +279,8 @@ func (c *gameplayClient) GetPublishedStoryDetailsInternal(ctx context.Context, s
 	}
 	httpReq.Header.Set("Accept", "application/json")
 
-	c.mu.RLock()
-	token := c.interServiceToken
-	c.mu.RUnlock()
-	if token == "" {
-		log.Warn("Inter-service token is not set, API call might fail")
-	} else {
-		httpReq.Header.Set("X-Internal-Service-Token", token)
-	}
-
 	log.Debug("Sending get published story details internal request to gameplay-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
 	if err != nil {
 		log.Error("HTTP request for get published story details internal failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -302,7 +311,7 @@ func (c *gameplayClient) GetPublishedStoryDetailsInternal(ctx context.Context, s
 	return &resp, nil
 }
 
-// <<< ОБНОВЛЕНО: Реализация ListStoryScenesInternal >>>
+// ListStoryScenesInternal получает список сцен истории.
 func (c *gameplayClient) ListStoryScenesInternal(ctx context.Context, storyID uuid.UUID) ([]models.StoryScene, error) {
 	scenesURL := fmt.Sprintf("%s/internal/stories/%s/scenes", c.baseURL, storyID.String())
 	log := c.logger.With(zap.String("url", scenesURL), zap.String("storyID", storyID.String()))
@@ -314,17 +323,8 @@ func (c *gameplayClient) ListStoryScenesInternal(ctx context.Context, storyID uu
 	}
 	httpReq.Header.Set("Accept", "application/json")
 
-	c.mu.RLock()
-	token := c.interServiceToken
-	c.mu.RUnlock()
-	if token == "" {
-		log.Warn("Inter-service token is not set, API call might fail")
-	} else {
-		httpReq.Header.Set("X-Internal-Service-Token", token)
-	}
-
 	log.Debug("Sending list story scenes internal request to gameplay-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
 	if err != nil {
 		log.Error("HTTP request for list story scenes internal failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -356,7 +356,7 @@ func (c *gameplayClient) ListStoryScenesInternal(ctx context.Context, storyID uu
 	return resp, nil
 }
 
-// <<< ОБНОВЛЕНО: Реализация UpdateDraftInternal >>>
+// UpdateDraftInternal обновляет черновик.
 func (c *gameplayClient) UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string, status models.StoryStatus) error {
 	updateURL := fmt.Sprintf("%s/internal/drafts/%s", c.baseURL, draftID.String())
 	log := c.logger.With(zap.String("url", updateURL), zap.String("draftID", draftID.String()), zap.String("status", string(status)))
@@ -374,25 +374,16 @@ func (c *gameplayClient) UpdateDraftInternal(ctx context.Context, draftID uuid.U
 	}
 	bodyReader := bytes.NewReader(bodyBytes)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, updateURL, bodyReader)
-	if err != nil {
-		log.Error("Failed to create update draft internal HTTP request", zap.Error(err))
-		return fmt.Errorf("internal error creating request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json")
-
-	c.mu.RLock()
-	token := c.interServiceToken
-	c.mu.RUnlock()
-	if token == "" {
-		log.Warn("Inter-service token is not set, API call might fail")
-	} else {
-		httpReq.Header.Set("X-Internal-Service-Token", token)
-	}
-
 	log.Debug("Sending update draft internal request to gameplay-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, &http.Request{
+		Method: http.MethodPost,
+		URL:    &url.URL{Path: updateURL},
+		Body:   io.NopCloser(bodyReader),
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+			"Accept":       []string{"application/json"},
+		},
+	})
 	if err != nil {
 		log.Error("HTTP request for update draft internal failed", zap.Error(err))
 		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -409,7 +400,7 @@ func (c *gameplayClient) UpdateDraftInternal(ctx context.Context, draftID uuid.U
 	return nil
 }
 
-// <<< ОБНОВЛЕНО: Реализация UpdateStoryInternal >>>
+// UpdateStoryInternal обновляет историю.
 func (c *gameplayClient) UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON string, status models.StoryStatus) error {
 	updateURL := fmt.Sprintf("%s/internal/stories/%s", c.baseURL, storyID.String())
 	log := c.logger.With(zap.String("url", updateURL), zap.String("storyID", storyID.String()), zap.String("status", string(status)))
@@ -447,25 +438,16 @@ func (c *gameplayClient) UpdateStoryInternal(ctx context.Context, storyID uuid.U
 	}
 	bodyReader := bytes.NewReader(bodyBytes)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, updateURL, bodyReader)
-	if err != nil {
-		log.Error("Failed to create update story internal HTTP request", zap.Error(err))
-		return fmt.Errorf("internal error creating request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json")
-
-	c.mu.RLock()
-	token := c.interServiceToken
-	c.mu.RUnlock()
-	if token == "" {
-		log.Warn("Inter-service token is not set, API call might fail")
-	} else {
-		httpReq.Header.Set("X-Internal-Service-Token", token)
-	}
-
 	log.Debug("Sending update story internal request to gameplay-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, &http.Request{
+		Method: http.MethodPost,
+		URL:    &url.URL{Path: updateURL},
+		Body:   io.NopCloser(bodyReader),
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+			"Accept":       []string{"application/json"},
+		},
+	})
 	if err != nil {
 		log.Error("HTTP request for update story internal failed", zap.Error(err))
 		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -482,7 +464,7 @@ func (c *gameplayClient) UpdateStoryInternal(ctx context.Context, storyID uuid.U
 	return nil
 }
 
-// <<< ОБНОВЛЕНО: Реализация UpdateSceneInternal >>>
+// UpdateSceneInternal обновляет сцену.
 func (c *gameplayClient) UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error {
 	updateURL := fmt.Sprintf("%s/internal/scenes/%s", c.baseURL, sceneID.String())
 	log := c.logger.With(zap.String("url", updateURL), zap.String("sceneID", sceneID.String()))
@@ -498,25 +480,16 @@ func (c *gameplayClient) UpdateSceneInternal(ctx context.Context, sceneID uuid.U
 	}
 	bodyReader := bytes.NewReader(bodyBytes)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, updateURL, bodyReader)
-	if err != nil {
-		log.Error("Failed to create update scene internal HTTP request", zap.Error(err))
-		return fmt.Errorf("internal error creating request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json")
-
-	c.mu.RLock()
-	token := c.interServiceToken
-	c.mu.RUnlock()
-	if token == "" {
-		log.Warn("Inter-service token is not set, API call might fail")
-	} else {
-		httpReq.Header.Set("X-Internal-Service-Token", token)
-	}
-
 	log.Debug("Sending update scene internal request to gameplay-service")
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, &http.Request{
+		Method: http.MethodPost,
+		URL:    &url.URL{Path: updateURL},
+		Body:   io.NopCloser(bodyReader),
+		Header: http.Header{
+			"Content-Type": []string{"application/json"},
+			"Accept":       []string{"application/json"},
+		},
+	})
 	if err != nil {
 		log.Error("HTTP request for update scene internal failed", zap.Error(err))
 		return fmt.Errorf("failed to communicate with gameplay service: %w", err)

@@ -25,6 +25,7 @@ The actual task payload you receive will contain an `InputData` field with the f
 6. **CRITICAL: Generate ALL text content (`sssf`, `fd`, `svd` descriptions, `desc`, `txt`, and `response_text` inside `cons`) STRICTLY in the language specified in the input `language`.** The generated language MUST match the input `language`.
 7. **Stat Balance:** Use moderate stat changes (±3 to ±10) usually. Larger changes (±15-25) infrequently for big moments. Avoid instant game-over values. Mix positive/negative within `cons`.
 8. **No-Consequence/Info Events:** Consequences object `cons` can be empty (`{}`) or contain only `response_text`. For info events, both `txt` values can be identical ("Continue.").
+9. **Character Attribution:** For EACH choice block (`ch`), you MUST select a character from the list provided under the **`chars` key within `stp`** (use their `n` - name field). Add this character's name to the `char` field within the choice block. The description text (`desc`) MUST involve or be presented by this specified character.
 
 **Output JSON Structure (MANDATORY, Compressed Keys):**
 ```json
@@ -38,7 +39,8 @@ The actual task payload you receive will contain an `InputData` field with the f
   "ch": [           // choices (array of ~20 choice blocks)
     {
       "sh": number,     // shuffleable (1 or 0)
-      "desc": "string", // description_text (Situation text, can use *italic*, **bold**)
+      "char": "string", // Character name from stp.chars[].n presenting the choice
+      "desc": "string", // description_text (Situation text involving 'char', can use *italic*, **bold**)
       "opts": [         // options (array, MUST contain exactly 2 options)
         {
           "txt": "string", // choice_1_text (Action text, can use *italic*, **bold**)
@@ -56,9 +58,9 @@ The actual task payload you receive will contain an `InputData` field with the f
 }
 ```
 
-**Goal:** Generate ~20 initial choices/events as a single-line compressed JSON string following the structure. Define new variables in `svd`. Ensure valid nested JSON consequences in `cons`.
+**Goal:** Generate ~20 initial choices/events as a single-line compressed JSON string following the structure. Define new variables in `svd`. Ensure valid nested JSON consequences in `cons`. Assign a character (`char`) to each choice block.
 
 **Example Output JSON:**
 ```json
-{"sssf":"You are Elric, heir to an ancient house of shadow mages... Your castle is shrouded in perpetual twilight...","fd":"You must consolidate power, restore the treasury... Be wary – the magic in your veins is unstable...","svd":{"council_relation":"Tracks the player's initial approach towards the Shadow Council ('assertive' or 'deferential').","guild_debt":"Tracks the amount owed to the Merchant Guild (numerical, starts at 0)."},"ch":[{"sh":0,"desc":"Master Weyland approaches, his expression **grave**. \"My Lord, the Shadow Council convenes soon. They question your *youth*. How will you address them first?\"","opts":[{"txt":"Assert your authority *directly*.","cons":{"core_stats_change":{"Power": 5, "Magic": -3}, "story_variables": {"council_relation": "assertive"}, "response_text": "The council members shift uncomfortably but **remain silent**."}},{"txt":"Seek their counsel *humbly*.","cons":{"core_stats_change":{"Power": -2, "People": 3}, "story_variables": {"council_relation": "deferential"}}}]},{"sh":1,"desc":"The Castellan reports that the grain stores are critically low...","opts":[{"txt":"Impose an emergency tax.","cons":{"core_stats_change":{"Wealth": 10, "People": -8}, "global_flags": ["emergency_tax_imposed"]}},{"txt":"Seek aid from the Merchant Guild.","cons":{"core_stats_change":{"Wealth": 5, "Power": -4}, "story_variables": {"guild_debt": 5}}}]}]}
+{"sssf":"You are Elric, heir to an ancient house of shadow mages... Your castle is shrouded in perpetual twilight...","fd":"You must consolidate power, restore the treasury... Be wary – the magic in your veins is unstable...","svd":{"council_relation":"Tracks the player's initial approach towards the Shadow Council ('assertive' or 'deferential').","guild_debt":"Tracks the amount owed to the Merchant Guild (numerical, starts at 0)."},"ch":[{"sh":0,"char":"Master Weyland","desc":"Master Weyland approaches, his expression **grave**. \"My Lord, the Shadow Council convenes soon. They question your *youth*. How will you address them first?\"","opts":[{"txt":"Assert your authority *directly*.","cons":{"core_stats_change":{"Power": 5, "Magic": -3}, "story_variables": {"council_relation": "assertive"}, "response_text": "The council members shift uncomfortably but **remain silent**."}},{"txt":"Seek their counsel *humbly*.","cons":{"core_stats_change":{"Power": -2, "People": 3}, "story_variables": {"council_relation": "deferential"}}}]},{"sh":1,"char":"Castellan","desc":"The Castellan reports that the grain stores are critically low...","opts":[{"txt":"Impose an emergency tax.","cons":{"core_stats_change":{"Wealth": 10, "People": -8}, "global_flags": ["emergency_tax_imposed"]}},{"txt":"Seek aid from the Merchant Guild.","cons":{"core_stats_change":{"Wealth": 5, "Power": -4}, "story_variables": {"guild_debt": 5}}}]}]}
 ```

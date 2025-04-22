@@ -180,11 +180,11 @@ func main() {
 	}
 
 	// <<< ПЕРЕНОС: Инициализируем другие клиенты ДО получения токена >>>
-	storyGenClient, err := client.NewStoryGeneratorClient(cfg.StoryGeneratorURL, cfg.ClientTimeout, logger)
+	storyGenClient, err := client.NewStoryGeneratorClient(cfg.StoryGeneratorURL, cfg.ClientTimeout, logger, authClient)
 	if err != nil {
 		sugar.Fatalf("Не удалось создать StoryGeneratorClient: %v", err)
 	}
-	gameplayClient, err := client.NewGameplayServiceClient(cfg.GameplayServiceURL, cfg.ClientTimeout, logger)
+	gameplayClient, err := client.NewGameplayServiceClient(cfg.GameplayServiceURL, cfg.ClientTimeout, logger, authClient)
 	if err != nil {
 		sugar.Fatalf("Не удалось создать GameplayServiceClient: %v", err)
 	}
@@ -200,9 +200,37 @@ func main() {
 			sugar.Infof("Попытка [%d/%d] получить межсервисный токен...", i+1, maxRetries)
 			interServiceToken, tokenErr := authClient.GenerateInterServiceToken(ctx, cfg.ServiceID) // Используем ServiceID из конфига
 			if tokenErr == nil {
+				// Устанавливаем токен для ВСЕХ клиентов, которые его используют
 				authClient.SetInterServiceToken(interServiceToken)
 				gameplayClient.SetInterServiceToken(interServiceToken)
-				sugar.Info("Межсервисный токен успешно получен и установлен.")
+				storyGenClient.SetInterServiceToken(interServiceToken) // Добавляем установку для storyGenClient
+				sugar.Info("Межсервисный токен успешно получен и установлен для всех клиентов.")
+
+				// Запускаем периодическое обновление токена
+				go func() {
+					ticker := time.NewTicker(cfg.InterServiceTokenTTL / 2)
+					defer ticker.Stop()
+
+					for {
+						select {
+						case <-ticker.C:
+							updateCtx, updateCancel := context.WithTimeout(context.Background(), 10*time.Second)
+							newToken, err := authClient.GenerateInterServiceToken(updateCtx, cfg.ServiceID)
+							updateCancel()
+
+							if err != nil {
+								sugar.Errorf("Не удалось обновить межсервисный токен: %v", err)
+								continue
+							}
+
+							authClient.SetInterServiceToken(newToken)
+							gameplayClient.SetInterServiceToken(newToken)
+							storyGenClient.SetInterServiceToken(newToken) // Добавляем обновление для storyGenClient
+							sugar.Info("Межсервисный токен успешно обновлен для всех клиентов")
+						}
+					}
+				}()
+
 				return // Выходим из горутины при успехе
 			}
 
