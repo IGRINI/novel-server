@@ -118,9 +118,9 @@ func (s *gameLoopServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUI
 	// 3. Get player progress or create initial progress
 	playerProgress, err := s.playerProgressRepo.GetByUserIDAndStoryID(ctx, userID, publishedStoryID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		// Check for the specific ErrNotFound error defined in shared models
+		if errors.Is(err, sharedModels.ErrNotFound) { // <<< Correctly check for ErrNotFound
 			log.Info("Player progress not found, creating initial progress")
-			// TODO: Extract initial progress creation logic if it becomes complex
 			playerProgress = &sharedModels.PlayerProgress{
 				UserID:           userID,
 				PublishedStoryID: publishedStoryID,
@@ -128,25 +128,18 @@ func (s *gameLoopServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUI
 				CoreStats:        make(map[string]int),
 				StoryVariables:   make(map[string]interface{}),
 				GlobalFlags:      []string{},
-				CreatedAt:        time.Now().UTC(),
-				UpdatedAt:        time.Now().UTC(),
+				// CreatedAt and UpdatedAt are handled by the repository
+				// SceneIndex defaults to 0, will be set later
 			}
 			if errCreate := s.playerProgressRepo.CreateOrUpdate(ctx, playerProgress); errCreate != nil {
 				log.Error("Error creating initial player progress", zap.Error(errCreate))
 				return nil, sharedModels.ErrInternalServer // Use shared error
 			}
 		} else {
-			log.Error("Error getting player progress", zap.Error(err))
+			// Handle other unexpected errors
+			log.Error("Unexpected error getting player progress", zap.Error(err))
 			return nil, sharedModels.ErrInternalServer // Use shared error
 		}
-	}
-
-	// <<< ДОБАВЛЕНО: Установка SceneIndex в 1 для нового прогресса >>>
-	if playerProgress.SceneIndex == 0 { // Проверяем, что это действительно новый прогресс (индекс еще не установлен)
-		log.Info("Setting initial scene index to 1")
-		playerProgress.SceneIndex = 1
-		// Не сохраняем здесь, так как CreateOrUpdate выше уже сохранил (или Get вернул существующий)
-		// Если Get вернул существующий, у него уже будет индекс > 0.
 	}
 
 	// 4. Get scene by hash
@@ -341,10 +334,6 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	progress.CurrentStateHash = newStateHash
 	progress.UpdatedAt = time.Now().UTC()
 
-	// <<< ДОБАВЛЕНО: Увеличиваем индекс сцены >>>
-	progress.SceneIndex++
-	s.logger.Info("Incremented scene index", append(logFields, zap.Int("newSceneIndex", progress.SceneIndex))...)
-
 	// 10. Check if the next scene already exists
 	nextScene, err := s.sceneRepo.FindByStoryAndHash(ctx, publishedStoryID, newStateHash)
 	if err != nil {
@@ -454,19 +443,6 @@ func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID,
 	log := s.logger.With(zap.String("publishedStoryID", storyID.String()), zap.String("userID", userID.String()))
 	log.Info("RetrySceneGeneration called")
 
-	// <<< ДОБАВЛЕНО: Проверка лимита активных генераций >>>
-	activeCount, err := s.storyConfigRepo.CountActiveGenerations(ctx, userID)
-	if err != nil {
-		log.Error("Error counting active generations before RetrySceneGeneration", zap.Error(err))
-		return sharedModels.ErrInternalServer // Внутренняя ошибка
-	}
-	generationLimit := 1 // TODO: Сделать лимит конфигурируемым
-	if activeCount >= generationLimit {
-		log.Warn("User reached the active generation limit, RetrySceneGeneration rejected", zap.Int("limit", generationLimit))
-		return sharedModels.ErrUserHasActiveGeneration
-	}
-	// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
-
 	// 1. Get the story
 	story, err := s.publishedRepo.GetByID(ctx, storyID)
 	if err != nil {
@@ -485,6 +461,7 @@ func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID,
 	}
 
 	// 3. Check if Setup generation failed or Scene generation failed
+	// Check if Setup generation failed or Scene generation failed
 	// <<< ИЗМЕНЕНО: Улучшенная проверка на существование Setup >>>
 	// Считаем Setup отсутствующим, если он nil ИЛИ содержит JSON 'null'.
 	setupExists := story.Setup != nil && string(story.Setup) != "null"

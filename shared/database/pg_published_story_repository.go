@@ -919,9 +919,9 @@ func (r *pgPublishedStoryRepository) FindWithProgressByUserID(ctx context.Contex
         SELECT
             ps.id,
             ps.title,
-            ps.short_description,
-            ps.author_id,
-            ps.published_at,
+            ps.description,
+            ps.user_id,
+            ps.created_at,
             ps.is_adult_content,
             ps.likes_count,
             pp.updated_at AS progress_updated_at,
@@ -968,15 +968,14 @@ func (r *pgPublishedStoryRepository) FindWithProgressByUserID(ctx context.Contex
 
 	for rows.Next() {
 		var summary models.PublishedStorySummaryWithProgress
-		var authorID uuid.UUID
 		var progressUpdatedAt time.Time
 		var isLiked bool // Variable to scan the like status
 
 		if err := rows.Scan(
 			&summary.ID,
 			&summary.Title,
-			&summary.ShortDescription,
-			&authorID,
+			&summary.PublishedStorySummary.ShortDescription,
+			&summary.AuthorID,
 			&summary.PublishedAt,
 			&summary.IsAdultContent,
 			&summary.LikesCount,
@@ -986,7 +985,6 @@ func (r *pgPublishedStoryRepository) FindWithProgressByUserID(ctx context.Contex
 			r.logger.Error("Error scanning story with progress row (with like check)", append(logFields, zap.Error(err))...)
 			continue // Skip problematic row
 		}
-		summary.AuthorID = authorID
 		summary.HasPlayerProgress = true
 		summary.IsLiked = isLiked // Assign the scanned like status
 		summary.AuthorName = ""   // Placeholder - to be filled by service layer

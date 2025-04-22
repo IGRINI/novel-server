@@ -75,7 +75,8 @@ WHERE user_id = $1 AND published_story_id = $2`
 func (r *pgPlayerProgressRepository) GetByUserIDAndStoryID(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (*models.PlayerProgress, error) {
 	progress := &models.PlayerProgress{}
 	var coreStatsJSON, storyVarsJSON []byte // Use []byte for scanning jsonb
-	var globalFlags pq.StringArray
+	// var globalFlags pq.StringArray    // Use direct type, it should handle '{}'
+	var globalFlags []string                                                                                            // Use native pgx scanning into Go slice
 	logFields := []zap.Field{zap.Stringer("userID", userID), zap.String("publishedStoryID", publishedStoryID.String())} // Log UUID
 
 	err := r.pool.QueryRow(ctx, getPlayerProgressQuery, userID, publishedStoryID).Scan(
@@ -83,7 +84,7 @@ func (r *pgPlayerProgressRepository) GetByUserIDAndStoryID(ctx context.Context, 
 		&progress.PublishedStoryID,
 		&coreStatsJSON,
 		&storyVarsJSON,
-		&globalFlags,
+		&globalFlags, // Scan directly into []string slice
 		&progress.CurrentStateHash,
 		&progress.SceneIndex,
 		&progress.UpdatedAt,
@@ -112,7 +113,14 @@ func (r *pgPlayerProgressRepository) GetByUserIDAndStoryID(ctx context.Context, 
 		r.logger.Error("Failed to unmarshal story variables", append(logFields, zap.Error(err))...)
 		return nil, err
 	}
-	progress.GlobalFlags = []string(globalFlags) // Assign scanned array
+
+	// Handle potentially nil globalFlags (removed, pq.StringArray should handle '{}')
+	// if globalFlags != nil {
+	// 	progress.GlobalFlags = []string(*globalFlags) // Dereference pointer if not nil
+	// } else {
+	// 	progress.GlobalFlags = []string{} // Assign empty slice if DB value was NULL
+	// }
+	progress.GlobalFlags = globalFlags // Assign the scanned slice directly
 
 	// r.logger.Debug("Retrieved player progress", zap.Uint64("userID", userID), zap.String("publishedStoryID", publishedStoryID.String()))
 	r.logger.Debug("Retrieved player progress", logFields...)
@@ -145,16 +153,23 @@ func (r *pgPlayerProgressRepository) CreateOrUpdate(ctx context.Context, progres
 		return err
 	}
 
+	// Handle empty global flags array - pass explicit '{}' literal to DB
+	var globalFlagsValue interface{}
+	if len(progress.GlobalFlags) > 0 {
+		globalFlagsValue = pq.Array(progress.GlobalFlags)
+	} else {
+		globalFlagsValue = "{}" // Pass the string literal for an empty array
+	}
+
 	_, err = r.pool.Exec(ctx, upsertPlayerProgressQuery,
 		progress.UserID,
 		progress.PublishedStoryID,
 		coreStatsJSON,
 		storyVarsJSON,
-		pq.Array(progress.GlobalFlags),
+		globalFlagsValue, // Pass the prepared value ('{}' or pq.Array)
 		progress.CurrentStateHash,
 		progress.SceneIndex,
 		progress.UpdatedAt,
-		// progress.CreatedAt, // Removed parameter for created_at
 		progress.LastStorySummary,
 		progress.LastFutureDirection,
 		progress.LastVarImpactSummary,

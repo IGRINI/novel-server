@@ -255,7 +255,7 @@ func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
 
 	// Парсим json.RawMessage из scene.Content
 	var rawContent map[string]json.RawMessage // Используем map для гибкого парсинга
-	if scene.Content == nil || len(scene.Content) == 0 || string(scene.Content) == "null" {
+	if len(scene.Content) == 0 || string(scene.Content) == "null" {
 		log.Error("Scene content is empty or null", zap.String("sceneID", scene.ID.String()))
 		handleServiceError(c, fmt.Errorf("internal error: scene content is missing"), h.logger)
 		return
@@ -270,19 +270,34 @@ func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
 	var sceneType string
 	if typeJSON, ok := rawContent["type"]; ok {
 		if err := json.Unmarshal(typeJSON, &sceneType); err != nil {
-			log.Error("Failed to unmarshal scene type", zap.String("sceneID", scene.ID.String()), zap.Error(err))
-			sceneType = "unknown" // Устанавливаем неизвестный тип при ошибке
+			log.Error("Failed to unmarshal scene type field", zap.String("sceneID", scene.ID.String()), zap.Error(err))
+			// sceneType останется пустым ""
+		} else if sceneType == "" { // Если тип распарсился, но оказался пустой строкой
+			log.Warn("Scene content has empty 'type' field", zap.String("sceneID", scene.ID.String()))
 		}
 	} else {
-		log.Warn("Scene content missing 'type' field", zap.String("sceneID", scene.ID.String()))
-		sceneType = "unknown"
+		// Ключ 'type' отсутствует в JSON
+		// Лог об этом теперь будет ниже, если тип останется неопределенным
+	}
+
+	// Если тип не был определен (отсутствовал или был пуст), но контент есть - предполагаем 'choices'
+	if sceneType == "" && len(scene.Content) > 0 && string(scene.Content) != "null" {
+		log.Warn("Scene content missing or empty 'type' field, assuming 'choices' for potentially initial scene", zap.String("sceneID", scene.ID.String()))
+		sceneType = "choices" // Assume it's a choices scene
+	}
+
+	// Проверяем, определили ли мы тип окончательно
+	if sceneType == "" {
+		log.Error("Could not determine scene type from empty or invalid content", zap.String("sceneID", scene.ID.String()))
+		handleServiceError(c, fmt.Errorf("internal error: unknown or empty scene content"), h.logger)
+		return
 	}
 
 	// Формируем DTO ответа на основе типа сцены
 	responseDTO := GameSceneResponseDTO{
 		ID:               scene.ID,
 		PublishedStoryID: scene.PublishedStoryID,
-		Type:             sceneType,
+		Type:             sceneType, // <<< Используем определенный sceneType
 	}
 
 	switch sceneType {
@@ -316,7 +331,7 @@ func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
 							Text: rawOpt.Text,
 						}
 						// Парсим последствия ('cons') для извлечения 'resp_txt' и 'cs_chg'
-						if rawOpt.Consequences != nil && len(rawOpt.Consequences) > 2 { // Проверяем, что не пустое {}
+						if len(rawOpt.Consequences) > 2 { // Проверяем, что не пустое {}
 							var consMap map[string]json.RawMessage // Используем RawMessage для гибкости парсинга cs_chg
 							if err := json.Unmarshal(rawOpt.Consequences, &consMap); err == nil {
 								preview := ConsequencePreviewDTO{}
