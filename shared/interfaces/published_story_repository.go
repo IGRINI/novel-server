@@ -69,4 +69,10 @@ type PublishedStoryRepository interface {
 	// Delete удаляет опубликованную историю и все связанные с ней данные (сцены, прогресс, лайки).
 	// Требует ID истории и ID пользователя для проверки владения.
 	Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
+
+	// CheckLike checks if a story is liked by a user.
+	CheckLike(ctx context.Context, userID, storyID uuid.UUID) (bool, error)
+
+	// FindWithProgressByUserID retrieves a paginated list of stories with progress for a specific user using cursor pagination.
+	FindWithProgressByUserID(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]models.PublishedStorySummaryWithProgress, string, error)
 }

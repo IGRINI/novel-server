@@ -33,6 +33,12 @@
             </label>
             <input type="email" id="email" name="email" value="{{ .User.Email }}" required>
         </div>
+        <div>
+            <label for="display_name">
+                Отображаемое имя (Display Name)
+            </label>
+            <input type="text" id="display_name" name="display_name" value="{{ .User.DisplayName }}">
+        </div>
         
         <label for="roles">Роли</label>
         <select id="roles" name="roles" multiple required>

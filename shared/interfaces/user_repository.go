@@ -35,12 +35,12 @@ type UserRepository interface {
 	// SetUserBanStatus sets the ban status of a user.
 	SetUserBanStatus(ctx context.Context, userID uuid.UUID, isBanned bool) error
 
-	// UpdateUserFields updates specific fields of a user.
-	// nil pointers mean the field should not be updated.
-	UpdateUserFields(ctx context.Context, userID uuid.UUID, email *string, roles []string, isBanned *bool) error
+	// UpdateUserFields обновляет только указанные поля пользователя (email, роли, статус бана).
+	// Поля со значением nil не обновляются.
+	UpdateUserFields(ctx context.Context, userID uuid.UUID, email *string, displayName *string, roles []string, isBanned *bool) error
 
 	// UpdatePasswordHash обновляет хеш пароля пользователя.
-	UpdatePasswordHash(ctx context.Context, userID uuid.UUID, passwordHash string) error
+	UpdatePasswordHash(ctx context.Context, userID uuid.UUID, newPasswordHash string) error
 
 	// GetUsersByIDs retrieves multiple users by their IDs.
 	// Returns an empty slice and nil error if no users are found for the given IDs.

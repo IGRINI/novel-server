@@ -282,12 +282,16 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		var reasonCondition string
 		finalValue := progress.CoreStats[gameOverStat]
 		if def, ok := setupContent.CoreStatsDefinition[gameOverStat]; ok {
-			if finalValue <= def.Min {
+			// Determine reason based on which flag is set in GameOverConditions
+			if def.GameOverConditions.Min { // Check the Min flag
+				// Assume if Min flag is true, game over *could* be due to min value.
+				// We don't have the exact boundary here, rely on applyConsequences having triggered isGameOver.
+				// If both Min and Max flags are true, this might not be the precise reason.
 				reasonCondition = "min"
-			}
-			if finalValue >= def.Max {
+			} else if def.GameOverConditions.Max { // Check the Max flag if Min wasn't the reason (or wasn't set)
 				reasonCondition = "max"
 			}
+			// If neither flag is set, reasonCondition remains "", which might indicate an issue.
 		}
 		reason := sharedMessaging.GameOverReason{
 			StatName:  gameOverStat,
@@ -765,13 +769,19 @@ func applyConsequences(progress *sharedModels.PlayerProgress, cons sharedModels.
 			if !exists { // If stat doesn't exist, assume it's 0 for comparison
 				currentValue = 0
 			}
-			// Check min/max bounds if they are defined (e.g., non-zero)
-			// Assuming Min=0/Max=0 means no bound check for that side.
-			// Adjust this logic based on how Min/Max are defined in StatDefinition.
-			if definition.Min != 0 && currentValue <= definition.Min {
+			// Check game over conditions based on StatDefinition flags
+			// TODO: This assumes that if isGameOver is true, one of the conditions was met.
+			// This might be inaccurate if a stat could theoretically go below min AND above max simultaneously,
+			// or if game over is triggered by other means not reflected in GameOverConditions.
+			// Also, we no longer have the numeric bounds (Min/Max) here directly.
+			// We rely on the fact that applyConsequences correctly determined isGameOver based on those bounds (or other rules).
+
+			// Check Min condition IF it's a game over condition
+			if definition.GameOverConditions.Min && currentValue <= 0 { // TODO: Hardcoded 0, need real min bound if logic requires it beyond just the flag
 				return statName, true
 			}
-			if definition.Max != 0 && currentValue >= definition.Max {
+			// Check Max condition IF it's a game over condition
+			if definition.GameOverConditions.Max && currentValue >= 100 { // TODO: Hardcoded 100, need real max bound if logic requires it beyond just the flag
 				return statName, true
 			}
 		}

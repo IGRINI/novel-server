@@ -37,9 +37,10 @@ type meResponse struct {
 }
 
 type updateUserRequest struct {
-	Email    *string  `json:"email,omitempty"`
-	Roles    []string `json:"roles,omitempty"`
-	IsBanned *bool    `json:"is_banned,omitempty"`
+	Email       *string  `json:"email,omitempty"`
+	DisplayName *string  `json:"display_name,omitempty"`
+	Roles       []string `json:"roles,omitempty"`
+	IsBanned    *bool    `json:"is_banned,omitempty"`
 }
 
 type updatePasswordRequest struct {

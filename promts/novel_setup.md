@@ -44,8 +44,8 @@
       "d": "string",    // description (in `ln`)
       "vt": ["string"], // visual_tags (MUST be English)
       "p": "string",    // personality (optional, in `ln`)
-      "pr": "string",   // prompt (detailed, for image gen, in `ln` + English style hints)
-      "np": "string",   // negative_prompt (for image gen, English)
+      "pr": "string",   // prompt (detailed, for image gen, MUST be English)
+      "np": "string",   // negative_prompt (for image gen, MUST be English)
       "ir": "string" // image_reference (deterministic, based on name or vt)
     }
     // ... Repeat for approximately 10 characters ...
@@ -54,7 +54,7 @@
 ```
 
 **Instructions:**
-1. **CRITICAL LANGUAGE RULE: Generate ALL text content intended for narrative or display (like character names `n`, descriptions `d`, personality `p`, descriptive parts of prompts `pr`, and enhanced core stat descriptions `csd.d`) STRICTLY in the language specified in the input `ln`.** The generated language MUST match the input `ln`. Fields like input `st`, `cvs`, and output `vt`, `np` are EXCEPTIONS and MUST remain/be generated in English; they DO NOT affect the main output language `ln`.
+1. **CRITICAL LANGUAGE RULE: Generate ALL text content intended for narrative or display (like character names `n`, descriptions `d`, personality `p`, and enhanced core stat descriptions `csd.d`) STRICTLY in the language specified in the input `ln`.** The generated language MUST match the input `ln`. Fields like input `st`, `cvs`, and output `vt`, `pr` (image prompt), `np` (negative image prompt) are EXCEPTIONS and MUST remain/be generated in **English**.
 2. Receive input JSON config (structure above).
 3. Generate **COMPRESSED JSON output ONLY** (structure above). Output must be a **single line, no markdown, no extra formatting**.
 4. **Strict JSON syntax** (quotes, commas, brackets).
@@ -70,3 +70,4 @@
      - `descriptor1`, `descriptor2`: optional, distinctive appearance tags like `scar`, `armor`, `glasses`, `robe`, `cyborg`, etc. (derived deterministically from `vt`).
    - Always use snake_case for all parts of `ir`.
    - The result must be deterministic — identical `vt` should always result in the same `ir`. The process should prioritize common tags for gender/age/theme and then pick distinctive descriptors.
+9. **Player Character Exclusion:** The generated `chars` array is for Non-Player Characters (NPCs) only. **DO NOT** include the player character (protagonist) in this list under any circumstances.

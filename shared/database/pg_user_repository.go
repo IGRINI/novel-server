@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"novel-server/shared/interfaces"
 	"novel-server/shared/models"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -181,67 +183,73 @@ func (r *pgUserRepository) SetUserBanStatus(ctx context.Context, userID uuid.UUI
 	return nil
 }
 
-// UpdateUserFields обновляет указанные поля пользователя в базе данных.
-// Принимает ID пользователя и указатели на обновляемые значения.
-// Если указатель равен nil, соответствующее поле не обновляется.
-func (r *pgUserRepository) UpdateUserFields(ctx context.Context, userID uuid.UUID, email *string, roles []string, isBanned *bool) error {
-	queryBase := "UPDATE users SET updated_at = CURRENT_TIMESTAMP"
-	args := []interface{}{} // Слайс для аргументов запроса
-	argID := 1              // Счетчик для плейсхолдеров ($1, $2, ...)
+// UpdateUserFields обновляет указанные поля пользователя (email, displayName, роли, is_banned).
+// Поля со значением nil не обновляются.
+func (r *pgUserRepository) UpdateUserFields(ctx context.Context, userID uuid.UUID, email *string, displayName *string, roles []string, isBanned *bool) error {
+	setClauses := []string{}
+	args := []interface{}{}
+	argID := 1
 
-	// Добавляем поля для обновления, если они переданы (не nil)
 	if email != nil {
-		queryBase += fmt.Sprintf(", email = $%d", argID)
+		setClauses = append(setClauses, fmt.Sprintf("email = $%d", argID))
 		args = append(args, *email)
 		argID++
 	}
-	if roles != nil { // Обновляем роли, если слайс передан (даже если пустой)
-		queryBase += fmt.Sprintf(", roles = $%d", argID)
-		args = append(args, roles) // Передаем сам слайс
-		argID++
-	}
-	if isBanned != nil {
-		queryBase += fmt.Sprintf(", is_banned = $%d", argID)
-		args = append(args, *isBanned)
-		argID++
-	}
-	/* // Пока убираем возможность обновления DisplayName через этот метод
 	if displayName != nil {
-		queryBase += fmt.Sprintf(", display_name = $%d", argID)
+		setClauses = append(setClauses, fmt.Sprintf("display_name = $%d", argID))
 		args = append(args, *displayName)
 		argID++
 	}
-	*/
-
-	// Если нечего обновлять, просто выходим
-	if len(args) == 0 {
-		r.logger.Info("UpdateUserFields called with no fields to update", zap.String("userID", userID.String()))
-		return nil
+	if roles != nil {
+		setClauses = append(setClauses, fmt.Sprintf("roles = $%d", argID))
+		args = append(args, roles)
+		argID++
+	}
+	if isBanned != nil {
+		setClauses = append(setClauses, fmt.Sprintf("is_banned = $%d", argID))
+		args = append(args, *isBanned)
+		argID++
 	}
 
-	// Добавляем условие WHERE и последний аргумент (userID)
-	query := queryBase + fmt.Sprintf(" WHERE id = $%d", argID)
+	if len(setClauses) == 0 {
+		r.logger.Info("UpdateUserFields called with no fields to update", zap.String("userID", userID.String()))
+		return nil // Нет полей для обновления
+	}
+
+	// Всегда обновляем updated_at
+	setClauses = append(setClauses, fmt.Sprintf("updated_at = $%d", argID))
+	args = append(args, time.Now())
+	argID++
+
 	args = append(args, userID)
 
-	r.logger.Debug("Executing update user query", zap.String("query", query), zap.String("userID", userID.String()), zap.Any("args", args))
+	query := fmt.Sprintf("UPDATE users SET %s WHERE id = $%d",
+		strings.Join(setClauses, ", "),
+		argID,
+	)
+
+	r.logger.Debug("Executing user update query", zap.String("query", query), zap.Any("args", args))
+
 	cmdTag, err := r.db.Exec(ctx, query, args...)
 	if err != nil {
-		// Проверяем на ошибку уникальности email
+		// Проверка на уникальность email
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "users_email_key" {
-			r.logger.Warn("Attempted to update user with duplicate email", zap.String("userID", userID.String()), zap.Stringp("email", email))
-			return models.ErrEmailAlreadyExists
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // 23505 - unique_violation
+			if strings.Contains(pgErr.ConstraintName, "users_email_key") {
+				r.logger.Warn("User update failed: email already exists", zap.String("userID", userID.String()), zap.Stringp("email", email), zap.Error(err))
+				return models.ErrEmailAlreadyExists
+			}
 		}
-		r.logger.Error("Failed to update user fields in postgres", zap.Error(err), zap.String("userID", userID.String()))
-		return fmt.Errorf("failed to update user fields: %w", err)
+		r.logger.Error("Failed to execute user update query", zap.String("userID", userID.String()), zap.Error(err))
+		return fmt.Errorf("failed to update user: %w", err)
 	}
 
 	if cmdTag.RowsAffected() == 0 {
-		r.logger.Warn("Attempted to update non-existent user", zap.String("userID", userID.String()))
+		r.logger.Warn("UpdateUserFields affected 0 rows, user not found?", zap.String("userID", userID.String()))
 		return models.ErrUserNotFound
 	}
 
-	r.logger.Info("User fields updated successfully", zap.String("userID", userID.String()))
+	r.logger.Info("User fields updated successfully", zap.String("userID", userID.String()), zap.Int64("rowsAffected", cmdTag.RowsAffected()))
 	return nil
 }
 

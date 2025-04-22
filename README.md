@@ -469,33 +469,62 @@
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 *   **`GET /api/published-stories/:id`**
-    *   Описание: Получение детальной информации об **одной** опубликованной истории, включая флаг наличия прогресса у текущего пользователя.
+    *   Описание: Получение детальной информации об **одной** опубликованной истории с распарсенными полями конфига/сетапа.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
-    *   Ответ при успехе (`200 OK`): Объект `PublishedStoryDetailWithProgressDTO` (содержит все поля `PublishedStory` + `hasPlayerProgress`).
+    *   Ответ при успехе (`200 OK`): Объект `PublishedStoryParsedDetailDTO`.
         ```json
         {
-          "id": "uuid-string",
-          "user_id": "uuid-string",
-          "config": { ... }, // Нераспарсенный JSON конфига
-          "setup": { ... }, // Нераспарсенный JSON сетапа
-          "status": "ready | completed | error",
-          "is_public": true,
-          "is_adult_content": false,
-          "title": "string",
-          "description": "string",
-          "likes_count": 123,
-          "is_liked": true, // Лайкнул ли текущий пользователь
-          "created_at": "timestamp",
-          "updated_at": "timestamp",
-          "hasPlayerProgress": true // Есть ли прогресс у текущего пользователя
+          "id": "uuid-string", // ID истории
+          "authorId": "uuid-string", // ID Автора
+          "authorName": "string", // Имя автора
+          "publishedAt": "timestamp-string", // Дата публикации (фактически время создания)
+          "likesCount": number, // Количество лайков
+          "isLiked": boolean, // Лайкнул ли историю текущий пользователь
+          "isAuthor": boolean, // Является ли текущий пользователь автором истории
+          "isPublic": boolean, // Является ли история публичной
+          "isAdultContent": boolean, // Флаг 18+ (из конфига)
+          "status": "ready | completed | error | setup_pending | generating_scene", // Текущий статус истории
+          // Распарсенные поля из Config/Setup:
+          "title": "string", // Название (из Config)
+          "shortDescription": "string", // Краткое описание (из Config)
+          // "franchise": "string | null", // Поле пока не извлекается
+          "genre": "string", // Жанр (из Config)
+          "language": "string", // Язык (из Config)
+          "playerName": "string", // Имя игрока (из Config)
+          // "playerDescription": "string", // Поле пока не извлекается
+          // "worldContext": "string", // Поле пока не извлекается
+          // "storySummary": "string", // Поле пока не извлекается
+          "coreStats": { // Статы (из Setup)
+            "statName1": {
+              "description": "string",
+              "initialValue": number,
+              "min": number, // Минимальное значение (0 - нет)
+              "max": number, // Максимальное значение (0 - нет)
+              "gameOverMin": boolean, // Game Over при достижении Min?
+              "gameOverMax": boolean // Game Over при достижении Max?
+            },
+            "statName2": { ... }
+          },
+          "characters": [ // Персонажи (из Setup)
+            {
+              "name": "string", // Имя персонажа
+              "description": "string", // Описание
+              "personality": "string | null" // Личность (опционально)
+            }
+            // ... другие персонажи
+          ],
+          // Информация о прогрессе:
+          "hasPlayerProgress": boolean, // Есть ли прогресс игры у текущего пользователя
+          "lastPlayedAt": "timestamp-string | null" // Время последнего обновления прогресса
         }
         ```
     *   Ответ при ошибке:
         *   `400 Bad Request`: Невалидный UUID.
         *   `401 Unauthorized`: Невалидный токен.
+        *   `403 Forbidden`: Нет доступа к приватной истории.
         *   `404 Not Found`: История не найдена.
-        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
+        *   `500 Internal Server Error`: Внутренняя ошибка (например, ошибка парсинга JSON конфига/сетапа).
 
 *   **`GET /api/published-stories/:id/scene`**
     *   Описание: Получение текущей сцены для **своей** игровой сессии в опубликованной истории. Если прогресса нет, возвращает начальную сцену.
@@ -627,7 +656,37 @@
         *   `409 Conflict` (`{"message": "Story is not in error state"}`): История не в статусе ошибки.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`GET /api/users/me/likes`**
+*   **`GET /api/published-stories/me/progress`**
+    *   Описание: Получение списка историй, в которых у текущего пользователя есть прогресс прохождения.
+    *   Аутентификация: **Требуется.**
+    *   Query параметры: `limit`, `cursor`.
+    *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`.
+        ```json
+        {
+          "data": [
+            {
+              "id": "uuid-string",
+              "title": "string",
+              "short_description": "string",
+              "author_id": "uuid-string",
+              "author_name": "string",
+              "published_at": "timestamp",
+              "is_adult_content": false,
+              "likes_count": 42,
+              "is_liked": true, // Лайкнул ли эту историю текущий пользователь
+              "hasPlayerProgress": true // Всегда true для этого эндпоинта
+            }
+            /* ... */
+          ],
+          "next_cursor": "string | null"
+        }
+        ```
+    *   Ответ при ошибке:
+        *   `400 Bad Request`: Невалидный курсор или `limit`.
+        *   `401 Unauthorized`: Невалидный токен.
+        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
+
+*   **`GET /api/published-stories/me/likes`**
     *   Описание: Получение списка историй, которые лайкнул пользователь.
     *   Аутентификация: **Требуется.**
     *   Query параметры: `limit`, `cursor`.

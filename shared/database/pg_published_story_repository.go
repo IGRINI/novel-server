@@ -898,3 +898,132 @@ func (r *pgPublishedStoryRepository) Delete(ctx context.Context, id uuid.UUID, u
 	r.logger.Info("Published story and related data deleted successfully", logFields...)
 	return nil
 }
+
+// FindWithProgressByUserID retrieves a paginated list of stories with progress for a specific user using cursor pagination.
+func (r *pgPublishedStoryRepository) FindWithProgressByUserID(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]models.PublishedStorySummaryWithProgress, string, error) {
+	r.logger.Debug("Finding stories with progress", zap.String("userID", userID.String()), zap.Int("limit", limit), zap.String("cursor", cursor))
+
+	if limit <= 0 {
+		limit = 20 // Default limit
+	}
+	fetchLimit := limit + 1
+
+	cursorTime, cursorID, err := utils.DecodeCursor(cursor) // Используем DecodeCursor
+	if err != nil {
+		r.logger.Warn("Invalid cursor provided for FindWithProgressByUserID", zap.String("cursor", cursor), zap.Error(err))
+		return nil, "", fmt.Errorf("invalid cursor: %w", err)
+	}
+
+	// Query to join published_stories and player_progress, filter by user_id, handle cursor pagination, and check likes.
+	query := `
+        SELECT
+            ps.id,
+            ps.title,
+            ps.short_description,
+            ps.author_id,
+            ps.published_at,
+            ps.is_adult_content,
+            ps.likes_count,
+            pp.updated_at AS progress_updated_at,
+            (sl.user_id IS NOT NULL) AS is_liked -- Check if a like exists for the current user
+        FROM published_stories ps
+        JOIN player_progress pp ON ps.id = pp.published_story_id
+        LEFT JOIN story_likes sl ON ps.id = sl.published_story_id AND sl.user_id = $1 -- LEFT JOIN to check like for the specific user
+        WHERE pp.user_id = $1
+    `
+	args := []interface{}{userID}
+	paramIndex := 2
+
+	if !cursorTime.IsZero() && cursorID != uuid.Nil {
+		// Use composite key (progress_updated_at, story_id) for cursor pagination
+		query += fmt.Sprintf(" AND (pp.updated_at, ps.id) < ($%d, $%d) ", paramIndex, paramIndex+1)
+		args = append(args, cursorTime, cursorID)
+		paramIndex += 2
+	}
+
+	// Order by progress timestamp first, then by story ID for stability
+	query += fmt.Sprintf(" ORDER BY pp.updated_at DESC, ps.id DESC LIMIT $%d", paramIndex)
+	args = append(args, fetchLimit)
+
+	logFields := []zap.Field{
+		zap.String("userID", userID.String()),
+		zap.String("cursor", cursor),
+		zap.Time("cursorTime", cursorTime),
+		zap.Stringer("cursorID", cursorID),
+		zap.Int("limit", limit),
+		zap.Int("fetchLimit", fetchLimit),
+	}
+	r.logger.Debug("Executing query for stories with progress (with like check)", append(logFields, zap.String("query", query))...)
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		r.logger.Error("Error querying stories with progress (with like check)", append(logFields, zap.Error(err))...)
+		return nil, "", fmt.Errorf("database query failed: %w", err)
+	}
+	defer rows.Close()
+
+	stories := make([]models.PublishedStorySummaryWithProgress, 0, limit)
+	var lastProgressUpdate time.Time
+	var lastStoryID uuid.UUID // Needed for the cursor
+
+	for rows.Next() {
+		var summary models.PublishedStorySummaryWithProgress
+		var authorID uuid.UUID
+		var progressUpdatedAt time.Time
+		var isLiked bool // Variable to scan the like status
+
+		if err := rows.Scan(
+			&summary.ID,
+			&summary.Title,
+			&summary.ShortDescription,
+			&authorID,
+			&summary.PublishedAt,
+			&summary.IsAdultContent,
+			&summary.LikesCount,
+			&progressUpdatedAt, // Scan pp.updated_at
+			&isLiked,           // Scan the calculated is_liked
+		); err != nil {
+			r.logger.Error("Error scanning story with progress row (with like check)", append(logFields, zap.Error(err))...)
+			continue // Skip problematic row
+		}
+		summary.AuthorID = authorID
+		summary.HasPlayerProgress = true
+		summary.IsLiked = isLiked // Assign the scanned like status
+		summary.AuthorName = ""   // Placeholder - to be filled by service layer
+
+		stories = append(stories, summary)
+		lastProgressUpdate = progressUpdatedAt
+		lastStoryID = summary.ID // Keep track of the last ID for the cursor
+	}
+
+	if err := rows.Err(); err != nil {
+		r.logger.Error("Error iterating story with progress rows (with like check)", append(logFields, zap.Error(err))...)
+		return nil, "", fmt.Errorf("database iteration failed: %w", err)
+	}
+
+	var nextCursor string
+	if len(stories) == fetchLimit {
+		stories = stories[:fetchLimit-1] // Correctly remove the extra item
+		// Create composite cursor using the last item's progress update time and ID
+		nextCursor = utils.EncodeCursor(lastProgressUpdate, lastStoryID) // Use EncodeCursor
+	}
+
+	r.logger.Debug("Found stories with progress (with like check)", append(logFields, zap.Int("count", len(stories)), zap.Bool("hasNext", nextCursor != ""))...)
+	return stories, nextCursor, nil
+}
+
+// CheckLike checks if a user has liked a story.
+func (r *pgPublishedStoryRepository) CheckLike(ctx context.Context, userID, storyID uuid.UUID) (bool, error) {
+	r.logger.Debug("Checking like status", zap.String("userID", userID.String()), zap.String("storyID", storyID.String()))
+	// Assuming the table name is 'story_likes' and columns are 'user_id' and 'published_story_id'
+	query := `SELECT EXISTS (SELECT 1 FROM story_likes WHERE user_id = $1 AND published_story_id = $2)`
+	var exists bool
+	err := r.db.QueryRow(ctx, query, userID, storyID).Scan(&exists)
+	if err != nil {
+		r.logger.Error("Error checking like status", zap.String("userID", userID.String()), zap.String("storyID", storyID.String()), zap.Error(err))
+		// Do not return ErrNotFound, return the actual DB error
+		return false, fmt.Errorf("database error checking like: %w", err)
+	}
+	r.logger.Debug("Like status checked", zap.String("userID", userID.String()), zap.String("storyID", storyID.String()), zap.Bool("liked", exists))
+	return exists, nil
+}

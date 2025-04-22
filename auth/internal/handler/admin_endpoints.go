@@ -125,7 +125,7 @@ func (h *AuthHandler) updateUser(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid request body: " + err.Error()})
 		return
 	}
-	err = h.authService.UpdateUser(c.Request.Context(), userID, req.Email, req.Roles, req.IsBanned)
+	err = h.authService.UpdateUser(c.Request.Context(), userID, req.Email, req.DisplayName, req.Roles, req.IsBanned)
 	if err != nil {
 		handleServiceError(c, err)
 		return

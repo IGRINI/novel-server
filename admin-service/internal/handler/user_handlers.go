@@ -17,9 +17,10 @@ import (
 )
 
 type userUpdateFormData struct {
-	Email    string   `form:"email"`
-	Roles    []string `form:"roles"`
-	IsBanned string   `form:"is_banned"`
+	Email       string   `form:"email"`
+	DisplayName string   `form:"display_name"`
+	Roles       []string `form:"roles"`
+	IsBanned    string   `form:"is_banned"`
 }
 
 const defaultUserListLimit = 20
@@ -145,12 +146,12 @@ func (h *AdminHandler) showUserEditPage(c *gin.Context) {
 	users, _, err := h.authClient.ListUsers(c.Request.Context(), 1, fmt.Sprintf("id:%s", userID.String()))
 	if err != nil {
 		h.logger.Error("Failed to get user details for editing (via ListUsers)", zap.String("userID", userID.String()), zap.Error(err))
-		c.Redirect(http.StatusSeeOther, "/users?error=fetch_failed")
+		c.Redirect(http.StatusSeeOther, "/admin/users?error=fetch_failed")
 		return
 	}
 	if len(users) == 0 {
 		h.logger.Warn("User not found for edit page", zap.String("userID", userID.String()))
-		c.Redirect(http.StatusSeeOther, "/users?error=not_found")
+		c.Redirect(http.StatusSeeOther, "/admin/users?error=not_found")
 		return
 	}
 	user := users[0]
@@ -179,7 +180,7 @@ func (h *AdminHandler) handleUserUpdate(c *gin.Context) {
 	var formData userUpdateFormData
 	if err := c.ShouldBind(&formData); err != nil {
 		h.logger.Warn("Failed to bind user update form data", zap.String("userID", userIDStr), zap.Error(err))
-		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/users/%s/edit?error=invalid_data", userIDStr))
+		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/admin/users/%s/edit?error=invalid_data", userIDStr))
 		return
 	}
 	adminUserID, _ := getUserIDFromContext(c)
@@ -187,6 +188,7 @@ func (h *AdminHandler) handleUserUpdate(c *gin.Context) {
 		zap.String("adminUserID", adminUserID.String()),
 		zap.String("targetUserID", userID.String()),
 		zap.String("email", formData.Email),
+		zap.String("displayName", formData.DisplayName),
 		zap.Strings("roles", formData.Roles),
 		zap.String("is_banned_form", formData.IsBanned),
 	)
@@ -206,22 +208,28 @@ func (h *AdminHandler) handleUserUpdate(c *gin.Context) {
 		rolesSlice = []string{}
 	}
 	isBanned := formData.IsBanned == "true"
-	updatePayload := client.UserUpdatePayload{
-		Email:    &formData.Email,
-		Roles:    rolesSlice,
-		IsBanned: &isBanned,
+	var emailPtr *string
+	if formData.Email != "" {
+		emailPtr = &formData.Email
 	}
-	if formData.Email == "" {
-		updatePayload.Email = nil
+	var displayNamePtr *string
+	if formData.DisplayName != "" {
+		displayNamePtr = &formData.DisplayName
+	}
+	updatePayload := client.UserUpdatePayload{
+		Email:       emailPtr,
+		DisplayName: displayNamePtr,
+		Roles:       rolesSlice,
+		IsBanned:    &isBanned,
 	}
 	err = h.authClient.UpdateUser(c.Request.Context(), userID, updatePayload)
 	if err != nil {
 		h.logger.Error("Failed to update user via auth client", zap.String("targetUserID", userID.String()), zap.Error(err))
-		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/users/%s/edit?error=update_failed", userIDStr))
+		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/admin/users/%s/edit?error=update_failed", userIDStr))
 		return
 	}
 	userUpdatesTotal.Inc()
-	c.Redirect(http.StatusSeeOther, fmt.Sprintf("/users/%s/edit?success=updated", userIDStr))
+	c.Redirect(http.StatusSeeOther, fmt.Sprintf("/admin/users/%s/edit?success=updated", userIDStr))
 }
 
 func (h *AdminHandler) handleResetPassword(c *gin.Context) {
@@ -240,12 +248,12 @@ func (h *AdminHandler) handleResetPassword(c *gin.Context) {
 	_, err = h.authClient.ResetPassword(c.Request.Context(), userID)
 	if err != nil {
 		h.logger.Error("Failed to reset password via auth-service", zap.String("targetUserID", userID.String()), zap.Error(err))
-		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/users/%s/edit?error=password_reset_failed", userIDStr))
+		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/admin/users/%s/edit?error=password_reset_failed", userIDStr))
 		return
 	}
 	passwordResetsTotal.Inc()
 	h.logger.Info("User password reset successfully", zap.String("targetUserID", userID.String()))
-	c.Redirect(http.StatusSeeOther, fmt.Sprintf("/users/%s/edit?success=password_reset", userIDStr))
+	c.Redirect(http.StatusSeeOther, fmt.Sprintf("/admin/users/%s/edit?success=password_reset", userIDStr))
 }
 
 func (h *AdminHandler) handleSendUserNotification(c *gin.Context) {
@@ -253,14 +261,14 @@ func (h *AdminHandler) handleSendUserNotification(c *gin.Context) {
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		h.logger.Warn("Invalid user ID format for sending notification", zap.String("rawID", userIDStr), zap.Error(err))
-		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/users/%s/edit?error=invalid_user_id", userIDStr))
+		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/admin/users/%s/edit?error=invalid_user_id", userIDStr))
 		return
 	}
 
 	message := c.PostForm("notification_message")
 	if message == "" {
 		h.logger.Warn("Notification message is empty", zap.String("userID", userIDStr))
-		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/users/%s/edit?error=empty_message", userIDStr))
+		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/admin/users/%s/edit?error=empty_message", userIDStr))
 		return
 	}
 
@@ -274,7 +282,7 @@ func (h *AdminHandler) handleSendUserNotification(c *gin.Context) {
 		// Data:    map[string]string{"source": "admin"}, // Поле Data отсутствует в entities.UserPushEvent? Убираем.
 	}
 
-	redirectURL := fmt.Sprintf("/users/%s/edit", userIDStr)
+	redirectURL := fmt.Sprintf("/admin/users/%s/edit", userIDStr)
 
 	// Используем правильное имя метода PublishUserPushEvent
 	if err := h.pushPublisher.PublishUserPushEvent(c.Request.Context(), event); err != nil {

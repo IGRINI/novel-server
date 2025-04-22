@@ -576,12 +576,15 @@ func (s *authServiceImpl) UnbanUser(ctx context.Context, userID uuid.UUID) error
 	return nil
 }
 
-// UpdateUser обновляет данные пользователя (email, роли, статус бана).
+// UpdateUser обновляет данные пользователя (email, displayName, роли, статус бана).
 // Использует метод репозитория UpdateUserFields для атомарного обновления.
-func (s *authServiceImpl) UpdateUser(ctx context.Context, userID uuid.UUID, email *string, roles []string, isBanned *bool) error {
+func (s *authServiceImpl) UpdateUser(ctx context.Context, userID uuid.UUID, email *string, displayName *string, roles []string, isBanned *bool) error {
 	logFields := []zap.Field{zap.String("userID", userID.String())}
 	if email != nil {
 		logFields = append(logFields, zap.Stringp("email", email))
+	}
+	if displayName != nil {
+		logFields = append(logFields, zap.Stringp("displayName", displayName))
 	}
 	if roles != nil {
 		logFields = append(logFields, zap.Strings("roles", roles))
@@ -601,8 +604,18 @@ func (s *authServiceImpl) UpdateUser(ctx context.Context, userID uuid.UUID, emai
 		}
 	}
 
+	// <<< Добавляем валидацию DisplayName (если передается и не пустой) >>>
+	if displayName != nil && *displayName != "" {
+		*displayName = strings.TrimSpace(*displayName)
+		// Можно добавить доп. валидации, например, на длину или символы
+		if len(*displayName) > 50 { // Пример валидации длины
+			s.logger.Warn("Update user attempt with too long display name", append(logFields, zap.Int("displayNameLength", len(*displayName)))...)
+			return fmt.Errorf("display name too long (max 50): %w", models.ErrInvalidInput)
+		}
+	}
+
 	// Вызываем метод репозитория для обновления
-	err := s.userRepo.UpdateUserFields(ctx, userID, email, roles, isBanned)
+	err := s.userRepo.UpdateUserFields(ctx, userID, email, displayName, roles, isBanned)
 	if err != nil {
 		// Логирование уже произошло в репозитории или здесь (для ErrInvalidInput)
 		// Просто возвращаем ошибку (может быть ErrUserNotFound, ErrEmailAlreadyExists, ErrInvalidInput или другая ошибка БД)

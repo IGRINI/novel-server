@@ -140,28 +140,23 @@ func (h *GameplayHandler) listMyPublishedStories(c *gin.Context) {
 	// <<< ДОБАВЛЕНО: Конвертация из DTO сервиса в sharedModels >>>
 	storySummaries := make([]sharedModels.PublishedStorySummaryWithProgress, len(storiesDTO))
 	for i, dto := range storiesDTO {
-		if dto == nil { // Safety check
+		if dto == nil {
 			log.Warn("Received nil PublishedStoryDetailWithProgressDTO in listMyPublishedStories")
 			continue
 		}
-		title := ""
-		if dto.Title != nil {
-			title = *dto.Title
-		}
-		description := ""
-		if dto.Description != nil {
-			description = *dto.Description
-		}
+		title := dto.Title
+		description := dto.ShortDescription
+
 		storySummaries[i] = sharedModels.PublishedStorySummaryWithProgress{
 			PublishedStorySummary: sharedModels.PublishedStorySummary{
 				ID:               dto.ID,
 				Title:            title,
-				ShortDescription: description, // Map description to ShortDescription
-				AuthorID:         dto.UserID,
-				AuthorName:       dto.AuthorName, // <-- Исправлено: Используем поле из DTO
-				PublishedAt:      dto.CreatedAt,
+				ShortDescription: description,
+				AuthorID:         dto.AuthorID,
+				AuthorName:       dto.AuthorName,
+				PublishedAt:      dto.PublishedAt,
 				IsAdultContent:   dto.IsAdultContent,
-				LikesCount:       dto.LikesCount,
+				LikesCount:       int64(dto.LikesCount),
 				IsLiked:          dto.IsLiked,
 			},
 			HasPlayerProgress: dto.HasPlayerProgress,
@@ -169,12 +164,12 @@ func (h *GameplayHandler) listMyPublishedStories(c *gin.Context) {
 	}
 
 	resp := PaginatedResponse{
-		Data:       storySummaries, // <<< Используем сконвертированные данные
+		Data:       storySummaries,
 		NextCursor: nextCursor,
 	}
 
 	log.Debug("Successfully fetched my published stories",
-		zap.Int("count", len(storySummaries)), // <<< Используем сконвертированные данные
+		zap.Int("count", len(storySummaries)),
 		zap.Bool("hasNext", nextCursor != ""),
 	)
 	c.JSON(http.StatusOK, resp)
@@ -219,12 +214,12 @@ func (h *GameplayHandler) listPublicPublishedStories(c *gin.Context) {
 	}
 
 	resp := PaginatedResponse{
-		Data:       stories, // <<< Используем stories напрямую
+		Data:       stories,
 		NextCursor: nextCursor,
 	}
 
 	log.Debug("Successfully fetched public published stories",
-		zap.Int("count", len(stories)), // <<< Используем stories
+		zap.Int("count", len(stories)),
 		zap.Bool("hasNext", nextCursor != ""),
 	)
 	c.JSON(http.StatusOK, resp)
@@ -700,3 +695,44 @@ func (h *GameplayHandler) deletePublishedStory(c *gin.Context) {
 }
 
 // <<<<< КОНЕЦ ОБРАБОТЧИКА УДАЛЕНИЯ ОПУБЛИКОВАННОЙ ИСТОРИИ >>>>>
+
+// listStoriesWithProgress возвращает список опубликованных историй, в которых у пользователя есть прогресс.
+// GET /published-stories/me/progress?limit=10&cursor=...
+func (h *GameplayHandler) listStoriesWithProgress(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		h.logger.Warn("Failed to get user ID from context", zap.Error(err))
+		c.JSON(http.StatusUnauthorized, APIError{Message: "Unauthorized: " + err.Error()})
+		return
+	}
+
+	// Парсим параметры пагинации
+	limitStr := c.DefaultQuery("limit", "10")
+	cursor := c.Query("cursor")
+
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 || limit > 100 {
+		h.logger.Warn("Invalid limit parameter for stories with progress", zap.String("limit", limitStr))
+		c.JSON(http.StatusBadRequest, APIError{Message: "Invalid limit parameter. Must be between 1 and 100."})
+		return
+	}
+
+	// Вызываем метод сервиса для получения историй с прогрессом
+	stories, nextCursor, serviceErr := h.service.GetStoriesWithProgress(c.Request.Context(), userID, limit, cursor)
+	if serviceErr != nil {
+		h.logger.Error("Failed to get stories with progress", zap.String("userID", userID.String()), zap.Error(serviceErr))
+		// TODO: Различать типы ошибок (Not Found, Internal)?
+		c.JSON(http.StatusInternalServerError, APIError{Message: "Failed to retrieve stories with progress"})
+		return
+	}
+
+	// Формируем ответ
+	response := PaginatedResponse{
+		Data:       stories,
+		NextCursor: nextCursor,
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// --- Вспомогательные функции для опубликованных историй --- //

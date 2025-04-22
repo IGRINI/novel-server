@@ -134,7 +134,8 @@ func (h *GameplayHandler) RegisterRoutes(router gin.IRouter) {
 		publishedGroup.DELETE("/:id/progress", h.deletePlayerProgress)
 		publishedGroup.POST("/:id/like", h.likeStory)
 		publishedGroup.DELETE("/:id/like", h.unlikeStory)
-		publishedGroup.GET("/users/me/likes", h.listLikedStories)
+		publishedGroup.GET("/me/likes", h.listLikedStories)
+		publishedGroup.GET("/me/progress", h.listStoriesWithProgress)
 		publishedGroup.PATCH("/:id/visibility", h.setStoryVisibility)
 		publishedGroup.POST("/:id/retry", h.retryPublishedStoryGeneration)
 		publishedGroup.DELETE("/:id", h.deletePublishedStory)
@@ -286,14 +287,14 @@ func (h *GameplayHandler) getPublishedStoryDetails(c *gin.Context) {
 
 	h.logger.Info("getPublishedStoryDetails called", zap.String("storyID", storyIDStr), zap.String("userID", userID.String()))
 
-	// Вызываем новый метод сервиса
-	storyDetailsDTO, err := h.service.GetPublishedStoryDetailsWithProgress(c.Request.Context(), userID, storyID)
+	// Вызываем правильный метод сервиса для получения деталей
+	storyDetailsDTO, err := h.service.GetPublishedStoryDetails(c.Request.Context(), storyID, userID) // Используем GetPublishedStoryDetails
 	if err != nil {
-		h.logger.Error("Error calling GetPublishedStoryDetailsWithProgress service", zap.Error(err))
-		handleServiceError(c, err, h.logger) // Используем стандартный обработчик ошибок
+		h.logger.Error("Error calling GetPublishedStoryDetails service", zap.Error(err)) // Обновляем сообщение об ошибке
+		handleServiceError(c, err, h.logger)                                             // Используем стандартный обработчик ошибок
 		return
 	}
 
-	// Отправляем ответ DTO напрямую (он уже содержит PublishedStory и HasPlayerProgress)
+	// Отправляем детальный ответ DTO напрямую
 	c.JSON(http.StatusOK, storyDetailsDTO)
 }

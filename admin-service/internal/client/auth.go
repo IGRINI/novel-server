@@ -27,12 +27,12 @@ type AuthServiceHttpClient interface {
 	RefreshAdminToken(ctx context.Context, refreshToken string) (*models.TokenDetails, *models.Claims, error)
 }
 
-// UserUpdatePayload определяет структуру данных для запроса на обновление пользователя.
-// Используем указатели, чтобы можно было передать только изменяемые поля.
+// UserUpdatePayload defines the structure for updating user data via the auth service.
 type UserUpdatePayload struct {
-	Email    *string  `json:"email,omitempty"`
-	Roles    []string `json:"roles,omitempty"` // Передаем весь слайс, если роли меняются
-	IsBanned *bool    `json:"is_banned,omitempty"`
+	Email       *string  `json:"email,omitempty"`
+	DisplayName *string  `json:"display_name,omitempty"`
+	Roles       []string `json:"roles,omitempty"`
+	IsBanned    *bool    `json:"isBanned,omitempty"`
 }
 
 // --- Структура ответа от auth-service ---

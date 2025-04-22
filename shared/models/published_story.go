@@ -46,21 +46,37 @@ type PublishedStory struct {
 	IsLiked        bool            `json:"is_liked" db:"-"`
 }
 
+// CharacterDefinition defines the structure for a character within NovelSetupContent.
+type CharacterDefinition struct {
+	Name        string   `json:"n"`            // name
+	Description string   `json:"d"`            // description
+	VisualTags  []string `json:"vt,omitempty"` // visual_tags (English)
+	Personality string   `json:"p,omitempty"`  // personality (optional)
+	Prompt      string   `json:"pr,omitempty"` // prompt (English)
+	NegPrompt   string   `json:"np,omitempty"` // negative_prompt (English)
+	ImageRef    string   `json:"ir,omitempty"` // image_reference (English, snake_case)
+}
+
 // NovelSetupContent defines the expected structure of the JSON stored in PublishedStory.Setup.
 // Based on the AI prompt format.
 type NovelSetupContent struct {
-	CoreStatsDefinition map[string]StatDefinition `json:"csd"` // core_stats_definition
-	// TODO: Добавить другие поля из setup по мере необходимости (chars, backgrounds и т.д.)
+	CoreStatsDefinition map[string]StatDefinition `json:"csd"`             // core_stats_definition
+	Characters          []CharacterDefinition     `json:"chars,omitempty"` // characters (NEW)
+	// TODO: Добавить другие поля из setup по мере необходимости (backgrounds и т.д.)
 }
 
-// StatDefinition defines the properties of a core stat, including its boundaries.
+// GameOverConditions defines the game over conditions based on min/max values.
+// Matches the "go" field in the setup JSON.
+type GameOverConditions struct {
+	Min bool `json:"min"`
+	Max bool `json:"max"`
+}
+
+// StatDefinition defines the properties of a core stat, as defined in the setup JSON.
 type StatDefinition struct {
-	Name        string `json:"nm"`   // name
-	Description string `json:"d"`    // description
-	Visible     bool   `json:"v"`    // visible
-	Min         int    `json:"min"`  // minimum_value
-	Max         int    `json:"max"`  // maximum_value
-	Initial     int    `json:"init"` // initial_value
+	Description        string             `json:"d"`  // description
+	Initial            int                `json:"iv"` // initial_value
+	GameOverConditions GameOverConditions `json:"go"` // game_over_conditions
 }
 
 // Config defines the structure expected within PublishedStory.Config (JSONB).
