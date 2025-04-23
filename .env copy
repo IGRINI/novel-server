@@ -1,0 +1,104 @@
+ENV=development
+LOG_LEVEL=debug
+
+# Настройки сервера (Пример для Auth Service)
+# SERVER_PORT=8080 - Заменено на AUTH_SERVER_PORT
+AUTH_SERVER_PORT=8081 # Порт для Auth Service
+
+# Настройки базы данных PostgreSQL
+DB_HOST=localhost # Для локального запуска вне Docker. В Docker будет 'postgres'
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=32283228
+DB_NAME=novel_db
+DB_SSL_MODE=disable
+DB_MAX_CONNECTIONS=10
+DB_MAX_IDLE_MINUTES=5m # Изменено на duration
+
+# Настройки Redis
+REDIS_ADDR=localhost:6379 # Для локального запуска. В Docker будет 'redis:6379'
+REDIS_PORT=6379
+REDIS_PASSWORD=
+REDIS_DB=0
+
+# Настройки API для нейросети
+AI_CLIENT_TYPE=openai # Устанавливаем тип клиента на ollama
+AI_MODEL=deepseek/deepseek-chat-v3-0324:free#nemo-q5-clean#deepseek/deepseek-chat-v3-0324:free
+AI_BASE_URL=https://openrouter.ai/api/v1#http://host.docker.internal:11434/v1 # Добавлено /v1 для OpenAI-совместимого API Ollamahttps://openrouter.ai/api/v1
+AI_TIMEOUT=500s # Таймаут из конфига
+AI_MAX_ATTEMPTS=1 # Макс. попытки из конфига
+AI_BASE_RETRY_DELAY=1s # Базовая задержка ретраев из конфига
+
+CONSUMER_CONCURRENCY=10
+GENERATION_LIMIT_PER_USER=1
+
+# Настройки CORS (Пример)
+ALLOWED_ORIGINS=http://localhost:3000,https://crion.space
+
+# Настройки JWT
+JWT_ACCESS_TOKEN_TTL=15m
+JWT_REFRESH_TOKEN_TTL=168h
+
+# Настройки Auth Service (Для других сервисов, если нужно)
+AUTH_SERVICE_URL=http://localhost:8081 # Для локального запуска. В Docker будет 'http://auth:8081'
+INTER_SERVICE_TOKEN_TTL=1h # Время жизни межсервисного JWT
+AUTH_SERVICE_TIMEOUT=5s
+HTTP_CLIENT_TIMEOUT=500s # Таймаут для HTTP клиента админки и других сервисов
+
+# Настройки RabbitMQ
+RABBITMQ_URL=amqp://guest:guest@localhost:5672/ # Для локального запуска. В Docker будет 'amqp://guest:guest@rabbitmq:5672/'
+RABBITMQ_PORT=5672
+RABBITMQ_MANAGE_PORT=15672
+# IMAGE_GENERATOR_TASK_QUEUE=image_generation_tasks # <<< Очередь задач для gameplay-service -> image-generator (Используем одно имя ниже)
+RABBITMQ_USER=guest # Можно переопределить
+RABBITMQ_PASS=guest # Можно переопределить
+
+# Настройки Story Generator Worker
+PROMPTS_DIR=../prompts
+
+# Настройки WebSocket Service
+WEBSOCKET_SERVER_PORT=8083 # Порт для WebSocket сервиса
+INTERNAL_UPDATES_QUEUE_NAME=internal_updates # Очередь для полных уведомлений (story-generator -> gameplay-service)
+CLIENT_UPDATES_QUEUE_NAME=client_updates     # Очередь для отфильтрованных уведомлений (gameplay-service -> websocket-service)
+
+GAMEPLAY_SERVER_PORT=8082
+
+# Добавлены недостающие переменные
+SERVICE_ID=default-service
+WEBSOCKET_METRICS_PORT=9092
+
+# <<< Добавляем URL для Gameplay Service >>>
+GAMEPLAY_SERVICE_URL=http://gameplay-service:8082
+# --- Настройки Notification Service ---
+PUSH_QUEUE_NAME=push_notifications # Имя очереди для пушей (можно опустить, если default устраивает)
+NOTIFICATION_WORKER_CONCURRENCY=10 # Кол-во воркеров (можно опустить, если default устраивает)
+TOKEN_SERVICE_URL=${AUTH_SERVICE_URL} # Используем URL Auth Service для получения токенов
+FCM_CREDENTIALS_PATH=./secrets/firebase-service-account.json # <<< ВАЖНО: Укажи ПРАВИЛЬНЫЙ путь к твоему ключу Firebase
+
+# --- Настройки APNS (добавить при необходимости) ---
+# APNS_KEY_ID=
+# APNS_TEAM_ID=
+# APNS_KEY_PATH=./secrets/apns_auth_key.p8 # <<< Укажи путь к ключу APNS .p8
+# APNS_TOPIC= # Bundle ID твоего iOS приложения
+
+# ... остальные переменные ...
+FCM_CREDENTIALS_PATH=./secrets/firebase-service-account.json # <<< УКАЖИ ПРАВИЛЬНЫЙ ПУТЬ!
+# APNS_KEY_ID=YOUR_KEY_ID
+# APNS_TEAM_ID=YOUR_TEAM_ID
+# APNS_KEY_PATH=./secrets/AuthKey_YOUR_KEY_ID.p8 # <<< УКАЖИ ПРАВИЛЬНЫЙ ПУТЬ!
+# APNS_TOPIC=com.yourcompany.yourapp # <<< УКАЖИ Bundle ID
+
+# --- Image Generator ---
+# Общие имена очередей
+IMAGE_GENERATOR_TASK_QUEUE=image_generation_tasks     # Очередь задач (gameplay -> image-gen)
+IMAGE_GENERATION_RESULT_QUEUE=image_generation_results # Очередь результатов (image-gen -> gameplay)
+
+SANA_SERVER_BASE_URL=http://localhost:8084 # <<< ВАЖНО: УКАЖИ ПРАВИЛЬНЫЙ URL ТВОЕГО SANA СЕРВЕРА!
+
+# Настройки S3/Minio хранилища
+STORAGE_ENDPOINT=localhost:9000         # <<< УКАЖИ ПРАВИЛЬНЫЙ Endpoint (e.g., minio:9000 in Docker)
+STORAGE_ACCESS_KEY_ID=minioadmin          # <<< УКАЖИ ПРАВИЛЬНЫЙ Access Key
+STORAGE_SECRET_ACCESS_KEY=minioadmin      # <<< УКАЖИ ПРАВИЛЬНЫЙ Secret Key (нужно читать из secrets/storage_secret_access_key)
+STORAGE_BUCKET_NAME=generated-images      # <<< УКАЖИ ПРАВИЛЬНОЕ Имя Bucket'а
+STORAGE_USE_SSL=false                     # Установи true, если твой S3/Minio использует SSL
+# STORAGE_REGION=us-east-1                # Раскомментируй и установи регион, если нужно

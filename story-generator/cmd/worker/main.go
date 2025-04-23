@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -28,8 +27,6 @@ const (
 	// Имена для Dead Letter Exchange и Queue
 	deadLetterExchange = "tasks_dlx"            // Общий DLX для задач
 	deadLetterQueue    = taskQueueName + "_dlq" // DLQ для этой конкретной очереди
-	// Порт для метрик Prometheus
-	metricsPort = "9091"
 	// <<< ДОБАВЛЕНО: Имена для DLX/DLQ >>>
 	dlxName       = "story_generation_tasks_dlx" // Dead Letter Exchange
 	dlqName       = "story_generation_tasks_dlq" // Dead Letter Queue
@@ -39,9 +36,6 @@ const (
 
 func main() {
 	log.Println("Запуск сервиса генерации историй (воркер + API)...")
-
-	// --- Запуск HTTP-сервера для метрик Prometheus в отдельной горутине ---
-	go startMetricsServer()
 
 	// Загружаем конфигурацию
 	cfg, err := config.LoadConfig()
@@ -198,15 +192,15 @@ func main() {
 	go func() {
 		defer close(done) // Сигнализируем о завершении горутины
 		for msg := range msgs {
-			// <<< Метрика: Счетчик полученных задач >>>
-			worker.IncrementTasksReceived()
+			// <<< Метрика: Счетчик полученных задач (НОВОЕ) >>>
+			worker.MetricsIncrementTasksReceived()
 
 			var payload messaging.GenerationTaskPayload
 			err := json.Unmarshal(msg.Body, &payload)
 			if err != nil {
 				log.Printf("[TaskID: %s] Ошибка десериализации JSON: %v. Отклоняем сообщение (nack, no requeue).", "N/A", err)
-				// <<< Метрика: Задача с ошибкой (десериализация) >>>
-				worker.IncrementTaskFailed("deserialization")
+				// <<< Метрика: Задача с ошибкой (десериализация) (НОВОЕ) >>>
+				worker.MetricsIncrementTaskFailed("deserialization")
 				msg.Nack(false, false) // Nack(multiple, requeue=false) - не возвращаем в очередь
 				continue
 			}
@@ -218,11 +212,25 @@ func main() {
 				// Requeue=false, чтобы избежать бесконечных циклов для 'плохих' задач.
 				// В идеале, такие задачи должны попадать в Dead Letter Queue.
 				log.Printf("[TaskID: %s] Ошибка обработки задачи: %v. Отклоняем сообщение (nack, no requeue).", payload.TaskID, err)
+				// <<< Метрика: Задача с ошибкой (обработка) (НОВОЕ) >>>
+				// Упрощаем определение причины, так как типы ошибок недоступны
+				reason := "processing" // Общая причина
+				worker.MetricsIncrementTaskFailed(reason)
 				msg.Nack(false, false)
 			} else {
 				// Успешная обработка - подтверждаем сообщение
 				log.Printf("[TaskID: %s] Задача успешно обработана, сохранена и уведомление отправлено. Подтверждаем сообщение (ack).", payload.TaskID)
-				msg.Ack(false) // Ack(multiple=false)
+				// <<< Метрика: Задача успешно выполнена (НОВОЕ) >>>
+				worker.MetricsIncrementTaskSucceeded()
+				// <<< Метрика: Использованные токены (НОВОЕ) >>>
+				// !!ВАЖНО!!: Здесь нужно получить количество использованных токенов.
+				// Сейчас `taskHandler.Handle` возвращает только `error`.
+				// Нужно модифицировать `taskHandler.Handle` (и интерфейс, если он есть),
+				// чтобы он возвращал `(int, error)` или `(*Result, error)`, где Result содержит токены.
+				// Пока что поставим заглушку 0.
+				// worker.MetricsAddTokensUsed(float64(tokenCount)) // Замените tokenCount на реальное значение
+				worker.MetricsAddTokensUsed(0) // ЗАГЛУШКА
+				msg.Ack(false)                 // Ack(multiple=false)
 			}
 		}
 		log.Println("Канал сообщений закрыт, горутина обработки завершается.")
@@ -252,24 +260,6 @@ func main() {
 	log.Println("Закрытие соединения с PostgreSQL...")
 	// dbPool.Close() вызывается через defer
 	log.Println("Сервис генерации историй остановлен.")
-}
-
-// startMetricsServer запускает HTTP-сервер для эндпоинта /metrics
-func startMetricsServer() {
-	http.Handle("/metrics", promhttp.Handler())
-
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status": "ok"}`))
-	})
-
-	go func() {
-		log.Printf("Запуск HTTP-сервера для метрик Prometheus и health на :%s...", metricsPort)
-		if err := http.ListenAndServe(":"+metricsPort, nil); err != nil {
-			log.Fatalf("Ошибка запуска HTTP-сервера для метрик: %v", err)
-		}
-	}()
 }
 
 // setupDatabase инициализирует и возвращает пул соединений с БД
@@ -329,8 +319,7 @@ func setupDatabase(cfg *config.Config) (*pgxpool.Pool, error) {
 	return nil, fmt.Errorf("не удалось подключиться к БД после %d попыток: %w", maxRetries, err) // Возвращаем последнюю ошибку
 }
 
-// --- Изменения в startHTTPServer ---
-// Убираем cfg из параметров, так как он будет доступен через apiHandler, если понадобится
+// startHTTPServer запускает HTTP-сервер для эндпоинта /metrics
 func startHTTPServer(apiHandler *api.APIHandler) *http.Server {
 	mux := http.NewServeMux()
 
@@ -357,11 +346,6 @@ func startHTTPServer(apiHandler *api.APIHandler) *http.Server {
 	return server
 }
 
-// --- Конец изменений в startHTTPServer ---
-
-// ----------------------------------------------------------
-
-// <<< ВОЗВРАЩАЮ ЛОКАЛЬНУЮ ФУНКЦИЮ >>>
 // connectRabbitMQ пытается подключиться к RabbitMQ с несколькими попытками
 func connectRabbitMQ(url string) (*amqp.Connection, error) {
 	var conn *amqp.Connection
@@ -379,5 +363,3 @@ func connectRabbitMQ(url string) (*amqp.Connection, error) {
 	}
 	return nil, err // Не удалось подключиться после всех попыток
 }
-
-// <<< КОНЕЦ ВОЗВРАТА >>>

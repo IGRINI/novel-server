@@ -10,10 +10,6 @@ scrape_configs:
     static_configs:
       - targets: ['auth-service:8081'] # Используем имя сервиса и его порт
 
-  - job_name: 'story-generator'
-    static_configs:
-      - targets: ['story-generator:9091'] # Используем имя сервиса и его порт
-
   - job_name: 'rabbitmq-exporter'
     static_configs:
       - targets: ['rabbitmq-exporter:9419'] # Используем имя сервиса и его порт
@@ -25,4 +21,9 @@ scrape_configs:
 
   - job_name: 'websocket-service' # Новая задача для WebSocket сервиса
     static_configs:
-      - targets: ['websocket-service:9092'] # Используем имя сервиса и порт метрик 
+      - targets: ['websocket-service:9092'] # Используем имя сервиса и порт метрик
+
+  - job_name: 'pushgateway'
+    static_configs:
+      - targets: ['pushgateway:9091']
+    honor_labels: true 

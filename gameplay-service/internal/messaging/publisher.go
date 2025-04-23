@@ -20,6 +20,12 @@ type TaskPublisher interface {
 	// Close() error // Optional: If the publisher needs explicit closing
 }
 
+// <<< НОВЫЙ ИНТЕРФЕЙС >>>
+// CharacterImageTaskPublisher defines the interface for publishing character image generation tasks.
+type CharacterImageTaskPublisher interface {
+	PublishCharacterImageTask(ctx context.Context, payload sharedMessaging.CharacterImageTaskPayload) error
+}
+
 // ClientUpdatePublisher defines the interface for publishing updates to the client.
 type ClientUpdatePublisher interface {
 	PublishClientUpdate(ctx context.Context, payload ClientStoryUpdate) error // Используем новую структуру
@@ -60,7 +66,7 @@ type ClientStoryUpdate struct {
 	UpdateType        string   `json:"update_type"`                  // <<< Тип обновления (draft_update, story_update)
 }
 
-// rabbitMQPublisher implements the TaskPublisher and ClientUpdatePublisher interfaces for RabbitMQ.
+// rabbitMQPublisher implements the TaskPublisher, ClientUpdatePublisher, PushNotificationPublisher, CharacterImageTaskPublisher interfaces for RabbitMQ.
 type rabbitMQPublisher struct {
 	channel   *amqp.Channel
 	queueName string
@@ -111,6 +117,32 @@ func NewRabbitMQTaskPublisher(conn *amqp.Connection, queueName string) (TaskPubl
 	return &rabbitMQPublisher{channel: ch, queueName: queueName}, nil
 }
 
+// <<< НОВЫЙ КОНСТРУКТОР >>>
+// NewRabbitMQCharacterImageTaskPublisher creates a new instance of CharacterImageTaskPublisher.
+func NewRabbitMQCharacterImageTaskPublisher(conn *amqp.Connection, queueName string) (CharacterImageTaskPublisher, error) {
+	ch, err := conn.Channel()
+	if err != nil {
+		return nil, fmt.Errorf("character image task publisher: не удалось открыть канал: %w", err)
+	}
+	// Паблишер объявляет очередь, чтобы быть уверенным в её существовании.
+	// Параметры должны совпадать с ожиданиями consumer'а (image-generator).
+	_, err = ch.QueueDeclare(
+		queueName, // name
+		true,      // durable
+		false,     // delete when unused
+		false,     // exclusive
+		false,     // no-wait
+		nil,       // arguments (можно добавить DLX, если нужно)
+	)
+	if err != nil {
+		log.Printf("CharacterImageTaskPublisher ERROR: Не удалось объявить очередь '%s': %v", queueName, err)
+		ch.Close()
+		return nil, fmt.Errorf("character image task publisher: не удалось объявить очередь '%s': %w", queueName, err)
+	}
+	log.Printf("CharacterImageTaskPublisher: Очередь '%s' успешно объявлена/найдена.", queueName)
+	return &rabbitMQPublisher{channel: ch, queueName: queueName}, nil
+}
+
 // NewRabbitMQClientUpdatePublisher creates a new instance of ClientUpdatePublisher.
 func NewRabbitMQClientUpdatePublisher(conn *amqp.Connection, queueName string) (ClientUpdatePublisher, error) {
 	ch, err := conn.Channel()
@@ -157,6 +189,22 @@ func (p *rabbitMQPublisher) PublishGenerationTask(ctx context.Context, payload s
 		// Используем %s для UserID (string)
 		log.Printf("[TaskID: %s][UserID: %s] Ошибка публикации GenerationTask: %v", payload.TaskID, payload.UserID, err)
 		return fmt.Errorf("ошибка публикации задачи генерации для TaskID %s: %w", payload.TaskID, err)
+	}
+	return nil
+}
+
+// PublishCharacterImageTask publishes a character image generation task.
+func (p *rabbitMQPublisher) PublishCharacterImageTask(ctx context.Context, payload sharedMessaging.CharacterImageTaskPayload) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("[CharTaskID: %s][CharID: %s] Ошибка сериализации CharacterImageTaskPayload: %v", payload.TaskID, payload.CharacterID, err)
+		return fmt.Errorf("ошибка сериализации задачи генерации изображения для CharID %s: %w", payload.CharacterID, err)
+	}
+
+	err = p.publishMessage(ctx, body)
+	if err != nil {
+		log.Printf("[CharTaskID: %s][CharID: %s] Ошибка публикации CharacterImageTask: %v", payload.TaskID, payload.CharacterID, err)
+		return fmt.Errorf("ошибка публикации задачи генерации изображения для CharID %s: %w", payload.CharacterID, err)
 	}
 	return nil
 }

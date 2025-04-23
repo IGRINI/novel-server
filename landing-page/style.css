@@ -1169,6 +1169,14 @@ ul {
     background-color: rgba(10, 10, 30, 0.4);
 }
 
+/* Медиа-запрос для мобильных устройств */
+@media (max-width: 768px) {
+    #ai-prompt-input {
+        min-height: 6.5rem; /* Примерная высота для 3 строк текста */
+        /* Можно также попробовать rows="3" в HTML, но оставим CSS */
+    }
+}
+
 /* --------- How It Works Section Styles --------- */
 .how-it-works-section {
     margin: 5px;
@@ -1573,4 +1581,41 @@ html {
 .cta-button--small:hover,
 .cta-button--small:focus {
      box-shadow: 0 0 6px var(--primary-color); /* Slightly reduced glow */
+}
+
+/* --- Стили для скрытия/показа юридических секций --- */
+.section--legal {
+    /* Скрываем по умолчанию */
+    opacity: 0;
+    max-height: 0;
+    overflow: hidden;
+    padding-top: 0; /* Убираем верхний паддинг в скрытом состоянии */
+    padding-bottom: 0; /* Убираем нижний паддинг в скрытом состоянии */
+    margin-top: 0; /* Убираем отступ сверху */
+    margin-bottom: 0; /* Убираем отступ снизу */
+    border: none; /* Убираем возможные рамки */
+
+    /* Плавный переход */
+    transition: opacity 0.5s ease-out, max-height 0.5s ease-out, padding 0.5s ease-out, margin 0.5s ease-out;
+    will-change: max-height, opacity, padding, margin; /* Оптимизация */
+}
+
+.section--legal.visible {
+    /* Показываем */
+    opacity: 1;
+    max-height: 5000px; /* Достаточно большая высота для любого контента */
+    /* Возвращаем паддинги/отступы секции */
+    padding-top: 4rem; 
+    padding-bottom: 4rem; 
+    margin-top: 0; /* Можно вернуть отступ, если нужно */
+    margin-bottom: 0;
+    overflow: visible; /* Показываем контент */
+}
+
+/* Медиа-запрос для мобильных устройств */
+@media (max-width: 768px) {
+    #ai-prompt-input {
+        min-height: 6.5rem; /* Примерная высота для 3 строк текста */
+        /* Можно также попробовать rows="3" в HTML, но оставим CSS */
+    }
 } 

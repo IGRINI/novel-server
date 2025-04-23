@@ -297,13 +297,12 @@ services:
       AI_BASE_RETRY_DELAY: ${AI_BASE_RETRY_DELAY}
       INTERNAL_UPDATES_QUEUE_NAME: ${INTERNAL_UPDATES_QUEUE_NAME}
       AI_CLIENT_TYPE: ${AI_CLIENT_TYPE}
+      PUSHGATEWAY_URL: http://pushgateway:9091
     secrets:
       - source: db_password
         target: /run/secrets/db_password
       - source: ai_api_key
         target: /run/secrets/ai_api_key
-    ports:
-      - "9091:9091"
     networks:
       - novel_network
     # Нет healthcheck, так как это воркер
@@ -401,8 +400,8 @@ services:
     depends_on:
       - admin-service
       - auth-service
-      - story-generator
       - rabbitmq-exporter
+      - pushgateway
 
   grafana:
     image: grafana/grafana:latest
@@ -449,6 +448,17 @@ services:
     deploy: # Политика перезапуска (можно настроить по желанию)
       restart_policy:
         condition: any
+
+# <<< ДОБАВЛЕНО: Сервис Pushgateway >>>
+  pushgateway:
+    image: prom/pushgateway:latest
+    container_name: novel_pushgateway
+    ports:
+      - "9091:9091" # Публикуем порт для доступа (и для Prometheus)
+    networks:
+      - novel_network
+    restart: unless-stopped # Перезапускать, если не остановлен вручную
+# <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
 
 volumes:
   postgres_data:

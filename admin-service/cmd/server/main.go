@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -112,6 +113,20 @@ func (r *multiTemplateRenderer) Instance(name string, data interface{}) render.R
 }
 
 // <<< Заканчиваем определение кастомного рендерера >>>
+
+// <<< Функция для конвертации в JSON для шаблонов >>>
+func toJson(v interface{}) template.JS {
+	b, err := json.Marshal(v)
+	if err != nil {
+		// В случае ошибки возвращаем пустой JS объект или null
+		// или можно логировать ошибку
+		log.Printf("[ERROR] Failed to marshal value to JSON in template function: %v", err)
+		return template.JS("null") // Или "{}" или "'Error marshalling JSON'"
+	}
+	return template.JS(b)
+}
+
+// <<< Конец функции >>>
 
 func main() {
 	log.Println("Запуск Admin Service...")
@@ -366,6 +381,9 @@ func main() {
 				return "secondary"
 			}
 		},
+		// <<< ДОБАВЛЕНО: Регистрация функции toJson >>>
+		"toJson": toJson,
+		// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
 		// Можно добавить другие функции здесь
 	}
 	router.SetFuncMap(funcMap) // Устанавливаем FuncMap для Gin, хотя кастомный рендер тоже его получит

@@ -40,6 +40,8 @@ type Config struct {
 	InternalUpdatesQueueName  string `envconfig:"INTERNAL_UPDATES_QUEUE_NAME" default:"internal_updates"`
 	ClientUpdatesQueueName    string `envconfig:"CLIENT_UPDATES_QUEUE_NAME" default:"client_updates"`
 	PushNotificationQueueName string `envconfig:"PUSH_NOTIFICATION_QUEUE_NAME" default:"push_notifications"`
+	ImageGeneratorTaskQueue   string `envconfig:"IMAGE_GENERATOR_TASK_QUEUE" default:"image_generation_tasks"`
+	ImageGeneratorResultQueue string `envconfig:"IMAGE_GENERATION_RESULT_QUEUE" default:"image_generation_results"`
 
 	// Настройки JWT (для проверки токена пользователя в middleware)
 	// Секретное поле БЕЗ envconfig тега
@@ -117,6 +119,8 @@ func LoadConfig() (*Config, error) {
 	log.Printf("  Internal Updates Queue Name: %s", cfg.InternalUpdatesQueueName)
 	log.Printf("  Client Updates Queue Name: %s", cfg.ClientUpdatesQueueName)
 	log.Printf("  Push Notification Queue Name: %s", cfg.PushNotificationQueueName)
+	log.Printf("  Image Generator Task Queue: %s", cfg.ImageGeneratorTaskQueue)
+	log.Printf("  Image Generator Result Queue: %s", cfg.ImageGeneratorResultQueue)
 	log.Println("  JWT Secret: [ЗАГРУЖЕН]")
 	log.Println("  Inter-Service Secret: [ЗАГРУЖЕН]")                         // <<< Логируем загрузку
 	log.Printf("  Generation Limit Per User: %d", cfg.GenerationLimitPerUser) // <<< ДОБАВЛЕНО ЛОГИРОВАНИЕ >>>

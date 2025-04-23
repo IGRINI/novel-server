@@ -9,8 +9,7 @@ import (
 	"novel-server/gameplay-service/internal/handler"
 	"novel-server/gameplay-service/internal/messaging"
 	"novel-server/gameplay-service/internal/service"
-	"novel-server/gameplay-service/internal/worker"
-	sharedDatabase "novel-server/shared/database"     // Импорт для PublishedStoryRepository
+	sharedDatabase "novel-server/shared/database"     // Импорт для репозиториев
 	sharedInterfaces "novel-server/shared/interfaces" // <<< Добавляем импорт shared/interfaces
 	sharedLogger "novel-server/shared/logger"         // <<< Добавляем импорт shared/logger
 
@@ -55,12 +54,6 @@ func main() {
 	logger.Info("Логгер инициализирован", zap.String("logLevel", cfg.LogLevel))
 	// --------------------------
 
-	// Убираем повторную загрузку конфига
-	// cfg, err := config.LoadConfig()
-	// if err != nil {
-	// 	logger.Fatal("Ошибка загрузки конфигурации", zap.Error(err))
-	// }
-
 	// Подключение к PostgreSQL
 	dbPool, err := setupDatabase(cfg, logger) // Передаем логгер
 	if err != nil {
@@ -77,15 +70,18 @@ func main() {
 	defer rabbitConn.Close()
 	logger.Info("Успешное подключение к RabbitMQ")
 
-	// Инициализация зависимостей
+	// --- Инициализация репозиториев --- //
 	storyConfigRepo := sharedDatabase.NewPgStoryConfigRepository(dbPool, logger)
 	publishedRepo := sharedDatabase.NewPgPublishedStoryRepository(dbPool, logger)
 	sceneRepo := sharedDatabase.NewPgStorySceneRepository(dbPool, logger)
 	playerProgressRepo := sharedDatabase.NewPgPlayerProgressRepository(dbPool, logger)
 	playerGameStateRepo := sharedDatabase.NewPgPlayerGameStateRepository(dbPool, logger)
 	likeRepo := sharedDatabase.NewPgLikeRepository(dbPool, logger)
+	// <<< ДОБАВЛЕНО: Создание репозитория для image references >>>
+	// Теперь конструктор существует
+	imageReferenceRepo := sharedDatabase.NewPgImageReferenceRepository(dbPool, logger) // Используем sharedDatabase
 
-	// <<< Создаем все паблишеры >>>
+	// --- Инициализация паблишеров --- //
 	taskPublisher, err := messaging.NewRabbitMQTaskPublisher(rabbitConn, cfg.GenerationTaskQueue)
 	if err != nil {
 		logger.Fatal("Не удалось создать TaskPublisher", zap.Error(err))
@@ -94,13 +90,18 @@ func main() {
 	if err != nil {
 		logger.Fatal("Не удалось создать ClientUpdatePublisher", zap.Error(err))
 	}
-	// <<< Добавляем создание PushNotificationPublisher >>>
 	pushPublisher, err := messaging.NewRabbitMQPushNotificationPublisher(rabbitConn, cfg.PushNotificationQueueName)
 	if err != nil {
 		logger.Fatal("Не удалось создать PushNotificationPublisher", zap.Error(err))
 	}
+	// <<< ДОБАВЛЕНО: Создание паблишера для задач генерации изображений >>>
+	// Поле ImageGeneratorTaskQueue добавлено в config
+	characterImageTaskPublisher, err := messaging.NewRabbitMQCharacterImageTaskPublisher(rabbitConn, cfg.ImageGeneratorTaskQueue) // Используем очередь из конфига
+	if err != nil {
+		logger.Fatal("Не удалось создать CharacterImageTaskPublisher", zap.Error(err))
+	}
 
-	// <<< Создаем HTTP клиент для Auth Service >>>
+	// --- Инициализация HTTP клиента для Auth Service --- //
 	authServiceClient := clients.NewHTTPAuthServiceClient(
 		cfg.AuthServiceURL,     // URL из конфига
 		cfg.InterServiceSecret, // Секрет из конфига
@@ -108,40 +109,64 @@ func main() {
 	)
 	logger.Info("Auth Service client initialized")
 
-	// <<< ИЗМЕНЕНО: Передаем logger И authServiceClient в NewGameplayService >>>
+	// --- Инициализация сервисов (ОТКАТ ЛИШНИХ ИЗМЕНЕНИЙ) --- //
 	gameplayService := service.NewGameplayService(storyConfigRepo, publishedRepo, sceneRepo, playerProgressRepo, playerGameStateRepo, likeRepo, taskPublisher, dbPool, logger, authServiceClient, cfg)
-	// <<< ИЗМЕНЕНО: Передаем logger, publishedRepo и cfg в NewGameplayHandler >>>
+
+	// --- Инициализация хендлеров (ОТКАТ ЛИШНИХ ИЗМЕНЕНИЙ) --- //
 	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret, storyConfigRepo, publishedRepo, cfg)
 
-	// <<< УДАЛЕНО: Перезапуск зависших задач при старте >>>
-	// go requeueStuckTasks(storyConfigRepo, taskPublisher, logger)
-
-	// <<< НОВОЕ: Установка статуса Error для зависших задач при старте >>>
+	// --- Проверка зависших задач --- //
 	go markStuckTasksAsError(storyConfigRepo, logger)
 
-	// Инициализация консьюмера уведомлений
+	// --- Инициализация консьюмера уведомлений --- //
 	notificationConsumer, err := messaging.NewNotificationConsumer(
 		rabbitConn,
+		// Зависимости для NotificationProcessor:
 		storyConfigRepo,
 		publishedRepo,
 		sceneRepo,
-		playerGameStateRepo,
+		playerGameStateRepo, // Передаем как интерфейс (он реализует sharedInterfaces.PlayerGameStateRepository)
+		imageReferenceRepo,  // Передаем созданный репозиторий
 		clientUpdatePublisher,
 		taskPublisher,
-		pushPublisher, // <<< Передаем созданный pushPublisher
+		pushPublisher,               // <<< Передаем созданный pushPublisher
+		characterImageTaskPublisher, // <<< Передаем созданный паблишер изображений
+		logger,                      // <<< Передаем логгер для процессора
+		// Параметры самого консьюмера:
 		cfg.InternalUpdatesQueueName,
-		cfg, // <<< Передаем весь конфиг
+		cfg, // Передаем весь конфиг для самого консьюмера
 	)
 	if err != nil {
 		logger.Fatal("Не удалось создать консьюмер уведомлений", zap.Error(err))
 	}
 	// Запускаем консьюмер в отдельной горутине
 	go func() {
-		logger.Info("Запуск горутины консьюмера уведомлений...")
+		logger.Info("Запуск горутины консьюмера уведомлений...", zap.String("queue", cfg.InternalUpdatesQueueName))
 		if err := notificationConsumer.StartConsuming(); err != nil {
 			logger.Error("Консьюмер уведомлений завершился с ошибкой", zap.Error(err))
 		}
 		logger.Info("Горутина консьюмера уведомлений завершена.")
+	}()
+
+	// --- Инициализация второго консьюмера (для результатов Image Generator) --- //
+	imageResultConsumer, err := messaging.NewNotificationConsumer(
+		rabbitConn,
+		// Используем те же зависимости, что и для основного консьюмера
+		storyConfigRepo, publishedRepo, sceneRepo, playerGameStateRepo, imageReferenceRepo,
+		clientUpdatePublisher, taskPublisher, pushPublisher, characterImageTaskPublisher, logger,
+		// Но слушаем другую очередь:
+		cfg.ImageGeneratorResultQueue, // <<< Очередь результатов генерации изображений
+		cfg,
+	)
+	if err != nil {
+		logger.Fatal("Не удалось создать консьюмер результатов изображений", zap.Error(err))
+	}
+	go func() {
+		logger.Info("Запуск горутины консьюмера результатов изображений...", zap.String("queue", cfg.ImageGeneratorResultQueue))
+		if err := imageResultConsumer.StartConsuming(); err != nil {
+			logger.Error("Консьюмер результатов изображений завершился с ошибкой", zap.Error(err))
+		}
+		logger.Info("Горутина консьюмера результатов изображений завершена.")
 	}()
 
 	// --- Настройка Gin --- //
@@ -183,8 +208,8 @@ func main() {
 	corsConfig.MaxAge = 12 * time.Hour
 	router.Use(cors.New(corsConfig))
 
-	// --- Регистрация маршрутов --- //
-	gameplayHandler.RegisterRoutes(router) // <<< Передаем Gin роутер
+	// --- Регистрация маршрутов (ОТКАТ ЛИШНИХ ИЗМЕНЕНИЙ) --- //
+	gameplayHandler.RegisterRoutes(router) // Передаем Gin роутер
 
 	// --- Регистрация healthcheck эндпоинта для Gin --- //
 	healthHandler := func(c *gin.Context) { // <<< Используем gin.Context
@@ -195,7 +220,7 @@ func main() {
 
 	logger.Info("Gameplay сервер готов к запуску", zap.String("port", cfg.Port))
 
-	// --- Запуск HTTP сервера (как в auth-service) --- //
+	// --- Запуск HTTP сервера --- //
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      router, // <<< Передаем Gin роутер
@@ -222,6 +247,11 @@ func main() {
 	notificationConsumer.Stop()
 	logger.Info("Консьюмер уведомлений остановлен.")
 
+	// <<< Останавливаем второй консьюмер >>>
+	logger.Info("Остановка консьюмера результатов изображений...")
+	imageResultConsumer.Stop()
+	logger.Info("Консьюмер результатов изображений остановлен.")
+
 	// Shutdown HTTP сервера
 	logger.Info("Остановка HTTP сервера...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -231,31 +261,6 @@ func main() {
 	}
 
 	logger.Info("Gameplay Service успешно остановлен")
-
-	// --- Инициализация и запуск DLQ Consumer --- //
-	// <<< ДОБАВЛЕНО: Запуск DLQ Consumer >>>
-	dlqConsumer := worker.NewDLQConsumer(rabbitConn, publishedRepo, logger)
-	dlqConsumer.StartConsuming()
-	// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
-
-	// --- Graceful Shutdown --- //
-	quit = make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	logger.Info("Получен сигнал завершения, начинаем graceful shutdown...")
-
-	// <<< ДОБАВЛЕНО: Остановка DLQ Consumer >>>
-	dlqConsumer.Stop()
-	logger.Info("DLQ Consumer остановлен.")
-	// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
-
-	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(ctx); err != nil {
-		logger.Fatal("Ошибка при graceful shutdown HTTP сервера", zap.Error(err))
-	}
-	logger.Info("HTTP сервер успешно остановлен.")
 }
 
 // <<< НОВАЯ ФУНКЦИЯ: Установка статуса Error для зависших задач >>>

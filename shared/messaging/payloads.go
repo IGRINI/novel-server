@@ -1,6 +1,7 @@
 package messaging
 
 import (
+	"context"
 	"novel-server/shared/models"
 )
 
@@ -51,16 +52,6 @@ type NotificationPayload struct {
 	GameStateID      string             `json:"gameStateId,omitempty"`        // <<< ДОБАВЛЕНО: ID состояния игры для обновления
 }
 
-// IsValidPromptType проверяет, является ли строка допустимым PromptType.
-func IsValidPromptType(pt PromptType) bool {
-	switch pt {
-	case PromptTypeNarrator, PromptTypeNovelSetup, PromptTypeNovelFirstSceneCreator, PromptTypeNovelCreator, PromptTypeNovelGameOverCreator:
-		return true
-	default:
-		return false
-	}
-}
-
 // GameOverReason details why the game ended.
 type GameOverReason struct {
 	StatName  string `json:"sn"`   // stat_name
@@ -79,4 +70,47 @@ type GameOverTaskPayload struct {
 	NovelSetup       models.NovelSetupContent `json:"setup"`                 // NovelSetup (extracted from PublishedStory.Setup)
 	LastState        models.PlayerProgress    `json:"lst"`                   // The final player progress state
 	Reason           GameOverReason           `json:"rsn"`                   // Reason for game over
+}
+
+// CharacterImageTaskPayload - структура сообщения для задачи генерации изображения персонажа.
+// Отправляется gameplay-service в image-generator.
+type CharacterImageTaskPayload struct {
+	TaskID         string `json:"task_id"`         // Уникальный ID задачи (можно correlation_id)
+	UserID         string `json:"user_id"`         // ID пользователя
+	CharacterID    string `json:"character_id"`    // Уникальный ID персонажа (присвоен gameplay-service)
+	Prompt         string `json:"prompt"`          // Промпт для генерации (из novel_setup JSON, поле 'pr')
+	NegativePrompt string `json:"negative_prompt"` // Негативный промпт (из novel_setup JSON, поле 'np')
+	ImageReference string `json:"image_reference"` // Референс для возможного кеширования/детерминизма (из novel_setup JSON, поле 'ir')
+}
+
+// CharacterImageResultPayload - структура сообщения с результатом генерации изображения персонажа.
+// Отправляется image-generator в gameplay-service.
+type CharacterImageResultPayload struct {
+	TaskID         string `json:"task_id"`             // ID исходной задачи (из CharacterImageTaskPayload)
+	UserID         string `json:"user_id"`             // ID пользователя
+	CharacterID    string `json:"character_id"`        // ID персонажа
+	ImageURL       string `json:"image_url,omitempty"` // URL сгенерированного и сохраненного изображения (если успех)
+	Error          string `json:"error,omitempty"`     // Описание ошибки, если генерация не удалась
+	ImageReference string `json:"image_reference"`     // <<< ДОБАВЛЯЕМ ImageReference, чтобы gameplay-service знал, какой ключ обновить >>>
+}
+
+// Publisher - интерфейс для отправки сообщений в очередь.
+// Это позволяет использовать разные реализации (RabbitMQ, моки для тестов).
+type Publisher interface {
+	// Publish отправляет сообщение.
+	// payload - структура сообщения, которая будет сериализована в JSON.
+	// correlationID - опциональный ID для связывания запроса и ответа.
+	Publish(ctx context.Context, payload interface{}, correlationID string) error
+	// Close закрывает соединение/канал паблишера.
+	Close() error
+}
+
+// IsValidPromptType проверяет, является ли строка допустимым PromptType.
+func IsValidPromptType(pt PromptType) bool {
+	switch pt {
+	case PromptTypeNarrator, PromptTypeNovelSetup, PromptTypeNovelFirstSceneCreator, PromptTypeNovelCreator, PromptTypeNovelGameOverCreator:
+		return true
+	default:
+		return false
+	}
 }

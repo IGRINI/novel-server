@@ -20,6 +20,9 @@ type Config struct {
 	RabbitMQURL              string `envconfig:"RABBITMQ_URL" default:"amqp://guest:guest@localhost:5672/"`
 	InternalUpdatesQueueName string `envconfig:"INTERNAL_UPDATES_QUEUE_NAME" default:"internal_updates"`
 
+	// Настройки Pushgateway
+	PushgatewayURL string `envconfig:"PUSHGATEWAY_URL" default:"http://localhost:9091"`
+
 	// Настройки воркера
 	PromptsDir string `envconfig:"PROMPTS_DIR" default:"prompts"` // Путь относительно корня воркера или WORKDIR в Docker
 
@@ -127,6 +130,7 @@ func LoadConfig() (*Config, error) {
 	log.Printf("  DB DSN: %s", cfg.getMaskedDSN()) // Логируем DSN с маской пароля
 	log.Printf("  DB Max Conns: %d", cfg.DBMaxConns)
 	log.Printf("  DB Idle Timeout: %v", cfg.DBIdleTimeout)
+	log.Printf("  Pushgateway URL: %s", cfg.PushgatewayURL)
 	// Логируем AI ключ только если он был загружен
 	if cfg.AIAPIKey != "" {
 		log.Println("  AI API Key: [ЗАГРУЖЕН]")

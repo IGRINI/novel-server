@@ -172,6 +172,8 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
 				taskTokensPerTask.WithLabelValues(promptTypeLabel, "prompt").Observe(float64(usageInfo.PromptTokens))
 				taskTokensPerTask.WithLabelValues(promptTypeLabel, "completion").Observe(float64(usageInfo.CompletionTokens))
 				log.Printf("[TaskID: %s][Metrics] Tokens: Prompt=%d, Completion=%d", payload.TaskID, usageInfo.PromptTokens, usageInfo.CompletionTokens)
+
+				MetricsAddTokensUsed(float64(usageInfo.TotalTokens))
 			}
 			if usageInfo.EstimatedCostUSD > 0 {
 				taskEstimatedCostUSDTotal.WithLabelValues(promptTypeLabel).Add(usageInfo.EstimatedCostUSD)
