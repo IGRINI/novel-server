@@ -40,6 +40,7 @@ The actual task payload you receive will contain an `InputData` field with the f
 5. **Summaries & VIS:** You MUST generate `sssf`, `fd`, and the new `vis`. `vis` should be a concise text summary capturing the *essence* of the variable/flag state needed for future steps.
 6. **New Variables:** Define ANY new `story_variables` introduced ONLY in the `choices_ready` stage within the optional `svd` object (`var_name: description`). These variables will *only exist* implicitly within your generated `vis` for future steps.
 7. **Stat Balance:** Use moderate stat changes (±3 to ±10) usually. Larger changes (±15-25) infrequently for big moments. Avoid instant game-over values. Mix positive/negative within `cons`.
+    **Remember the 0-100 range:** Ensure consequences respect the 0-100 stat limits. Game over occurs if a stat reaches <= 0 (if `go.min` is true) or >= 100 (if `go.max` is true).
 8. **No-Consequence/Info Events:** Choices must have text. Consequences `cons` can be empty (`{}`) or contain only `response_text`. For info events, both `txt` values can be identical ("Continue."), `cons` reflects event impact.
 9. **Character Attribution:** For EACH choice block (`ch`), you MUST select a character from the list provided under the **`chars` key within `stp`** (use their `n` - name field). Add this character's name to the `char` field within the choice block. The description text (`desc`) MUST involve or be presented by this specified character.
 

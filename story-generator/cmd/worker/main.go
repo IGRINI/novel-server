@@ -173,8 +173,8 @@ func main() {
 	taskHandler := worker.NewTaskHandler(cfg, aiClient, resultRepo, notifier)
 
 	// --- Инициализация и запуск HTTP API сервера ---
-	apiHandler := api.NewAPIHandler(aiClient)
-	httpServer := startHTTPServer(cfg, apiHandler)
+	apiHandler := api.NewAPIHandler(aiClient, cfg)
+	httpServer := startHTTPServer(apiHandler)
 	log.Printf("HTTP API сервер запущен на порту %s", cfg.HTTPServerPort)
 	// -----------------------------------------------
 
@@ -329,41 +329,35 @@ func setupDatabase(cfg *config.Config) (*pgxpool.Pool, error) {
 	return nil, fmt.Errorf("не удалось подключиться к БД после %d попыток: %w", maxRetries, err) // Возвращаем последнюю ошибку
 }
 
-// --- Обновленная функция для запуска основного HTTP API сервера ---
-// Теперь принимает *config.Config
-func startHTTPServer(cfg *config.Config, apiHandler *api.APIHandler) *http.Server {
+// --- Изменения в startHTTPServer ---
+// Убираем cfg из параметров, так как он будет доступен через apiHandler, если понадобится
+func startHTTPServer(apiHandler *api.APIHandler) *http.Server {
 	mux := http.NewServeMux()
 
-	// Регистрируем обработчик для стриминга
-	mux.HandleFunc("/generate/stream", apiHandler.HandleGenerateStream)
-	// <<< Регистрируем обработчик для не-стриминга >>>
-	mux.HandleFunc("/generate", apiHandler.HandleGenerate)
+	// Регистрируем обработчики API
+	apiHandler.RegisterRoutes(mux) // Предполагаем, что есть метод RegisterRoutes
 
-	// Добавляем health check для основного API
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status": "ok"}`))
-	})
-
-	srv := &http.Server{
-		Addr:    ":" + cfg.HTTPServerPort, // Используем порт из cfg
-		Handler: mux,
-		// Устанавливаем таймауты на основе AITimeout из конфига
-		ReadTimeout:  15 * time.Second,               // Оставляем фиксированным
-		WriteTimeout: cfg.AITimeout + 10*time.Second, // Таймаут AI + запас
-		IdleTimeout:  cfg.AITimeout + 30*time.Second, // Таймаут AI + больший запас
+	// Создаем HTTP сервер
+	server := &http.Server{
+		Addr:         ":" + apiHandler.GetPort(), // Получаем порт из хендлера (нужно будет добавить метод GetPort в APIHandler)
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,  // Пример таймаута чтения
+		WriteTimeout: 60 * time.Second,  // Пример таймаута записи (для стриминга может быть больше)
+		IdleTimeout:  120 * time.Second, // Пример таймаута простоя
 	}
 
+	// Запускаем сервер в отдельной горутине
 	go func() {
-		log.Printf("Запуск HTTP API сервера на :%s...", cfg.HTTPServerPort)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("Запуск HTTP API сервера на порту %s...", apiHandler.GetPort())
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Ошибка запуска HTTP API сервера: %v", err)
 		}
 	}()
 
-	return srv // Возвращаем сервер для graceful shutdown
+	return server
 }
+
+// --- Конец изменений в startHTTPServer ---
 
 // ----------------------------------------------------------
 

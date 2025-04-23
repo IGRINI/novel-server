@@ -56,5 +56,3 @@ func (r *postgresResultRepository) Save(ctx context.Context, result *model.Gener
 	log.Printf("[TaskID: %s] Результат успешно сохранен в БД.", result.ID)
 	return nil
 }
-
-// --- TODO: Реализовать методы GetByID, ListByUserID, если они понадобятся ---

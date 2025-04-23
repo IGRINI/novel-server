@@ -62,6 +62,7 @@
 5. Strictly follow input `ac` flag.
 6. Generate **approximately 10 characters** in the `chars` array, relevant to the story context.
 7. Create the output `csd` object. The **keys** in this object MUST be the EXACT stat names received as keys in the input `cs` object (e.g., if input `cs` has a key "сила", output `csd` MUST have a key "сила"). Copy the `go` conditions for each stat EXACTLY from input `cs` to the corresponding key in output `csd`. Enhance stat descriptions (`d`) for context if needed, respecting rule #1 for language.
+7.1. **Core Stat Rules Reminder:** Core stats operate within a 0-100 range. Game over conditions (`go`) indicate whether reaching <= 0 (`go.min`) or >= 100 (`go.max`) triggers game over. Generated descriptions (`d`) and icons (`ic`) should align with this.
 8. **Stat Icons:** For EACH stat definition in `csd`, you MUST select an appropriate icon name from the following list and include it as the value for the `ic` field: Crown, Flag, Ring, Throne, Person, GroupOfPeople, TwoHands, Mask, Compass, Pyramid, Dollar, Lightning, Sword, Shield, Helmet, Spear, Axe, Bow, Star, Gear, WarningTriangle, Mountain, Eye, Skull, Fire, Pentagram, Book, Leaf, Cane, Scales, Heart, Sun.
 9. **Image Reuse Rule:** For each character, include an additional field `ir` to enable deterministic image reuse. The `ir` must follow these rules:
    - If the character name (`n`) matches a well-known person or fictional character (e.g., "Harry Potter", "Darth Vader"), set: `ir = "ch_" + snake_case(name)`.

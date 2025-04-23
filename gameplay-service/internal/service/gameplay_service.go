@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"novel-server/gameplay-service/internal/config"
 	"novel-server/gameplay-service/internal/messaging"
 	interfaces "novel-server/shared/interfaces"
 	sharedModels "novel-server/shared/models"
@@ -122,7 +124,7 @@ type GameplayService interface {
 	ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStorySummaryDTO, string, error)
 	ListPublicStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStorySummaryDTO, string, error)
 	GetPublishedStoryDetails(ctx context.Context, storyID, userID uuid.UUID) (*PublishedStoryParsedDetailDTO, error)
-	ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error)
+	ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, bool, error)
 	GetPublishedStoryDetailsWithProgress(ctx context.Context, userID, publishedStoryID uuid.UUID) (*PublishedStorySummaryDTO, error)
 
 	// Core Gameplay methods
@@ -172,6 +174,9 @@ type GameplayService interface {
 
 	// <<< ДОБАВЛЕНО: Сигнатура для обновления прогресса игрока >>>
 	UpdatePlayerProgressInternal(ctx context.Context, progressID uuid.UUID, progressData map[string]interface{}) error
+
+	// <<< ДОБАВЛЕНО: Явное добавление метода для подсчета активных историй >>>
+	GetActiveStoryCount(ctx context.Context) (int, error)
 }
 
 type gameplayServiceImpl struct {
@@ -190,6 +195,7 @@ type gameplayServiceImpl struct {
 	pool                 *pgxpool.Pool
 	logger               *zap.Logger
 	authClient           interfaces.AuthServiceClient
+	cfg                  *config.Config
 }
 
 func NewGameplayService(
@@ -203,9 +209,10 @@ func NewGameplayService(
 	pool *pgxpool.Pool,
 	logger *zap.Logger,
 	authClient interfaces.AuthServiceClient,
+	cfg *config.Config,
 ) GameplayService {
 	// <<< СОЗДАЕМ DraftService >>>
-	draftSvc := NewDraftService(configRepo, publisher, logger)
+	draftSvc := NewDraftService(configRepo, publisher, logger, cfg)
 	// <<< СОЗДАЕМ PublishingService >>>
 	publishingSvc := NewPublishingService(configRepo, publishedRepo, publisher, pool, logger)
 	// <<< СОЗДАЕМ LikeService >>>
@@ -231,6 +238,7 @@ func NewGameplayService(
 		pool:                 pool,
 		logger:               logger.Named("GameplayService"),
 		authClient:           authClient,
+		cfg:                  cfg,
 	}
 }
 
@@ -315,7 +323,7 @@ func (s *gameplayServiceImpl) GetPublishedStoryDetails(ctx context.Context, stor
 }
 
 // ListUserPublishedStories delegates to StoryBrowsingService.
-func (s *gameplayServiceImpl) ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error) {
+func (s *gameplayServiceImpl) ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, bool, error) {
 	return s.storyBrowsingService.ListUserPublishedStories(ctx, userID, limit, offset)
 }
 
@@ -494,6 +502,17 @@ func (s *gameplayServiceImpl) GetPlayerProgressInternal(ctx context.Context, pro
 func (s *gameplayServiceImpl) UpdatePlayerProgressInternal(ctx context.Context, progressID uuid.UUID, progressData map[string]interface{}) error {
 	// Делегируем вызов gameLoopService
 	return s.gameLoopService.UpdatePlayerProgressInternal(ctx, progressID, progressData)
+}
+
+// <<< ДОБАВЛЕНО: Реализация GetActiveStoryCount для gameplayServiceImpl >>>
+// GetActiveStoryCount делегирует вызов встроенному storyBrowsingService.
+func (s *gameplayServiceImpl) GetActiveStoryCount(ctx context.Context) (int, error) {
+	// Проверяем, инициализирован ли storyBrowsingService
+	if s.storyBrowsingService == nil {
+		s.logger.Error("storyBrowsingService is not initialized in gameplayServiceImpl")
+		return 0, fmt.Errorf("internal error: story browsing service not available")
+	}
+	return s.storyBrowsingService.GetActiveStoryCount(ctx)
 }
 
 // --- Helper Functions moved to game_loop_service.go ---

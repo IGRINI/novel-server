@@ -48,8 +48,8 @@ const (
 	testTaskID            = "task-456"
 	testGeneratedText     = "Generated text result."
 	testNarratorUserInput = "Generate a simple fantasy story about a knight."
-	// Корректный путь от story-generator/internal/worker к корню проекта и затем к promts
-	sourceNarratorPath = "../../../promts/narrator.md"
+	// Корректный путь от story-generator/internal/worker к корню проекта и затем к prompts
+	sourceNarratorPath = "../../../prompts/narrator.md"
 )
 
 func TestTaskHandler_Handle_NarratorPrompt(t *testing.T) {

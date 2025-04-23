@@ -22,6 +22,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
+// <<< ДОБАВЛЕНО: Константы цен >>>
+const (
+	pricePerMillionInputTokensUSD  = 0.1 // Цена за 1М входных токенов в USD
+	pricePerMillionOutputTokensUSD = 0.4 // Цена за 1М выходных токенов в USD
+)
+
+// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
+
 // <<< Структура для параметров генерации (дублируем из admin-service/client) >>>
 // Используем указатели, чтобы отличить 0/0.0 от отсутствия.
 type GenerationParams struct {
@@ -35,12 +43,13 @@ type GenerationParams struct {
 // ErrAIGenerationFailed - ошибка при генерации текста AI
 var ErrAIGenerationFailed = errors.New("ошибка генерации текста AI")
 
-// --- Pricing Constants (Example for gpt-4.1-nano variants) ---
-// TODO: Move pricing to configuration?
-const (
-	pricePerMillionInputTokensNano  = 0.10
-	pricePerMillionOutputTokensNano = 0.40
-)
+// --- Pricing Constants Removed ---
+// Цены удалены, так как их следует брать из конфигурации.
+// Расчет стоимости пока отключен.
+// const (
+// 	pricePerMillionInputTokensNano  = 0.10
+// 	pricePerMillionOutputTokensNano = 0.40
+// )
 
 // --- End Pricing Constants ---
 
@@ -84,22 +93,23 @@ var (
 		},
 		[]string{"model", "user_id"}, // Labels: model used, user_id
 	)
-	// <<< Новая метрика для стоимости >>>
+	// <<< РАСКОММЕНТИРОВАНО: Метрика стоимости >>>
 	aiEstimatedCostUSD = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "story_generator_ai_estimated_cost_usd_total",
-			Help: "Estimated cost of AI token usage in USD.",
+			Help: "Estimated total cost of AI requests in USD.",
 		},
-		[]string{"model", "user_id"}, // Labels: model used, user_id
+		[]string{"model", "user_id"},
 	)
+	// <<< КОНЕЦ РАСКОММЕНТИРОВАНИЯ >>>
 )
 
-// UsageInfo содержит информацию об использовании токенов и стоимости запроса
+// UsageInfo содержит информацию об использовании токенов и стоимости
 type UsageInfo struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
-	EstimatedCostUSD float64 // Оценочная стоимость (может быть 0, если не поддерживается)
+	EstimatedCostUSD float64 // Оценочная стоимость
 }
 
 // AIClient интерфейс для взаимодействия с AI API
@@ -111,6 +121,16 @@ type AIClient interface {
 	// Возвращает информацию об использовании (может быть неполной или отсутствовать для stream) и ошибку.
 	GenerateTextStream(ctx context.Context, userID string, systemPrompt string, userInput string, params GenerationParams, chunkHandler func(string) error) (UsageInfo, error)
 }
+
+// <<< ДОБАВЛЕНО: Функция расчета стоимости >>>
+// calculateCost рассчитывает оценочную стоимость запроса на основе токенов.
+func calculateCost(promptTokens, completionTokens int) float64 {
+	inputCost := float64(promptTokens) * pricePerMillionInputTokensUSD / 1_000_000.0
+	outputCost := float64(completionTokens) * pricePerMillionOutputTokensUSD / 1_000_000.0
+	return inputCost + outputCost
+}
+
+// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
 
 // --- OpenAI Client Implementation ---
 
@@ -197,14 +217,11 @@ func (c *openAIClient) GenerateText(ctx context.Context, userID string, systemPr
 		usageInfo.PromptTokens = resp.Usage.PromptTokens
 		usageInfo.CompletionTokens = resp.Usage.CompletionTokens
 		usageInfo.TotalTokens = resp.Usage.TotalTokens
-
-		// <<< Рассчитываем и обновляем стоимость >>>
-		cost := calculateCost(c.model, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
-		usageInfo.EstimatedCostUSD = cost // Сохраняем стоимость в UsageInfo
-		log.Printf("[DEBUG] Calculated cost (userID: %s, model: %s): %.8f", userID, c.model, cost)
-		if cost > 0 {
-			aiEstimatedCostUSD.With(prometheus.Labels{"model": c.model, "user_id": userID}).Add(cost)
-			log.Printf("AI Usage Cost (estimated, userID: %s): $%.6f", userID, cost)
+		usageInfo.EstimatedCostUSD = calculateCost(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+		log.Printf("[DEBUG] Calculated cost (userID: %s, model: %s): %.8f", userID, c.model, usageInfo.EstimatedCostUSD)
+		if usageInfo.EstimatedCostUSD > 0 {
+			aiEstimatedCostUSD.With(prometheus.Labels{"model": c.model, "user_id": userID}).Add(usageInfo.EstimatedCostUSD)
+			log.Printf("AI Usage Cost (estimated, userID: %s): $%.6f", userID, usageInfo.EstimatedCostUSD)
 		}
 	}
 
@@ -308,20 +325,23 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 		usageInfo.PromptTokens = promptTokensCount
 		usageInfo.CompletionTokens = completionTokensCount
 		usageInfo.TotalTokens = finalUsage.TotalTokens
-		// Рассчитываем стоимость
-		cost := calculateCost(c.model, promptTokensCount, completionTokensCount)
-		usageInfo.EstimatedCostUSD = cost
-		log.Printf("AI Stream Usage (from final block, userID: %s): Prompt=%d, Completion=%d, Total=%d, Cost=%.6f",
-			userID, promptTokensCount, completionTokensCount, finalUsage.TotalTokens, cost)
+		usageInfo.EstimatedCostUSD = calculateCost(promptTokensCount, completionTokensCount)
+		log.Printf("AI Stream Usage (from final block, userID: %s): Prompt=%d, Completion=%d, Total=%d",
+			userID, promptTokensCount, completionTokensCount, finalUsage.TotalTokens)
 		// Обновляем метрики
 		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "success_stream", "user_id": userID}).Inc()
 		aiRequestDuration.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(duration.Seconds())
 		aiPromptTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(promptTokensCount))
 		aiCompletionTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(completionTokensCount))
 		aiTotalTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(finalUsage.TotalTokens))
-		if cost > 0 {
-			aiEstimatedCostUSD.With(prometheus.Labels{"model": c.model, "user_id": userID}).Add(cost)
-		}
+		// <<< Расчет стоимости удален >>>
+		// cost := calculateCost(c.model, promptTokensCount, completionTokensCount)
+		// usageInfo.EstimatedCostUSD = cost
+		// log.Printf("[DEBUG] Calculated cost (userID: %s, model: %s): %.8f", userID, c.model, cost)
+		// if cost > 0 {
+		// 	aiEstimatedCostUSD.With(prometheus.Labels{"model": c.model, "user_id": userID}).Add(cost)
+		// 	log.Printf("AI Usage Cost (estimated, userID: %s): $%.6f", userID, cost)
+		// }
 	} else {
 		// Если финальный Usage не пришел (зависит от модели/API)
 		// Используем примерный подсчет completion токенов и оцениваем prompt токены
@@ -335,20 +355,19 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 			usageInfo.PromptTokens = promptTokensCount
 			usageInfo.CompletionTokens = completionTokensCount
 			usageInfo.TotalTokens = totalTokens
-			// Рассчитываем стоимость
-			cost := calculateCost(c.model, promptTokensCount, completionTokensCount)
-			usageInfo.EstimatedCostUSD = cost
-			log.Printf("AI Stream Usage (estimated, userID: %s): Prompt≈%d, Completion≈%d, Total≈%d, Cost≈%.6f",
-				userID, promptTokensCount, completionTokensCount, totalTokens, cost)
+			usageInfo.EstimatedCostUSD = calculateCost(promptTokensCount, completionTokensCount)
+			log.Printf("AI Stream Usage (estimated, userID: %s): Prompt≈%d, Completion≈%d, Total≈%d",
+				userID, promptTokensCount, completionTokensCount, totalTokens)
 			// Обновляем метрики (с примерными значениями)
 			aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "success_stream_estimated", "user_id": userID}).Inc()
 			aiRequestDuration.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(duration.Seconds())
 			aiPromptTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(promptTokensCount))
 			aiCompletionTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(completionTokensCount))
 			aiTotalTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(totalTokens))
-			if cost > 0 {
-				aiEstimatedCostUSD.With(prometheus.Labels{"model": c.model, "user_id": userID}).Add(cost)
-			}
+			// <<< Метрика стоимости удалена >>>
+			// if cost > 0 {
+			// 	aiEstimatedCostUSD.With(prometheus.Labels{"model": c.model, "user_id": userID}).Add(cost)
+			// }
 		} else {
 			log.Printf("[ERROR] Could not get tokenizer for model %s to estimate stream tokens (userID: %s). Skipping token metrics for this stream.", c.model, userID)
 			// Обновляем только счетчик запросов без токенов/стоимости
@@ -360,26 +379,12 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 	return usageInfo, nil
 }
 
-// calculateCost рассчитывает стоимость на основе модели и количества токенов
+// <<< Функция calculateCost удалена >>>
+/*
 func calculateCost(modelName string, promptTokens, completionTokens int) float64 {
-	// Убрали проверку: if strings.Contains(modelName, "gpt-4.1-nano")
-	// Теперь расчет применяется ко всем моделям, используя константы nano
-	// TODO: Рассмотреть добавление конфигурации цен для разных моделей в будущем
-	log.Printf("[DEBUG] Calculating cost using nano prices for model: %s", modelName) // Добавим лог для ясности
-	promptCost := float64(promptTokens) * pricePerMillionInputTokensNano / 1_000_000
-	completionCost := float64(completionTokens) * pricePerMillionOutputTokensNano / 1_000_000
-	return promptCost + completionCost
-
-	/* <<< Старая логика с проверкой >>>
-	if strings.Contains(modelName, "gpt-4.1-nano") {
-		promptCost := float64(promptTokens) * pricePerMillionInputTokensNano / 1_000_000
-		completionCost := float64(completionTokens) * pricePerMillionOutputTokensNano / 1_000_000
-		return promptCost + completionCost
-	}
-	// Возвращаем 0, если для модели нет цены
-	return 0.0
-	*/
+	// ... (старый код)
 }
+*/
 
 // --- Вспомогательная функция для конвертации *float64 в float32 ---
 func float32Val(f64 *float64) float32 { // Возвращает float32, а не *float32
@@ -450,7 +455,7 @@ func newOllamaClient(cfg *config.Config) (AIClient, error) {
 
 // GenerateText генерирует текст с использованием Ollama
 func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPrompt string, userInput string, params GenerationParams) (string, UsageInfo, error) {
-	usageInfo := UsageInfo{} // Ollama API не возвращает стоимость
+	usageInfo := UsageInfo{EstimatedCostUSD: 0} // Ollama API не возвращает стоимость
 
 	if strings.TrimSpace(systemPrompt) == "" {
 		log.Printf("Ошибка: Системный промт пуст. Невозможно отправить запрос к Ollama. userID: %s", userID)
@@ -566,7 +571,7 @@ func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPr
 
 // GenerateTextStream генерирует текст с использованием Ollama в потоковом режиме
 func (c *ollamaClient) GenerateTextStream(ctx context.Context, userID string, systemPrompt string, userInput string, params GenerationParams, chunkHandler func(string) error) (UsageInfo, error) {
-	usageInfo := UsageInfo{} // Ollama API не возвращает стоимость
+	usageInfo := UsageInfo{EstimatedCostUSD: 0} // Ollama API не возвращает стоимость
 
 	if strings.TrimSpace(systemPrompt) == "" {
 		log.Printf("Ошибка стриминга Ollama: Системный промт пуст. userID: %s", userID)
@@ -658,12 +663,12 @@ func (c *ollamaClient) GenerateTextStream(ctx context.Context, userID string, sy
 		aiPromptTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(promptTokens))
 		aiCompletionTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(completionTokens))
 		aiTotalTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(promptTokens + completionTokens))
-		// <<< Рассчитываем и обновляем стоимость >>>
-		cost := calculateCost(c.model, promptTokens, completionTokens)
-		if cost > 0 {
-			aiEstimatedCostUSD.With(prometheus.Labels{"model": c.model, "user_id": userID}).Add(cost)
-			log.Printf("Ollama Stream Usage Cost (estimated, userID: %s): $%.6f", userID, cost)
-		}
+		// <<< Расчет стоимости удален >>>
+		// cost := calculateCost(c.model, promptTokens, completionTokens)
+		// if cost > 0 {
+		// 	aiEstimatedCostUSD.With(prometheus.Labels{"model": c.model, "user_id": userID}).Add(cost)
+		// 	log.Printf("Ollama Stream Usage Cost (estimated, userID: %s): $%.6f", userID, cost)
+		// }
 	}
 
 	// Заполняем UsageInfo из последнего ответа Ollama

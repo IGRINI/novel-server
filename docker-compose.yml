@@ -283,12 +283,12 @@ services:
       - rabbitmq
       - migrate
     volumes:
-      - ./promts:/app/promts
+      - ./prompts:/app/prompts
     environment:
       <<: *env-vars
       DB_HOST: postgres
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/
-      PROMPTS_DIR: /app/promts
+      PROMPTS_DIR: /app/prompts
       SERVICE_ID: story-generator-service
       AI_BASE_URL: ${AI_BASE_URL}
       AI_MODEL: ${AI_MODEL}

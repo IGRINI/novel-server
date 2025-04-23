@@ -38,8 +38,23 @@
                     <td>{{ .CreatedAt | formatAsDateTime }}</td>
                     <td>{{ .UpdatedAt | formatAsDateTime }}</td>
                     <td>
-                        <a href="/admin/users/{{$.TargetUser.ID}}/drafts/{{.ID}}" class="cta-button cta-button--secondary btn-sm">Детали</a>
-                        {{/* TODO: Добавить кнопки действий (удалить, перегенерировать?) */}}
+                        <a href="/admin/users/{{$.TargetUser.ID}}/drafts/{{.ID}}" class="cta-button cta-button--secondary btn-sm" style="margin-right: 0.5rem;">Детали</a>
+                        {{ if eq .Status "Error" }}
+                            <button class="cta-button cta-button--secondary btn-sm" style="margin-right: 0.5rem;"
+                                    hx-post="/admin/users/{{$.TargetUser.ID}}/drafts/{{.ID}}/retry"
+                                    hx-confirm="Попробовать перегенерировать этот черновик?"
+                                    hx-target="closest tr" 
+                                    hx-swap="outerHTML">
+                                Retry
+                            </button>
+                        {{ end }}
+                        <button class="cta-button cta-button--danger btn-sm"
+                                hx-delete="/admin/users/{{$.TargetUser.ID}}/drafts/{{.ID}}"
+                                hx-confirm="Вы уверены, что хотите удалить черновик {{ .ID }}?"
+                                hx-target="closest tr"
+                                hx-swap="outerHTML">
+                            Удалить
+                        </button>
                     </td>
                 </tr>
             {{ else }}

@@ -671,7 +671,11 @@ func (c *gameplayClient) UpdatePlayerProgressInternal(ctx context.Context, progr
 	if httpResp.StatusCode == http.StatusBadRequest {
 		respBodyBytes, _ := io.ReadAll(httpResp.Body)
 		log.Warn("Received Bad Request status for update player progress internal", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
-		// TODO: Распарсить тело ошибки, если gameplay-service возвращает детали?
+		// Попытаемся распарить тело ошибки для логирования деталей
+		var errResp models.ErrorResponse
+		if err := json.Unmarshal(respBodyBytes, &errResp); err == nil {
+			log.Warn("Gameplay service returned Bad Request details", zap.String("code", errResp.Code), zap.String("message", errResp.Message))
+		}
 		return models.ErrBadRequest // Возвращаем стандартную ошибку
 	}
 	if httpResp.StatusCode != http.StatusOK && httpResp.StatusCode != http.StatusNoContent {
@@ -681,5 +685,178 @@ func (c *gameplayClient) UpdatePlayerProgressInternal(ctx context.Context, progr
 	}
 
 	log.Info("Player progress updated successfully")
+	return nil
+}
+
+// GetActiveStoryCount получает количество активных (готовых к игре) историй из gameplay-service.
+func (c *gameplayClient) GetActiveStoryCount(ctx context.Context) (int, error) {
+	countURL := fmt.Sprintf("%s/internal/stories/active/count", c.baseURL)
+	log := c.logger.With(zap.String("url", countURL))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, countURL, nil)
+	if err != nil {
+		log.Error("Failed to create get active story count HTTP request", zap.Error(err))
+		return 0, fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Accept", "application/json")
+
+	log.Debug("Sending get active story count request to gameplay-service")
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	if err != nil {
+		log.Error("HTTP request for get active story count failed", zap.Error(err))
+		return 0, fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	respBodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		log.Error("Failed to read get active story count response body", zap.Int("status", httpResp.StatusCode), zap.Error(err))
+		return 0, fmt.Errorf("failed to read gameplay service response: %w", err)
+	}
+
+	if httpResp.StatusCode != http.StatusOK {
+		log.Warn("Received non-OK status for get active story count", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		return 0, fmt.Errorf("received unexpected status %d from gameplay service for get active story count", httpResp.StatusCode)
+	}
+
+	type countResponse struct {
+		Count int `json:"count"`
+	}
+	var resp countResponse
+	if err := json.Unmarshal(respBodyBytes, &resp); err != nil {
+		log.Error("Failed to unmarshal get active story count response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes), zap.Error(err))
+		return 0, fmt.Errorf("invalid active story count response format from gameplay service: %w", err)
+	}
+
+	log.Info("Active story count retrieved successfully", zap.Int("count", resp.Count))
+	return resp.Count, nil
+}
+
+// DeleteDraft удаляет черновик пользователя.
+func (c *gameplayClient) DeleteDraft(ctx context.Context, userID, draftID uuid.UUID) error {
+	// Эндпоинт в gameplay-service: DELETE /stories/{id}
+	deleteURL := fmt.Sprintf("%s/stories/%s", c.baseURL, draftID.String())
+	log := c.logger.With(zap.String("url", deleteURL), zap.String("draftID", draftID.String()), zap.String("userID", userID.String()))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, deleteURL, nil)
+	if err != nil {
+		log.Error("Failed to create delete draft HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+	// Устанавливаем заголовок X-User-ID, так как эндпоинт требует аутентификации пользователя
+	httpReq.Header.Set("X-User-ID", userID.String())
+	httpReq.Header.Set("Accept", "application/json")
+
+	log.Debug("Sending delete draft request to gameplay-service")
+	// Используем стандартный httpClient.Do, так как это пользовательский эндпоинт, а не внутренний
+	httpResp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		log.Error("HTTP request for delete draft failed", zap.Error(err))
+		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusNoContent && httpResp.StatusCode != http.StatusOK {
+		respBodyBytes, _ := io.ReadAll(httpResp.Body)
+		log.Warn("Received non-OK/NoContent status for delete draft", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		if httpResp.StatusCode == http.StatusNotFound {
+			return models.ErrNotFound
+		} else if httpResp.StatusCode == http.StatusForbidden {
+			return models.ErrForbidden
+		}
+		return fmt.Errorf("received unexpected status %d from gameplay service for delete draft", httpResp.StatusCode)
+	}
+
+	log.Info("Draft deleted successfully via gameplay-service")
+	return nil
+}
+
+// RetryDraftGeneration повторяет генерацию черновика.
+func (c *gameplayClient) RetryDraftGeneration(ctx context.Context, userID, draftID uuid.UUID) error {
+	// Эндпоинт в gameplay-service: POST /stories/drafts/{draft_id}/retry
+	retryURL := fmt.Sprintf("%s/stories/drafts/%s/retry", c.baseURL, draftID.String())
+	log := c.logger.With(zap.String("url", retryURL), zap.String("draftID", draftID.String()), zap.String("userID", userID.String()))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, retryURL, nil) // Тело запроса не нужно
+	if err != nil {
+		log.Error("Failed to create retry draft generation HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+	// Устанавливаем заголовок X-User-ID
+	httpReq.Header.Set("X-User-ID", userID.String())
+	httpReq.Header.Set("Accept", "application/json")
+
+	log.Debug("Sending retry draft generation request to gameplay-service")
+	// Используем стандартный httpClient.Do
+	httpResp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		log.Error("HTTP request for retry draft generation failed", zap.Error(err))
+		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusOK && httpResp.StatusCode != http.StatusAccepted { // 200 OK или 202 Accepted
+		respBodyBytes, _ := io.ReadAll(httpResp.Body)
+		log.Warn("Received non-OK/Accepted status for retry draft generation", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		if httpResp.StatusCode == http.StatusNotFound {
+			return models.ErrNotFound
+		} else if httpResp.StatusCode == http.StatusForbidden {
+			return models.ErrForbidden
+		} else if httpResp.StatusCode == http.StatusConflict {
+			// Попытка извлечь код ошибки из тела ответа
+			var errResp models.ErrorResponse
+			if json.Unmarshal(respBodyBytes, &errResp) == nil {
+				if errResp.Code == models.ErrCodeCannotRetry {
+					return models.ErrCannotRetry
+				} else if errResp.Code == models.ErrCodeUserHasActiveGeneration {
+					return models.ErrUserHasActiveGeneration
+				}
+			}
+			// Если не удалось распознать код ошибки, возвращаем общую ошибку конфликта (ErrCannotRetry)
+			return fmt.Errorf("%w: cannot retry draft in current state (status %d)", models.ErrCannotRetry, httpResp.StatusCode)
+		}
+		return fmt.Errorf("received unexpected status %d from gameplay service for retry draft generation", httpResp.StatusCode)
+	}
+
+	log.Info("Retry draft generation request sent successfully via gameplay-service")
+	return nil
+}
+
+// DeletePublishedStory удаляет опубликованную историю пользователя.
+func (c *gameplayClient) DeletePublishedStory(ctx context.Context, userID, storyID uuid.UUID) error {
+	// Эндпоинт в gameplay-service: DELETE /published-stories/{id}
+	deleteURL := fmt.Sprintf("%s/published-stories/%s", c.baseURL, storyID.String())
+	log := c.logger.With(zap.String("url", deleteURL), zap.String("storyID", storyID.String()), zap.String("userID", userID.String()))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, deleteURL, nil)
+	if err != nil {
+		log.Error("Failed to create delete published story HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+	// Устанавливаем заголовок X-User-ID
+	httpReq.Header.Set("X-User-ID", userID.String())
+	httpReq.Header.Set("Accept", "application/json")
+
+	log.Debug("Sending delete published story request to gameplay-service")
+	// Используем стандартный httpClient.Do
+	httpResp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		log.Error("HTTP request for delete published story failed", zap.Error(err))
+		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusNoContent && httpResp.StatusCode != http.StatusOK {
+		respBodyBytes, _ := io.ReadAll(httpResp.Body)
+		log.Warn("Received non-OK/NoContent status for delete published story", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		if httpResp.StatusCode == http.StatusNotFound {
+			return models.ErrNotFound
+		} else if httpResp.StatusCode == http.StatusForbidden {
+			return models.ErrForbidden
+		}
+		return fmt.Errorf("received unexpected status %d from gameplay service for delete published story", httpResp.StatusCode)
+	}
+
+	log.Info("Published story deleted successfully via gameplay-service")
 	return nil
 }

@@ -77,4 +77,10 @@ type PublishedStoryRepository interface {
 
 	// FindWithProgressByUserID retrieves a paginated list of stories with progress for a specific user using cursor pagination.
 	FindWithProgressByUserID(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]models.PublishedStorySummaryWithProgress, string, error)
+
+	// CountByStatus подсчитывает количество историй по статусу.
+	CountByStatus(ctx context.Context, status models.StoryStatus) (int, error)
+
+	// ListByUserIDOffset retrieves a paginated list of stories created by a specific user using cursor pagination with offset.
+	ListByUserIDOffset(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.PublishedStory, error)
 }

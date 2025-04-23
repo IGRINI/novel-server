@@ -35,7 +35,7 @@ COPY --from=builder /story-worker .
 # --- ВАЖНО: Копирование директории с промптами ---
 # Путь назначения должен совпадать с тем, что ожидается в конфигурации (PROMPTS_DIR)
 # Копируем из исходников в builder stage, т.к. скопировали весь проект туда
-COPY --from=builder /app/promts/ ./promts/
+COPY --from=builder /app/prompts/ ./prompts/
 # ----------------------------------------------------
 
 # Копируем .env файл, если используется godotenv (не рекомендуется для production)

@@ -101,15 +101,12 @@ func (h *GameplayHandler) listUserStoriesInternal(c *gin.Context) {
 	log = log.With(zap.Stringer("userID", userID), zap.Int("limit", limit), zap.Int("offset", offset))
 	log.Info("Internal request for user published stories")
 
-	stories, err := h.service.ListUserPublishedStories(c.Request.Context(), userID, limit, offset)
+	stories, hasMore, err := h.service.ListUserPublishedStories(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		log.Error("Failed to list user published stories internally", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, sharedModels.ErrorResponse{Message: "Failed to retrieve published stories"})
 		return
 	}
-
-	// Для offset пагинации нам нужно определить 'hasMore'
-	hasMore := len(stories) == limit
 
 	// Отдаем только данные, без курсора. Клиент должен сам определить пагинацию.
 	// Можно было бы создать отдельную DTO для этого ответа.

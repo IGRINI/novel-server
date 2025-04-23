@@ -38,8 +38,14 @@
                     <td>{{ .Status }}</td>
                     <td>{{ .CreatedAt | formatAsDateTime }}</td>
                     <td>
-                        <a href="/admin/users/{{$.TargetUser.ID}}/stories/{{.ID}}" class="cta-button cta-button--secondary btn-sm">Детали</a>
-                        {{/* TODO: Добавить другие кнопки действий */}}
+                        <a href="/admin/users/{{$.TargetUser.ID}}/stories/{{.ID}}" class="cta-button cta-button--secondary btn-sm" style="margin-right: 0.5rem;">Детали</a>
+                        <button class="cta-button cta-button--danger btn-sm"
+                                hx-delete="/admin/users/{{$.TargetUser.ID}}/stories/{{.ID}}"
+                                hx-confirm="Вы уверены, что хотите удалить историю '{{ .Title | derefString | default .ID }}'? Это действие нельзя отменить."
+                                hx-target="closest tr"
+                                hx-swap="outerHTML">
+                            Удалить
+                        </button>
                     </td>
                 </tr>
             {{ else }}

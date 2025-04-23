@@ -73,6 +73,7 @@
     e.  Generate **4 unique `cs`** (core_stats) relevant to the setting.
     f.  **Autonomously set `ac`** (is_adult_content) based ONLY on generated content, ignoring any user request on `ac`.
     g.  **Generate a specific Player Name (`pn`):** Invent a creative and specific name, nickname, or title for the player character. **Avoid generic placeholders** like "Player", "Adventurer", "Traveler", "Hero", etc., unless the `UserInput` explicitly requests such a generic term.
+    g.1. **Core Stat Rules:** Core stats (`cs`) always operate within a 0-100 range. Game over is triggered when a stat reaches 0 or less if `go.min` is true, or 100 or more if `go.max` is true. Ensure descriptions and initial values (`iv`) reflect this.
     h.  Ensure `s_so_far` describes the story's starting point, and `fd` describes the plan for the first scene.
     i.  Output must be a **single line, no markdown, no extra formatting**.
 

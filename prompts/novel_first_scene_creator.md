@@ -23,7 +23,8 @@ The actual task payload you receive will contain an `InputData` field with the f
 4. **Text Formatting:** Markdown (`*italic*`, `**bold**`) is allowed ONLY within the `desc` (description) and `txt` (choice text) string values.
 5. **New Variables:** Define ANY new `story_variables` introduced in this batch within the `svd` object (`var_name: description`). Omit `svd` if no new vars.
 6. **CRITICAL: Generate ALL text content (`sssf`, `fd`, `svd` descriptions, `desc`, `txt`, and `response_text` inside `cons`) STRICTLY in the language specified in the input `language`.** The generated language MUST match the input `language`.
-7. **Stat Balance:** Use moderate stat changes (±3 to ±10) usually. Larger changes (±15-25) infrequently for big moments. Avoid instant game-over values. Mix positive/negative within `cons`.
+7. **Stat Balance:** Use moderate stat changes (±3 to ±10) usually. Larger changes (±15-25) infrequently for big moments. Avoid instant game-over values.
+    **Remember the 0-100 range:** Ensure consequences don't immediately push stats below 0 or above 100 based on their initial values (`iv`) from the Setup, unless that's the intended dramatic start.
 8. **No-Consequence/Info Events:** Consequences object `cons` can be empty (`{}`) or contain only `response_text`. For info events, both `txt` values can be identical ("Continue.").
 9. **Character Attribution:** For EACH choice block (`ch`), you MUST select a character from the list provided under the **`chars` key within `stp`** (use their `n` - name field). Add this character's name to the `char` field within the choice block. The description text (`desc`) MUST involve or be presented by this specified character.
 

@@ -61,6 +61,12 @@ var (
 	ErrCannotUpdateSubmittedStory    = errors.New("cannot update story config that is not in draft status")
 	ErrStoryAlreadyGeneratingOrReady = errors.New("story generation already in progress or completed")
 
+	// <<< НОВЫЕ ОШИБКИ ДЛЯ GAME LOOP >>>
+	ErrGameOverPending         = errors.New("game over sequence is pending generation")
+	ErrGameCompleted           = errors.New("game has already been completed by the player")
+	ErrPlayerStateInError      = errors.New("player game state is in an error status")
+	ErrPlayerGameStateNotFound = errors.New("player game state not found") // Добавлено для случая, когда стейт не найден
+
 	// Add other specific errors as needed
 )
 
@@ -122,4 +128,10 @@ const (
 	ErrCodeDatabaseError = "DATABASE_ERROR"
 	ErrCodeRedisError    = "REDIS_ERROR"
 	ErrCodePasswordHash  = "PASSWORD_HASH_ERROR"
+
+	// <<< НОВЫЕ КОДЫ ОШИБОК ДЛЯ GAME LOOP >>>
+	ErrCodeGameOverPending         = "GAME_OVER_PENDING"           // maps to models.ErrGameOverPending
+	ErrCodeGameCompleted           = "GAME_COMPLETED"              // maps to models.ErrGameCompleted
+	ErrCodePlayerStateInError      = "PLAYER_STATE_ERROR"          // maps to models.ErrPlayerStateInError
+	ErrCodePlayerGameStateNotFound = "PLAYER_GAME_STATE_NOT_FOUND" // maps to models.ErrPlayerGameStateNotFound
 )

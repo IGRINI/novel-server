@@ -170,6 +170,9 @@ func (h *GameplayHandler) RegisterRoutes(router gin.IRouter) {
 
 		// Удаление данных
 		internalGroup.DELETE("/scenes/:scene_id", h.deleteSceneInternal) // DELETE /internal/scenes/{id}
+
+		// <<< ДОБАВЛЕНО: Эндпоинт для получения количества активных историй >>>
+		internalGroup.GET("/stories/active/count", h.getActiveStoryCountInternal)
 	}
 }
 
@@ -212,6 +215,12 @@ func handleServiceError(c *gin.Context, err error, logger *zap.Logger) {
 	case errors.Is(err, sharedModels.ErrUserBanned): // Пример, если понадобится
 		statusCode = http.StatusForbidden
 		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeUserBanned, Message: "User is banned"}
+	case errors.Is(err, sharedModels.ErrPlayerGameStateNotFound):
+		statusCode = http.StatusNotFound
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodePlayerGameStateNotFound, Message: err.Error()}
+	case errors.Is(err, sharedModels.ErrGameCompleted):
+		statusCode = http.StatusNotFound
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeGameCompleted, Message: err.Error()}
 	case errors.Is(err, sharedModels.ErrNotFound):
 		statusCode = http.StatusNotFound
 		// Уточняем сообщение в зависимости от типа NotFound, если возможно, иначе общее
@@ -238,6 +247,9 @@ func handleServiceError(c *gin.Context, err error, logger *zap.Logger) {
 	case errors.Is(err, sharedModels.ErrSceneNeedsGeneration):
 		statusCode = http.StatusConflict
 		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeSceneNeedsGeneration, Message: err.Error()}
+	case errors.Is(err, sharedModels.ErrGameOverPending):
+		statusCode = http.StatusConflict
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeGameOverPending, Message: err.Error()}
 	case errors.Is(err, service.ErrInvalidChoiceIndex), errors.Is(err, service.ErrInvalidChoice), errors.Is(err, service.ErrStoryNotReady):
 		statusCode = http.StatusBadRequest
 		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeBadRequest, Message: err.Error()} // Можно уточнить код, если нужно
@@ -250,12 +262,15 @@ func handleServiceError(c *gin.Context, err error, logger *zap.Logger) {
 	case errors.Is(err, sharedModels.ErrBadRequest), errors.Is(err, sharedModels.ErrInvalidInput):
 		statusCode = http.StatusBadRequest
 		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeBadRequest, Message: err.Error()}
-	default: // Все остальное - внутренняя ошибка
-		logger.Error("Unhandled internal error", zap.Error(err)) // Используем переданный логгер
+	case errors.Is(err, sharedModels.ErrPlayerStateInError):
+		statusCode = http.StatusInternalServerError
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodePlayerStateInError, Message: err.Error()}
+	default:
+		logger.Error("Unhandled internal error", zap.Error(err))
 		statusCode = http.StatusInternalServerError
 		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeInternal, Message: "Internal server error"}
 	}
-	// Используем c.AbortWithStatusJSON для отправки ошибки и прерывания
+
 	c.AbortWithStatusJSON(statusCode, apiErr)
 }
 
@@ -429,3 +444,20 @@ func (h *GameplayHandler) updatePlayerProgressInternal(c *gin.Context) {
 // func (h *GameplayHandler) deleteSceneInternal(c *gin.Context) { ... }
 
 // Оставляем существующие реализации для этих методов, если они корректны.
+
+// <<< ДОБАВЛЕНО: Обработчик для получения количества активных историй >>>
+func (h *GameplayHandler) getActiveStoryCountInternal(c *gin.Context) {
+	h.logger.Info("getActiveStoryCountInternal called")
+
+	count, err := h.service.GetActiveStoryCount(c.Request.Context())
+	if err != nil {
+		// Используем стандартный обработчик ошибок, который залогирует и вернет 500
+		handleServiceError(c, err, h.logger)
+		return
+	}
+
+	// Возвращаем результат в JSON
+	c.JSON(http.StatusOK, gin.H{
+		"count": count,
+	})
+}

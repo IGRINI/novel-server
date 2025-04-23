@@ -50,11 +50,11 @@ const (
 	// Путь к файлу .env относительно файла теста (3 уровня вверх)
 	dotEnvPath = "../../../.env"
 	// Путь к файлу промта относительно файла теста
-	intSourceNarratorPath        = "../../../promts/narrator.md"
-	intSourceSetupPath           = "../../../promts/novel_setup.md"
-	intSourceFirstScenePath      = "../../../promts/novel_first_scene_creator.md"
-	intSourceCreatorPath         = "../../../promts/novel_creator.md"
-	intSourceGameOverCreatorPath = "../../../promts/novel_gameover_creator.md"
+	intSourceNarratorPath        = "../../../prompts/narrator.md"
+	intSourceSetupPath           = "../../../prompts/novel_setup.md"
+	intSourceFirstScenePath      = "../../../prompts/novel_first_scene_creator.md"
+	intSourceCreatorPath         = "../../../prompts/novel_creator.md"
+	intSourceGameOverCreatorPath = "../../../prompts/novel_gameover_creator.md"
 )
 
 // TestTaskHandler_Handle_FullGameFlow_Integration tests the entire workflow from Narrator to Game Over

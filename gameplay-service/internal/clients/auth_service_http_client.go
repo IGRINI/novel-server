@@ -22,7 +22,7 @@ type HTTPAuthServiceClient struct {
 	baseURL    string // Base URL of the auth-service (e.g., "http://auth-service:8080")
 	httpClient *http.Client
 	logger     *zap.Logger
-	// TODO: Add any necessary headers, e.g., for inter-service authentication
+	// Заголовок для межсервисной аутентификации уже добавляется
 	interServiceToken string // Example: Token for secure inter-service calls
 }
 

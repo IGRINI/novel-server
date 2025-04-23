@@ -344,8 +344,8 @@ func main() {
 			if t.IsZero() {
 				return "-"
 			}
-			// TODO: Можно использовать локализацию или более гибкий формат
-			return t.Format("2006-01-02 15:04:05")
+			// Форматируем дату и время в формате ДД.ММ.ГГГГ ЧЧ:ММ:СС
+			return t.Format("02.01.2006 15:04:05")
 		},
 		"bytesToString": func(b []byte) string {
 			return string(b)

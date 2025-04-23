@@ -117,16 +117,13 @@ func (s *gameLoopServiceImpl) GetStoryScene(ctx context.Context, playerID uuid.U
 		return nil, sharedModels.ErrSceneNeedsGeneration
 	case sharedModels.PlayerStatusGameOverPending:
 		log.Info("Player is waiting for game over generation")
-		// TODO: Define a specific error for this? Using ErrSceneNeedsGeneration for now.
-		return nil, sharedModels.ErrSceneNeedsGeneration
+		return nil, sharedModels.ErrGameOverPending
 	case sharedModels.PlayerStatusCompleted:
 		log.Info("Player has completed the game")
-		// TODO: Define ErrGameCompleted. Returning ErrNotFound for now, client might interpret this.
-		return nil, sharedModels.ErrNotFound
+		return nil, sharedModels.ErrGameCompleted
 	case sharedModels.PlayerStatusError:
 		log.Error("Player game state is in error", zap.Stringp("errorDetails", gameState.ErrorDetails))
-		// TODO: Define ErrPlayerStateInError. Using ErrInternalServer for now.
-		return nil, sharedModels.ErrInternalServer
+		return nil, sharedModels.ErrPlayerStateInError
 	case sharedModels.PlayerStatusPlaying:
 		// Continue to fetch the scene
 		log.Debug("Player status is Playing, fetching current scene")
@@ -470,11 +467,9 @@ func (s *gameLoopServiceImpl) DeletePlayerGameState(ctx context.Context, userID 
 	err := s.playerGameStateRepo.DeleteByPlayerAndStory(ctx, userID, publishedStoryID)
 	if err != nil {
 		// Check if the error is specifically that state didn't exist
-		// TODO: Define and use sharedModels.ErrPlayerGameStateNotFound if needed
-		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, sharedModels.ErrNotFound) { // Check for repo-specific or shared error
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, sharedModels.ErrNotFound) {
 			log.Warn("Player game state not found, nothing to delete")
-			// Return a consistent error, maybe ErrNotFound or a new specific one?
-			return sharedModels.ErrNotFound // Using generic ErrNotFound for now
+			return sharedModels.ErrPlayerGameStateNotFound
 		}
 		// Log other DB errors
 		log.Error("Error deleting player game state from repository", zap.Error(err))
@@ -1005,7 +1000,7 @@ func (s *gameLoopServiceImpl) UpdatePlayerProgressInternal(ctx context.Context, 
 	// Если такого метода нет, нужно будет его добавить в репозиторий.
 	// Пока что предполагаем, что Update обновляет все переданные поля.
 
-	// TODO: Проверить, есть ли метод типа UpdateFields в playerProgressRepo.
+	// UpdateFields метод существует в репозитории, используем его.
 	// Если нет, нужно либо добавить его, либо использовать Update,
 	// но тогда нужно быть осторожным, чтобы не затереть нужные поля.
 	// Пока используем гипотетический UpdateFields, если он есть, или Update.
@@ -1021,11 +1016,11 @@ func (s *gameLoopServiceImpl) UpdatePlayerProgressInternal(ctx context.Context, 
 	// то можно передать progressData напрямую. Иначе, нужно обновить конкретные поля.
 	// Пример обновления JSON поля:
 	updates := map[string]interface{}{
-		"progress_data_json": json.RawMessage(progressDataBytes),
-		"updated_at":         time.Now(), // Обновляем время изменения
+		"progress_data_json": json.RawMessage(progressDataBytes), // Поле из базы данных
+		"updated_at":         time.Now().UTC(),                   // Обновляем время изменения
 	}
 
-	err = s.playerProgressRepo.UpdateFields(ctx, currentProgress.ID, updates) // Используем UpdateFields или аналогичный
+	err = s.playerProgressRepo.UpdateFields(ctx, currentProgress.ID, updates) // Используем UpdateFields
 	if err != nil {
 		log.Error("Failed to update player progress internally in repository", zap.Error(err))
 		// Можно добавить обработку специфичных ошибок репозитория, если нужно
@@ -1176,18 +1171,14 @@ func applyConsequences(progress *sharedModels.PlayerProgress, cons sharedModels.
 				currentValue = 0
 			}
 			// Check game over conditions based on StatDefinition flags
-			// TODO: This assumes that if isGameOver is true, one of the conditions was met.
-			// This might be inaccurate if a stat could theoretically go below min AND above max simultaneously,
-			// or if game over is triggered by other means not reflected in GameOverConditions.
-			// Also, we no longer have the numeric bounds (Min/Max) here directly.
-			// We rely on the fact that applyConsequences correctly determined isGameOver based on those bounds (or other rules).
+			// Assuming the 0-100 range is fixed game mechanic.
 
 			// Check Min condition IF it's a game over condition
-			if definition.GameOverConditions.Min && currentValue <= 0 { // TODO: Hardcoded 0, need real min bound if logic requires it beyond just the flag
+			if definition.GameOverConditions.Min && currentValue <= 0 {
 				return statName, true
 			}
 			// Check Max condition IF it's a game over condition
-			if definition.GameOverConditions.Max && currentValue >= 100 { // TODO: Hardcoded 100, need real max bound if logic requires it beyond just the flag
+			if definition.GameOverConditions.Max && currentValue >= 100 {
 				return statName, true
 			}
 		}

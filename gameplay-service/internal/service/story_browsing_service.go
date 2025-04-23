@@ -115,16 +115,17 @@ type PublishedStoryParsedDetailDTO struct {
 	CurrentSceneSummary *string        `json:"currentSceneSummary,omitempty"`
 }
 
-// ParsedCoreStatDTO represents a core stat with its details, parsed for client use.
+// ParsedCoreStatDTO represents core stat details extracted for the API response.
+// Includes the potentially enhanced description from the Setup.
 type ParsedCoreStatDTO struct {
-	Key          string                          `json:"key"`
-	Name         string                          `json:"name"`
-	Description  string                          `json:"description"`
-	InitialValue int                             `json:"initial_value"`
-	Min          int                             `json:"min"`            // TODO: Get real Min boundary (e.g., from config?)
-	Max          int                             `json:"max"`            // TODO: Get real Max boundary (e.g., from config?)
-	GameOver     sharedModels.GameOverConditions `json:"gameOver"`       // Added game over conditions
-	Icon         string                          `json:"icon,omitempty"` // <<< ДОБАВЛЕНО: Иконка стата
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	InitialValue  int    `json:"initialValue"`
+	Min           int    `json:"min"`           // Game over condition boundary (usually 0)
+	Max           int    `json:"max"`           // Game over condition boundary (usually 100)
+	GameOverOnMin bool   `json:"gameOverOnMin"` // True if game over happens at min boundary
+	GameOverOnMax bool   `json:"gameOverOnMax"` // True if game over happens at max boundary
+	Icon          string `json:"icon,omitempty"`
 }
 
 // StoryBrowsingService defines methods for browsing and retrieving story details.
@@ -132,13 +133,14 @@ type StoryBrowsingService interface {
 	ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStorySummaryDTO, string, error)
 	ListPublicStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStorySummaryDTO, string, error)
 	GetPublishedStoryDetails(ctx context.Context, storyID, userID uuid.UUID) (*PublishedStoryParsedDetailDTO, error)
-	ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error)
+	ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, bool, error)
 	GetPublishedStoryDetailsInternal(ctx context.Context, storyID uuid.UUID) (*sharedModels.PublishedStory, error)
 	ListStoryScenesInternal(ctx context.Context, storyID uuid.UUID) ([]sharedModels.StoryScene, error)
 	UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON json.RawMessage, status sharedModels.StoryStatus) error
 	GetPublishedStoryDetailsWithProgress(ctx context.Context, userID, publishedStoryID uuid.UUID) (*PublishedStorySummaryDTO, error)
 	GetStoriesWithProgress(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]sharedModels.PublishedStorySummaryWithProgress, string, error)
 	GetParsedSetup(ctx context.Context, storyID uuid.UUID) (*sharedModels.NovelSetupContent, error)
+	GetActiveStoryCount(ctx context.Context) (int, error)
 }
 
 type storyBrowsingServiceImpl struct {
@@ -471,19 +473,16 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 	// 8. Map Core Stats from Setup
 	parsedStats := make(map[string]ParsedCoreStatDTO)
 	if novelSetup.CoreStatsDefinition != nil {
-		for key, statDef := range novelSetup.CoreStatsDefinition {
-			// TODO: Min, Max, and Visible are no longer directly available in StatDefinition from Setup JSON.
-			// Using defaults (0, 100, true) for now. Revisit where these values should come from.
-			// Name comes from the map key.
-			parsedStats[key] = ParsedCoreStatDTO{
-				Key:          key,
-				Name:         key, // Use map key as name
-				Description:  statDef.Description,
-				InitialValue: statDef.Initial,
-				Min:          0,                          // TODO: Get real Min boundary (e.g., from config?)
-				Max:          100,                        // TODO: Get real Max boundary (e.g., from config?)
-				GameOver:     statDef.GameOverConditions, // Assign game over conditions
-				Icon:         statDef.Icon,               // Assign icon from stat definition
+		for statName, definition := range novelSetup.CoreStatsDefinition {
+			parsedStats[statName] = ParsedCoreStatDTO{
+				Name:          statName,
+				Description:   definition.Description,
+				InitialValue:  definition.Initial,
+				Min:           0,
+				Max:           100,
+				GameOverOnMin: definition.GameOverConditions.Min,
+				GameOverOnMax: definition.GameOverConditions.Max,
+				Icon:          definition.Icon,
 			}
 		}
 	}
@@ -536,7 +535,7 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 // ListUserPublishedStories retrieves a paginated list of PublishedStory for a specific user ID.
 // Note: This uses offset/limit, which is generally discouraged in favor of cursors.
 // It might be a legacy method or used internally.
-func (s *storyBrowsingServiceImpl) ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, error) {
+func (s *storyBrowsingServiceImpl) ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, bool, error) {
 	log := s.logger.With(zap.String("userID", userID.String()), zap.Int("limit", limit), zap.Int("offset", offset))
 	log.Info("ListUserPublishedStories called (offset-based)")
 
@@ -547,14 +546,25 @@ func (s *storyBrowsingServiceImpl) ListUserPublishedStories(ctx context.Context,
 		offset = 0
 	}
 
-	// Pass empty cursor "" and correct limit. Ignore returned nextCursor.
-	stories, _, err := s.publishedRepo.ListByUserID(ctx, userID, "", limit)
+	// <<< ИЗМЕНЕНО: Запрашиваем limit + 1 элемент для определения hasMore >>>
+	fetchLimit := limit + 1
+
+	// <<< ИЗМЕНЕНО: Вызываем новый метод репозитория с offset/limit >>>
+	stories, err := s.publishedRepo.ListByUserIDOffset(ctx, userID, fetchLimit, offset)
 	if err != nil {
-		log.Error("Error listing user published stories from repository (offset-based wrapper)", zap.Error(err))
-		return nil, ErrInternal // Use local error
+		log.Error("Error listing user published stories from repository (offset-based)", zap.Error(err))
+		// Не возвращаем ErrInternal, а пробрасываем ошибку из репозитория
+		return nil, false, fmt.Errorf("repository error fetching stories: %w", err)
 	}
 
-	return stories, nil
+	// <<< ИЗМЕНЕНО: Определяем hasMore и обрезаем список >>>
+	hasMore := len(stories) == fetchLimit
+	if hasMore {
+		stories = stories[:limit] // Возвращаем только limit элементов
+	}
+
+	log.Info("Successfully listed user published stories (offset-based)", zap.Int("count", len(stories)), zap.Bool("hasMore", hasMore))
+	return stories, hasMore, nil
 }
 
 // GetPublishedStoryDetailsInternal retrieves the details of a published story for internal use.
@@ -796,4 +806,20 @@ func (s *storyBrowsingServiceImpl) GetParsedSetup(ctx context.Context, storyID u
 	}
 
 	return &novelSetup, nil
+}
+
+// GetActiveStoryCount возвращает количество историй со статусом 'ready'.
+func (s *storyBrowsingServiceImpl) GetActiveStoryCount(ctx context.Context) (int, error) {
+	log := s.logger.With(zap.String("method", "GetActiveStoryCount"))
+	log.Debug("Counting active stories")
+
+	count, err := s.publishedRepo.CountByStatus(ctx, sharedModels.StatusReady)
+	if err != nil {
+		log.Error("Failed to count active stories", zap.Error(err))
+		// Не маскируем ошибку репозитория
+		return 0, fmt.Errorf("failed to count active stories: %w", err)
+	}
+
+	log.Info("Successfully counted active stories", zap.Int("count", count))
+	return count, nil
 }

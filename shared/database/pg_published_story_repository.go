@@ -1022,3 +1022,64 @@ func (r *pgPublishedStoryRepository) CheckLike(ctx context.Context, userID, stor
 	r.logger.Debug("Like status checked", zap.String("userID", userID.String()), zap.String("storyID", storyID.String()), zap.Bool("liked", exists))
 	return exists, nil
 }
+
+// CountByStatus подсчитывает количество опубликованных историй по заданному статусу.
+func (r *pgPublishedStoryRepository) CountByStatus(ctx context.Context, status models.StoryStatus) (int, error) {
+	query := `SELECT COUNT(*) FROM published_stories WHERE status = $1`
+	log := r.logger.With(zap.String("status", string(status)))
+
+	var count int
+	err := r.db.QueryRow(ctx, query, status).Scan(&count)
+	if err != nil {
+		log.Error("Failed to count published stories by status", zap.Error(err))
+		// Не возвращаем ErrNotFound, т.к. COUNT(*) всегда вернет строку (даже если 0)
+		return 0, fmt.Errorf("failed to query story count by status: %w", err)
+	}
+
+	log.Debug("Successfully counted published stories by status", zap.Int("count", count))
+	return count, nil
+}
+
+// ListByUserIDOffset retrieves a paginated list of stories created by a specific user using offset/limit.
+func (r *pgPublishedStoryRepository) ListByUserIDOffset(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.PublishedStory, error) {
+	if limit <= 0 {
+		limit = 10 // Default limit
+	}
+	if offset < 0 {
+		offset = 0 // Offset cannot be negative
+	}
+
+	query := `
+        SELECT
+            id, user_id, config, setup, status, is_public, is_adult_content,
+            title, description, error_details, likes_count, created_at, updated_at
+        FROM published_stories
+        WHERE user_id = $1
+        ORDER BY created_at DESC, id DESC
+        LIMIT $2 OFFSET $3
+    `
+
+	logFields := []zap.Field{
+		zap.String("userID", userID.String()),
+		zap.Int("limit", limit),
+		zap.Int("offset", offset),
+	}
+	r.logger.Debug("Listing published stories by user with offset/limit", logFields...)
+
+	rows, err := r.db.Query(ctx, query, userID, limit, offset)
+	if err != nil {
+		r.logger.Error("Failed to query published stories by user with offset/limit", append(logFields, zap.Error(err))...)
+		return nil, fmt.Errorf("ошибка получения списка опубликованных историй пользователя %s (offset/limit): %w", userID.String(), err)
+	}
+	defer rows.Close()
+
+	stories, err := scanStories(rows) // scanStories already selects title
+	if err != nil {
+		// scanStories logs errors internally
+		r.logger.Error("Failed to scan stories in ListByUserIDOffset", append(logFields, zap.Error(err))...)
+		return nil, err // Return the scan error
+	}
+
+	r.logger.Debug("Published stories listed successfully by user with offset/limit", append(logFields, zap.Int("count", len(stories)))...)
+	return stories, nil
+}

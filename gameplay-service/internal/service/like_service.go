@@ -165,7 +165,7 @@ func (s *likeServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID
 	}
 
 	// --- Начало получения данных об авторах ---
-	// TODO: Реализовать получение DisplayName авторов из auth-service
+	// Получение DisplayName авторов из auth-service уже реализовано ниже
 	// 1. Собрать уникальные UserID авторов из 'stories'
 	authorIDs := make(map[uuid.UUID]struct{})
 	for _, story := range stories {

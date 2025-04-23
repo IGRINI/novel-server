@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"novel-server/gameplay-service/internal/config"
 	"novel-server/gameplay-service/internal/messaging"
 	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
@@ -40,6 +41,7 @@ type draftServiceImpl struct {
 	repo      interfaces.StoryConfigRepository
 	publisher messaging.TaskPublisher
 	logger    *zap.Logger
+	cfg       *config.Config
 }
 
 // NewDraftService creates a new instance of DraftService.
@@ -47,11 +49,13 @@ func NewDraftService(
 	repo interfaces.StoryConfigRepository,
 	publisher messaging.TaskPublisher,
 	logger *zap.Logger,
+	cfg *config.Config,
 ) DraftService {
 	return &draftServiceImpl{
 		repo:      repo,
 		publisher: publisher,
 		logger:    logger.Named("DraftService"),
+		cfg:       cfg,
 	}
 }
 
@@ -66,8 +70,8 @@ func (s *draftServiceImpl) GenerateInitialStory(ctx context.Context, userID uuid
 		log.Error("Error counting active generations", zap.Error(err))
 		return nil, fmt.Errorf("error checking generation status: %w", err)
 	}
-	// TODO: Make the limit configurable
-	generationLimit := 1
+	// Используем лимит из конфига
+	generationLimit := s.cfg.GenerationLimitPerUser
 	if activeCount >= generationLimit {
 		log.Warn("User reached the active generation limit", zap.Int("limit", generationLimit))
 		return nil, sharedModels.ErrUserHasActiveGeneration
@@ -144,7 +148,7 @@ func (s *draftServiceImpl) ReviseDraft(ctx context.Context, id uuid.UUID, userID
 		log.Error("Error counting active generations before revision", zap.Error(err))
 		return fmt.Errorf("error checking generation status: %w", err)
 	}
-	generationLimit := 1 // TODO: Configurable
+	generationLimit := s.cfg.GenerationLimitPerUser
 	if activeCount >= generationLimit {
 		log.Warn("User reached active generation limit, revision rejected", zap.Int("limit", generationLimit))
 		return sharedModels.ErrUserHasActiveGeneration
@@ -275,6 +279,33 @@ func (s *draftServiceImpl) ListUserDrafts(ctx context.Context, userID uuid.UUID,
 		nextCursor = "" // No next page if we didn't fetch extra
 	}
 
+	// Временная структура для парсинга только title из config JSON
+	type configTitle struct {
+		Title string `json:"title"`
+	}
+
+	for i := range configs {
+		// Проверяем, есть ли config и не пуст ли он
+		if configs[i].Config != nil && len(configs[i].Config) > 0 && string(configs[i].Config) != "null" {
+			var ct configTitle
+			if err := json.Unmarshal(configs[i].Config, &ct); err == nil {
+				// Если парсинг успешен и title не пустой, обновляем поле Title в основной структуре
+				if ct.Title != "" {
+					configs[i].Title = ct.Title
+				}
+			} else {
+				// Логируем ошибку парсинга, но не прерываем процесс
+				log.Warn("Failed to unmarshal config JSON to extract title",
+					zap.String("draftID", configs[i].ID.String()),
+					zap.Error(err))
+			}
+		} else {
+			// Если config пустой или null, Title остается пустым (или тем, что было в БД, если оно там есть)
+		}
+	}
+	// <<< КОНЕЦ ИЗМЕНЕНИЙ >>>
+
+	log.Debug("User drafts listed successfully", zap.Int("count", len(configs)), zap.Bool("hasNext", nextCursor != ""))
 	return configs, nextCursor, nil
 }
 
@@ -303,7 +334,7 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 		log.Error("Error counting active generations before retry", zap.Error(err))
 		return fmt.Errorf("error checking generation status: %w", err)
 	}
-	generationLimit := 1 // TODO: Configurable
+	generationLimit := s.cfg.GenerationLimitPerUser
 	if activeCount >= generationLimit {
 		log.Info("User reached active generation limit, retry rejected")
 		return sharedModels.ErrUserHasActiveGeneration

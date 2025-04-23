@@ -40,4 +40,12 @@ type GameplayServiceClient interface {
 
 	// UpdatePlayerProgressInternal обновляет детали прогресса игрока.
 	UpdatePlayerProgressInternal(ctx context.Context, progressID uuid.UUID, progressData map[string]interface{}) error
+
+	// <<< ДОБАВЛЕНО: Получение количества активных историй >>>
+	GetActiveStoryCount(ctx context.Context) (int, error)
+
+	// <<< ДОБАВЛЕНО: Методы для действий с контентом >>>
+	DeleteDraft(ctx context.Context, userID, draftID uuid.UUID) error
+	RetryDraftGeneration(ctx context.Context, userID, draftID uuid.UUID) error
+	DeletePublishedStory(ctx context.Context, userID, storyID uuid.UUID) error
 }

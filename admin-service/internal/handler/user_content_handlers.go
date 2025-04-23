@@ -755,3 +755,134 @@ func (h *AdminHandler) handleUpdatePlayerProgress(c *gin.Context) {
 	log.Info("Player progress updated successfully")
 	c.Redirect(http.StatusSeeOther, redirectURLBase+"?success=updated")
 }
+
+// <<< ДОБАВЛЕНО: Обработчик удаления черновика >>>
+func (h *AdminHandler) handleDeleteDraft(c *gin.Context) {
+	ctx := c.Request.Context()
+	log := h.logger.With(zap.String("handler", "handleDeleteDraft"))
+
+	targetUserIDStr := c.Param("user_id")
+	userID, err := uuid.Parse(targetUserIDStr)
+	if err != nil {
+		log.Warn("Invalid user ID format for delete draft", zap.Error(err))
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	draftIDStr := c.Param("draft_id")
+	draftID, err := uuid.Parse(draftIDStr)
+	if err != nil {
+		log.Warn("Invalid draft ID format for delete draft", zap.Error(err))
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	log = log.With(zap.String("userID", userID.String()), zap.String("draftID", draftID.String()))
+
+	log.Info("Attempting to delete draft")
+	err = h.gameplayClient.DeleteDraft(ctx, userID, draftID)
+
+	if err != nil {
+		log.Error("Failed to delete draft via gameplay service", zap.Error(err))
+		if errors.Is(err, sharedModels.ErrNotFound) {
+			// Ошибка 404, элемент уже удален, для HTMX это тоже успех
+			c.Status(http.StatusOK)
+		} else if errors.Is(err, sharedModels.ErrForbidden) {
+			c.Status(http.StatusForbidden)
+		} else {
+			c.Status(http.StatusInternalServerError)
+		}
+		return
+	}
+
+	log.Info("Draft deleted successfully")
+	// Возвращаем 200 OK с пустым телом, чтобы HTMX удалил строку
+	c.Status(http.StatusOK)
+}
+
+// <<< ДОБАВЛЕНО: Обработчик повторной генерации черновика >>>
+func (h *AdminHandler) handleRetryDraft(c *gin.Context) {
+	ctx := c.Request.Context()
+	log := h.logger.With(zap.String("handler", "handleRetryDraft"))
+
+	targetUserIDStr := c.Param("user_id")
+	userID, err := uuid.Parse(targetUserIDStr)
+	if err != nil {
+		log.Warn("Invalid user ID format for retry draft", zap.Error(err))
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	draftIDStr := c.Param("draft_id")
+	draftID, err := uuid.Parse(draftIDStr)
+	if err != nil {
+		log.Warn("Invalid draft ID format for retry draft", zap.Error(err))
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	log = log.With(zap.String("userID", userID.String()), zap.String("draftID", draftID.String()))
+
+	log.Info("Attempting to retry draft generation")
+	err = h.gameplayClient.RetryDraftGeneration(ctx, userID, draftID)
+
+	if err != nil {
+		log.Error("Failed to retry draft generation via gameplay service", zap.Error(err))
+		// Возвращаем соответствующий статус ошибки
+		if errors.Is(err, sharedModels.ErrNotFound) {
+			c.Status(http.StatusNotFound)
+		} else if errors.Is(err, sharedModels.ErrForbidden) {
+			c.Status(http.StatusForbidden)
+		} else if errors.Is(err, sharedModels.ErrCannotRetry) || errors.Is(err, sharedModels.ErrUserHasActiveGeneration) {
+			c.Status(http.StatusConflict)
+		} else {
+			c.Status(http.StatusInternalServerError)
+		}
+		// Можно добавить сообщение в заголовок HX-Trigger для toast
+		// c.Header("HX-Trigger", `{"showToast": {"message": "Ошибка: ..."}}`)
+		return
+	}
+
+	log.Info("Retry draft generation request sent successfully")
+	// TODO: Как лучше обновить UI? Просто 200 OK? Или редирект? Или обновить строку?
+	// Пока просто возвращаем 200 OK. Возможно, потребуется HX-Refresh.
+	c.Status(http.StatusOK)
+}
+
+// <<< ДОБАВЛЕНО: Обработчик удаления опубликованной истории >>>
+func (h *AdminHandler) handleDeleteStory(c *gin.Context) {
+	ctx := c.Request.Context()
+	log := h.logger.With(zap.String("handler", "handleDeleteStory"))
+
+	targetUserIDStr := c.Param("user_id")
+	userID, err := uuid.Parse(targetUserIDStr)
+	if err != nil {
+		log.Warn("Invalid user ID format for delete story", zap.Error(err))
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	storyIDStr := c.Param("story_id")
+	storyID, err := uuid.Parse(storyIDStr)
+	if err != nil {
+		log.Warn("Invalid story ID format for delete story", zap.Error(err))
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	log = log.With(zap.String("userID", userID.String()), zap.String("storyID", storyID.String()))
+
+	log.Info("Attempting to delete published story")
+	err = h.gameplayClient.DeletePublishedStory(ctx, userID, storyID)
+
+	if err != nil {
+		log.Error("Failed to delete published story via gameplay service", zap.Error(err))
+		if errors.Is(err, sharedModels.ErrNotFound) {
+			// Ошибка 404, элемент уже удален, для HTMX это тоже успех
+			c.Status(http.StatusOK)
+		} else if errors.Is(err, sharedModels.ErrForbidden) {
+			c.Status(http.StatusForbidden)
+		} else {
+			c.Status(http.StatusInternalServerError)
+		}
+		return
+	}
+
+	log.Info("Published story deleted successfully")
+	// Возвращаем 200 OK с пустым телом, чтобы HTMX удалил строку
+	c.Status(http.StatusOK)
+}

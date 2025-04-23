@@ -25,6 +25,7 @@ type AuthServiceHttpClient interface {
 	// RefreshAdminToken обновляет Access и Refresh токены, используя предоставленный Refresh Token.
 	// Возвращает новые TokenDetails, Claims и ошибку.
 	RefreshAdminToken(ctx context.Context, refreshToken string) (*models.TokenDetails, *models.Claims, error)
+	GetUserInfo(ctx context.Context, userID uuid.UUID) (*models.User, error)
 }
 
 // UserUpdatePayload defines the structure for updating user data via the auth service.

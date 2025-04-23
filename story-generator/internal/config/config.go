@@ -21,7 +21,7 @@ type Config struct {
 	InternalUpdatesQueueName string `envconfig:"INTERNAL_UPDATES_QUEUE_NAME" default:"internal_updates"`
 
 	// Настройки воркера
-	PromptsDir string `envconfig:"PROMPTS_DIR" default:"promts"` // Путь относительно корня воркера или WORKDIR в Docker
+	PromptsDir string `envconfig:"PROMPTS_DIR" default:"prompts"` // Путь относительно корня воркера или WORKDIR в Docker
 
 	// Настройки AI
 	AIClientType     string        `envconfig:"AI_CLIENT_TYPE" default:"openai"` // Тип клиента: "openai" или "ollama"
@@ -43,6 +43,9 @@ type Config struct {
 	DBIdleTimeout time.Duration `envconfig:"DB_MAX_IDLE_MINUTES" default:"5m"`
 	// Секретное поле БЕЗ envconfig тега
 	DBPassword string
+
+	// Настройки CORS
+	AllowedOrigins []string `envconfig:"ALLOWED_ORIGINS"` // Список разрешенных источников (разделенных запятой)
 
 	// Дополнительные настройки можно добавить сюда
 }
@@ -75,8 +78,14 @@ func LoadConfig() (*Config, error) {
 	// Загружаем ОБЯЗАТЕЛЬНЫЕ секреты
 	var loadErr error
 	cfg.AIAPIKey, loadErr = utils.ReadSecret("ai_api_key")
-	if loadErr != nil {
-		return nil, loadErr
+	// Обработка случая, когда AI_CLIENT_TYPE != 'openai' - не требовать ключ
+	if cfg.AIClientType == "openai" && loadErr != nil {
+		return nil, fmt.Errorf("ошибка чтения секрета ai_api_key (требуется для openai): %w", loadErr)
+	} else if cfg.AIClientType != "openai" && loadErr != nil {
+		log.Printf("[WARN] Секрет ai_api_key не найден, но не требуется для AI_CLIENT_TYPE='%s'", cfg.AIClientType)
+		cfg.AIAPIKey = "" // Убедимся, что он пустой
+	} else if loadErr == nil {
+		log.Println("  AI API Key: [ЗАГРУЖЕН]")
 	}
 
 	cfg.DBPassword, loadErr = utils.ReadSecret("db_password")
@@ -84,8 +93,28 @@ func LoadConfig() (*Config, error) {
 		return nil, loadErr
 	}
 
+	// <<< Обработка ALLOWED_ORIGINS >>>
+	// envconfig уже должен был загрузить строку в cfg.AllowedOrigins[0], если она была одна
+	// Если же передано несколько через запятую, envconfig так не умеет по умолчанию.
+	// Мы прочитаем переменную окружения заново и разделим ее.
+	allowedOriginsStr := os.Getenv("ALLOWED_ORIGINS")
+	if allowedOriginsStr != "" {
+		cfg.AllowedOrigins = strings.Split(allowedOriginsStr, ",")
+		// Удаляем пробелы вокруг каждого origin
+		for i := range cfg.AllowedOrigins {
+			cfg.AllowedOrigins[i] = strings.TrimSpace(cfg.AllowedOrigins[i])
+		}
+	} else {
+		// Если переменная не установлена, можно установить дефолтное значение,
+		// например, разрешить только тот же origin или ничего не разрешать.
+		// Пока оставим пустым (CORS будет работать по умолчанию браузера, т.е. запрещено)
+		cfg.AllowedOrigins = []string{}
+		log.Println("[WARN] Переменная окружения ALLOWED_ORIGINS не установлена. CORS будет запрещен по умолчанию.")
+	}
+	// <<< Конец обработки ALLOWED_ORIGINS >>>
+
 	// Логируем загруженную конфигурацию (кроме паролей/ключей)
-	log.Printf("Конфигурация загружена (секреты из файлов):")
+	log.Printf("Конфигурация загружена:")
 	log.Printf("  HTTP Server Port: %s", cfg.HTTPServerPort)
 	log.Printf("  RabbitMQ URL: %s", cfg.RabbitMQURL)
 	log.Printf("  Prompts Dir: %s", cfg.PromptsDir)
@@ -98,8 +127,14 @@ func LoadConfig() (*Config, error) {
 	log.Printf("  DB DSN: %s", cfg.getMaskedDSN()) // Логируем DSN с маской пароля
 	log.Printf("  DB Max Conns: %d", cfg.DBMaxConns)
 	log.Printf("  DB Idle Timeout: %v", cfg.DBIdleTimeout)
-	log.Println("  AI API Key: [ЗАГРУЖЕН]")
+	// Логируем AI ключ только если он был загружен
+	if cfg.AIAPIKey != "" {
+		log.Println("  AI API Key: [ЗАГРУЖЕН]")
+	} else {
+		log.Println("  AI API Key: [НЕ ИСПОЛЬЗУЕТСЯ]")
+	}
 	log.Printf("  Internal Updates Queue: %s", cfg.InternalUpdatesQueueName)
+	log.Printf("  Allowed Origins (CORS): %v", cfg.AllowedOrigins) // Логируем разрешенные origins
 
 	return &cfg, nil
 }

@@ -5,19 +5,88 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"novel-server/story-generator/internal/config"
 	"novel-server/story-generator/internal/service"
+	"slices"
 )
 
 // APIHandler обрабатывает HTTP запросы к API генератора.
 type APIHandler struct {
 	aiClient service.AIClient
-	// Можно добавить логгер, если нужен кастомный
+	config   *config.Config
 }
 
 // NewAPIHandler создает новый экземпляр APIHandler.
-func NewAPIHandler(aiClient service.AIClient) *APIHandler {
+func NewAPIHandler(aiClient service.AIClient, cfg *config.Config) *APIHandler {
+	if cfg == nil {
+		log.Fatal("APIHandler: Конфигурация не должна быть nil")
+	}
 	return &APIHandler{
 		aiClient: aiClient,
+		config:   cfg,
+	}
+}
+
+// GetPort возвращает порт HTTP сервера из конфигурации.
+func (h *APIHandler) GetPort() string {
+	return h.config.HTTPServerPort
+}
+
+// RegisterRoutes регистрирует все HTTP пути для API.
+func (h *APIHandler) RegisterRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/generate/stream", h.corsMiddleware(h.HandleGenerateStream))
+	mux.HandleFunc("/generate", h.corsMiddleware(h.HandleGenerate))
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status": "ok"}`))
+	})
+}
+
+// corsMiddleware обрабатывает CORS preflight (OPTIONS) и устанавливает заголовки для основных запросов.
+func (h *APIHandler) corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		allowed := false
+
+		if h.config == nil || len(h.config.AllowedOrigins) == 0 {
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next(w, r)
+			return
+		}
+
+		isWildcardAllowed := slices.Contains(h.config.AllowedOrigins, "*")
+		isOriginAllowed := slices.Contains(h.config.AllowedOrigins, origin)
+
+		if isWildcardAllowed {
+			allowed = true
+			origin = "*"
+		} else if origin != "" && isOriginAllowed {
+			allowed = true
+		}
+
+		if allowed {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Max-Age", "86400")
+		}
+
+		if r.Method == http.MethodOptions {
+			if allowed {
+				w.WriteHeader(http.StatusNoContent)
+			} else {
+				http.Error(w, "CORS Rejected", http.StatusForbidden)
+			}
+			return
+		}
+
+		next(w, r)
 	}
 }
 
@@ -38,7 +107,6 @@ func (h *APIHandler) HandleGenerateStream(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Парсим JSON тело запроса
 	var reqPayload generateStreamRequest
 	if err := json.NewDecoder(r.Body).Decode(&reqPayload); err != nil {
 		http.Error(w, "Ошибка чтения тела запроса: "+err.Error(), http.StatusBadRequest)
@@ -47,28 +115,18 @@ func (h *APIHandler) HandleGenerateStream(w http.ResponseWriter, r *http.Request
 	defer r.Body.Close()
 
 	log.Printf("API: Получен запрос на /generate/stream (System: %d chars, User: %d chars, Temp: %v, MaxTokens: %v, TopP: %v)",
-		len(reqPayload.SystemPrompt),
-		len(reqPayload.UserPrompt),
-		reqPayload.Temperature, // Логируем полученные параметры
-		reqPayload.MaxTokens,
-		reqPayload.TopP,
-	)
+		len(reqPayload.SystemPrompt), len(reqPayload.UserPrompt), reqPayload.Temperature, reqPayload.MaxTokens, reqPayload.TopP)
 
-	// Устанавливаем заголовки для стриминга простого текста
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*") // TODO: Ограничить для production!
 
-	// <<< Передаем параметры в AI клиент >>>
-	// Создаем структуру с параметрами
 	genParams := service.GenerationParams{
 		Temperature: reqPayload.Temperature,
 		MaxTokens:   reqPayload.MaxTokens,
 		TopP:        reqPayload.TopP,
 	}
 
-	// Получаем Flusher для отправки данных по частям
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		log.Println("API: Ошибка - ResponseWriter не поддерживает Flusher")
@@ -78,35 +136,32 @@ func (h *APIHandler) HandleGenerateStream(w http.ResponseWriter, r *http.Request
 
 	log.Println("API: Начинаем стримить ответ клиенту...")
 
-	// <<< Вызываем GenerateTextStream с callback-функцией >>>
-	_, err := h.aiClient.GenerateTextStream(r.Context(), "api_user", reqPayload.SystemPrompt, reqPayload.UserPrompt, genParams, func(chunk string) error {
-		// Отправляем сырой текст клиенту
-		_, writeErr := fmt.Fprint(w, chunk) // Пишем просто текст
+	usageInfo, err := h.aiClient.GenerateTextStream(r.Context(), "api_user", reqPayload.SystemPrompt, reqPayload.UserPrompt, genParams, func(chunk string) error {
+		_, writeErr := fmt.Fprint(w, chunk)
 		if writeErr != nil {
 			log.Printf("API: Ошибка записи клиенту (в callback): %v", writeErr)
-			return writeErr // Возвращаем ошибку, чтобы прервать стриминг
+			return writeErr
 		}
-		flusher.Flush() // Отправляем немедленно
-		return nil      // Успешно обработали чанк
+		flusher.Flush()
+		return nil
 	})
 
-	// <<< Обрабатываем ошибку, возвращенную GenerateTextStream >>>
 	if err != nil {
 		log.Printf("API: Ошибка во время стриминга от AI или при записи клиенту: %v", err)
-		// Если заголовки еще не отправлены, можем отправить HTTP ошибку
-		// Проверить, были ли уже записаны данные, сложно без доп. состояния.
-		// Просто логируем ошибку, т.к. ответ мог уже частично уйти.
-		// http.Error(w, "Ошибка стриминга: "+err.Error(), http.StatusInternalServerError) // Это может не сработать
 		return
+	} else {
+		log.Printf("API: Стриминг клиенту успешно завершен. Usage: PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d, Cost=%.6f USD",
+			usageInfo.PromptTokens,
+			usageInfo.CompletionTokens,
+			usageInfo.TotalTokens,
+			usageInfo.EstimatedCostUSD)
 	}
-
-	log.Println("API: Стриминг клиенту успешно завершен.")
 }
 
 // escapeSSEData больше не нужна
 /*
 func escapeSSEData(data string) string {
-	data = strings.ReplaceAll(data, "\r", "") // Убираем одиночные CR
+	data = strings.ReplaceAll(data, "\r", "")
 	data = strings.ReplaceAll(data, "\n", "\ndata: ")
 	return data
 }
@@ -119,7 +174,6 @@ func (h *APIHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Парсим JSON тело запроса (та же структура)
 	var reqPayload generateStreamRequest
 	if err := json.NewDecoder(r.Body).Decode(&reqPayload); err != nil {
 		http.Error(w, "Ошибка чтения тела запроса: "+err.Error(), http.StatusBadRequest)
@@ -128,37 +182,31 @@ func (h *APIHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	log.Printf("API: Получен запрос на /generate (Non-Streaming) (System: %d chars, User: %d chars, Temp: %v, MaxTokens: %v, TopP: %v)",
-		len(reqPayload.SystemPrompt),
-		len(reqPayload.UserPrompt),
-		reqPayload.Temperature,
-		reqPayload.MaxTokens,
-		reqPayload.TopP,
-	)
+		len(reqPayload.SystemPrompt), len(reqPayload.UserPrompt), reqPayload.Temperature, reqPayload.MaxTokens, reqPayload.TopP)
 
-	// <<< Создаем структуру параметров для AI клиента >>>
 	genParams := service.GenerationParams{
 		Temperature: reqPayload.Temperature,
 		MaxTokens:   reqPayload.MaxTokens,
 		TopP:        reqPayload.TopP,
 	}
 
-	// <<< Вызываем не-стриминговый метод AI клиента >>>
-	// generatedText, err := h.aiClient.GenerateText(r.Context(), reqPayload.SystemPrompt, reqPayload.UserPrompt)
-	// <<< Исправляем вызов: передаем "api_user" как userID и genParams >>>
-	// <<< Исправляем: обрабатываем три возвращаемых значения (string, UsageInfo, error) >>>
-	generatedText, _, err := h.aiClient.GenerateText(r.Context(), "api_user", reqPayload.SystemPrompt, reqPayload.UserPrompt, genParams)
+	generatedText, usageInfo, err := h.aiClient.GenerateText(r.Context(), "api_user", reqPayload.SystemPrompt, reqPayload.UserPrompt, genParams)
 	if err != nil {
 		log.Printf("API: Ошибка генерации текста от AI: %v", err)
 		http.Error(w, "Ошибка генерации текста от AI: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Отправляем результат как простой текст
+	log.Printf("API: Генерация (Non-Streaming) завершена. Usage: PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d, Cost=%.6f USD",
+		usageInfo.PromptTokens,
+		usageInfo.CompletionTokens,
+		usageInfo.TotalTokens,
+		usageInfo.EstimatedCostUSD)
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, err = w.Write([]byte(generatedText))
 	if err != nil {
 		log.Printf("API: Ошибка записи ответа клиенту: %v", err)
 	}
-	log.Println("API: Ответ (non-streaming) успешно отправлен.")
 }

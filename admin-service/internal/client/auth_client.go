@@ -50,7 +50,12 @@ func NewAuthServiceClient(baseURL string, timeout time.Duration, logger *zap.Log
 		baseURL: baseURL,
 		httpClient: &http.Client{
 			Timeout: timeout, // Таймаут на весь запрос
-			// TODO: Настроить Transport для keep-alive, max idle conns и т.д.
+			Transport: &http.Transport{ // Базовая конфигурация транспорта
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+				ForceAttemptHTTP2:   true, // Попробуем использовать HTTP/2
+			},
 		},
 		logger:       logger.Named("AuthServiceClient"),
 		staticSecret: staticSecret, // Сохраняем статичный секрет
@@ -720,3 +725,53 @@ func (c *authClient) RefreshAdminToken(ctx context.Context, refreshToken string)
 }
 
 // <<< Конец нового метода >>>
+
+// <<< ДОБАВЛЕНИЕ: Метод GetUserInfo >>>
+// GetUserInfo получает информацию о пользователе по его ID.
+func (c *authClient) GetUserInfo(ctx context.Context, userID uuid.UUID) (*models.User, error) {
+	getInfoURL := fmt.Sprintf("%s/internal/auth/users/%s", c.baseURL, userID.String())
+	log := c.logger.With(zap.String("url", getInfoURL), zap.String("userID", userID.String()))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, getInfoURL, nil)
+	if err != nil {
+		log.Error("Failed to create get user info HTTP request", zap.Error(err))
+		return nil, fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Accept", "application/json")
+
+	log.Debug("Sending get user info request to auth-service")
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	if err != nil {
+		log.Error("HTTP request for get user info failed", zap.Error(err))
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("request to auth service timed out: %w", err)
+		}
+		return nil, fmt.Errorf("failed to communicate with auth service: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	respBodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		log.Error("Failed to read get user info response body", zap.Int("status", httpResp.StatusCode), zap.Error(err))
+		return nil, fmt.Errorf("failed to read auth service response: %w", err)
+	}
+
+	if httpResp.StatusCode != http.StatusOK {
+		log.Warn("Received non-OK status for get user info", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		if httpResp.StatusCode == http.StatusNotFound {
+			return nil, models.ErrUserNotFound // Используем стандартную ошибку
+		}
+		return nil, fmt.Errorf("received unexpected status %d from auth service for get user info", httpResp.StatusCode)
+	}
+
+	var user models.User
+	if err := json.Unmarshal(respBodyBytes, &user); err != nil {
+		log.Error("Failed to unmarshal get user info response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes), zap.Error(err))
+		return nil, fmt.Errorf("invalid user info response format from auth service: %w", err)
+	}
+
+	log.Info("User info retrieved successfully")
+	return &user, nil
+}
+
+// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
