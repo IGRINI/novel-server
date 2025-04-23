@@ -152,6 +152,12 @@ type GameplayService interface {
 
 	// <<< Новый метод для получения историй с прогрессом >>>
 	GetStoriesWithProgress(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]sharedModels.PublishedStorySummaryWithProgress, string, error)
+
+	// <<< ДОБАВЛЕНО: Метод для получения прогресса игрока >>>
+	GetPlayerProgress(ctx context.Context, userID, storyID uuid.UUID) (*sharedModels.PlayerProgress, error)
+
+	// <<< ДОБАВЛЕНО: Метод для получения распарсенного Setup >>>
+	GetParsedSetup(ctx context.Context, storyID uuid.UUID) (*sharedModels.NovelSetupContent, error)
 }
 
 type gameplayServiceImpl struct {
@@ -301,6 +307,11 @@ func (s *gameplayServiceImpl) GetPublishedStoryDetailsWithProgress(ctx context.C
 	return s.storyBrowsingService.GetPublishedStoryDetailsWithProgress(ctx, userID, publishedStoryID)
 }
 
+// GetParsedSetup delegates to StoryBrowsingService.
+func (s *gameplayServiceImpl) GetParsedSetup(ctx context.Context, storyID uuid.UUID) (*sharedModels.NovelSetupContent, error) {
+	return s.storyBrowsingService.GetParsedSetup(ctx, storyID)
+}
+
 // === Конец делегированных методов StoryBrowsingService ===
 
 // === Методы, делегированные GameLoopService ===
@@ -322,7 +333,12 @@ func (s *gameplayServiceImpl) DeletePlayerProgress(ctx context.Context, userID u
 
 // RetryStoryGeneration delegates to GameLoopService.
 func (s *gameplayServiceImpl) RetryStoryGeneration(ctx context.Context, storyID, userID uuid.UUID) error {
-	return s.gameLoopService.RetrySceneGeneration(ctx, storyID, userID)
+	return s.gameLoopService.RetryStoryGeneration(ctx, storyID, userID)
+}
+
+// GetPlayerProgress delegates to GameLoopService.
+func (s *gameplayServiceImpl) GetPlayerProgress(ctx context.Context, userID, storyID uuid.UUID) (*sharedModels.PlayerProgress, error) {
+	return s.gameLoopService.GetPlayerProgress(ctx, userID, storyID)
 }
 
 // === Конец делегированных методов GameLoopService ===

@@ -58,17 +58,18 @@ type CoreStatDetailDTO struct {
 
 // PublishedStorySummaryDTO represents a summary of a published story for lists.
 type PublishedStorySummaryDTO struct {
-	ID                uuid.UUID `json:"id"`
-	Title             string    `json:"title"`
-	ShortDescription  string    `json:"short_description"`
-	AuthorID          uuid.UUID `json:"author_id"`
-	AuthorName        string    `json:"author_name"`
-	PublishedAt       time.Time `json:"published_at"`
-	IsAdultContent    bool      `json:"is_adult_content"`
-	LikesCount        int       `json:"likes_count"`
-	IsLiked           bool      `json:"is_liked"`          // Is liked by the requesting user
-	HasPlayerProgress bool      `json:"hasPlayerProgress"` // Does the requesting user have progress
-	IsPublic          bool      `json:"is_public"`         // Visibility
+	ID                uuid.UUID                `json:"id"`
+	Title             string                   `json:"title"`
+	ShortDescription  string                   `json:"short_description"`
+	AuthorID          uuid.UUID                `json:"author_id"`
+	AuthorName        string                   `json:"author_name"`
+	PublishedAt       time.Time                `json:"published_at"`
+	IsAdultContent    bool                     `json:"is_adult_content"`
+	LikesCount        int                      `json:"likes_count"`
+	IsLiked           bool                     `json:"is_liked"`          // Is liked by the requesting user
+	HasPlayerProgress bool                     `json:"hasPlayerProgress"` // Does the requesting user have progress
+	IsPublic          bool                     `json:"is_public"`         // Visibility
+	Status            sharedModels.StoryStatus `json:"status"`            // Added Status
 }
 
 // ParsedCharacterDTO represents concise character information for client response.
@@ -120,12 +121,13 @@ type ParsedCoreStatDTO struct {
 	Name         string                          `json:"name"`
 	Description  string                          `json:"description"`
 	InitialValue int                             `json:"initial_value"`
-	Min          int                             `json:"min"`      // TODO: Get real Min boundary (e.g., from config?)
-	Max          int                             `json:"max"`      // TODO: Get real Max boundary (e.g., from config?)
-	GameOver     sharedModels.GameOverConditions `json:"gameOver"` // Added game over conditions
+	Min          int                             `json:"min"`            // TODO: Get real Min boundary (e.g., from config?)
+	Max          int                             `json:"max"`            // TODO: Get real Max boundary (e.g., from config?)
+	GameOver     sharedModels.GameOverConditions `json:"gameOver"`       // Added game over conditions
+	Icon         string                          `json:"icon,omitempty"` // <<< ДОБАВЛЕНО: Иконка стата
 }
 
-// StoryBrowsingService defines the interface for browsing published stories.
+// StoryBrowsingService defines methods for browsing and retrieving story details.
 type StoryBrowsingService interface {
 	ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStorySummaryDTO, string, error)
 	ListPublicStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStorySummaryDTO, string, error)
@@ -136,6 +138,7 @@ type StoryBrowsingService interface {
 	UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON json.RawMessage, status sharedModels.StoryStatus) error
 	GetPublishedStoryDetailsWithProgress(ctx context.Context, userID, publishedStoryID uuid.UUID) (*PublishedStorySummaryDTO, error)
 	GetStoriesWithProgress(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]sharedModels.PublishedStorySummaryWithProgress, string, error)
+	GetParsedSetup(ctx context.Context, storyID uuid.UUID) (*sharedModels.NovelSetupContent, error)
 }
 
 type storyBrowsingServiceImpl struct {
@@ -225,6 +228,7 @@ func (s *storyBrowsingServiceImpl) ListMyPublishedStories(ctx context.Context, u
 			IsLiked:           likesMap[story.ID],
 			HasPlayerProgress: progressExistsMap[story.ID],
 			IsPublic:          story.IsPublic,
+			Status:            story.Status,
 		})
 	}
 
@@ -291,6 +295,7 @@ func (s *storyBrowsingServiceImpl) ListPublicStories(ctx context.Context, userID
 			IsLiked:           likesMap[story.ID],
 			HasPlayerProgress: progressExistsMap[story.ID],
 			IsPublic:          story.IsPublic,
+			Status:            story.Status,
 		})
 	}
 
@@ -475,6 +480,7 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 				Min:          0,                          // TODO: Get real Min boundary (e.g., from config?)
 				Max:          100,                        // TODO: Get real Max boundary (e.g., from config?)
 				GameOver:     statDef.GameOverConditions, // Assign game over conditions
+				Icon:         statDef.Icon,               // Assign icon from stat definition
 			}
 		}
 	}
@@ -702,6 +708,7 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetailsWithProgress(ctx cont
 		IsLiked:           isLiked,
 		HasPlayerProgress: hasProgress,
 		IsPublic:          story.IsPublic,
+		Status:            story.Status,
 	}
 
 	log.Info("Successfully retrieved published story summary with progress")
@@ -756,4 +763,34 @@ func (s *storyBrowsingServiceImpl) GetStoriesWithProgress(ctx context.Context, u
 
 	log.Info("Successfully fetched stories with progress", zap.Int("count", len(stories)), zap.Bool("hasNext", nextCursor != ""))
 	return stories, nextCursor, nil
+}
+
+// GetParsedSetup retrieves the parsed setup for a published story.
+func (s *storyBrowsingServiceImpl) GetParsedSetup(ctx context.Context, storyID uuid.UUID) (*sharedModels.NovelSetupContent, error) {
+	log := s.logger.With(zap.String("storyID", storyID.String()))
+
+	story, err := s.publishedRepo.GetByID(ctx, storyID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			log.Warn("Published story not found for GetParsedSetup")
+			return nil, sharedModels.ErrNotFound // Используем общую ошибку
+		}
+		log.Error("Failed to get published story for GetParsedSetup", zap.Error(err))
+		return nil, sharedModels.ErrInternalServer // Используем общую ошибку
+	}
+
+	if len(story.Setup) == 0 || string(story.Setup) == "null" {
+		log.Warn("Published story has nil or empty Setup JSON")
+		// Возвращаем ошибку или пустой объект? Если Setup обязателен, то ошибка.
+		return nil, fmt.Errorf("setup data is missing or invalid for story %s", storyID)
+	}
+
+	var novelSetup sharedModels.NovelSetupContent
+	if err := json.Unmarshal(story.Setup, &novelSetup); err != nil {
+		log.Error("Failed to unmarshal story Setup JSON", zap.Error(err))
+		// Ошибка парсинга - считаем внутренней ошибкой сервера
+		return nil, fmt.Errorf("%w: failed to parse setup data", sharedModels.ErrInternalServer)
+	}
+
+	return &novelSetup, nil
 }

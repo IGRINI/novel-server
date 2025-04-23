@@ -16,6 +16,7 @@ type GameSceneResponseDTO struct {
 	Choices          []ChoiceBlockDTO `json:"choices,omitempty"`      // Блоки выбора (для type="choices" или "continuation")
 	EndingText       *string          `json:"endingText,omitempty"`   // Текст концовки (для type="game_over")
 	Continuation     *ContinuationDTO `json:"continuation,omitempty"` // Данные для продолжения (для type="continuation")
+	CurrentStats     map[string]int   `json:"currentStats,omitempty"` // Текущие статы игрока
 }
 
 // ChoiceBlockDTO представляет блок выбора в сцене.

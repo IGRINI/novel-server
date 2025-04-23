@@ -159,6 +159,7 @@ func (h *GameplayHandler) listMyPublishedStories(c *gin.Context) {
 				IsAdultContent:   dto.IsAdultContent,
 				LikesCount:       int64(dto.LikesCount),
 				IsLiked:          dto.IsLiked,
+				Status:           dto.Status,
 			},
 			HasPlayerProgress: dto.HasPlayerProgress,
 		}
@@ -293,12 +294,37 @@ func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
 		return
 	}
 
+	// Получаем прогресс игрока. Теперь GetPlayerProgress создает его, если он не существует.
+	playerProgress, err := h.service.GetPlayerProgress(c.Request.Context(), userID, storyID)
+	if err != nil {
+		// Ошибка здесь означает реальную проблему (не просто отсутствие прогресса)
+		h.logger.Error("Failed to get or create player progress", zap.String("storyID", storyID.String()), zap.String("userID", userID.String()), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("internal error: failed to get player progress data: %w", err), h.logger)
+		return
+	} // playerProgress теперь не должен быть nil, если нет ошибки
+
 	// Формируем DTO ответа на основе типа сцены
 	responseDTO := GameSceneResponseDTO{
 		ID:               scene.ID,
 		PublishedStoryID: scene.PublishedStoryID,
 		Type:             sceneType, // <<< Используем определенный sceneType
+		// CurrentStats будет заполнено ниже
 	}
+
+	// <<< НАЧАЛО: Заполнение CurrentStats >>>
+	responseDTO.CurrentStats = make(map[string]int)
+	// Теперь playerProgress гарантированно не nil (если не было ошибки выше)
+	if playerProgress.CoreStats != nil { // Проверяем на всякий случай, что карта статов не nil
+		// Копируем статы из прогресса
+		for statName, statValue := range playerProgress.CoreStats { // Используем playerProgress.CoreStats
+			responseDTO.CurrentStats[statName] = statValue
+		}
+	} else {
+		// Эта ситуация не должна возникать, если GetPlayerProgress отработал корректно
+		h.logger.Error("Player progress CoreStats map is nil after GetPlayerProgress", zap.String("storyID", storyID.String()), zap.String("userID", userID.String()))
+		// Возвращаем пустую мапу или ошибку? Пока оставляем пустую.
+	}
+	// <<< КОНЕЦ: Заполнение CurrentStats >>>
 
 	switch sceneType {
 	case "choices", "continuation":
@@ -424,6 +450,7 @@ func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
 		return
 	}
 
+	log.Debug("Final response DTO before sending", zap.Any("responseDTO", responseDTO)) // <<< Добавляем лог DTO
 	log.Info("Successfully fetched and formatted story scene", zap.String("sceneID", scene.ID.String()))
 	c.JSON(http.StatusOK, responseDTO)
 }

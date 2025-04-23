@@ -74,9 +74,10 @@ type GameOverConditions struct {
 
 // StatDefinition defines the properties of a core stat, as defined in the setup JSON.
 type StatDefinition struct {
-	Description        string             `json:"d"`  // description
-	Initial            int                `json:"iv"` // initial_value
-	GameOverConditions GameOverConditions `json:"go"` // game_over_conditions
+	Description        string             `json:"d"`            // description
+	Initial            int                `json:"iv"`           // initial_value
+	GameOverConditions GameOverConditions `json:"go"`           // game_over_conditions
+	Icon               string             `json:"ic,omitempty"` // Icon name from the list
 }
 
 // Config defines the structure expected within PublishedStory.Config (JSONB).
@@ -97,15 +98,16 @@ type Config struct {
 
 // PublishedStorySummary provides a concise view of a published story, often used in lists.
 type PublishedStorySummary struct {
-	ID               uuid.UUID `json:"id"`
-	Title            string    `json:"title"`
-	ShortDescription string    `json:"short_description"` // Changed from Description
-	AuthorID         uuid.UUID `json:"author_id"`
-	AuthorName       string    `json:"author_name"`
-	PublishedAt      time.Time `json:"published_at"`
-	IsAdultContent   bool      `json:"is_adult_content"`
-	LikesCount       int64     `json:"likes_count"` // Added LikesCount
-	IsLiked          bool      `json:"is_liked"`    // Added IsLiked (specific to user context)
+	ID               uuid.UUID   `json:"id"`
+	Title            string      `json:"title"`
+	ShortDescription string      `json:"short_description"` // Changed from Description
+	AuthorID         uuid.UUID   `json:"author_id"`
+	AuthorName       string      `json:"author_name"`
+	PublishedAt      time.Time   `json:"published_at"`
+	IsAdultContent   bool        `json:"is_adult_content"`
+	LikesCount       int64       `json:"likes_count"` // Added LikesCount
+	IsLiked          bool        `json:"is_liked"`    // Added IsLiked (specific to user context)
+	Status           StoryStatus `json:"status"`      // Added Status
 }
 
 // PublishedStorySummaryWithProgress extends PublishedStorySummary with player progress info.

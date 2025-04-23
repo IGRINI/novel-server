@@ -312,14 +312,38 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 	var userInputs []string
 	var lastUserInput string
 	var promptType sharedMessaging.PromptType
+	var userInputForTask string
 
 	if config.UserInput != nil {
 		if err := json.Unmarshal(config.UserInput, &userInputs); err == nil && len(userInputs) > 0 {
 			lastUserInput = userInputs[len(userInputs)-1]
 			if len(userInputs) == 1 {
 				promptType = sharedMessaging.PromptTypeNarrator
+				userInputForTask = lastUserInput
+				log.Info("Retry is for initial generation")
 			} else {
 				promptType = sharedMessaging.PromptTypeNarrator
+				log.Info("Retry is for a revision generation", zap.String("revisionPrompt", lastUserInput))
+
+				if len(config.Config) == 0 {
+					log.Error("Cannot retry revision: previous config is missing or empty", zap.String("draftID", config.ID.String()))
+					return fmt.Errorf("cannot retry revision %s: previous config is missing", config.ID.String())
+				}
+
+				var currentConfigMap map[string]interface{}
+				if errUnmarshal := json.Unmarshal(config.Config, &currentConfigMap); errUnmarshal != nil {
+					log.Error("Cannot retry revision: failed to unmarshal existing config JSON", zap.Error(errUnmarshal))
+					return fmt.Errorf("cannot retry revision %s: invalid existing config JSON: %w", config.ID.String(), errUnmarshal)
+				}
+
+				currentConfigMap["ur"] = lastUserInput
+
+				userInputBytes, errMarshal := json.Marshal(currentConfigMap)
+				if errMarshal != nil {
+					log.Error("Cannot retry revision: failed to marshal updated config JSON for UserInput", zap.Error(errMarshal))
+					return fmt.Errorf("cannot retry revision %s: failed to prepare input for AI: %w", config.ID.String(), errMarshal)
+				}
+				userInputForTask = string(userInputBytes)
 			}
 		} else {
 			log.Error("Failed to unmarshal UserInput or UserInput is empty for retry", zap.Error(err))
@@ -342,7 +366,7 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 		TaskID:        taskID,
 		UserID:        config.UserID.String(),
 		PromptType:    promptType,
-		UserInput:     lastUserInput,
+		UserInput:     userInputForTask,
 		StoryConfigID: config.ID.String(),
 	}
 

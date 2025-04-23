@@ -502,9 +502,18 @@
               "min": number, // Минимальное значение (0 - нет)
               "max": number, // Максимальное значение (0 - нет)
               "gameOverMin": boolean, // Game Over при достижении Min?
-              "gameOverMax": boolean // Game Over при достижении Max?
+              "gameOverMax": boolean, // Game Over при достижении Max?
+              "icon": "Sword" // <<< ДОБАВЛЕНО: Иконка
             },
-            "statName2": { ... }
+            "statName2": { 
+              "description": "...",
+              "initialValue": 0,
+              "min": 0,
+              "max": 0,
+              "gameOverMin": false,
+              "gameOverMax": false,
+              "icon": "Crown" // <<< ДОБАВЛЕНО: Иконка
+            }
           },
           "characters": [ // Персонажи (из Setup)
             {
@@ -514,7 +523,7 @@
             }
             // ... другие персонажи
           ],
-          // Информация о прогрессе:
+          // Информация о прогрессе:authorName
           "hasPlayerProgress": true,
           "lastPlayedAt": "2024-03-10T15:30:00Z",
           "currentSceneIndex": 3,
@@ -542,6 +551,10 @@
           "id": "uuid-string", // ID текущей сцены
           "publishedStoryId": "uuid-string", // ID опубликованной истории
           "type": "choices", // Тип сцены: "choices", "game_over", "continuation"
+          "currentStats": { // <<< НОВОЕ ПОЛЕ: Текущие статы игрока
+            "stat_key_1": 50,
+            "stat_key_2": 35
+          },
           // --- Поля для type="choices" или "continuation" ---
           "choices": [
             {
@@ -659,66 +672,4 @@
         *   `401 Unauthorized`: Невалидный токен.
         *   `404 Not Found`: История не найдена.
         *   `409 Conflict` (`{"message": "Story is not in error state"}`): История не в статусе ошибки.
-        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
-
-*   **`GET /api/published-stories/me/progress`**
-    *   Описание: Получение списка историй, в которых у текущего пользователя есть прогресс прохождения.
-    *   Аутентификация: **Требуется.**
-    *   Query параметры: `limit`, `cursor`.
-    *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`.
-        ```json
-        {
-          "data": [
-            {
-              "id": "uuid-string",
-              "title": "string",
-              "short_description": "string",
-              "author_id": "uuid-string",
-              "author_name": "string",
-              "published_at": "timestamp",
-              "is_adult_content": false,
-              "likes_count": 42,
-              "is_liked": true, // Лайкнул ли эту историю текущий пользователь
-              "hasPlayerProgress": true // Всегда true для этого эндпоинта
-            }
-            /* ... */
-          ],
-          "next_cursor": "string | null"
-        }
-        ```
-    *   Ответ при ошибке:
-        *   `400 Bad Request`: Невалидный курсор или `limit`.
-        *   `401 Unauthorized`: Невалидный токен.
-        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
-
-*   **`GET /api/published-stories/me/likes`**
-    *   Описание: Получение списка историй, которые лайкнул пользователь.
-    *   Аутентификация: **Требуется.**
-    *   Query параметры: `limit`, `cursor`.
-    *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`.
-        ```json
-        {
-          "data": [
-            {
-              "id": "uuid-string",
-              "title": "string",
-              "short_description": "string", // <-- Обновлено поле
-              "author_id": "uuid-string",
-              "author_name": "string", // <-- Добавлено имя автора
-              "published_at": "timestamp",
-              "is_adult_content": false, // <-- Обновлено поле
-              "likes_count": 123,
-              "is_liked": true, // Всегда true для этого эндпоинта
-              "hasPlayerProgress": false // Есть ли прогресс у текущего пользователя
-            }
-            /* ... */
-          ],
-          "next_cursor": "string | null"
-        }
-        ```
-    *   Ответ при ошибке:
-        *   `400 Bad Request`: Невалидный курсор или `limit`.
-        *   `401 Unauthorized`: Невалидный токен.
-        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
-
----
+        *   `

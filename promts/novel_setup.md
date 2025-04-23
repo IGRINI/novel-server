@@ -34,7 +34,8 @@
       "go": {         // game_over_conditions (COPY EXACTLY from input `cs`)
         "min": true,
         "max": true
-      }
+      },
+      "ic": "string"  // <<< ДОБАВЛЕНО: Иконка стата из списка
     }
     // ... Repeat for all 4 stats from input `cs` ...
   },
@@ -61,7 +62,8 @@
 5. Strictly follow input `ac` flag.
 6. Generate **approximately 10 characters** in the `chars` array, relevant to the story context.
 7. Create the output `csd` object. The **keys** in this object MUST be the EXACT stat names received as keys in the input `cs` object (e.g., if input `cs` has a key "сила", output `csd` MUST have a key "сила"). Copy the `go` conditions for each stat EXACTLY from input `cs` to the corresponding key in output `csd`. Enhance stat descriptions (`d`) for context if needed, respecting rule #1 for language.
-8. **Image Reuse Rule:** For each character, include an additional field `ir` to enable deterministic image reuse. The `ir` must follow these rules:
+8. **Stat Icons:** For EACH stat definition in `csd`, you MUST select an appropriate icon name from the following list and include it as the value for the `ic` field: Crown, Flag, Ring, Throne, Person, GroupOfPeople, TwoHands, Mask, Compass, Pyramid, Dollar, Lightning, Sword, Shield, Helmet, Spear, Axe, Bow, Star, Gear, WarningTriangle, Mountain, Eye, Skull, Fire, Pentagram, Book, Leaf, Cane, Scales, Heart, Sun.
+9. **Image Reuse Rule:** For each character, include an additional field `ir` to enable deterministic image reuse. The `ir` must follow these rules:
    - If the character name (`n`) matches a well-known person or fictional character (e.g., "Harry Potter", "Darth Vader"), set: `ir = "ch_" + snake_case(name)`.
    - Otherwise, generate `ir` using the following structure: `ch_[gender]_[age]_[theme]_[descriptor1]_[descriptor2]`, where:
      - `gender`: one of `male`, `female`, `other`, `andro`, `unknown` (derived deterministically from `vt`).
@@ -70,4 +72,9 @@
      - `descriptor1`, `descriptor2`: optional, distinctive appearance tags like `scar`, `armor`, `glasses`, `robe`, `cyborg`, etc. (derived deterministically from `vt`).
    - Always use snake_case for all parts of `ir`.
    - The result must be deterministic — identical `vt` should always result in the same `ir`. The process should prioritize common tags for gender/age/theme and then pick distinctive descriptors.
-9. **Player Character Exclusion:** The generated `chars` array is for Non-Player Characters (NPCs) only. **DO NOT** include the player character (protagonist) in this list under any circumstances.
+10. **Player Character Exclusion:** The generated `chars` array is for Non-Player Characters (NPCs) only. **DO NOT** include the player character (protagonist) in this list under any circumstances.
+
+**Example Output JSON:**
+```json
+{"csd":{"Power":{"iv":50,"d":"Your political influence and authority.","go":{"min":true,"max":false},"ic":"Crown"},"Wealth":{"iv":30,"d":"The state of your treasury.","go":{"min":true,"max":false},"ic":"Dollar"},"People":{"iv":40,"d":"The mood of your subjects.","go":{"min":true,"max":false},"ic":"GroupOfPeople"},"Army":{"iv":25,"d":"The strength of your military forces.","go":{"min":true,"max":false},"ic":"Sword"}},"chars":[{"n":"Advisor Valerius","d":"An old, calculating advisor with sharp eyes.","vt":["male","old","fantasy","robe","scroll"],"p":"Cunning and pragmatic.","pr":"Elderly male fantasy advisor, thin face, sharp calculating eyes, wearing dark elaborate robes embroidered with silver thread, holding an ancient scroll, dimly lit stone chamber background, detailed realistic painting style.","np":"young, smiling, simple clothes, bright light, cartoon","ir":"ch_male_old_fantasy_robe_scroll"},{"n":"Captain Elena","d":"A stern, capable captain of the Royal Guard.","vt":["female","adult","medieval","armor","sword","scar"],"p":"Loyal and disciplined.","pr":"Adult female knight captain, stern expression, wearing practical steel plate armor with kingdom sigil, prominent scar across left eyebrow, hand resting on sword hilt, castle courtyard background, medieval painting style.","np":"smiling, relaxed, magic, futuristic","ir":"ch_female_adult_medieval_armor_scar"}]}
+```
