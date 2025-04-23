@@ -7,43 +7,43 @@ import (
 	"github.com/google/uuid"
 )
 
-// StoryStatus определяет возможные статусы опубликованной истории.
+// StoryStatus определяет возможные статусы опубликованной истории как шаблона.
 // Совпадает с типом ENUM 'story_status' в БД.
 type StoryStatus string
 
 const (
+	StatusDraft             StoryStatus = "draft"               // Черновик, доступен для редактирования
 	StatusSetupPending      StoryStatus = "setup_pending"       // Ожидает генерации Setup
 	StatusSetupGenerating   StoryStatus = "setup_generating"    // Идет генерация Setup
 	StatusFirstScenePending StoryStatus = "first_scene_pending" // Setup готов, ожидает генерации 1й сцены
-	StatusGeneratingScene   StoryStatus = "generating_scene"    // Идет генерация следующей сцены
-	StatusReady             StoryStatus = "ready"               // Готова к игре (Setup и 1я сцена сгенерированы)
-	StatusGameOverPending   StoryStatus = "game_over_pending"   // Ожидает генерации концовки
-	StatusError             StoryStatus = "error"               // Ошибка при генерации Setup или сцены
-	StatusCompleted         StoryStatus = "completed"           // Игра завершена (концовка сгенерирована)
-	StatusDraft             StoryStatus = "draft"               // Черновик, доступен для редактирования
-	StatusGenerating        StoryStatus = "generating"          // Идет генерация (начальная или ревизия)
-	StatusRevising          StoryStatus = "revising"            // (Возможно) Отдельный статус для ревизии, если нужно
-	// StatusAvailable         StoryStatus = "available" // Возможно, этот статус не нужен?
+	// StatusGeneratingScene   StoryStatus = "generating_scene"    // УДАЛЕНО: Статус генерации сцены для игрока
+	StatusInitialGeneration StoryStatus = "initial_generation" // Идет первоначальная генерация (Setup и/или 1я сцена)
+	StatusGenerating        StoryStatus = "generating"         // Идет генерация (для черновика StoryConfig)
+	StatusReady             StoryStatus = "ready"              // Готова к игре (Setup и 1я сцена сгенерированы успешно)
+	// StatusGameOverPending   StoryStatus = "game_over_pending"   // УДАЛЕНО: Статус ожидания концовки для игрока
+	StatusError StoryStatus = "error" // Ошибка при первоначальной генерации Setup или 1й сцены
+	// StatusCompleted         StoryStatus = "completed"           // УДАЛЕНО: Статус завершения игры для игрока
+	// StatusRevising          StoryStatus = "revising"            // (Возможно) Отдельный статус для ревизии, если нужно - пока убрал для ясности
 )
 
 // PublishedStory представляет опубликованную историю в базе данных.
 type PublishedStory struct {
-	ID             uuid.UUID       `json:"id" db:"id"`
-	UserID         uuid.UUID       `json:"user_id" db:"user_id"`       // Или uuid.UUID, если User.ID - UUID
-	Config         json.RawMessage `json:"config" db:"config"`         // Изначальный конфиг из драфта
-	Setup          json.RawMessage `json:"setup,omitempty" db:"setup"` // Сгенерированный setup
-	Status         StoryStatus     `json:"status" db:"status"`
-	EndingText     *string         `json:"ending_text,omitempty" db:"ending_text"` // Текст концовки (если StatusCompleted)
-	IsPublic       bool            `json:"is_public" db:"is_public"`
-	IsAdultContent bool            `json:"is_adult_content" db:"is_adult_content"`
-	Title          *string         `json:"title,omitempty" db:"title"`             // Указатель, так как может быть NULL
-	Description    *string         `json:"description,omitempty" db:"description"` // Указатель, так как может быть NULL
-	CoverImageURL  *string         `json:"cover_image_url,omitempty" db:"cover_image_url"`
-	ErrorDetails   *string         `json:"error_details,omitempty" db:"error_details"` // Указатель, так как может быть NULL
-	LikesCount     int64           `json:"likes_count" db:"likes_count"`               // Добавляем счетчик лайков
-	CreatedAt      time.Time       `json:"created_at" db:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at" db:"updated_at"`
-	IsLiked        bool            `json:"is_liked" db:"-"`
+	ID     uuid.UUID       `json:"id" db:"id"`
+	UserID uuid.UUID       `json:"user_id" db:"user_id"`       // ID автора истории
+	Config json.RawMessage `json:"config" db:"config"`         // Изначальный конфиг из драфта
+	Setup  json.RawMessage `json:"setup,omitempty" db:"setup"` // Сгенерированный setup
+	Status StoryStatus     `json:"status" db:"status"`
+	// EndingText     *string         `json:"ending_text,omitempty" db:"ending_text"` // УДАЛЕНО: Концовка специфична для игрока
+	IsPublic       bool      `json:"is_public" db:"is_public"`
+	IsAdultContent bool      `json:"is_adult_content" db:"is_adult_content"`
+	Title          *string   `json:"title,omitempty" db:"title"`             // Указатель, так как может быть NULL
+	Description    *string   `json:"description,omitempty" db:"description"` // Указатель, так как может быть NULL
+	CoverImageURL  *string   `json:"cover_image_url,omitempty" db:"cover_image_url"`
+	ErrorDetails   *string   `json:"error_details,omitempty" db:"error_details"` // Детали ошибки *первоначальной генерации*
+	LikesCount     int64     `json:"likes_count" db:"likes_count"`
+	CreatedAt      time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at" db:"updated_at"`
+	IsLiked        bool      `json:"is_liked" db:"-"` // Это поле заполняется на уровне запроса для конкретного пользователя
 }
 
 // CharacterDefinition defines the structure for a character within NovelSetupContent.

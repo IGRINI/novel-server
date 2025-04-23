@@ -82,6 +82,7 @@ func main() {
 	publishedRepo := sharedDatabase.NewPgPublishedStoryRepository(dbPool, logger)
 	sceneRepo := sharedDatabase.NewPgStorySceneRepository(dbPool, logger)
 	playerProgressRepo := sharedDatabase.NewPgPlayerProgressRepository(dbPool, logger)
+	playerGameStateRepo := sharedDatabase.NewPgPlayerGameStateRepository(dbPool, logger)
 	likeRepo := sharedDatabase.NewPgLikeRepository(dbPool, logger)
 
 	// <<< Создаем все паблишеры >>>
@@ -108,7 +109,7 @@ func main() {
 	logger.Info("Auth Service client initialized")
 
 	// <<< ИЗМЕНЕНО: Передаем logger И authServiceClient в NewGameplayService >>>
-	gameplayService := service.NewGameplayService(storyConfigRepo, publishedRepo, sceneRepo, playerProgressRepo, likeRepo, taskPublisher, dbPool, logger, authServiceClient)
+	gameplayService := service.NewGameplayService(storyConfigRepo, publishedRepo, sceneRepo, playerProgressRepo, playerGameStateRepo, likeRepo, taskPublisher, dbPool, logger, authServiceClient)
 	// <<< ИЗМЕНЕНО: Передаем logger, publishedRepo и cfg в NewGameplayHandler >>>
 	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret, storyConfigRepo, publishedRepo, cfg)
 
@@ -124,10 +125,12 @@ func main() {
 		storyConfigRepo,
 		publishedRepo,
 		sceneRepo,
+		playerGameStateRepo,
 		clientUpdatePublisher,
 		taskPublisher,
 		pushPublisher, // <<< Передаем созданный pushPublisher
 		cfg.InternalUpdatesQueueName,
+		cfg, // <<< Передаем весь конфиг
 	)
 	if err != nil {
 		logger.Fatal("Не удалось создать консьюмер уведомлений", zap.Error(err))
@@ -158,9 +161,22 @@ func main() {
 	router.Use(gin.Recovery()) // <<< Используем Gin Recovery
 
 	// <<< Настройка Gin CORS Middleware >>>
-	corsConfig := cors.DefaultConfig()
-	// TODO: Заменить "*" на конкретные разрешенные origin в production
-	corsConfig.AllowOrigins = []string{"*"} // Пока оставляем так же, как было в Echo
+	corsConfig := cors.DefaultConfig() // Начинаем с дефолтных настроек
+	// Удаляем TODO, т.к. теперь берем из конфига
+	if cfg.Env == "development" && len(cfg.AllowedOrigins) == 0 {
+		// В режиме разработки, если origins не заданы явно, разрешаем все для удобства
+		logger.Warn("CORS AllowedOrigins не задан в конфиге, разрешаю '*' для development режима")
+		corsConfig.AllowOrigins = []string{"*"}
+	} else if len(cfg.AllowedOrigins) > 0 {
+		// Если origins заданы в конфиге, используем их
+		logger.Info("Используются CORS AllowedOrigins из конфига", zap.Strings("origins", cfg.AllowedOrigins))
+		corsConfig.AllowOrigins = cfg.AllowedOrigins
+	} else {
+		// В production (или если origins пустой массив), не разрешаем никакие origins (кроме необходимых для preflight)
+		logger.Warn("CORS AllowedOrigins не задан или пуст в production режиме. CORS будет заблокирован для большинства запросов.")
+		corsConfig.AllowOrigins = []string{} // Пустой список, gin-cors правильно это обработает
+	}
+	// Остальные настройки оставляем
 	corsConfig.AllowMethods = []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}
 	corsConfig.AllowHeaders = []string{"Origin", "Content-Type", "Accept", "Authorization"}
 	corsConfig.AllowCredentials = true // Если нужны куки или Authorization header
@@ -274,7 +290,7 @@ func markStuckTasksAsError(repo sharedInterfaces.StoryConfigRepository, logger *
 		}
 
 		// Проверяем еще раз на всякий случай, вдруг статус изменился пока мы работали
-		if cfg.Status != sharedModels.StatusGenerating && cfg.Status != sharedModels.StatusRevising { // Используем StatusRevising если он есть
+		if cfg.Status != sharedModels.StatusGenerating {
 			logger.Info("Статус задачи изменился, пропускаем обновление", logFields...)
 			continue
 		}

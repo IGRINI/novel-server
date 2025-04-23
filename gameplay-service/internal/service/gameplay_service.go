@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Define local service-level errors
@@ -126,7 +128,7 @@ type GameplayService interface {
 	// Core Gameplay methods
 	GetStoryScene(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error)
 	MakeChoice(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID, selectedOptionIndices []int) error
-	DeletePlayerProgress(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
+	DeletePlayerGameState(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
 	RetryStoryGeneration(ctx context.Context, storyID, userID uuid.UUID) error
 
 	// ListMyDrafts (duplicated?) - Keep for now, handled by DraftService
@@ -140,6 +142,15 @@ type GameplayService interface {
 	UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string, status sharedModels.StoryStatus) error
 	UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON json.RawMessage, status sharedModels.StoryStatus) error
 	UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error
+
+	// <<< ДОБАВЛЕНО: Метод для удаления сцены админкой >>>
+	DeleteSceneInternal(ctx context.Context, sceneID uuid.UUID) error
+
+	// <<< ДОБАВЛЕНО: Метод для получения списка состояний игроков админкой >>>
+	ListStoryPlayersInternal(ctx context.Context, storyID uuid.UUID) ([]sharedModels.PlayerGameState, error)
+
+	// <<< ДОБАВЛЕНО: Метод для получения деталей прогресса игрока админкой >>>
+	GetPlayerProgressInternal(ctx context.Context, progressID uuid.UUID) (*sharedModels.PlayerProgress, error)
 
 	// <<< Новый метод для удаления черновика >>>
 	DeleteDraft(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
@@ -158,6 +169,9 @@ type GameplayService interface {
 
 	// <<< ДОБАВЛЕНО: Метод для получения распарсенного Setup >>>
 	GetParsedSetup(ctx context.Context, storyID uuid.UUID) (*sharedModels.NovelSetupContent, error)
+
+	// <<< ДОБАВЛЕНО: Сигнатура для обновления прогресса игрока >>>
+	UpdatePlayerProgressInternal(ctx context.Context, progressID uuid.UUID, progressData map[string]interface{}) error
 }
 
 type gameplayServiceImpl struct {
@@ -165,6 +179,7 @@ type gameplayServiceImpl struct {
 	publishedRepo        interfaces.PublishedStoryRepository
 	sceneRepo            interfaces.StorySceneRepository
 	playerProgressRepo   interfaces.PlayerProgressRepository
+	playerGameStateRepo  interfaces.PlayerGameStateRepository
 	likeRepo             interfaces.LikeRepository
 	draftService         DraftService
 	publishingService    PublishingService
@@ -182,6 +197,7 @@ func NewGameplayService(
 	publishedRepo interfaces.PublishedStoryRepository,
 	sceneRepo interfaces.StorySceneRepository,
 	playerProgressRepo interfaces.PlayerProgressRepository,
+	playerGameStateRepo interfaces.PlayerGameStateRepository,
 	likeRepo interfaces.LikeRepository,
 	publisher messaging.TaskPublisher,
 	pool *pgxpool.Pool,
@@ -193,17 +209,18 @@ func NewGameplayService(
 	// <<< СОЗДАЕМ PublishingService >>>
 	publishingSvc := NewPublishingService(configRepo, publishedRepo, publisher, pool, logger)
 	// <<< СОЗДАЕМ LikeService >>>
-	likeSvc := NewLikeService(likeRepo, publishedRepo, playerProgressRepo, authClient, logger)
+	likeSvc := NewLikeService(likeRepo, publishedRepo, playerGameStateRepo, authClient, logger)
 	// <<< СОЗДАЕМ StoryBrowsingService >>>
-	storyBrowsingSvc := NewStoryBrowsingService(publishedRepo, sceneRepo, playerProgressRepo, likeRepo, authClient, logger)
+	storyBrowsingSvc := NewStoryBrowsingService(publishedRepo, sceneRepo, playerProgressRepo, playerGameStateRepo, likeRepo, authClient, logger)
 	// <<< СОЗДАЕМ GameLoopService >>>
-	gameLoopSvc := NewGameLoopService(publishedRepo, sceneRepo, playerProgressRepo, publisher, configRepo, logger)
+	gameLoopSvc := NewGameLoopService(publishedRepo, sceneRepo, playerProgressRepo, playerGameStateRepo, publisher, configRepo, logger)
 
 	return &gameplayServiceImpl{
 		configRepo:           configRepo,
 		publishedRepo:        publishedRepo,
 		sceneRepo:            sceneRepo,
 		playerProgressRepo:   playerProgressRepo,
+		playerGameStateRepo:  playerGameStateRepo,
 		likeRepo:             likeRepo,
 		draftService:         draftSvc,
 		publishingService:    publishingSvc,
@@ -326,9 +343,9 @@ func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	return s.gameLoopService.MakeChoice(ctx, userID, publishedStoryID, selectedOptionIndices)
 }
 
-// DeletePlayerProgress deletes player progress for the specified story.
-func (s *gameplayServiceImpl) DeletePlayerProgress(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error {
-	return s.gameLoopService.DeletePlayerProgress(ctx, userID, publishedStoryID)
+// DeletePlayerGameState deletes player game state for the specified story.
+func (s *gameplayServiceImpl) DeletePlayerGameState(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error {
+	return s.gameLoopService.DeletePlayerGameState(ctx, userID, publishedStoryID)
 }
 
 // RetryStoryGeneration delegates to GameLoopService.
@@ -374,6 +391,12 @@ func (s *gameplayServiceImpl) UpdateStoryInternal(ctx context.Context, storyID u
 // UpdateSceneInternal delegates to GameLoopService.
 func (s *gameplayServiceImpl) UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error {
 	return s.gameLoopService.UpdateSceneInternal(ctx, sceneID, contentJSON)
+}
+
+// <<< ДОБАВЛЕНО: Метод для удаления сцены админкой >>>
+func (s *gameplayServiceImpl) DeleteSceneInternal(ctx context.Context, sceneID uuid.UUID) error {
+	// Implementation of DeleteSceneInternal method
+	return s.gameLoopService.DeleteSceneInternal(ctx, sceneID)
 }
 
 // <<< Новый метод для удаления черновика >>>
@@ -435,13 +458,43 @@ func (s *gameplayServiceImpl) ListPublishedStoriesPublic(ctx context.Context, us
 	return results, nextCursor, nil
 }
 
-// GetStoriesWithProgress делегирует вызов StoryBrowsingService
+// GetStoriesWithProgress deleгирует вызов StoryBrowsingService
 func (s *gameplayServiceImpl) GetStoriesWithProgress(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]sharedModels.PublishedStorySummaryWithProgress, string, error) {
 	return s.storyBrowsingService.GetStoriesWithProgress(ctx, userID, limit, cursor)
 }
 
 // ListMyPublishedStories retrieves a list of stories published by the user.
 // ... existing code ...
+
+// <<< ДОБАВЛЕНО: Метод для получения списка состояний игроков админкой >>>
+func (s *gameplayServiceImpl) ListStoryPlayersInternal(ctx context.Context, storyID uuid.UUID) ([]sharedModels.PlayerGameState, error) {
+	// Implementation of ListStoryPlayersInternal method
+	return s.playerGameStateRepo.ListByStoryID(ctx, storyID)
+}
+
+// <<< ДОБАВЛЕНО: Метод для получения деталей прогресса игрока админкой >>>
+func (s *gameplayServiceImpl) GetPlayerProgressInternal(ctx context.Context, progressID uuid.UUID) (*sharedModels.PlayerProgress, error) {
+	s.logger.Debug("Getting player progress internally", zap.Stringer("progressID", progressID))
+
+	progress, err := s.playerProgressRepo.GetByID(ctx, progressID)
+	if err != nil {
+		if errors.Is(err, sharedModels.ErrNotFound) {
+			s.logger.Warn("Player progress not found for internal request", zap.Stringer("progressID", progressID))
+			return nil, status.Errorf(codes.NotFound, "player progress with id %s not found", progressID)
+		}
+		s.logger.Error("Failed to get player progress from repository", zap.Stringer("progressID", progressID), zap.Error(err))
+		return nil, status.Errorf(codes.Internal, "failed to retrieve player progress: %v", err)
+	}
+
+	s.logger.Info("Successfully retrieved player progress internally", zap.Stringer("progressID", progressID))
+	return progress, nil
+}
+
+// <<< ДОБАВЛЕНО: Реализация UpdatePlayerProgressInternal через делегирование >>>
+func (s *gameplayServiceImpl) UpdatePlayerProgressInternal(ctx context.Context, progressID uuid.UUID, progressData map[string]interface{}) error {
+	// Делегируем вызов gameLoopService
+	return s.gameLoopService.UpdatePlayerProgressInternal(ctx, progressID, progressData)
+}
 
 // --- Helper Functions moved to game_loop_service.go ---
 /*

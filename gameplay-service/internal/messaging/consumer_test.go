@@ -45,12 +45,14 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		mockTaskPub := new(messagingMocks.TaskPublisher)
 		mockPublishedRepo := new(repoMocks.PublishedStoryRepository)
 		mockSceneRepo := new(repoMocks.StorySceneRepository)
+		mockPlayerGameStateRepo := new(repoMocks.PlayerGameStateRepository)
 		mockPushPub := new(messagingMocks.PushNotificationPublisher)
 
 		processor := messaging.NewNotificationProcessor(
 			mockRepo,
 			mockPublishedRepo,
 			mockSceneRepo,
+			mockPlayerGameStateRepo,
 			mockClientPub,
 			mockTaskPub,
 			mockPushPub,
@@ -94,12 +96,14 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		mockTaskPub := new(messagingMocks.TaskPublisher)
 		mockPublishedRepo := new(repoMocks.PublishedStoryRepository)
 		mockSceneRepo := new(repoMocks.StorySceneRepository)
+		mockPlayerGameStateRepo := new(repoMocks.PlayerGameStateRepository)
 		mockPushPub := new(messagingMocks.PushNotificationPublisher)
 
 		processor := messaging.NewNotificationProcessor(
 			mockRepo,
 			mockPublishedRepo,
 			mockSceneRepo,
+			mockPlayerGameStateRepo,
 			mockClientPub,
 			mockTaskPub,
 			mockPushPub,
@@ -127,12 +131,14 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		mockTaskPub := new(messagingMocks.TaskPublisher)
 		mockPublishedRepo := new(repoMocks.PublishedStoryRepository)
 		mockSceneRepo := new(repoMocks.StorySceneRepository)
+		mockPlayerGameStateRepo := new(repoMocks.PlayerGameStateRepository)
 		mockPushPub := new(messagingMocks.PushNotificationPublisher)
 
 		processor := messaging.NewNotificationProcessor(
 			mockRepo,
 			mockPublishedRepo,
 			mockSceneRepo,
+			mockPlayerGameStateRepo,
 			mockClientPub,
 			mockTaskPub,
 			mockPushPub,
@@ -168,12 +174,14 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		mockTaskPub := new(messagingMocks.TaskPublisher)
 		mockPublishedRepo := new(repoMocks.PublishedStoryRepository)
 		mockSceneRepo := new(repoMocks.StorySceneRepository)
+		mockPlayerGameStateRepo := new(repoMocks.PlayerGameStateRepository)
 		mockPushPub := new(messagingMocks.PushNotificationPublisher)
 
 		processor := messaging.NewNotificationProcessor(
 			mockRepo,
 			mockPublishedRepo,
 			mockSceneRepo,
+			mockPlayerGameStateRepo,
 			mockClientPub,
 			mockTaskPub,
 			mockPushPub,
@@ -209,12 +217,14 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		mockTaskPub := new(messagingMocks.TaskPublisher)
 		mockPublishedRepo := new(repoMocks.PublishedStoryRepository)
 		mockSceneRepo := new(repoMocks.StorySceneRepository)
+		mockPlayerGameStateRepo := new(repoMocks.PlayerGameStateRepository)
 		mockPushPub := new(messagingMocks.PushNotificationPublisher)
 
 		processor := messaging.NewNotificationProcessor(
 			mockRepo,
 			mockPublishedRepo,
 			mockSceneRepo,
+			mockPlayerGameStateRepo,
 			mockClientPub,
 			mockTaskPub,
 			mockPushPub,
@@ -258,12 +268,14 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		mockTaskPub := new(messagingMocks.TaskPublisher)
 		mockPublishedRepo := new(repoMocks.PublishedStoryRepository)
 		mockSceneRepo := new(repoMocks.StorySceneRepository)
+		mockPlayerGameStateRepo := new(repoMocks.PlayerGameStateRepository)
 		mockPushPub := new(messagingMocks.PushNotificationPublisher)
 
 		processor := messaging.NewNotificationProcessor(
 			mockRepo,
 			mockPublishedRepo,
 			mockSceneRepo,
+			mockPlayerGameStateRepo,
 			mockClientPub,
 			mockTaskPub,
 			mockPushPub,
@@ -299,12 +311,14 @@ func TestNotificationProcessor_Process(t *testing.T) {
 		mockTaskPub := new(messagingMocks.TaskPublisher)
 		mockPublishedRepo := new(repoMocks.PublishedStoryRepository)
 		mockSceneRepo := new(repoMocks.StorySceneRepository)
+		mockPlayerGameStateRepo := new(repoMocks.PlayerGameStateRepository)
 		mockPushPub := new(messagingMocks.PushNotificationPublisher)
 
 		processor := messaging.NewNotificationProcessor(
 			mockRepo,
 			mockPublishedRepo,
 			mockSceneRepo,
+			mockPlayerGameStateRepo,
 			mockClientPub,
 			mockTaskPub,
 			mockPushPub,

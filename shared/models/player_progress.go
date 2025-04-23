@@ -8,9 +8,9 @@ import (
 
 // PlayerProgress хранит текущее состояние игрока в рамках опубликованной истории.
 type PlayerProgress struct {
-	// ID               uuid.UUID              `db:"id" json:"id"`
-	UserID           uuid.UUID              `db:"user_id" json:"userId"`
-	PublishedStoryID uuid.UUID              `db:"published_story_id" json:"publishedStoryId"`
+	ID               uuid.UUID              `db:"id" json:"id"`                               // Primary Key
+	UserID           uuid.UUID              `db:"user_id" json:"userId"`                      // Nullable in DB, kept for potential direct lookups
+	PublishedStoryID uuid.UUID              `db:"published_story_id" json:"publishedStoryId"` // Nullable in DB, kept for potential direct lookups
 	CoreStats        map[string]int         `db:"core_stats" json:"coreStats"`
 	StoryVariables   map[string]interface{} `db:"story_variables" json:"story_variables"`
 	GlobalFlags      []string               `db:"global_flags" json:"global_flags"`

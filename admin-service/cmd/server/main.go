@@ -362,8 +362,6 @@ func main() {
 				return "success"
 			case sharedModels.StatusSetupPending:
 				return "info"
-			case sharedModels.StatusGameOverPending:
-				return "secondary"
 			default:
 				return "secondary"
 			}

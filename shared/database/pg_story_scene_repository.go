@@ -233,3 +233,58 @@ func (r *pgStorySceneRepository) Upsert(ctx context.Context, scene *models.Story
 	r.logger.Info("Story scene upserted successfully", logFields...)
 	return nil
 }
+
+// Delete удаляет сцену по ID.
+func (r *pgStorySceneRepository) Delete(ctx context.Context, id uuid.UUID) error {
+	query := `DELETE FROM story_scenes WHERE id = $1`
+
+	result, err := r.db.Exec(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("error executing delete query for story scene %s: %w", id, err)
+	}
+
+	rowsAffected := result.RowsAffected()
+	if rowsAffected == 0 {
+		// Если ничего не удалено, значит, сцена с таким ID не найдена.
+		return models.ErrNotFound
+	}
+
+	if rowsAffected > 1 {
+		// Этого не должно происходить при удалении по PK, но добавим проверку.
+		r.logger.Warn("Multiple rows affected by delete query for single story scene ID",
+			zap.String("sceneID", id.String()),
+			zap.Int64("rowsAffected", rowsAffected),
+		)
+	}
+
+	return nil
+}
+
+// GetByStoryIDAndStateHash получает сцену по ID истории и хешу состояния.
+func (r *pgStorySceneRepository) GetByStoryIDAndStateHash(ctx context.Context, storyID uuid.UUID, stateHash string) (*models.StoryScene, error) {
+	query := `
+		SELECT id, published_story_id, state_hash, scene_content, created_at
+		FROM story_scenes
+		WHERE published_story_id = $1 AND state_hash = $2
+	`
+
+	row := r.db.QueryRow(ctx, query, storyID, stateHash)
+	scene := &models.StoryScene{}
+
+	err := row.Scan(
+		&scene.ID,
+		&scene.PublishedStoryID,
+		&scene.StateHash,
+		&scene.Content,
+		&scene.CreatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, models.ErrNotFound // Используем стандартную ошибку
+		}
+		return nil, fmt.Errorf("error scanning story scene row for story %s, hash %s: %w", storyID, stateHash, err)
+	}
+
+	return scene, nil
+}

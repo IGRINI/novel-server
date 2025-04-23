@@ -23,9 +23,10 @@ type GenerationTaskPayload struct {
 	UserID           string     `json:"userId"`                     // ID пользователя
 	PromptType       PromptType `json:"promptType"`                 // Тип промпта для AI
 	UserInput        string     `json:"userInput"`                  // Входные данные для AI (например, запрос пользователя или JSON)
-	StoryConfigID    string     `json:"storyConfigId"`              // ID черновика (для Narrator)
-	PublishedStoryID string     `json:"publishedStoryId,omitempty"` // ID опубликованной истории (для Setup, Creator, GameOver)
+	StoryConfigID    string     `json:"storyConfigId,omitempty"`    // ID черновика (для Narrator, Setup). Убрали omitempty? Проверить
+	PublishedStoryID string     `json:"publishedStoryId,omitempty"` // ID опубликованной истории (для Creator, GameOver)
 	StateHash        string     `json:"state_hash,omitempty"`       // Хеш состояния (для Creator, GameOver)
+	GameStateID      string     `json:"gameStateId,omitempty"`      // ID состояния игры игрока (для обновления по callback)
 }
 
 // NotificationStatus определяет статус уведомления
@@ -47,6 +48,7 @@ type NotificationPayload struct {
 	StoryConfigID    string             `json:"story_config_id,omitempty"`    // Опционально: ID конфигурации истории, если применимо
 	PublishedStoryID string             `json:"published_story_id,omitempty"` // !!! ДОБАВЛЕНО: ID опубликованной истории
 	StateHash        string             `json:"state_hash,omitempty"`         // <<< Добавлено: Хеш состояния, для которого генерировалась сцена
+	GameStateID      string             `json:"gameStateId,omitempty"`        // <<< ДОБАВЛЕНО: ID состояния игры для обновления
 }
 
 // IsValidPromptType проверяет, является ли строка допустимым PromptType.
@@ -71,9 +73,10 @@ type GameOverTaskPayload struct {
 	TaskID           string                   `json:"task_id"`
 	UserID           string                   `json:"user_id"` // User ID as string
 	PublishedStoryID string                   `json:"published_story_id"`
-	PromptType       PromptType               `json:"prompt_type"` // Should be PromptTypeNovelGameOverCreator
-	NovelConfig      models.Config            `json:"cfg"`         // NovelConfig (extracted from PublishedStory.Config)
-	NovelSetup       models.NovelSetupContent `json:"setup"`       // NovelSetup (extracted from PublishedStory.Setup)
-	LastState        models.PlayerProgress    `json:"lst"`         // The final player progress state
-	Reason           GameOverReason           `json:"rsn"`         // Reason for game over
+	GameStateID      string                   `json:"gameStateId,omitempty"` // ID состояния игры игрока (для обновления по callback)
+	PromptType       PromptType               `json:"prompt_type"`           // Should be PromptTypeNovelGameOverCreator
+	NovelConfig      models.Config            `json:"cfg"`                   // NovelConfig (extracted from PublishedStory.Config)
+	NovelSetup       models.NovelSetupContent `json:"setup"`                 // NovelSetup (extracted from PublishedStory.Setup)
+	LastState        models.PlayerProgress    `json:"lst"`                   // The final player progress state
+	Reason           GameOverReason           `json:"rsn"`                   // Reason for game over
 }

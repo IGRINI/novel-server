@@ -530,7 +530,8 @@ func (h *GameplayHandler) deletePlayerProgress(c *gin.Context) {
 	}
 	log.Info("Deleting player progress")
 
-	err = h.service.DeletePlayerProgress(c.Request.Context(), userID, id)
+	// Call the correct service method to delete the player game state
+	err = h.service.DeletePlayerGameState(c.Request.Context(), userID, id)
 	if err != nil {
 		// Логируем только если это не ErrNotFound (ожидаемая ошибка, если прогресса нет)
 		if !errors.Is(err, service.ErrPlayerProgressNotFound) && !errors.Is(err, sharedModels.ErrNotFound) {
@@ -861,8 +862,8 @@ func (h *GameplayHandler) listStoriesWithProgress(c *gin.Context) {
 	stories, nextCursor, serviceErr := h.service.GetStoriesWithProgress(c.Request.Context(), userID, limit, cursor)
 	if serviceErr != nil {
 		h.logger.Error("Failed to get stories with progress", zap.String("userID", userID.String()), zap.Error(serviceErr))
-		// TODO: Различать типы ошибок (Not Found, Internal)?
-		c.JSON(http.StatusInternalServerError, APIError{Message: "Failed to retrieve stories with progress"})
+		// Используем handleServiceError, который умеет обрабатывать ErrNotFound и другие стандартные ошибки
+		handleServiceError(c, serviceErr, h.logger)
 		return
 	}
 

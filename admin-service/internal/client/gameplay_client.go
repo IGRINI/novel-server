@@ -505,3 +505,181 @@ func (c *gameplayClient) UpdateSceneInternal(ctx context.Context, sceneID uuid.U
 	log.Info("Scene update internal request sent successfully")
 	return nil
 }
+
+// DeleteSceneInternal удаляет сцену по ее ID.
+func (c *gameplayClient) DeleteSceneInternal(ctx context.Context, sceneID uuid.UUID) error {
+	deleteURL := fmt.Sprintf("%s/internal/scenes/%s", c.baseURL, sceneID.String())
+	log := c.logger.With(zap.String("url", deleteURL), zap.String("sceneID", sceneID.String()))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, deleteURL, nil)
+	if err != nil {
+		log.Error("Failed to create delete scene HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+	// Указываем, что мы ожидаем JSON ответ (хотя в DELETE он может быть пустым)
+	httpReq.Header.Set("Accept", "application/json")
+
+	log.Debug("Sending delete scene request to gameplay-service")
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	if err != nil {
+		log.Error("HTTP request for delete scene failed", zap.Error(err))
+		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	// Проверяем статус ответа
+	if httpResp.StatusCode == http.StatusNotFound {
+		log.Warn("Scene not found for deletion", zap.Int("status", httpResp.StatusCode))
+		return models.ErrNotFound // Возвращаем стандартную ошибку
+	}
+	if httpResp.StatusCode != http.StatusOK && httpResp.StatusCode != http.StatusNoContent {
+		respBodyBytes, _ := io.ReadAll(httpResp.Body)
+		log.Warn("Received non-OK status for delete scene", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		return fmt.Errorf("received unexpected status %d from gameplay service for delete scene", httpResp.StatusCode)
+	}
+
+	log.Info("Scene deleted successfully")
+	return nil
+}
+
+// ListStoryPlayersInternal получает список состояний игроков для данной истории.
+func (c *gameplayClient) ListStoryPlayersInternal(ctx context.Context, storyID uuid.UUID) ([]models.PlayerGameState, error) {
+	listURL := fmt.Sprintf("%s/internal/stories/%s/players", c.baseURL, storyID.String())
+	log := c.logger.With(zap.String("url", listURL), zap.String("storyID", storyID.String()))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, listURL, nil)
+	if err != nil {
+		log.Error("Failed to create list story players internal HTTP request", zap.Error(err))
+		return nil, fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Accept", "application/json")
+
+	log.Debug("Sending list story players internal request to gameplay-service")
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	if err != nil {
+		log.Error("HTTP request for list story players internal failed", zap.Error(err))
+		return nil, fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	respBodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		log.Error("Failed to read list story players internal response body", zap.Int("status", httpResp.StatusCode), zap.Error(err))
+		return nil, fmt.Errorf("failed to read gameplay service response: %w", err)
+	}
+
+	if httpResp.StatusCode != http.StatusOK {
+		log.Warn("Received non-OK status for list story players internal", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		// Можно добавить обработку 404, если пустой список не считается ошибкой
+		return nil, fmt.Errorf("received unexpected status %d from gameplay service for list story players internal", httpResp.StatusCode)
+	}
+
+	var resp []models.PlayerGameState
+	if err := json.Unmarshal(respBodyBytes, &resp); err != nil {
+		log.Error("Failed to unmarshal list story players internal response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes), zap.Error(err))
+		return nil, fmt.Errorf("invalid player game state list response format from gameplay service: %w", err)
+	}
+
+	// Если ответ null, возвращаем пустой срез, а не nil
+	if resp == nil {
+		resp = make([]models.PlayerGameState, 0)
+	}
+
+	log.Info("Story players internal retrieved successfully", zap.Int("count", len(resp)))
+	return resp, nil
+}
+
+// GetPlayerProgressInternal получает детали прогресса игрока.
+func (c *gameplayClient) GetPlayerProgressInternal(ctx context.Context, progressID uuid.UUID) (*models.PlayerProgress, error) {
+	detailURL := fmt.Sprintf("%s/internal/player-progress/%s", c.baseURL, progressID.String())
+	log := c.logger.With(zap.String("url", detailURL), zap.String("progressID", progressID.String()))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, detailURL, nil)
+	if err != nil {
+		log.Error("Failed to create get player progress internal HTTP request", zap.Error(err))
+		return nil, fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Accept", "application/json")
+
+	log.Debug("Sending get player progress internal request to gameplay-service")
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	if err != nil {
+		log.Error("HTTP request for get player progress internal failed", zap.Error(err))
+		return nil, fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	respBodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		log.Error("Failed to read get player progress internal response body", zap.Int("status", httpResp.StatusCode), zap.Error(err))
+		return nil, fmt.Errorf("failed to read gameplay service response: %w", err)
+	}
+
+	if httpResp.StatusCode != http.StatusOK {
+		log.Warn("Received non-OK status for get player progress internal", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		if httpResp.StatusCode == http.StatusNotFound {
+			return nil, models.ErrPlayerProgressNotFound // Используем специальную ошибку, если она есть, или models.ErrNotFound
+		}
+		return nil, fmt.Errorf("received unexpected status %d from gameplay service for get player progress internal", httpResp.StatusCode)
+	}
+
+	var resp models.PlayerProgress
+	if err := json.Unmarshal(respBodyBytes, &resp); err != nil {
+		log.Error("Failed to unmarshal get player progress internal response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes), zap.Error(err))
+		return nil, fmt.Errorf("invalid player progress internal response format from gameplay service: %w", err)
+	}
+
+	log.Info("Player progress internal retrieved successfully")
+	return &resp, nil
+}
+
+// UpdatePlayerProgressInternal обновляет детали прогресса игрока.
+func (c *gameplayClient) UpdatePlayerProgressInternal(ctx context.Context, progressID uuid.UUID, progressData map[string]interface{}) error {
+	updateURL := fmt.Sprintf("%s/internal/player-progress/%s", c.baseURL, progressID.String())
+	log := c.logger.With(zap.String("url", updateURL), zap.String("progressID", progressID.String()))
+
+	// Подготовка тела запроса
+	bodyBytes, err := json.Marshal(progressData)
+	if err != nil {
+		log.Error("Failed to marshal update player progress internal request body", zap.Error(err))
+		return fmt.Errorf("internal error creating request body: %w", err)
+	}
+	bodyReader := bytes.NewReader(bodyBytes)
+
+	// Создаем PUT запрос
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, updateURL, bodyReader)
+	if err != nil {
+		log.Error("Failed to create update player progress internal HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
+	log.Debug("Sending update player progress internal request to gameplay-service")
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	if err != nil {
+		log.Error("HTTP request for update player progress internal failed", zap.Error(err))
+		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	// Проверяем статус ответа
+	if httpResp.StatusCode == http.StatusNotFound {
+		log.Warn("Player progress not found for update", zap.Int("status", httpResp.StatusCode))
+		return models.ErrPlayerProgressNotFound // Используем специальную ошибку, если она есть, или models.ErrNotFound
+	}
+	if httpResp.StatusCode == http.StatusBadRequest {
+		respBodyBytes, _ := io.ReadAll(httpResp.Body)
+		log.Warn("Received Bad Request status for update player progress internal", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		// TODO: Распарсить тело ошибки, если gameplay-service возвращает детали?
+		return models.ErrBadRequest // Возвращаем стандартную ошибку
+	}
+	if httpResp.StatusCode != http.StatusOK && httpResp.StatusCode != http.StatusNoContent {
+		respBodyBytes, _ := io.ReadAll(httpResp.Body)
+		log.Warn("Received non-OK/NoContent status for update player progress internal", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		return fmt.Errorf("received unexpected status %d from gameplay service for update player progress internal", httpResp.StatusCode)
+	}
+
+	log.Info("Player progress updated successfully")
+	return nil
+}

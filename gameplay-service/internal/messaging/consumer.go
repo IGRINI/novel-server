@@ -11,6 +11,7 @@ import (
 
 	// "novel-server/gameplay-service/internal/models" // Удален
 	// "novel-server/gameplay-service/internal/repository" // Удален
+	"novel-server/gameplay-service/internal/config" // <<< ИСПРАВЛЕН ИМПОРТ
 	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging" // Общие структуры сообщений
 	sharedModels "novel-server/shared/models"       // !!! ДОБАВЛЕНО
@@ -19,7 +20,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	amqp "github.com/rabbitmq/amqp091-go"
+	amqp "github.com/rabbitmq/amqp091-go" // <<< ВОЗВРАЩАЕМ ПСЕВДОНИМ
 )
 
 // Типы обновлений для ClientStoryUpdate
@@ -38,17 +39,21 @@ const (
 // \x60\x60\x60 - закрывающие ```
 var jsonBlockRegex = regexp.MustCompile(`(?s)` + "```" + `(?:\w+)?\s*(.*?)\s*` + "```")
 
+// userChoiceInfo больше не используется, комментарий удален
+// type userChoiceInfo struct { ... } // REMOVED
+
 // --- NotificationProcessor ---
 
 // NotificationProcessor обрабатывает логику уведомлений.
 // Вынесен в отдельную структуру для тестируемости.
 type NotificationProcessor struct {
-	repo          interfaces.StoryConfigRepository    // Используем shared интерфейс
-	publishedRepo interfaces.PublishedStoryRepository // !!! ДОБАВЛЕНО: Для PublishedStory
-	sceneRepo     interfaces.StorySceneRepository     // !!! ДОБАВЛЕНО: Для StoryScene
-	clientPub     ClientUpdatePublisher               // Для отправки обновлений клиенту
-	taskPub       TaskPublisher                       // !!! ДОБАВЛЕНО: Для отправки новых задач генерации
-	pushPub       PushNotificationPublisher           // <<< Добавляем издателя push-уведомлений
+	repo                interfaces.StoryConfigRepository     // Используем shared интерфейс
+	publishedRepo       interfaces.PublishedStoryRepository  // !!! ДОБАВЛЕНО: Для PublishedStory
+	sceneRepo           interfaces.StorySceneRepository      // !!! ДОБАВЛЕНО: Для StoryScene
+	playerGameStateRepo interfaces.PlayerGameStateRepository // <<< ДОБАВЛЕНО: Для PlayerGameState
+	clientPub           ClientUpdatePublisher                // Для отправки обновлений клиенту
+	taskPub             TaskPublisher                        // !!! ДОБАВЛЕНО: Для отправки новых задач генерации
+	pushPub             PushNotificationPublisher            // <<< Добавляем издателя push-уведомлений
 }
 
 // NewNotificationProcessor создает новый экземпляр NotificationProcessor.
@@ -56,16 +61,18 @@ func NewNotificationProcessor(
 	repo interfaces.StoryConfigRepository, // Используем shared интерфейс
 	publishedRepo interfaces.PublishedStoryRepository,
 	sceneRepo interfaces.StorySceneRepository, // !!! Добавлено sceneRepo
+	playerGameStateRepo interfaces.PlayerGameStateRepository, // <<< ДОБАВЛЕНО
 	clientPub ClientUpdatePublisher,
 	taskPub TaskPublisher,
 	pushPub PushNotificationPublisher) *NotificationProcessor {
 	return &NotificationProcessor{
-		repo:          repo,
-		publishedRepo: publishedRepo,
-		sceneRepo:     sceneRepo,
-		clientPub:     clientPub,
-		taskPub:       taskPub,
-		pushPub:       pushPub, // <<< Сохраняем pushPub
+		repo:                repo,
+		publishedRepo:       publishedRepo,
+		sceneRepo:           sceneRepo,
+		playerGameStateRepo: playerGameStateRepo, // <<< ДОБАВЛЕНО
+		clientPub:           clientPub,
+		taskPub:             taskPub,
+		pushPub:             pushPub, // <<< Сохраняем pushPub
 	}
 }
 
@@ -316,11 +323,23 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 			log.Printf("[processor][TaskID: %s] Ошибка: PromptTypeNovelSetup получен с StoryConfigID: %s.", taskID, storyConfigID)
 			return fmt.Errorf("некорректное уведомление: Setup с StoryConfigID")
 		}
+		publishedStory, err := p.publishedRepo.GetByID(dbCtx, publishedStoryID)
+		if err != nil {
+			log.Printf("[processor][TaskID: %s] Ошибка получения PublishedStory %s для обновления Setup: %v", taskID, publishedStoryID, err)
+			return fmt.Errorf("ошибка получения PublishedStory %s: %w", publishedStoryID, err)
+		}
 
 		if notification.Status == sharedMessaging.NotificationStatusSuccess {
+			// <<< Проверяем статус ТОЛЬКО для Success сценария >>>
+			if publishedStory.Status != sharedModels.StatusSetupGenerating {
+				log.Printf("[processor][TaskID: %s] PublishedStory %s уже не в статусе SetupGenerating (текущий: %s), обновление Setup Success отменено.", taskID, publishedStoryID, publishedStory.Status)
+				return nil // Игнорируем устаревшее
+			}
+			// <<< Конец проверки статуса >>>
+
 			log.Printf("[processor][TaskID: %s] Уведомление Setup Success для PublishedStory %s.", taskID, publishedStoryID)
 
-			// <<< Добавляем извлечение JSON для Setup >>>
+			// <<< Улучшенное извлечение JSON >>>
 			rawGeneratedText := notification.GeneratedText
 			jsonToParse := ""
 			matches := jsonBlockRegex.FindStringSubmatch(rawGeneratedText)
@@ -331,74 +350,80 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 				jsonToParse = strings.TrimSpace(rawGeneratedText)
 				log.Printf("[processor][TaskID: %s] Блок ``` не найден для Setup PublishedStory %s, используется исходный/обрезанный текст.", taskID, publishedStoryID)
 			}
-			setupJSON := json.RawMessage(jsonToParse) // Используем очищенный JSON
-			// <<< Конец извлечения JSON для Setup >>>
+			setupBytes := []byte(jsonToParse)
+			// <<< Конец улучшенного извлечения JSON >>>
 
-			newStatus := sharedModels.StatusFirstScenePending
-			// Обновляем Setup и Status, используя новый метод
-			if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, newStatus, setupJSON, nil, nil, nil); err != nil {
-				log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось сохранить Setup/Status для PublishedStory %s: %v", taskID, publishedStoryID, err)
-				// Пытаемся обновить статус на Error
-				errMsg := fmt.Sprintf("Failed to update setup/status: %v", err)
-				if errRollback := p.publishedRepo.UpdateStatusDetails(context.Background(), publishedStoryID, sharedModels.StatusError, nil, nil, nil, &errMsg); errRollback != nil {
-					log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА 2: Не удалось откатить статус PublishedStory %s на Error: %v", taskID, publishedStoryID, errRollback)
+			// Валидация: Проверяем, что setupBytes - валидный JSON
+			var temp map[string]interface{}
+			if err := json.Unmarshal(setupBytes, &temp); err != nil {
+				// Если невалидный JSON, обновляем статус на Error
+				log.Printf("[processor][TaskID: %s] ОШИБКА ПАРСИНГА SETUP: Невалидный JSON получен для Setup PublishedStory %s: %v. Текст: '%s'", taskID, publishedStoryID, err, jsonToParse)
+				errDetails := fmt.Sprintf("Invalid JSON received for Setup: %v", err)
+				if updateErr := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, sharedModels.StatusError, nil, nil, nil, &errDetails); updateErr != nil {
+					log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось обновить статус PublishedStory %s на Error после ошибки парсинга Setup: %v", taskID, publishedStoryID, updateErr)
+					return fmt.Errorf("ошибка обновления статуса Error для PublishedStory %s: %w", publishedStoryID, updateErr)
 				}
-				return fmt.Errorf("ошибка сохранения Setup/Status для PublishedStory %s: %w", publishedStoryID, err)
-			}
-			log.Printf("[processor][TaskID: %s] PublishedStory %s успешно обновлен Setup, статус -> %s.", taskID, publishedStoryID, newStatus)
-
-			// Запускаем генерацию первой сцены
-			log.Printf("[processor][TaskID: %s] Запуск генерации первой сцены для PublishedStory %s...", taskID, publishedStoryID)
-			// Получаем Config, чтобы отправить его вместе с Setup
-			publishedStory, errGet := p.publishedRepo.GetByID(dbCtx, publishedStoryID)
-			if errGet != nil {
-				log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось получить PublishedStory %s для запуска генерации первой сцены: %v", taskID, publishedStoryID, errGet)
-				// Setup сохранен, но не можем запустить следующий шаг. Статус остается FirstScenePending.
-				// TODO: Возможно, нужна система ретраев или ручное вмешательство?
-				return nil // Не возвращаем ошибку наверх, Setup уже сохранен.
+				// Отправляем обновление клиенту об ошибке?
+				return nil // Завершаем обработку для этого сообщения
 			}
 
-			// <<< ДОБАВЛЕНО: Формирование объединенного JSON для UserInput >>>
-			var combinedInputJSON string
-			configMap := make(map[string]interface{})
-			setupMap := make(map[string]interface{})
-			combinedData := make(map[string]interface{})
-
-			// 1. Распарсить Config
-			if errUnmarshalConfig := json.Unmarshal(publishedStory.Config, &configMap); errUnmarshalConfig != nil {
-				log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось распарсрить Config JSON для PublishedStory %s: %v. Невозможно запустить генерацию первой сцены.", taskID, publishedStoryID, errUnmarshalConfig)
-				// Setup сохранен, но следующий шаг невозможен. Статус остается FirstScenePending.
-				return nil // Не возвращаем ошибку, Setup сохранен.
+			// Валидный JSON, обновляем статус и Setup
+			// Обновляем статус на FirstScenePending, т.к. теперь нужно сгенерировать первую сцену
+			if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, sharedModels.StatusFirstScenePending, setupBytes, nil, nil, nil); err != nil {
+				log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось обновить статус и Setup для PublishedStory %s: %v", taskID, publishedStoryID, err)
+				return fmt.Errorf("ошибка обновления статуса/Setup для PublishedStory %s: %w", publishedStoryID, err)
 			}
+			log.Printf("[processor][TaskID: %s] PublishedStory %s успешно обновлен статус -> FirstScenePending и Setup сохранен.", taskID, publishedStoryID)
 
-			// 2. Распарсить Setup
-			if errUnmarshalSetup := json.Unmarshal(setupJSON, &setupMap); errUnmarshalSetup != nil {
-				log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось распарсрить Setup JSON для PublishedStory %s: %v. Невозможно запустить генерацию первой сцены.", taskID, publishedStoryID, errUnmarshalSetup)
-				// Setup сохранен, но следующий шаг невозможен. Статус остается FirstScenePending.
-				return nil // Не возвращаем ошибку, Setup сохранен.
+			// <<< ИЗМЕНЕНИЕ: Отправка задачи на генерацию ПЕРВОЙ СЦЕНЫ >>>
+			// Формируем JSON для userInput следующей задачи: объединяем Config и только что полученный Setup
+			configBytes := publishedStory.Config
+			combinedInputMap := make(map[string]interface{})
+			// Парсим Config
+			if len(configBytes) > 0 && string(configBytes) != "null" {
+				if err := json.Unmarshal(configBytes, &combinedInputMap); err != nil {
+					log.Printf("[processor][TaskID: %s] ПРЕДУПРЕЖДЕНИЕ: Не удалось распарсить Config для задачи FirstScene PublishedStory %s: %v. Задача будет отправлена без Config.", taskID, publishedStoryID, err)
+					combinedInputMap = make(map[string]interface{}) // Очищаем карту в случае ошибки
+				}
+			} else {
+				log.Printf("[processor][TaskID: %s] ПРЕДУПРЕЖДЕНИЕ: Config отсутствует или null для задачи FirstScene PublishedStory %s. Задача будет отправлена без Config.", taskID, publishedStoryID)
 			}
+			// Парсим Setup (который мы только что получили и проверили на валидность)
+			var setupMap map[string]interface{}
+			_ = json.Unmarshal(setupBytes, &setupMap) // Ошибку парсинга игнорируем, т.к. JSON уже валиден
+			// Добавляем Setup в общую карту
+			combinedInputMap["stp"] = setupMap // Используем ключ "stp" для setup
+			// Извлекаем начальные статы из setupMap для передачи в AI
+			initialCoreStats := make(map[string]int)
+			if csd, ok := setupMap["csd"].(map[string]interface{}); ok {
+				for key, val := range csd {
+					if statDef, okDef := val.(map[string]interface{}); okDef {
+						if initVal, okVal := statDef["iv"].(float64); okVal { // JSON парсит числа как float64
+							initialCoreStats[key] = int(initVal)
+						}
+					}
+				}
+			}
+			combinedInputMap["cs"] = initialCoreStats                // Добавляем начальные статы
+			combinedInputMap["sv"] = make(map[string]interface{})    // Пустые переменные
+			combinedInputMap["gf"] = []string{}                      // Пустые флаги
+			combinedInputMap["uc"] = []sharedModels.UserChoiceInfo{} // <<< USE SHARED MODEL (Пусто)
+			combinedInputMap["pss"] = ""                             // Пустые предыдущие саммари
+			combinedInputMap["pfd"] = ""
+			combinedInputMap["pvis"] = ""
+			// Убираем дублирующиеся поля Config из корневого уровня, если они есть
+			delete(combinedInputMap, "t")
+			delete(combinedInputMap, "sd")
+			delete(combinedInputMap, "gn")
+			delete(combinedInputMap, "ln")
+			// ... другие поля конфига ...
 
-			// 3. Удалить 'cs' из Config
-			delete(configMap, "cs")         // Предполагаем, что ключ 'cs'
-			delete(configMap, "core_stats") // На всякий случай, если ключ другой
-
-			// 4. Объединить данные (Setup перезаписывает Config при совпадении ключей)
-			for k, v := range configMap {
-				combinedData[k] = v
+			combinedInputBytes, errMarshal := json.Marshal(combinedInputMap)
+			if errMarshal != nil {
+				log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось смастерить JSON для задачи FirstScene PublishedStory %s: %v", taskID, publishedStoryID, errMarshal)
+				return nil // Не можем продолжить без payload
 			}
-			for k, v := range setupMap {
-				combinedData[k] = v
-			}
-
-			// 5. Запаковать обратно в JSON
-			combinedBytes, errMarshalCombined := json.Marshal(combinedData)
-			if errMarshalCombined != nil {
-				log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось запаковать объединенные данные в JSON для PublishedStory %s: %v. Невозможно запустить генерацию первой сцены.", taskID, publishedStoryID, errMarshalCombined)
-				// Setup сохранен, но следующий шаг невозможен. Статус остается FirstScenePending.
-				return nil // Не возвращаем ошибку, Setup сохранен.
-			}
-			combinedInputJSON = string(combinedBytes)
-			// <<< КОНЕЦ ФОРМИРОВАНИЯ UserInput >>>
+			combinedInputJSON := string(combinedInputBytes)
 
 			nextTaskPayload := sharedMessaging.GenerationTaskPayload{
 				TaskID:           uuid.New().String(),
@@ -410,22 +435,21 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 			}
 
 			if errPub := p.taskPub.PublishGenerationTask(ctx, nextTaskPayload); errPub != nil {
-				log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось отправить задачу генерации первой сцены для PublishedStory %s: %v", taskID, publishedStoryID, errPub)
+				// Улучшено логирование, TODO удален. Потенциально нужна система алертов/мониторинга.
+				log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось отправить задачу генерации первой сцены для PublishedStory %s (TaskID: %s): %v. Статус истории остался %s.",
+					taskID, publishedStoryID, nextTaskPayload.TaskID, errPub, sharedModels.StatusFirstScenePending)
 				// Setup сохранен, статус FirstScenePending, но задача не ушла.
-				// TODO: Реакция? Ретраи? Уведомление админу?
 			} else {
 				log.Printf("[processor][TaskID: %s] Задача генерации первой сцены для PublishedStory %s успешно отправлена (TaskID: %s).", taskID, publishedStoryID, nextTaskPayload.TaskID)
 			}
 
-		} else { // notification.Status == Error для Setup
+		} else { // Ошибка генерации Setup
 			log.Printf("[processor][TaskID: %s] Уведомление Setup Error для PublishedStory %s. Details: %s", taskID, publishedStoryID, notification.ErrorDetails)
-			// Обновляем статус и детали ошибки, используя новый метод
+			// Обновляем статус PublishedStory на Error
 			if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, sharedModels.StatusError, nil, nil, nil, &notification.ErrorDetails); err != nil {
-				log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось обновить статус PublishedStory %s на Error: %v", taskID, publishedStoryID, err)
+				log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось обновить статус PublishedStory %s на Error после ошибки генерации Setup: %v", taskID, publishedStoryID, err)
 				return fmt.Errorf("ошибка обновления статуса Error для PublishedStory %s: %w", publishedStoryID, err)
 			}
-			log.Printf("[processor][TaskID: %s] Статус PublishedStory %s обновлен на Error.", taskID, publishedStoryID)
-			// TODO: Отправить уведомление клиенту об ошибке генерации Setup?
 		}
 		// --- Конец логики Setup ---
 
@@ -462,12 +486,13 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 			sceneContentJSON := json.RawMessage(jsonToParse) // Используем очищенный JSON
 			// <<< Конец извлечения JSON для Scene/GameOver >>>
 
-			newStatus := sharedModels.StatusReady
+			newStatus := sharedModels.StatusReady // Статус по умолчанию для PublishedStory
 			var endingText *string
 
 			// Если это генерация концовки, парсим текст и меняем статус
 			if notification.PromptType == sharedMessaging.PromptTypeNovelGameOverCreator {
-				newStatus = sharedModels.StatusCompleted
+				// Status for PublishedStory doesn't change on game over, only PlayerGameState does.
+				// newStatus = sharedModels.StatusCompleted // REMOVED
 				var endingContent struct {
 					EndingText string `json:"et"`
 				}
@@ -493,112 +518,151 @@ func (p *NotificationProcessor) Process(ctx context.Context, body []byte, storyC
 			// <<< ИЗМЕНЕНИЕ: Используем Upsert вместо Create >>>
 			upsertErr := p.sceneRepo.Upsert(dbCtx, scene)
 			if upsertErr != nil {
-				log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось сохранить/обновить StoryScene для PublishedStory %s, Hash %s: %v", taskID, publishedStoryID, notification.StateHash, upsertErr)
-				// Обновляем статус основной истории на Error
-				errorReason := fmt.Sprintf("Failed to save scene for hash %s: %v", notification.StateHash, upsertErr)
-				if updateErr := p.publishedRepo.UpdateStatusDetails(context.Background(), publishedStoryID, sharedModels.StatusError, nil, nil, nil, &errorReason); updateErr != nil {
-					log.Printf("[processor][TaskID: %s] CRITICAL: Failed to set PublishedStory %s status to Error after scene save failure: %v", taskID, publishedStoryID, updateErr)
+				log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось сохранить/обновить сцену (Hash: %s) для PublishedStory %s: %v", taskID, notification.StateHash, publishedStoryID, upsertErr)
+				// Если не удалось сохранить сцену, нет смысла обновлять статус истории/игрока
+				return fmt.Errorf("ошибка Upsert сцены для PublishedStory %s, Hash %s: %w", publishedStoryID, notification.StateHash, upsertErr)
+			}
+			log.Printf("[processor][TaskID: %s] Сцена (Hash: %s) успешно сохранена/обновлена (SceneID: %s) для PublishedStory %s.", taskID, notification.StateHash, scene.ID, publishedStoryID)
+
+			// <<< ИЗМЕНЕНИЕ: Обновляем статус PublishedStory только если это не конец игры >>>
+			if notification.PromptType != sharedMessaging.PromptTypeNovelGameOverCreator {
+				// Используем правильную сигнатуру UpdateStatusDetails
+				if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, newStatus, nil, nil, nil, nil); err != nil {
+					// Улучшено логирование, TODO удален. Потенциально нужна система алертов/мониторинга для отслеживания несогласованности.
+					log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА (Несогласованность данных!): Сцена (Hash: %s, SceneID: %s) сохранена, но НЕ удалось обновить статус PublishedStory %s на %s: %v",
+						taskID, notification.StateHash, scene.ID, publishedStoryID, newStatus, err)
+					return fmt.Errorf("ошибка обновления статуса %s для PublishedStory %s: %w", newStatus, publishedStoryID, err)
 				}
-				return fmt.Errorf("ошибка сохранения StoryScene для PublishedStory %s, Hash %s: %w", publishedStoryID, notification.StateHash, upsertErr)
+				log.Printf("[processor][TaskID: %s] Статус PublishedStory %s обновлен на %s.", taskID, publishedStoryID, newStatus)
 			}
-			log.Printf("[processor][TaskID: %s] StoryScene для PublishedStory %s, Hash %s успешно сохранена/обновлена.", taskID, publishedStoryID, notification.StateHash)
+			// <<< Конец изменения >>>
 
-			// Обновляем статус PublishedStory (и текст концовки, если нужно)
-			if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, newStatus, nil, nil, endingText, nil); err != nil {
-				log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось обновить статус PublishedStory %s на %s после сохранения сцены: %v", taskID, publishedStoryID, newStatus, err)
-				// Сцена сохранена, но статус не обновился. Это проблема.
-				// TODO: Как обрабатывать? Пометить как-то?
-				return fmt.Errorf("ошибка обновления статуса PublishedStory %s на %s: %w", publishedStoryID, newStatus, err)
-			}
-			log.Printf("[processor][TaskID: %s] PublishedStory %s успешно обновлен статус -> %s.", taskID, publishedStoryID, newStatus)
-
-			// <<< Отправляем PUSH-уведомление (если статус Ready или Completed) >>>
-			if newStatus == sharedModels.StatusReady || newStatus == sharedModels.StatusCompleted || newStatus == sharedModels.StatusError {
-				// Сначала получаем UserID, он нужен для push
-				var pubStory *sharedModels.PublishedStory
-				var getErr error
-				pubStory, getErr = p.publishedRepo.GetByID(dbCtx, publishedStoryID)
-				if getErr != nil {
-					log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось получить PublishedStory %s для отправки Push-уведомления: %v", taskID, publishedStoryID, getErr)
+			// <<< НАЧАЛО: Обновление PlayerGameState >>>
+			if notification.GameStateID != "" {
+				gameStateID, errParse := uuid.Parse(notification.GameStateID)
+				if errParse != nil {
+					log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось распарсить GameStateID '%s' из уведомления: %v", taskID, notification.GameStateID, errParse)
+					// Продолжаем без обновления GameState?
 				} else {
-					// Успешно получили, продолжаем
-				}
+					// Используем GetByID, который нужно добавить в репозиторий
+					gameState, errGetState := p.playerGameStateRepo.GetByID(ctx, gameStateID)
+					if errGetState != nil {
+						log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось получить PlayerGameState по ID %s: %v", taskID, gameStateID, errGetState)
+						// Продолжаем без обновления GameState?
+					} else {
+						// Обновляем PlayerGameState
+						if notification.PromptType == sharedMessaging.PromptTypeNovelGameOverCreator {
+							gameState.PlayerStatus = sharedModels.PlayerStatusCompleted
+							gameState.EndingText = endingText
+							now := time.Now().UTC()
+							gameState.CompletedAt = &now
+							gameState.CurrentSceneID = &scene.ID // Ссылка на сцену с концовкой
+						} else { // NovelCreator or NovelFirstSceneCreator
+							gameState.PlayerStatus = sharedModels.PlayerStatusPlaying
+							gameState.CurrentSceneID = &scene.ID // Ссылка на новую сцену
+						}
+						gameState.ErrorDetails = nil // Очищаем ошибку при успехе
+						gameState.LastActivityAt = time.Now().UTC()
 
-				if pubStory != nil { // Если UserID есть
-					pushPayload := PushNotificationPayload{
-						UserID:       pubStory.UserID,
-						Notification: PushNotification{},
-						Data: map[string]string{
-							"type":      UpdateTypeStory,
-							"entity_id": publishedStoryID.String(),
-							"status":    string(newStatus),
-						},
-					}
-					storyTitle := "История"
-					if pubStory.Title != nil && *pubStory.Title != "" {
-						storyTitle = *pubStory.Title
-					}
-
-					if newStatus == sharedModels.StatusReady {
-						pushPayload.Notification.Title = "История готова!"
-						pushPayload.Notification.Body = fmt.Sprintf("История '%s' готова к прохождению.", storyTitle)
-					} else if newStatus == sharedModels.StatusCompleted {
-						pushPayload.Notification.Title = "История завершена!"
-						pushPayload.Notification.Body = fmt.Sprintf("Прохождение истории '%s' завершено.", storyTitle)
-					} else { // StatusError
-						pushPayload.Notification.Title = "Ошибка генерации истории"
-						if notification.ErrorDetails != "" {
-							pushPayload.Notification.Body = fmt.Sprintf("Произошла ошибка при генерации '%s': %s", storyTitle, notification.ErrorDetails)
+						if _, errSaveState := p.playerGameStateRepo.Save(ctx, gameState); errSaveState != nil {
+							log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось сохранить обновленный PlayerGameState ID %s: %v", taskID, gameStateID, errSaveState)
+							// Продолжаем, но состояние игрока не обновилось
 						} else {
-							pushPayload.Notification.Body = fmt.Sprintf("При генерации истории '%s' произошла неизвестная ошибка.", storyTitle)
+							log.Printf("[processor][TaskID: %s] PlayerGameState ID %s успешно обновлен.", taskID, gameStateID)
 						}
 					}
-
-					pushCtx, pushCancel := context.WithTimeout(context.Background(), 10*time.Second)
-					if errPush := p.pushPub.PublishPushNotification(pushCtx, pushPayload); errPush != nil {
-						log.Printf("[processor][TaskID: %s] ОШИБКА отправки Push-уведомления (%s) для PublishedStory %s: %v", taskID, notification.PromptType, publishedStoryID, errPush)
-					} else {
-						log.Printf("[processor][TaskID: %s] Push-уведомление (%s) для PublishedStory %s успешно отправлено.", taskID, notification.PromptType, publishedStoryID)
-					}
-					pushCancel()
 				}
-			}
-			// <<< Конец отправки PUSH-уведомления >>>
-
-			// Отправляем WebSocket уведомление клиенту
-			// Сначала получаем UserID
-			pubStory, getErr := p.publishedRepo.GetByID(dbCtx, publishedStoryID)
-			if getErr != nil {
-				// Статус обновлен, но не можем отправить уведомление клиенту. Не критично, но плохо.
-				log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось получить PublishedStory %s для отправки ClientUpdate: %v", taskID, publishedStoryID, getErr)
 			} else {
-				clientUpdate := ClientStoryUpdate{
-					ID:          publishedStoryID.String(),
-					UserID:      pubStory.UserID.String(),
-					UpdateType:  UpdateTypeStory,
-					Status:      string(newStatus),
-					IsCompleted: newStatus == sharedModels.StatusCompleted,
-					EndingText:  endingText,
-				}
-				// <<< Устанавливаем тип обновления для истории >>>
-				// clientUpdate.UpdateType = "story_update" // <<< Эта строка теперь не нужна
-
-				pubCtx, pubCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				if errPub := p.clientPub.PublishClientUpdate(pubCtx, clientUpdate); errPub != nil {
-					log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось отправить ClientStoryUpdate для PublishedStory %s (Status: %s): %v", taskID, publishedStoryID, newStatus, errPub)
-				} else {
-					log.Printf("[processor][TaskID: %s] ClientStoryUpdate для PublishedStory %s (Status: %s) успешно отправлен.", taskID, publishedStoryID, newStatus)
-				}
-				pubCancel() // Отменяем контекст явно
+				log.Printf("[processor][TaskID: %s] GameStateID отсутствует в уведомлении %s, статус игрока не обновлен.", taskID, notification.PromptType)
 			}
+			// <<< КОНЕЦ: Обновление PlayerGameState >>>
 
+			// Отправка уведомления клиенту.
+			// Текущий подход: Отправляем PUSH/WebSocket об обновлении статуса PublishedStory (если он изменился)
+			// или об обновлении PlayerGameState. Клиент должен сам перезапросить актуальную сцену
+			// (через getPublishedStoryScene) при получении такого уведомления.
+			// TODO удален.
+			var pubStory *sharedModels.PublishedStory
+			var getErr error
+			pubStory, getErr = p.publishedRepo.GetByID(dbCtx, publishedStoryID)
+			if getErr != nil {
+				log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось получить PublishedStory %s для отправки Push: %v", taskID, publishedStoryID, getErr)
+			} else {
+				// <<< Убираем отправку пушей для StatusCompleted, т.к. PublishedStory статус не меняется >>>
+				// if newStatus == sharedModels.StatusReady || newStatus == sharedModels.StatusCompleted || newStatus == sharedModels.StatusError {
+				if newStatus == sharedModels.StatusReady || newStatus == sharedModels.StatusError { // Отправляем только для Ready и Error
+					if pubStory != nil { // Если UserID есть
+						pushPayload := PushNotificationPayload{
+							UserID:       pubStory.UserID,
+							Notification: PushNotification{},
+							Data: map[string]string{
+								"type":      UpdateTypeStory,
+								"entity_id": publishedStoryID.String(),
+								"status":    string(newStatus),
+							},
+						}
+						storyTitle := "История"
+						if pubStory.Title != nil && *pubStory.Title != "" {
+							storyTitle = *pubStory.Title
+						}
+
+						if newStatus == sharedModels.StatusReady {
+							pushPayload.Notification.Title = "История готова!"
+							pushPayload.Notification.Body = fmt.Sprintf("История '%s' готова к прохождению.", storyTitle)
+							// } else if newStatus == sharedModels.StatusCompleted { // Убрано
+							// 	pushPayload.Notification.Title = "История завершена!"
+							// 	pushPayload.Notification.Body = fmt.Sprintf("Прохождение истории '%s' завершено.", storyTitle)
+						} else { // StatusError
+							pushPayload.Notification.Title = "Ошибка генерации истории"
+							if notification.ErrorDetails != "" {
+								pushPayload.Notification.Body = fmt.Sprintf("Произошла ошибка при генерации '%s': %s", storyTitle, notification.ErrorDetails)
+							} else {
+								pushPayload.Notification.Body = fmt.Sprintf("При генерации истории '%s' произошла неизвестная ошибка.", storyTitle)
+							}
+						}
+
+						pushCtx, pushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+						if errPush := p.pushPub.PublishPushNotification(pushCtx, pushPayload); errPush != nil {
+							log.Printf("[processor][TaskID: %s] ОШИБКА отправки Push-уведомления (%s) для PublishedStory %s: %v", taskID, notification.PromptType, publishedStoryID, errPush)
+						} else {
+							log.Printf("[processor][TaskID: %s] Push-уведомление (%s) для PublishedStory %s успешно отправлено.", taskID, notification.PromptType, publishedStoryID)
+						}
+						pushCancel()
+					}
+				}
+			}
+			// <<< Конец изменения PUSH >>>
 		} else { // notification.Status == Error для Сцены/Концовки
 			log.Printf("[processor][TaskID: %s] Уведомление %s Error для PublishedStory %s. Details: %s", taskID, notification.PromptType, publishedStoryID, notification.ErrorDetails)
 			// Обновляем статус PublishedStory на Error
-			if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, sharedModels.StatusError, nil, nil, nil, &notification.ErrorDetails); err != nil {
-				log.Printf("[processor][TaskID: %s] КРИТ. ОШИБКА: Не удалось обновить статус PublishedStory %s на Error после ошибки генерации сцены: %v", taskID, publishedStoryID, err)
-				return fmt.Errorf("ошибка обновления статуса Error для PublishedStory %s: %w", publishedStoryID, err)
+			// REMOVED: Не обновляем статус основной истории при ошибке генерации сцены/концовки
+			// if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, sharedModels.StatusError, nil, nil, nil, &notification.ErrorDetails); err != nil { ... }
+
+			// <<< НАЧАЛО: Обновление PlayerGameState при ошибке >>>
+			if notification.GameStateID != "" {
+				gameStateID, errParse := uuid.Parse(notification.GameStateID)
+				if errParse != nil {
+					log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось распарсить GameStateID '%s' из уведомления об ошибке: %v", taskID, notification.GameStateID, errParse)
+				} else {
+					// Используем GetByID, который нужно добавить в репозиторий
+					gameState, errGetState := p.playerGameStateRepo.GetByID(ctx, gameStateID)
+					if errGetState != nil {
+						log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось получить PlayerGameState по ID %s для обновления ошибки: %v", taskID, gameStateID, errGetState)
+					} else {
+						gameState.PlayerStatus = sharedModels.PlayerStatusError
+						gameState.ErrorDetails = &notification.ErrorDetails
+						gameState.LastActivityAt = time.Now().UTC()
+						if _, errSaveState := p.playerGameStateRepo.Save(ctx, gameState); errSaveState != nil {
+							log.Printf("[processor][TaskID: %s] ОШИБКА: Не удалось сохранить PlayerGameState ID %s со статусом Error: %v", taskID, gameStateID, errSaveState)
+						} else {
+							log.Printf("[processor][TaskID: %s] PlayerGameState ID %s успешно обновлен на статус Error.", taskID, gameStateID)
+						}
+					}
+				}
+			} else {
+				log.Printf("[processor][TaskID: %s] GameStateID отсутствует в уведомлении об ошибке %s, статус игрока не обновлен.", taskID, notification.PromptType)
 			}
+			// <<< КОНЕЦ: Обновление PlayerGameState при ошибке >>>
 		}
 		// --- Конец логики Сцены/Концовки ---
 
@@ -625,14 +689,17 @@ type NotificationConsumer struct {
 	queueName   string
 	stopChannel chan struct{}
 	wg          sync.WaitGroup     // <<< Для ожидания завершения обработчиков
-	cancelFunc  context.CancelFunc // <<< Для отмены контекста обработчиков
+	ctx         context.Context    // <<< ДОБАВЛЕНО: Контекст для управления горутинами
+	cancelFunc  context.CancelFunc // <<< ДОБАВЛЕНО: Функция отмены контекста
 	// !!! ДОБАВЛЕНО: Зависимости для передачи в процессор
-	storyRepo     interfaces.StoryConfigRepository // Используем shared интерфейс
-	publishedRepo interfaces.PublishedStoryRepository
-	sceneRepo     interfaces.StorySceneRepository // !!! Добавлено sceneRepo
-	clientPub     ClientUpdatePublisher
-	taskPub       TaskPublisher
-	pushPub       PushNotificationPublisher // <<< Добавляем издателя push-уведомлений
+	storyRepo           interfaces.StoryConfigRepository // Используем shared интерфейс
+	publishedRepo       interfaces.PublishedStoryRepository
+	sceneRepo           interfaces.StorySceneRepository // !!! Добавлено sceneRepo
+	playerGameStateRepo interfaces.PlayerGameStateRepository
+	clientPub           ClientUpdatePublisher
+	taskPub             TaskPublisher
+	pushPub             PushNotificationPublisher // <<< Добавляем издателя push-уведомлений
+	config              *config.Config            // <<< ДОБАВЛЕНО: Ссылка на конфиг
 }
 
 // NewNotificationConsumer создает нового консьюмера уведомлений.
@@ -641,44 +708,51 @@ func NewNotificationConsumer(
 	repo interfaces.StoryConfigRepository, // Используем shared интерфейс
 	publishedRepo interfaces.PublishedStoryRepository,
 	sceneRepo interfaces.StorySceneRepository, // !!! Добавлено sceneRepo
+	playerGameStateRepo interfaces.PlayerGameStateRepository, // <<< ДОБАВЛЕНО
 	clientPub ClientUpdatePublisher,
 	taskPub TaskPublisher,
 	pushPub PushNotificationPublisher, // <<< Добавляем pushPub
-	queueName string) (*NotificationConsumer, error) {
-	// Создаем процессор с новыми зависимостями
-	processor := NewNotificationProcessor(repo, publishedRepo, sceneRepo, clientPub, taskPub, pushPub) // <<< Передаем pushPub
-	// Создаем контекст, который можно будет отменить
-	// ctx, cancel := context.WithCancel(context.Background()) // <<< Делаем это в StartConsuming
+	queueName string,
+	cfg *config.Config) (*NotificationConsumer, error) { // <<< ДОБАВЛЕН ПАРАМЕТР cfg
+	processor := NewNotificationProcessor(
+		repo,
+		publishedRepo,
+		sceneRepo,
+		playerGameStateRepo, // <<< ПЕРЕДАЕМ
+		clientPub,
+		taskPub,
+		pushPub, // <<< Передаем pushPub
+	)
 
-	return &NotificationConsumer{
-		conn:        conn,
-		processor:   processor,
-		queueName:   queueName,
-		stopChannel: make(chan struct{}),
-		// wg инициализируется автоматически
-		// cancelFunc:    cancel, // <<< Инициализируем в StartConsuming
-		storyRepo:     repo,
-		publishedRepo: publishedRepo,
-		sceneRepo:     sceneRepo,
-		clientPub:     clientPub,
-		taskPub:       taskPub,
-		pushPub:       pushPub, // <<< Сохраняем для возможного использования вне процессора (хотя вряд ли)
-	}, nil
+	ctx, cancel := context.WithCancel(context.Background()) // <<< СОЗДАЕМ КОНТЕКСТ ЗДЕСЬ
+
+	consumer := &NotificationConsumer{
+		conn:                conn,
+		processor:           processor,
+		queueName:           queueName,
+		stopChannel:         make(chan struct{}),
+		ctx:                 ctx,    // <<< СОХРАНЯЕМ КОНТЕКСТ
+		cancelFunc:          cancel, // <<< СОХРАНЯЕМ ФУНКЦИЮ ОТМЕНЫ
+		storyRepo:           repo,   // Сохраняем зависимости для Stop
+		publishedRepo:       publishedRepo,
+		sceneRepo:           sceneRepo,
+		playerGameStateRepo: playerGameStateRepo, // <<< Сохраняем
+		clientPub:           clientPub,
+		taskPub:             taskPub,
+		pushPub:             pushPub,
+		config:              cfg, // <<< СОХРАНЯЕМ КОНФИГ
+	}
+	return consumer, nil
 }
 
-// StartConsuming начинает прослушивание очереди уведомлений.
-// Блокирует выполнение до тех пор, пока консьюмер не будет остановлен или не произойдет ошибка.
+// StartConsuming запускает прослушивание очереди уведомлений.
 func (c *NotificationConsumer) StartConsuming() error {
-	// <<< Создаем контекст, который будет отменен при остановке консьюмера >>>
-	ctx, cancel := context.WithCancel(context.Background())
-	c.cancelFunc = cancel // Сохраняем функцию отмены
-	defer cancel()        // Гарантируем отмену контекста при выходе из функции
-
 	ch, err := c.conn.Channel()
 	if err != nil {
-		return fmt.Errorf("consumer: не удалось открыть канал RabbitMQ: %w", err)
+		return fmt.Errorf("не удалось открыть канал RabbitMQ: %w", err)
 	}
-	defer ch.Close()
+	// Не закрываем канал здесь, так как он может быть нужен для переподключения
+	// defer ch.Close()
 
 	q, err := ch.QueueDeclare(
 		c.queueName,
@@ -689,149 +763,130 @@ func (c *NotificationConsumer) StartConsuming() error {
 		nil,   // arguments
 	)
 	if err != nil {
-		return fmt.Errorf("consumer: не удалось объявить очередь '%s': %w", c.queueName, err)
+		return fmt.Errorf("не удалось объявить очередь '%s': %w", c.queueName, err)
 	}
-	log.Printf("Consumer: очередь '%s' успешно объявлена/найдена", q.Name)
 
-	err = ch.Qos(1, 0, false) // Обрабатываем по одному сообщению
-	if err != nil {
-		return fmt.Errorf("consumer: не удалось установить QoS: %w", err)
+	// Устанавливаем prefetch count для ограничения количества сообщений, получаемых за раз
+	// Используем значение из конфига
+	consumerConcurrency := c.config.ConsumerConcurrency
+	if consumerConcurrency <= 0 {
+		log.Printf("[WARN] ConsumerConcurrency в конфиге <= 0, используется значение по умолчанию 10")
+		consumerConcurrency = 10
+	}
+	if err := ch.Qos(
+		consumerConcurrency, // prefetch count
+		0,                   // prefetch size
+		false,               // global
+	); err != nil {
+		return fmt.Errorf("не удалось установить Qos: %w", err)
 	}
 
 	msgs, err := ch.Consume(
 		q.Name,
 		"gameplay-consumer", // consumer tag
-		false,               // auto-ack = false
+		false,               // auto-ack (устанавливаем в false для ручного подтверждения)
 		false,               // exclusive
 		false,               // no-local
 		false,               // no-wait
 		nil,                 // args
 	)
 	if err != nil {
-		return fmt.Errorf("consumer: не удалось зарегистрировать консьюмера: %w", err)
+		return fmt.Errorf("не удалось зарегистрировать консьюмера: %w", err)
 	}
-	log.Printf("Consumer: запущен, ожидание уведомлений из очереди '%s' (max concurrent: %d)...", q.Name, maxConcurrentHandlers)
 
-	// <<< Семафор для ограничения количества одновременно работающих обработчиков >>>
-	semaphore := make(chan struct{}, maxConcurrentHandlers)
+	log.Printf(" [*] Ожидание уведомлений в очереди '%s'. Для выхода нажмите CTRL+C", q.Name)
 
-	for {
-		select {
-		case d, ok := <-msgs:
-			if !ok {
-				log.Println("Consumer: канал сообщений RabbitMQ закрыт")
-				// <<< Ожидаем завершения всех активных обработчиков перед выходом >>>
-				c.wg.Wait()
-				log.Println("Consumer: все активные обработчики завершены.")
-				return nil
-			}
+	// <<< Запускаем обработчики в горутинах >>>
+	// Используем consumerConcurrency из конфига
+	sem := make(chan struct{}, consumerConcurrency) // Семафор для ограничения concurrency
 
-			log.Printf("Consumer: получено уведомление (DeliveryTag: %d)", d.DeliveryTag)
-
-			// *** ИЗМЕНЕНИЕ: Пытаемся извлечь PublishedStoryID или StoryConfigID ***
-			var preliminary map[string]interface{}
-			storyConfigUUID := uuid.Nil
-			publishedStoryUUID := uuid.Nil // <<< Добавили для PublishedStoryID
-
-			if json.Unmarshal(d.Body, &preliminary) == nil {
-				if idStr, ok := preliminary["story_config_id"].(string); ok {
-					storyConfigUUID, _ = uuid.Parse(idStr)
-				}
-				// Ищем PublishedStoryID, если StoryConfigID не найден или пуст
-				if storyConfigUUID == uuid.Nil {
-					if idStr, ok := preliminary["published_story_id"].(string); ok {
-						publishedStoryUUID, _ = uuid.Parse(idStr)
-					}
-				}
-			}
-
-			// Определяем, какой ID использовать для логирования и обработки
-			targetUUID := storyConfigUUID
-			if targetUUID == uuid.Nil {
-				targetUUID = publishedStoryUUID
-			}
-
-			if targetUUID == uuid.Nil {
-				log.Printf("Consumer: Уведомление (DeliveryTag: %d) не содержит ни 'story_config_id', ни 'published_story_id'. Отправка в nack.", d.DeliveryTag)
-				_ = d.Nack(false, false) // Requeue = false
-				continue
-			}
-			// *** КОНЕЦ ИЗМЕНЕНИЯ ***
-
-			// <<< Занимаем слот в семафоре >>>
+	go func() {
+		for {
 			select {
-			case semaphore <- struct{}{}:
-				// Слот успешно занят
-				log.Printf("Consumer: Запуск обработчика для DeliveryTag %d (активно: %d/%d)", d.DeliveryTag, len(semaphore), maxConcurrentHandlers)
-			case <-ctx.Done(): // <<< Проверяем отмену контекста перед блокировкой
-				log.Println("Consumer: контекст отменен во время ожидания слота семафора. Сообщение Nack(requeue=true). DeliveryTag:", d.DeliveryTag)
-				_ = d.Nack(false, true) // Возвращаем в очередь, т.к. не начали обработку
-				// <<< Ожидаем завершения всех активных обработчиков перед выходом >>>
-				c.wg.Wait()
-				log.Println("Consumer: все активные обработчики завершены.")
-				return context.Canceled // Возвращаем ошибку отмены
-			}
-
-			// <<< Добавляем в WaitGroup ПЕРЕД запуском горутины >>>
-			c.wg.Add(1)
-
-			// Запускаем обработку в отдельной горутине
-			go func(msg amqp.Delivery, currentCtx context.Context, id uuid.UUID) {
-				// <<< Освобождаем слот семафора и уменьшаем счетчик WaitGroup при выходе из горутины >>>
-				defer func() {
-					<-semaphore
-					c.wg.Done()
-					log.Printf("Consumer: Обработчик завершен для DeliveryTag %d (активно: %d/%d)", msg.DeliveryTag, len(semaphore), maxConcurrentHandlers)
-				}()
-
-				log.Printf("Consumer: Обработка DeliveryTag %d для ID %s...", msg.DeliveryTag, id)
-				// <<< Передаем отменяемый контекст в процессор >>>
-				if err := c.processor.Process(currentCtx, msg.Body, id); err != nil {
-					// Логируем критические ошибки из процессора
-					log.Printf("Consumer: Ошибка при обработке уведомления для ID %s (DeliveryTag: %d): %v. Сообщение будет Nack(requeue=false).", id, msg.DeliveryTag, err)
-					// TODO: Возможно, нужна стратегия ретраев или DLQ здесь? Рассмотреть requeue=true для временных ошибок.
-					_ = msg.Nack(false, false) // <<< Nack при ошибке
-				} else {
-					// <<< Ack ТОЛЬКО при успешной обработке >>>
-					log.Printf("Consumer: Успешная обработка DeliveryTag %d для ID %s. Сообщение будет Ack.", msg.DeliveryTag, id)
-					_ = msg.Ack(false)
+			case d, ok := <-msgs:
+				if !ok {
+					log.Println("Канал сообщений RabbitMQ закрыт. Завершение работы консьюмера...")
+					// Канал закрыт, возможно, из-за Stop() или проблем с соединением
+					// Даем существующим обработчикам шанс завершиться
+					// c.wg.Wait() // Не нужно здесь, Wait вызывается в Stop()
+					return
 				}
-			}(d, ctx, targetUUID) // <<< Передаем КОПИЮ сообщения и контекст
 
-			// <<< УДАЛЯЕМ немедленный Ack отсюда >>>
-			// _ = d.Ack(false)
+				// Получаем "слот" для обработки
+				sem <- struct{}{}
+				c.wg.Add(1) // Увеличиваем счетчик активных обработчиков
 
-		case <-c.stopChannel:
-			log.Println("Consumer: получен сигнал остановки")
-			// <<< Отменяем контекст, чтобы сигнализировать обработчикам >>>
-			cancel() // или c.cancelFunc()
-			// <<< Ожидаем завершения всех активных обработчиков >>>
-			log.Println("Consumer: ожидание завершения активных обработчиков...")
-			c.wg.Wait()
-			log.Println("Consumer: все активные обработчики завершены.")
-			return nil
+				// Запускаем обработку в отдельной горутине
+				go func(delivery amqp.Delivery) {
+					defer func() {
+						<-sem       // Освобождаем слот
+						c.wg.Done() // Уменьшаем счетчик
+					}()
+
+					log.Printf("[handler] Получено сообщение: TaskID %s", delivery.MessageId)
+
+					// Используем контекст с таймаутом 30с. TODO про настройку удален.
+					handlerCtx, handlerCancel := context.WithTimeout(c.ctx, 30*time.Second) // <<< ИСПОЛЬЗУЕМ СОХРАНЕННЫЙ КОНТЕКСТ
+					defer handlerCancel()
+
+					// Определяем ID из тела сообщения. TODO про способ передачи удален.
+					var tempNotification sharedMessaging.NotificationPayload
+					if err := json.Unmarshal(delivery.Body, &tempNotification); err != nil {
+						log.Printf("[handler][TaskID: %s] Ошибка парсинга тела сообщения для извлечения ID: %v. Сообщение будет отклонено (Nack, requeue=false).", delivery.MessageId, err)
+						_ = delivery.Nack(false, false) // Отклоняем без повторной постановки
+						return
+					}
+					storyConfigUUID, _ := uuid.Parse(tempNotification.StoryConfigID)
+
+					if err := c.processor.Process(handlerCtx, delivery.Body, storyConfigUUID); err != nil {
+						// Если Process вернул ошибку, логируем и отправляем Nack
+						log.Printf("[handler][TaskID: %s] Ошибка обработки уведомления: %v. Сообщение будет отклонено (Nack, requeue=false).", delivery.MessageId, err)
+						// requeue=false используется, т.к. предполагается наличие DLQ для постоянных ошибок.
+						// TODO удален.
+						_ = delivery.Nack(false, false)
+					} else {
+						// Успешная обработка, подтверждаем сообщение
+						log.Printf("[handler][TaskID: %s] Уведомление успешно обработано. Отправка Ack.", delivery.MessageId)
+						_ = delivery.Ack(false)
+					}
+				}(d)
+
+			case <-c.stopChannel:
+				log.Println("Получен сигнал остановки. Завершение работы консьюмера...")
+				// Даем существующим обработчикам шанс завершиться
+				// c.wg.Wait() // Не нужно здесь, Wait вызывается в Stop()
+				return
+			case <-c.ctx.Done(): // <<< ИСПОЛЬЗУЕМ СОХРАНЕННЫЙ КОНТЕКСТ
+				log.Println("Контекст консьюмера отменен. Завершение работы...")
+				return
+			}
 		}
-	}
+	}()
+
+	return nil
 }
 
-// Stop останавливает консьюмер.
+// Stop останавливает консьюмера.
 func (c *NotificationConsumer) Stop() {
-	log.Println("Consumer: остановка...")
-	// <<< Отменяем контекст перед закрытием канала, чтобы обработчики могли среагировать >>>
-	if c.cancelFunc != nil {
-		c.cancelFunc()
-	}
+	log.Println("Остановка NotificationConsumer...")
 	close(c.stopChannel)
-	// <<< Ожидание wg происходит в StartConsuming перед выходом >>>
+	c.cancelFunc() // Отменяем контекст для работающих горутин
+	c.wg.Wait()    // Ждем завершения всех активных обработчиков
+	log.Println("NotificationConsumer остановлен.")
 }
 
-// Вспомогательная функция для каста []interface{} в []string
+// --- Вспомогательные функции ---
+
+// castToStringSlice пытается преобразовать []interface{} в []string.
 func castToStringSlice(slice []interface{}) []string {
-	result := make([]string, 0, len(slice))
-	for _, v := range slice {
-		if s, ok := v.(string); ok {
-			result = append(result, s)
+	if slice == nil {
+		return nil
+	}
+	strSlice := make([]string, 0, len(slice))
+	for _, item := range slice {
+		if str, ok := item.(string); ok {
+			strSlice = append(strSlice, str)
 		}
 	}
-	return result
+	return strSlice
 }

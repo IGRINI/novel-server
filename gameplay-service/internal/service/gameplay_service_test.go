@@ -9,9 +9,11 @@ import (
 	// "novel-server/gameplay-service/internal/messaging"
 	messagingMocks "novel-server/gameplay-service/internal/messaging/mocks"
 	// "novel-server/gameplay-service/internal/models" // <<< Удаляем старый импорт
-	// repositoryMocks "novel-server/gameplay-service/internal/repository/mocks" // <<< Удаляем старый импорт мока
+	// repositoryMocks "novel-server/shared/interfaces/mocks" // <<< Удаляем старый импорт мока
 	"novel-server/gameplay-service/internal/service"
-	repositoryMocks "novel-server/shared/interfaces/mocks" // <<< Добавляем новый импорт мока
+	sharedMocks "novel-server/shared/interfaces/mocks" // <<< Используем моки из shared для ВСЕХ интерфейсов
+
+	// <<< Добавляем импорт для интерфейсов
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
 	"testing"
@@ -30,15 +32,33 @@ func TestGenerateInitialStory(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("Successful initial generation", func(t *testing.T) {
-		mockRepo := new(repositoryMocks.StoryConfigRepository) // Используем мок из shared/interfaces/mocks
-		mockPublisher := new(messagingMocks.TaskPublisher)     // Используем мок из пакета
-		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, nil, mockPublisher, nil, zap.NewNop())
+		// Используем моки из gameplay-service и shared/interfaces/mocks
+		mockStoryConfigRepo := new(sharedMocks.StoryConfigRepository)
+		mockPublishedStoryRepo := new(sharedMocks.PublishedStoryRepository)
+		mockStorySceneRepo := new(sharedMocks.StorySceneRepository)
+		mockPlayerProgressRepo := new(sharedMocks.PlayerProgressRepository)
+		mockPlayerGameStateRepo := new(sharedMocks.PlayerGameStateRepository)
+		mockLikeRepo := new(sharedMocks.LikeRepository)
+		mockPublisher := new(messagingMocks.TaskPublisher)
+		mockAuthClient := new(sharedMocks.AuthServiceClient) // Используем мок из shared
+		gameplayService := service.NewGameplayService(
+			mockStoryConfigRepo,
+			mockPublishedStoryRepo,
+			mockStorySceneRepo,
+			mockPlayerProgressRepo,
+			mockPlayerGameStateRepo,
+			mockLikeRepo,
+			mockPublisher,
+			nil, // notificationPublisher
+			zap.NewNop(),
+			mockAuthClient,
+		)
 
 		// Ожидаем вызов CountActiveGenerations, возвращаем 0
-		mockRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
+		mockStoryConfigRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
 
 		// Ожидаем вызов Create
-		mockRepo.On("Create", ctx, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { // <<< Используем sharedModels
+		mockStoryConfigRepo.On("Create", ctx, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { // <<< Используем sharedModels
 			// Проверяем основные поля создаваемого конфига
 			assert.Equal(t, userID, cfg.UserID)
 			assert.Equal(t, sharedModels.StatusGenerating, cfg.Status) // <<< Используем sharedModels
@@ -55,10 +75,8 @@ func TestGenerateInitialStory(t *testing.T) {
 		mockPublisher.On("PublishGenerationTask", ctx, mock.MatchedBy(func(payload sharedMessaging.GenerationTaskPayload) bool {
 			assert.Equal(t, initialPrompt, payload.UserInput)
 			assert.Equal(t, sharedMessaging.PromptTypeNarrator, payload.PromptType)
-			assert.Empty(t, payload.InputData)        // InputData должен быть пустым
 			assert.NotEmpty(t, payload.StoryConfigID) // StoryConfigID должен быть
 			assert.NotEmpty(t, payload.TaskID)
-			// assert.Equal(t, strconv.FormatUint(userID, 10), payload.UserID)
 			assert.Equal(t, userID.String(), payload.UserID) // <<< Check UUID string
 			return true
 		})).Return(nil).Once()
@@ -74,17 +92,23 @@ func TestGenerateInitialStory(t *testing.T) {
 		assert.NotEmpty(t, createdConfig.ID)
 
 		// Убеждаемся, что все ожидаемые вызовы были сделаны
-		mockRepo.AssertExpectations(t)
+		mockStoryConfigRepo.AssertExpectations(t)
 		mockPublisher.AssertExpectations(t)
 	})
 
 	t.Run("Generation limit reached", func(t *testing.T) {
-		mockRepo := new(repositoryMocks.StoryConfigRepository)
+		mockStoryConfigRepo := new(sharedMocks.StoryConfigRepository)
+		mockPublishedStoryRepo := new(sharedMocks.PublishedStoryRepository)
+		mockStorySceneRepo := new(sharedMocks.StorySceneRepository)
+		mockPlayerProgressRepo := new(sharedMocks.PlayerProgressRepository)
+		mockPlayerGameStateRepo := new(sharedMocks.PlayerGameStateRepository)
+		mockLikeRepo := new(sharedMocks.LikeRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, nil, mockPublisher, nil, zap.NewNop())
+		mockAuthClient := new(sharedMocks.AuthServiceClient)
+		gameplayService := service.NewGameplayService(mockStoryConfigRepo, mockPublishedStoryRepo, mockStorySceneRepo, mockPlayerProgressRepo, mockPlayerGameStateRepo, mockLikeRepo, mockPublisher, nil, zap.NewNop(), mockAuthClient)
 
 		// Ожидаем вызов CountActiveGenerations, возвращаем лимит (1)
-		mockRepo.On("CountActiveGenerations", ctx, userID).Return(1, nil).Once()
+		mockStoryConfigRepo.On("CountActiveGenerations", ctx, userID).Return(1, nil).Once()
 
 		// Вызываем тестируемый метод
 		createdConfig, err := gameplayService.GenerateInitialStory(ctx, userID, initialPrompt, "en")
@@ -95,18 +119,24 @@ func TestGenerateInitialStory(t *testing.T) {
 		assert.True(t, errors.Is(err, sharedModels.ErrUserHasActiveGeneration))
 
 		// Убеждаемся, что Create и Publish не вызывались
-		mockRepo.AssertExpectations(t)
+		mockStoryConfigRepo.AssertExpectations(t)
 		mockPublisher.AssertNotCalled(t, "PublishGenerationTask", mock.Anything, mock.Anything)
 	})
 
 	t.Run("Error counting active generations", func(t *testing.T) {
-		mockRepo := new(repositoryMocks.StoryConfigRepository)
+		mockStoryConfigRepo := new(sharedMocks.StoryConfigRepository)
+		mockPublishedStoryRepo := new(sharedMocks.PublishedStoryRepository)
+		mockStorySceneRepo := new(sharedMocks.StorySceneRepository)
+		mockPlayerProgressRepo := new(sharedMocks.PlayerProgressRepository)
+		mockPlayerGameStateRepo := new(sharedMocks.PlayerGameStateRepository)
+		mockLikeRepo := new(sharedMocks.LikeRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, nil, mockPublisher, nil, zap.NewNop())
+		mockAuthClient := new(sharedMocks.AuthServiceClient)
+		gameplayService := service.NewGameplayService(mockStoryConfigRepo, mockPublishedStoryRepo, mockStorySceneRepo, mockPlayerProgressRepo, mockPlayerGameStateRepo, mockLikeRepo, mockPublisher, nil, zap.NewNop(), mockAuthClient)
 		dbError := errors.New("database error")
 
 		// Ожидаем вызов CountActiveGenerations, возвращаем ошибку
-		mockRepo.On("CountActiveGenerations", ctx, userID).Return(0, dbError).Once()
+		mockStoryConfigRepo.On("CountActiveGenerations", ctx, userID).Return(0, dbError).Once()
 
 		// Вызываем тестируемый метод
 		createdConfig, err := gameplayService.GenerateInitialStory(ctx, userID, initialPrompt, "en")
@@ -118,21 +148,27 @@ func TestGenerateInitialStory(t *testing.T) {
 		assert.True(t, errors.Is(err, dbError)) // Проверяем, что исходная ошибка обернута
 
 		// Убеждаемся, что Create и Publish не вызывались
-		mockRepo.AssertExpectations(t)
+		mockStoryConfigRepo.AssertExpectations(t)
 		mockPublisher.AssertNotCalled(t, "PublishGenerationTask", mock.Anything, mock.Anything)
 	})
 
 	t.Run("Error creating draft", func(t *testing.T) {
-		mockRepo := new(repositoryMocks.StoryConfigRepository)
+		mockStoryConfigRepo := new(sharedMocks.StoryConfigRepository)
+		mockPublishedStoryRepo := new(sharedMocks.PublishedStoryRepository)
+		mockStorySceneRepo := new(sharedMocks.StorySceneRepository)
+		mockPlayerProgressRepo := new(sharedMocks.PlayerProgressRepository)
+		mockPlayerGameStateRepo := new(sharedMocks.PlayerGameStateRepository)
+		mockLikeRepo := new(sharedMocks.LikeRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, nil, mockPublisher, nil, zap.NewNop())
+		mockAuthClient := new(sharedMocks.AuthServiceClient)
+		gameplayService := service.NewGameplayService(mockStoryConfigRepo, mockPublishedStoryRepo, mockStorySceneRepo, mockPlayerProgressRepo, mockPlayerGameStateRepo, mockLikeRepo, mockPublisher, nil, zap.NewNop(), mockAuthClient)
 		createError := errors.New("failed to create")
 
 		// Ожидаем вызов CountActiveGenerations, возвращаем 0
-		mockRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
+		mockStoryConfigRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
 
 		// Ожидаем вызов Create, возвращаем ошибку
-		mockRepo.On("Create", ctx, mock.AnythingOfType("*sharedmodels.StoryConfig")).Return(createError).Once() // <<< Используем sharedModels
+		mockStoryConfigRepo.On("Create", ctx, mock.AnythingOfType("*sharedmodels.StoryConfig")).Return(createError).Once() // <<< Используем sharedModels
 
 		// Вызываем тестируемый метод
 		createdConfig, err := gameplayService.GenerateInitialStory(ctx, userID, initialPrompt, "en")
@@ -144,22 +180,28 @@ func TestGenerateInitialStory(t *testing.T) {
 		assert.True(t, errors.Is(err, createError))
 
 		// Убеждаемся, что Publish не вызывался
-		mockRepo.AssertExpectations(t)
+		mockStoryConfigRepo.AssertExpectations(t)
 		mockPublisher.AssertNotCalled(t, "PublishGenerationTask", mock.Anything, mock.Anything)
 	})
 
 	t.Run("Error publishing task", func(t *testing.T) {
-		mockRepo := new(repositoryMocks.StoryConfigRepository)
+		mockStoryConfigRepo := new(sharedMocks.StoryConfigRepository)
+		mockPublishedStoryRepo := new(sharedMocks.PublishedStoryRepository)
+		mockStorySceneRepo := new(sharedMocks.StorySceneRepository)
+		mockPlayerProgressRepo := new(sharedMocks.PlayerProgressRepository)
+		mockPlayerGameStateRepo := new(sharedMocks.PlayerGameStateRepository)
+		mockLikeRepo := new(sharedMocks.LikeRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, nil, mockPublisher, nil, zap.NewNop())
+		mockAuthClient := new(sharedMocks.AuthServiceClient)
+		gameplayService := service.NewGameplayService(mockStoryConfigRepo, mockPublishedStoryRepo, mockStorySceneRepo, mockPlayerProgressRepo, mockPlayerGameStateRepo, mockLikeRepo, mockPublisher, nil, zap.NewNop(), mockAuthClient)
 		publishError := errors.New("failed to publish")
 
 		// Ожидаем вызов CountActiveGenerations, возвращаем 0
-		mockRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
+		mockStoryConfigRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
 
 		// Ожидаем успешный вызов Create
-		var capturedConfig *sharedModels.StoryConfig                                         // <<< Используем sharedModels
-		mockRepo.On("Create", ctx, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { // <<< Используем sharedModels
+		var capturedConfig *sharedModels.StoryConfig                                                    // <<< Используем sharedModels
+		mockStoryConfigRepo.On("Create", ctx, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { // <<< Используем sharedModels
 			capturedConfig = cfg // Захватываем созданный конфиг
 			return true
 		})).Return(nil).Once()
@@ -168,7 +210,7 @@ func TestGenerateInitialStory(t *testing.T) {
 		mockPublisher.On("PublishGenerationTask", ctx, mock.AnythingOfType("sharedMessaging.GenerationTaskPayload")).Return(publishError).Once() // <<< Используем sharedMessaging
 
 		// Ожидаем вызов Update для отката статуса на Error
-		mockRepo.On("Update", mock.Anything, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { // <<< Используем sharedModels
+		mockStoryConfigRepo.On("Update", mock.Anything, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { // <<< Используем sharedModels
 			return cfg.ID == capturedConfig.ID && cfg.Status == sharedModels.StatusError // <<< Используем sharedModels
 		})).Return(nil).Once()
 
@@ -184,7 +226,7 @@ func TestGenerateInitialStory(t *testing.T) {
 		assert.True(t, errors.Is(err, publishError) || strings.Contains(err.Error(), publishError.Error()))
 
 		// Убеждаемся, что все ожидаемые вызовы были сделаны
-		mockRepo.AssertExpectations(t)
+		mockStoryConfigRepo.AssertExpectations(t)
 		mockPublisher.AssertExpectations(t)
 	})
 }
@@ -213,18 +255,25 @@ func TestReviseDraft(t *testing.T) {
 			Config:    baseCurrentConfigJSON,
 			Status:    sharedModels.StatusDraft, // <<< Используем sharedModels
 		}
-		currentConfigJSONString := string(baseCurrentConfigJSON)
+		// currentConfigJSONString := string(baseCurrentConfigJSON) // <<< УДАЛЯЕМ, больше не нужна
 
-		mockRepo := new(repositoryMocks.StoryConfigRepository)
+		// Используем моки ТОЛЬКО из shared/interfaces/mocks
+		mockStoryConfigRepo := new(sharedMocks.StoryConfigRepository)
+		mockPublishedStoryRepo := new(sharedMocks.PublishedStoryRepository)
+		mockStorySceneRepo := new(sharedMocks.StorySceneRepository)
+		mockPlayerProgressRepo := new(sharedMocks.PlayerProgressRepository)
+		mockPlayerGameStateRepo := new(sharedMocks.PlayerGameStateRepository)
+		mockLikeRepo := new(sharedMocks.LikeRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, nil, mockPublisher, nil, zap.NewNop())
+		mockAuthClient := new(sharedMocks.AuthServiceClient)
+		gameplayService := service.NewGameplayService(mockStoryConfigRepo, mockPublishedStoryRepo, mockStorySceneRepo, mockPlayerProgressRepo, mockPlayerGameStateRepo, mockLikeRepo, mockPublisher, nil, zap.NewNop(), mockAuthClient)
 
 		// Ожидаем GetByID
-		mockRepo.On("GetByID", ctx, storyID, userID).Return(existingConfig, nil).Once()
+		mockStoryConfigRepo.On("GetByID", ctx, storyID, userID).Return(existingConfig, nil).Once()
 		// Ожидаем CountActiveGenerations, возвращаем 0
-		mockRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
+		mockStoryConfigRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
 		// Ожидаем Update (статус generating, UserInput обновлен)
-		mockRepo.On("Update", ctx, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { // <<< Используем sharedModels
+		mockStoryConfigRepo.On("Update", ctx, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { // <<< Используем sharedModels
 			assert.Equal(t, storyID, cfg.ID)
 			assert.Equal(t, sharedModels.StatusGenerating, cfg.Status) // <<< Используем sharedModels
 			var userInputs []string
@@ -235,11 +284,23 @@ func TestReviseDraft(t *testing.T) {
 		})).Return(nil).Once()
 		// Ожидаем PublishGenerationTask
 		mockPublisher.On("PublishGenerationTask", ctx, mock.MatchedBy(func(payload sharedMessaging.GenerationTaskPayload) bool { // <<< Используем sharedMessaging
-			assert.Equal(t, revisionPrompt, payload.UserInput)
+			// Проверяем, что UserInput - это JSON, содержащий и старый конфиг, и ключ 'ur'
 			assert.Equal(t, sharedMessaging.PromptTypeNarrator, payload.PromptType)
-			assert.NotEmpty(t, payload.InputData)
-			assert.Contains(t, payload.InputData, "current_config") // Должен быть current_config
-			assert.Equal(t, currentConfigJSONString, payload.InputData["current_config"])
+
+			var inputData map[string]interface{}
+			err := json.Unmarshal([]byte(payload.UserInput), &inputData)
+			assert.NoError(t, err, "payload.UserInput should be valid JSON")
+
+			// Проверяем наличие ключа ревизии 'ur'
+			assert.Contains(t, inputData, "ur", "UserInput JSON should contain 'ur' key")
+			assert.Equal(t, revisionPrompt, inputData["ur"], "Value for 'ur' key should be the revision prompt")
+
+			// Проверяем наличие ключей из оригинального конфига
+			assert.Contains(t, inputData, "t", "UserInput JSON should contain original 't' key")
+			assert.Contains(t, inputData, "sd", "UserInput JSON should contain original 'sd' key")
+			assert.Equal(t, "Старый тайтл", inputData["t"], "Value for 't' key mismatch")
+			assert.Equal(t, "Старое описание", inputData["sd"], "Value for 'sd' key mismatch")
+
 			assert.Equal(t, storyID.String(), payload.StoryConfigID)
 			assert.Equal(t, userID.String(), payload.UserID) // <<< Check UUID string
 			return true
@@ -250,7 +311,7 @@ func TestReviseDraft(t *testing.T) {
 
 		// Проверяем результат
 		assert.NoError(t, err)
-		mockRepo.AssertExpectations(t)
+		mockStoryConfigRepo.AssertExpectations(t)
 		mockPublisher.AssertExpectations(t)
 	})
 
@@ -267,12 +328,19 @@ func TestReviseDraft(t *testing.T) {
 			Status:    sharedModels.StatusGenerating, // Невалидный статус <<< Используем sharedModels
 		}
 
-		mockRepo := new(repositoryMocks.StoryConfigRepository)
+		// Используем моки ТОЛЬКО из shared/interfaces/mocks
+		mockStoryConfigRepo := new(sharedMocks.StoryConfigRepository)
+		mockPublishedStoryRepo := new(sharedMocks.PublishedStoryRepository)
+		mockStorySceneRepo := new(sharedMocks.StorySceneRepository)
+		mockPlayerProgressRepo := new(sharedMocks.PlayerProgressRepository)
+		mockPlayerGameStateRepo := new(sharedMocks.PlayerGameStateRepository)
+		mockLikeRepo := new(sharedMocks.LikeRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, nil, mockPublisher, nil, zap.NewNop())
+		mockAuthClient := new(sharedMocks.AuthServiceClient)
+		gameplayService := service.NewGameplayService(mockStoryConfigRepo, mockPublishedStoryRepo, mockStorySceneRepo, mockPlayerProgressRepo, mockPlayerGameStateRepo, mockLikeRepo, mockPublisher, nil, zap.NewNop(), mockAuthClient)
 
 		// Ожидаем GetByID
-		mockRepo.On("GetByID", ctx, storyID, userID).Return(invalidStatusConfig, nil).Once()
+		mockStoryConfigRepo.On("GetByID", ctx, storyID, userID).Return(invalidStatusConfig, nil).Once()
 
 		// Вызываем метод
 		err := gameplayService.ReviseDraft(ctx, storyID, userID, revisionPrompt)
@@ -280,7 +348,7 @@ func TestReviseDraft(t *testing.T) {
 		// Проверяем результат
 		assert.Error(t, err)
 		assert.True(t, errors.Is(err, sharedModels.ErrCannotRevise))
-		mockRepo.AssertExpectations(t)
+		mockStoryConfigRepo.AssertExpectations(t)
 		mockPublisher.AssertNotCalled(t, "PublishGenerationTask", mock.Anything, mock.Anything)
 	})
 
@@ -296,14 +364,21 @@ func TestReviseDraft(t *testing.T) {
 			Status:    sharedModels.StatusDraft, // Валидный статус <<< Используем sharedModels
 		}
 
-		mockRepo := new(repositoryMocks.StoryConfigRepository)
+		// Используем моки ТОЛЬКО из shared/interfaces/mocks
+		mockStoryConfigRepo := new(sharedMocks.StoryConfigRepository)
+		mockPublishedStoryRepo := new(sharedMocks.PublishedStoryRepository)
+		mockStorySceneRepo := new(sharedMocks.StorySceneRepository)
+		mockPlayerProgressRepo := new(sharedMocks.PlayerProgressRepository)
+		mockPlayerGameStateRepo := new(sharedMocks.PlayerGameStateRepository)
+		mockLikeRepo := new(sharedMocks.LikeRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, nil, mockPublisher, nil, zap.NewNop())
+		mockAuthClient := new(sharedMocks.AuthServiceClient)
+		gameplayService := service.NewGameplayService(mockStoryConfigRepo, mockPublishedStoryRepo, mockStorySceneRepo, mockPlayerProgressRepo, mockPlayerGameStateRepo, mockLikeRepo, mockPublisher, nil, zap.NewNop(), mockAuthClient)
 
 		// Ожидаем GetByID (успешно)
-		mockRepo.On("GetByID", ctx, storyID, userID).Return(existingConfig, nil).Once()
+		mockStoryConfigRepo.On("GetByID", ctx, storyID, userID).Return(existingConfig, nil).Once()
 		// Ожидаем CountActiveGenerations, возвращаем лимит (1)
-		mockRepo.On("CountActiveGenerations", ctx, userID).Return(1, nil).Once()
+		mockStoryConfigRepo.On("CountActiveGenerations", ctx, userID).Return(1, nil).Once()
 
 		// Вызываем метод
 		err := gameplayService.ReviseDraft(ctx, storyID, userID, revisionPrompt)
@@ -311,7 +386,7 @@ func TestReviseDraft(t *testing.T) {
 		// Проверяем результат
 		assert.Error(t, err)
 		assert.True(t, errors.Is(err, sharedModels.ErrUserHasActiveGeneration))
-		mockRepo.AssertExpectations(t)
+		mockStoryConfigRepo.AssertExpectations(t)
 		mockPublisher.AssertNotCalled(t, "PublishGenerationTask", mock.Anything, mock.Anything)
 	})
 
@@ -321,12 +396,19 @@ func TestReviseDraft(t *testing.T) {
 		revisionPrompt := baseRevisionPrompt
 		getError := errors.New("get failed")
 
-		mockRepo := new(repositoryMocks.StoryConfigRepository)
+		// Используем моки ТОЛЬКО из shared/interfaces/mocks
+		mockStoryConfigRepo := new(sharedMocks.StoryConfigRepository)
+		mockPublishedStoryRepo := new(sharedMocks.PublishedStoryRepository)
+		mockStorySceneRepo := new(sharedMocks.StorySceneRepository)
+		mockPlayerProgressRepo := new(sharedMocks.PlayerProgressRepository)
+		mockPlayerGameStateRepo := new(sharedMocks.PlayerGameStateRepository)
+		mockLikeRepo := new(sharedMocks.LikeRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, nil, mockPublisher, nil, zap.NewNop())
+		mockAuthClient := new(sharedMocks.AuthServiceClient)
+		gameplayService := service.NewGameplayService(mockStoryConfigRepo, mockPublishedStoryRepo, mockStorySceneRepo, mockPlayerProgressRepo, mockPlayerGameStateRepo, mockLikeRepo, mockPublisher, nil, zap.NewNop(), mockAuthClient)
 
 		// Ожидаем ТОЛЬКО GetByID, возвращаем ошибку
-		mockRepo.On("GetByID", ctx, storyID, userID).Return(nil, getError).Once()
+		mockStoryConfigRepo.On("GetByID", ctx, storyID, userID).Return(nil, getError).Once()
 
 		// Вызываем метод
 		err := gameplayService.ReviseDraft(ctx, storyID, userID, revisionPrompt)
@@ -334,7 +416,7 @@ func TestReviseDraft(t *testing.T) {
 		// Проверяем результат
 		assert.Error(t, err)
 		assert.True(t, errors.Is(err, getError) || strings.Contains(err.Error(), getError.Error()))
-		mockRepo.AssertExpectations(t)
+		mockStoryConfigRepo.AssertExpectations(t)
 		mockPublisher.AssertNotCalled(t, "PublishGenerationTask", mock.Anything, mock.Anything)
 	})
 
@@ -351,16 +433,23 @@ func TestReviseDraft(t *testing.T) {
 		}
 		updateError := errors.New("update failed")
 
-		mockRepo := new(repositoryMocks.StoryConfigRepository)
+		// Используем моки ТОЛЬКО из shared/interfaces/mocks
+		mockStoryConfigRepo := new(sharedMocks.StoryConfigRepository)
+		mockPublishedStoryRepo := new(sharedMocks.PublishedStoryRepository)
+		mockStorySceneRepo := new(sharedMocks.StorySceneRepository)
+		mockPlayerProgressRepo := new(sharedMocks.PlayerProgressRepository)
+		mockPlayerGameStateRepo := new(sharedMocks.PlayerGameStateRepository)
+		mockLikeRepo := new(sharedMocks.LikeRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, nil, mockPublisher, nil, zap.NewNop())
+		mockAuthClient := new(sharedMocks.AuthServiceClient)
+		gameplayService := service.NewGameplayService(mockStoryConfigRepo, mockPublishedStoryRepo, mockStorySceneRepo, mockPlayerProgressRepo, mockPlayerGameStateRepo, mockLikeRepo, mockPublisher, nil, zap.NewNop(), mockAuthClient)
 
 		// Ожидаем GetByID (успешно)
-		mockRepo.On("GetByID", ctx, storyID, userID).Return(existingConfig, nil).Once()
+		mockStoryConfigRepo.On("GetByID", ctx, storyID, userID).Return(existingConfig, nil).Once()
 		// Ожидаем CountActiveGenerations (успешно, < лимита)
-		mockRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
+		mockStoryConfigRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
 		// Ожидаем Update, возвращаем ошибку
-		mockRepo.On("Update", ctx, mock.AnythingOfType("*sharedmodels.StoryConfig")).Return(updateError).Once() // <<< Используем sharedModels
+		mockStoryConfigRepo.On("Update", ctx, mock.AnythingOfType("*sharedmodels.StoryConfig")).Return(updateError).Once() // <<< Используем sharedModels
 
 		// Вызываем метод
 		err := gameplayService.ReviseDraft(ctx, storyID, userID, revisionPrompt)
@@ -368,7 +457,7 @@ func TestReviseDraft(t *testing.T) {
 		// Проверяем результат
 		assert.Error(t, err)
 		assert.True(t, errors.Is(err, updateError) || strings.Contains(err.Error(), updateError.Error()))
-		mockRepo.AssertExpectations(t)
+		mockStoryConfigRepo.AssertExpectations(t)
 		mockPublisher.AssertNotCalled(t, "PublishGenerationTask", mock.Anything, mock.Anything)
 	})
 
@@ -387,20 +476,27 @@ func TestReviseDraft(t *testing.T) {
 			Status:    sharedModels.StatusDraft, // <<< Используем sharedModels
 		}
 
-		mockRepo := new(repositoryMocks.StoryConfigRepository)
+		// Используем моки ТОЛЬКО из shared/interfaces/mocks
+		mockStoryConfigRepo := new(sharedMocks.StoryConfigRepository)
+		mockPublishedStoryRepo := new(sharedMocks.PublishedStoryRepository)
+		mockStorySceneRepo := new(sharedMocks.StorySceneRepository)
+		mockPlayerProgressRepo := new(sharedMocks.PlayerProgressRepository)
+		mockPlayerGameStateRepo := new(sharedMocks.PlayerGameStateRepository)
+		mockLikeRepo := new(sharedMocks.LikeRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, nil, mockPublisher, nil, zap.NewNop())
+		mockAuthClient := new(sharedMocks.AuthServiceClient)
+		gameplayService := service.NewGameplayService(mockStoryConfigRepo, mockPublishedStoryRepo, mockStorySceneRepo, mockPlayerProgressRepo, mockPlayerGameStateRepo, mockLikeRepo, mockPublisher, nil, zap.NewNop(), mockAuthClient)
 
 		// Ожидаем GetByID
-		mockRepo.On("GetByID", ctx, storyID, userID).Return(configToRevise, nil).Once()
+		mockStoryConfigRepo.On("GetByID", ctx, storyID, userID).Return(configToRevise, nil).Once()
 		// Ожидаем CountActiveGenerations, возвращаем 0
-		mockRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
+		mockStoryConfigRepo.On("CountActiveGenerations", ctx, userID).Return(0, nil).Once()
 		// Ожидаем первый успешный Update
-		mockRepo.On("Update", ctx, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { return cfg.Status == sharedModels.StatusGenerating })).Return(nil).Once() // <<< Используем sharedModels
+		mockStoryConfigRepo.On("Update", ctx, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { return cfg.Status == sharedModels.StatusGenerating })).Return(nil).Once() // <<< Используем sharedModels
 		// Ожидаем PublishGenerationTask, возвращаем ошибку
 		mockPublisher.On("PublishGenerationTask", ctx, mock.AnythingOfType("sharedMessaging.GenerationTaskPayload")).Return(publishError).Once() // <<< Используем sharedMessaging
 		// Ожидаем второй Update (откат)
-		mockRepo.On("Update", ctx, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { // <<< Используем sharedModels
+		mockStoryConfigRepo.On("Update", ctx, mock.MatchedBy(func(cfg *sharedModels.StoryConfig) bool { // <<< Используем sharedModels
 			var userInputs []string
 			err := json.Unmarshal(cfg.UserInput, &userInputs)
 			return cfg.Status == sharedModels.StatusDraft && err == nil && len(userInputs) == 1 && userInputs[0] == "Начальный промпт" // <<< Используем sharedModels
@@ -412,7 +508,7 @@ func TestReviseDraft(t *testing.T) {
 		// Проверяем результат
 		assert.Error(t, err)
 		assert.True(t, errors.Is(err, publishError) || strings.Contains(err.Error(), publishError.Error()))
-		mockRepo.AssertExpectations(t)
+		mockStoryConfigRepo.AssertExpectations(t)
 		mockPublisher.AssertExpectations(t)
 	})
 }
@@ -432,12 +528,19 @@ func TestGetStoryConfig(t *testing.T) {
 	}
 
 	t.Run("Successful get", func(t *testing.T) {
-		mockRepo := new(repositoryMocks.StoryConfigRepository)
+		// Используем моки ТОЛЬКО из shared/interfaces/mocks
+		mockStoryConfigRepo := new(sharedMocks.StoryConfigRepository)
+		mockPublishedStoryRepo := new(sharedMocks.PublishedStoryRepository)
+		mockStorySceneRepo := new(sharedMocks.StorySceneRepository)
+		mockPlayerProgressRepo := new(sharedMocks.PlayerProgressRepository)
+		mockPlayerGameStateRepo := new(sharedMocks.PlayerGameStateRepository)
+		mockLikeRepo := new(sharedMocks.LikeRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher) // Publisher не используется в Get
-		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, nil, mockPublisher, nil, zap.NewNop())
+		mockAuthClient := new(sharedMocks.AuthServiceClient)
+		gameplayService := service.NewGameplayService(mockStoryConfigRepo, mockPublishedStoryRepo, mockStorySceneRepo, mockPlayerProgressRepo, mockPlayerGameStateRepo, mockLikeRepo, mockPublisher, nil, zap.NewNop(), mockAuthClient)
 
 		// Ожидаем GetByID
-		mockRepo.On("GetByID", ctx, storyID, userID).Return(existingConfig, nil).Once()
+		mockStoryConfigRepo.On("GetByID", ctx, storyID, userID).Return(existingConfig, nil).Once()
 
 		// Вызываем метод
 		config, err := gameplayService.GetStoryConfig(ctx, storyID, userID)
@@ -446,17 +549,24 @@ func TestGetStoryConfig(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotNil(t, config)
 		assert.Equal(t, existingConfig, config)
-		mockRepo.AssertExpectations(t)
+		mockStoryConfigRepo.AssertExpectations(t)
 	})
 
 	t.Run("Config not found", func(t *testing.T) {
-		mockRepo := new(repositoryMocks.StoryConfigRepository)
+		// Используем моки ТОЛЬКО из shared/interfaces/mocks
+		mockStoryConfigRepo := new(sharedMocks.StoryConfigRepository)
+		mockPublishedStoryRepo := new(sharedMocks.PublishedStoryRepository)
+		mockStorySceneRepo := new(sharedMocks.StorySceneRepository)
+		mockPlayerProgressRepo := new(sharedMocks.PlayerProgressRepository)
+		mockPlayerGameStateRepo := new(sharedMocks.PlayerGameStateRepository)
+		mockLikeRepo := new(sharedMocks.LikeRepository)
 		mockPublisher := new(messagingMocks.TaskPublisher)
-		gameplayService := service.NewGameplayService(mockRepo, nil, nil, nil, nil, mockPublisher, nil, zap.NewNop())
+		mockAuthClient := new(sharedMocks.AuthServiceClient)
+		gameplayService := service.NewGameplayService(mockStoryConfigRepo, mockPublishedStoryRepo, mockStorySceneRepo, mockPlayerProgressRepo, mockPlayerGameStateRepo, mockLikeRepo, mockPublisher, nil, zap.NewNop(), mockAuthClient)
 		notFoundError := errors.New("not found") // Можно использовать sharedModels.ErrNotFound
 
 		// Ожидаем GetByID, возвращаем ошибку
-		mockRepo.On("GetByID", ctx, storyID, userID).Return(nil, notFoundError).Once()
+		mockStoryConfigRepo.On("GetByID", ctx, storyID, userID).Return(nil, notFoundError).Once()
 
 		// Вызываем метод
 		config, err := gameplayService.GetStoryConfig(ctx, storyID, userID)
@@ -465,7 +575,7 @@ func TestGetStoryConfig(t *testing.T) {
 		assert.Error(t, err)
 		assert.Nil(t, config)
 		assert.True(t, errors.Is(err, notFoundError) || strings.Contains(err.Error(), notFoundError.Error()))
-		mockRepo.AssertExpectations(t)
+		mockStoryConfigRepo.AssertExpectations(t)
 	})
 }
 

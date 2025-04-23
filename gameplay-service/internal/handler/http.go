@@ -148,31 +148,28 @@ func (h *GameplayHandler) RegisterRoutes(router gin.IRouter) {
 	internalGroup := router.Group("/internal")
 	internalGroup.Use(interServiceAuthMiddleware)
 	{
-		// Маршруты для чтения данных админкой
-		internalGroup.GET("/users/:user_id/drafts", h.listUserDraftsInternal)
-		internalGroup.GET("/users/:user_id/stories", h.listUserStoriesInternal)
-		internalGroup.GET("/users/:user_id/stories/:story_id", h.getPublishedStoryDetailsInternal)
-		internalGroup.GET("/users/:user_id/stories/:story_id/scenes", h.listStoryScenesInternal)
+		// Маршруты для чтения данных админкой (ПОЛЬЗОВАТЕЛЬСКИЕ ДАННЫЕ)
+		internalGroup.GET("/users/:user_id/drafts", h.listUserDraftsInternal)   // GET /internal/users/{id}/drafts
+		internalGroup.GET("/users/:user_id/stories", h.listUserStoriesInternal) // GET /internal/users/{id}/stories
+		// Старые, неверные маршруты для деталей/сцен, закомментированы или удалены
+		// internalGroup.GET("/users/:user_id/stories/:story_id", h.getPublishedStoryDetailsInternal) // УДАЛЕНО/ЗАМЕНЕНО
+		// internalGroup.GET("/users/:user_id/stories/:story_id/scenes", h.listStoryScenesInternal) // УДАЛЕНО/ЗАМЕНЕНО
 
-		// <<< ДОБАВЛЕНО: Маршруты для обновления данных админкой >>>
-		// internalGroup.POST("/users/:user_id/drafts/:draft_id", h.updateDraftInternal)                   // Обновление черновика
-		// internalGroup.POST("/users/:user_id/stories/:story_id", h.updateStoryInternal)                  // Обновление истории (Config/Setup)
-		// internalGroup.POST("/users/:user_id/stories/:story_id/scenes/:scene_id", h.updateSceneInternal) // Обновление контента сцены
-
-		// <<< НАЧАЛО ИСПРАВЛЕНИЯ МАРШРУТОВ >>>
-		// Правильные маршруты для внутреннего API (без user_id в пути, т.к. это внутренний вызов без привязки к конкретному пользователю API)
-
-		// Чтение деталей
-		internalGroup.GET("/drafts/:draft_id", h.getDraftDetailsInternal)           // GET /internal/drafts/{id}
-		internalGroup.GET("/stories/:story_id", h.getPublishedStoryDetailsInternal) // GET /internal/stories/{id}
-		internalGroup.GET("/stories/:story_id/scenes", h.listStoryScenesInternal)   // GET /internal/stories/{id}/scenes
+		// Маршруты для чтения данных админкой (ПО ID СУЩНОСТЕЙ) - Соответствуют клиенту
+		internalGroup.GET("/drafts/:draft_id", h.getDraftDetailsInternal)               // GET /internal/drafts/{id} - НОВЫЙ
+		internalGroup.GET("/stories/:story_id", h.getPublishedStoryDetailsInternal)     // GET /internal/stories/{id} - НОВЫЙ
+		internalGroup.GET("/stories/:story_id/scenes", h.listStoryScenesInternal)       // GET /internal/stories/{id}/scenes - НОВЫЙ
+		internalGroup.GET("/stories/:story_id/players", h.listStoryPlayersInternal)     // GET /internal/stories/{id}/players
+		internalGroup.GET("/player-progress/:progress_id", h.getPlayerProgressInternal) // GET /internal/player-progress/{id}
 
 		// Обновление данных
-		internalGroup.POST("/drafts/:draft_id", h.updateDraftInternal)  // POST /internal/drafts/{id}
-		internalGroup.POST("/stories/:story_id", h.updateStoryInternal) // POST /internal/stories/{id}
-		internalGroup.POST("/scenes/:scene_id", h.updateSceneInternal)  // POST /internal/scenes/{id}
+		internalGroup.POST("/drafts/:draft_id", h.updateDraftInternal)                     // POST /internal/drafts/{id}
+		internalGroup.POST("/stories/:story_id", h.updateStoryInternal)                    // POST /internal/stories/{id}
+		internalGroup.POST("/scenes/:scene_id", h.updateSceneInternal)                     // POST /internal/scenes/{id}
+		internalGroup.PUT("/player-progress/:progress_id", h.updatePlayerProgressInternal) // PUT /internal/player-progress/{id} - РАСКОММЕНТИРОВАНО И ДОБАВЛЕН ОБРАБОТЧИК
 
-		// <<< КОНЕЦ ИСПРАВЛЕНИЯ МАРШРУТОВ >>>
+		// Удаление данных
+		internalGroup.DELETE("/scenes/:scene_id", h.deleteSceneInternal) // DELETE /internal/scenes/{id}
 	}
 }
 
@@ -273,7 +270,7 @@ type PaginatedResponse struct {
 // теперь должны принимать *gin.Context вместо echo.Context.
 // Их реализацию нужно будет обновить в соответствующих *_handlers.go файлах.
 
-// <<< ИЗМЕНЕНО: Обработчик getPublishedStoryDetails >>>
+// <<< ИЗМЕНЕНО: Обработчик getPublishedStoryDetails (ДЛЯ ПОЛЬЗОВАТЕЛЕЙ) >>>
 func (h *GameplayHandler) getPublishedStoryDetails(c *gin.Context) {
 	storyIDStr := c.Param("id")
 	storyID, err := uuid.Parse(storyIDStr)
@@ -298,3 +295,137 @@ func (h *GameplayHandler) getPublishedStoryDetails(c *gin.Context) {
 	// Отправляем детальный ответ DTO напрямую
 	c.JSON(http.StatusOK, storyDetailsDTO)
 }
+
+// <<< ДОБАВЛЕНО: Обработчик для получения деталей прогресса игрока админкой >>>
+func (h *GameplayHandler) getPlayerProgressInternal(c *gin.Context) {
+	progressIDStr := c.Param("progress_id")
+	progressID, err := uuid.Parse(progressIDStr)
+	if err != nil {
+		h.logger.Error("Invalid progress ID format", zap.String("progressID", progressIDStr), zap.Error(err))
+		c.JSON(http.StatusBadRequest, APIError{Message: "Invalid progress ID format"})
+		return
+	}
+
+	h.logger.Info("getPlayerProgressInternal called", zap.String("progressID", progressIDStr))
+
+	progress, err := h.service.GetPlayerProgressInternal(c.Request.Context(), progressID)
+	if err != nil {
+		// Логгирование уже происходит внутри handleServiceError или в сервисе
+		handleServiceError(c, err, h.logger) // Используем общий обработчик ошибок
+		return
+	}
+
+	c.JSON(http.StatusOK, progress) // Отправляем найденный прогресс
+}
+
+// <<< ДОБАВЛЕНО: Обработчик для получения деталей черновика админкой >>>
+func (h *GameplayHandler) getDraftDetailsInternal(c *gin.Context) {
+	draftIDStr := c.Param("draft_id")
+	draftID, err := uuid.Parse(draftIDStr)
+	if err != nil {
+		h.logger.Error("Invalid draft ID format for internal request", zap.String("draftID", draftIDStr), zap.Error(err))
+		c.JSON(http.StatusBadRequest, APIError{Message: "Invalid draft ID format"})
+		return
+	}
+
+	h.logger.Info("getDraftDetailsInternal called", zap.String("draftID", draftIDStr))
+
+	draft, err := h.service.GetDraftDetailsInternal(c.Request.Context(), draftID)
+	if err != nil {
+		handleServiceError(c, err, h.logger)
+		return
+	}
+
+	c.JSON(http.StatusOK, draft)
+}
+
+// <<< ДОБАВЛЕНО: Обработчик для получения деталей опубликованной истории админкой >>>
+func (h *GameplayHandler) getPublishedStoryDetailsInternal(c *gin.Context) {
+	storyIDStr := c.Param("story_id")
+	storyID, err := uuid.Parse(storyIDStr)
+	if err != nil {
+		h.logger.Error("Invalid story ID format for internal request", zap.String("storyID", storyIDStr), zap.Error(err))
+		c.JSON(http.StatusBadRequest, APIError{Message: "Invalid story ID format"})
+		return
+	}
+
+	h.logger.Info("getPublishedStoryDetailsInternal called", zap.String("storyID", storyIDStr))
+
+	// Используем метод сервиса, который не требует userID
+	story, err := h.service.GetPublishedStoryDetailsInternal(c.Request.Context(), storyID)
+	if err != nil {
+		handleServiceError(c, err, h.logger)
+		return
+	}
+
+	c.JSON(http.StatusOK, story)
+}
+
+// <<< ДОБАВЛЕНО: Обработчик для получения списка сцен истории админкой >>>
+func (h *GameplayHandler) listStoryScenesInternal(c *gin.Context) {
+	storyIDStr := c.Param("story_id")
+	storyID, err := uuid.Parse(storyIDStr)
+	if err != nil {
+		h.logger.Error("Invalid story ID format for internal request", zap.String("storyID", storyIDStr), zap.Error(err))
+		c.JSON(http.StatusBadRequest, APIError{Message: "Invalid story ID format"})
+		return
+	}
+
+	h.logger.Info("listStoryScenesInternal called", zap.String("storyID", storyIDStr))
+
+	scenes, err := h.service.ListStoryScenesInternal(c.Request.Context(), storyID)
+	if err != nil {
+		handleServiceError(c, err, h.logger)
+		return
+	}
+
+	// Убедимся, что возвращается пустой срез, а не nil, если сцен нет
+	if scenes == nil {
+		scenes = make([]sharedModels.StoryScene, 0)
+	}
+
+	c.JSON(http.StatusOK, scenes)
+}
+
+// <<< ДОБАВЛЕНО: Обработчик для обновления прогресса игрока админкой >>>
+func (h *GameplayHandler) updatePlayerProgressInternal(c *gin.Context) {
+	progressIDStr := c.Param("progress_id")
+	progressID, err := uuid.Parse(progressIDStr)
+	if err != nil {
+		h.logger.Error("Invalid progress ID format for update", zap.String("progressID", progressIDStr), zap.Error(err))
+		c.JSON(http.StatusBadRequest, APIError{Message: "Invalid progress ID format"})
+		return
+	}
+
+	var progressData map[string]interface{}
+	if err := c.ShouldBindJSON(&progressData); err != nil {
+		h.logger.Error("Failed to bind player progress update JSON", zap.String("progressID", progressIDStr), zap.Error(err))
+		c.JSON(http.StatusBadRequest, APIError{Message: "Invalid request body format"})
+		return
+	}
+
+	h.logger.Info("updatePlayerProgressInternal called", zap.String("progressID", progressIDStr))
+
+	err = h.service.UpdatePlayerProgressInternal(c.Request.Context(), progressID, progressData)
+	if err != nil {
+		handleServiceError(c, err, h.logger)
+		return
+	}
+
+	c.Status(http.StatusNoContent) // Или http.StatusOK, если сервис что-то возвращает
+}
+
+// --- Реализации существующих обработчиков (listUserDraftsInternal, listUserStoriesInternal, etc.) ---
+// Убедитесь, что эти обработчики существуют и правильно вызывают методы сервиса.
+// Если они были частью удаленных/измененных маршрутов, их нужно проверить/адаптировать.
+
+// Пример (если нужно будет добавить/адаптировать):
+// func (h *GameplayHandler) listUserDraftsInternal(c *gin.Context) { ... }
+// func (h *GameplayHandler) listUserStoriesInternal(c *gin.Context) { ... }
+// func (h *GameplayHandler) listStoryPlayersInternal(c *gin.Context) { ... }
+// func (h *GameplayHandler) updateDraftInternal(c *gin.Context) { ... }
+// func (h *GameplayHandler) updateStoryInternal(c *gin.Context) { ... }
+// func (h *GameplayHandler) updateSceneInternal(c *gin.Context) { ... }
+// func (h *GameplayHandler) deleteSceneInternal(c *gin.Context) { ... }
+
+// Оставляем существующие реализации для этих методов, если они корректны.

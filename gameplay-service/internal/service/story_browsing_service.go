@@ -142,30 +142,33 @@ type StoryBrowsingService interface {
 }
 
 type storyBrowsingServiceImpl struct {
-	publishedRepo interfaces.PublishedStoryRepository
-	sceneRepo     interfaces.StorySceneRepository
-	progressRepo  interfaces.PlayerProgressRepository
-	likeRepo      interfaces.LikeRepository
-	authClient    interfaces.AuthServiceClient
-	logger        *zap.Logger
+	publishedRepo       interfaces.PublishedStoryRepository
+	sceneRepo           interfaces.StorySceneRepository
+	playerProgressRepo  interfaces.PlayerProgressRepository
+	playerGameStateRepo interfaces.PlayerGameStateRepository
+	likeRepo            interfaces.LikeRepository
+	authClient          interfaces.AuthServiceClient
+	logger              *zap.Logger
 }
 
 // NewStoryBrowsingService creates a new instance of StoryBrowsingService.
 func NewStoryBrowsingService(
 	publishedRepo interfaces.PublishedStoryRepository,
 	sceneRepo interfaces.StorySceneRepository,
-	progressRepo interfaces.PlayerProgressRepository,
+	playerProgressRepo interfaces.PlayerProgressRepository,
+	playerGameStateRepo interfaces.PlayerGameStateRepository,
 	likeRepo interfaces.LikeRepository,
 	authClient interfaces.AuthServiceClient,
 	logger *zap.Logger,
 ) StoryBrowsingService {
 	return &storyBrowsingServiceImpl{
-		publishedRepo: publishedRepo,
-		sceneRepo:     sceneRepo,
-		progressRepo:  progressRepo,
-		likeRepo:      likeRepo,
-		authClient:    authClient,
-		logger:        logger.Named("StoryBrowsingService"),
+		publishedRepo:       publishedRepo,
+		sceneRepo:           sceneRepo,
+		playerProgressRepo:  playerProgressRepo,
+		playerGameStateRepo: playerGameStateRepo,
+		likeRepo:            likeRepo,
+		authClient:          authClient,
+		logger:              logger.Named("StoryBrowsingService"),
 	}
 }
 
@@ -339,7 +342,7 @@ func (s *storyBrowsingServiceImpl) fetchProgressExists(ctx context.Context, user
 	progressExistsMap := make(map[uuid.UUID]bool)
 	if userID != uuid.Nil && len(storyIDs) > 0 {
 		var errProgress error
-		progressExistsMap, errProgress = s.progressRepo.CheckProgressExistsForStories(ctx, userID, storyIDs)
+		progressExistsMap, errProgress = s.playerGameStateRepo.CheckGameStateExistsForStories(ctx, userID, storyIDs)
 		if errProgress != nil {
 			s.logger.Error("Failed to check player progress (batch)", zap.Error(errProgress))
 			progressExistsMap = make(map[uuid.UUID]bool) // Return empty map on error
@@ -415,7 +418,7 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 	var currentPlayerStats map[string]int
 	var currentSceneSummary *string
 	if userID != uuid.Nil {
-		progress, errProgress := s.progressRepo.GetByUserIDAndStoryID(ctx, userID, storyID)
+		progress, errProgress := s.playerProgressRepo.GetByUserIDAndStoryID(ctx, userID, storyID)
 		if errProgress == nil {
 			hasProgress = true
 			lastPlayedAt = &progress.UpdatedAt

@@ -8,30 +8,32 @@ import (
 )
 
 // PlayerProgressRepository defines the interface for interacting with player progress data.
+//
+//go:generate mockery --name PlayerProgressRepository --output ./mocks --outpkg mocks --case=underscore
 type PlayerProgressRepository interface {
-	// Get retrieves the current player progress for a specific story.
-	// Returns models.ErrNotFound if no progress exists for the given user and story.
-	// Get(ctx context.Context, userID uint64, publishedStoryID uuid.UUID) (*models.PlayerProgress, error)
+	// GetByID retrieves a specific progress node by its unique ID.
+	// Returns models.ErrNotFound if not found.
+	GetByID(ctx context.Context, progressID uuid.UUID) (*models.PlayerProgress, error)
 
-	// Upsert creates a new player progress record or updates an existing one
-	// based on the composite primary key (user_id, published_story_id).
-	// Upsert(ctx context.Context, progress *models.PlayerProgress) error
+	// GetByStoryIDAndHash retrieves a specific progress node by story ID and state hash.
+	// This is used to find existing nodes and promote state reuse.
+	// Returns models.ErrNotFound if not found.
+	GetByStoryIDAndHash(ctx context.Context, publishedStoryID uuid.UUID, stateHash string) (*models.PlayerProgress, error)
 
-	// TODO: Potentially add a Delete method if needed later?
+	// Save creates a new player progress node if progress.ID is zero UUID,
+	// or updates an existing one based on progress.ID.
+	// Returns the ID of the created/updated record.
+	Save(ctx context.Context, progress *models.PlayerProgress) (uuid.UUID, error)
 
 	// GetByUserIDAndStoryID retrieves the player's progress for a specific story.
+	// DEPRECATED? Might still be useful for specific lookups, but primary access is via PlayerGameState.
 	// Returns models.ErrNotFound if no progress exists for the given user and story.
 	GetByUserIDAndStoryID(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (*models.PlayerProgress, error)
 
-	// CreateOrUpdate creates a new player progress record or updates an existing one based on UserID and PublishedStoryID.
-	// It should update all relevant fields including stats, variables, flags, hash, and the current choice index.
-	CreateOrUpdate(ctx context.Context, progress *models.PlayerProgress) error
+	// Delete removes a specific progress node by its unique ID.
+	// Returns models.ErrNotFound if the node with the given ID does not exist.
+	Delete(ctx context.Context, progressID uuid.UUID) error
 
-	// Delete removes the player progress record for a specific user and story.
-	// Returns nil if the record was deleted or did not exist.
-	Delete(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
-
-	// CheckProgressExistsForStories checks if player progress exists for a given user and a list of story IDs.
-	// Returns a map where keys are story IDs and values are booleans indicating progress existence.
-	CheckProgressExistsForStories(ctx context.Context, userID uuid.UUID, storyIDs []uuid.UUID) (map[uuid.UUID]bool, error)
+	// UpdateFields updates specific fields of a progress node by its unique ID.
+	UpdateFields(ctx context.Context, progressID uuid.UUID, updates map[string]interface{}) error
 }

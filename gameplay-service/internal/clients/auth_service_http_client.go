@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	interfaces "novel-server/shared/interfaces"
 	"strings"
@@ -92,7 +93,19 @@ func (c *HTTPAuthServiceClient) GetUsersInfo(ctx context.Context, userIDs []uuid
 	// Проверяем статус ответа
 	if resp.StatusCode != http.StatusOK {
 		log.Error("Auth service returned non-OK status (POST)", zap.Int("status_code", resp.StatusCode))
-		// TODO: Read response body for more error details if available
+		// Читаем тело ответа для деталей ошибки
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			log.Warn("Failed to read error response body from auth service", zap.Error(readErr))
+		} else {
+			log.Warn("Auth service error response body", zap.ByteString("body", bodyBytes))
+			// Можно попытаться распарсить как APIError, если структура известна
+			// var apiErr sharedModels.APIError // Предполагая, что есть такая структура
+			// if err := json.Unmarshal(bodyBytes, &apiErr); err == nil {
+			//   log.Warn("Auth service API error details", zap.Any("api_error", apiErr))
+			//   return nil, fmt.Errorf("auth service returned status %d: %s", resp.StatusCode, apiErr.Message)
+			// }
+		}
 		return nil, fmt.Errorf("auth service returned status %d (POST)", resp.StatusCode)
 	}
 

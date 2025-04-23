@@ -537,11 +537,8 @@ func (r *pgPublishedStoryRepository) UpdateConfigAndSetupAndStatus(ctx context.C
 func (r *pgPublishedStoryRepository) CountActiveGenerationsForUser(ctx context.Context, userID uuid.UUID) (int, error) {
 	activeStatuses := []string{
 		string(models.StatusSetupPending),
-		string(models.StatusGeneratingScene),
 		string(models.StatusFirstScenePending),
-		string(models.StatusGameOverPending),
 		string(models.StatusGenerating),
-		string(models.StatusRevising),
 	}
 
 	query := `SELECT COUNT(*) FROM published_stories WHERE user_id = $1 AND status = ANY($2::story_status[])`

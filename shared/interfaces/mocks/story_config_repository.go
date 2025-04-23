@@ -5,11 +5,15 @@ package mocks
 import (
 	context "context"
 
+	json "encoding/json"
+
 	mock "github.com/stretchr/testify/mock"
 
 	models "novel-server/shared/models"
 
 	pgx "github.com/jackc/pgx/v5"
+
+	time "time"
 
 	uuid "github.com/google/uuid"
 )
@@ -131,6 +135,36 @@ func (_m *StoryConfigRepository) FindGeneratingConfigs(ctx context.Context) ([]*
 	return r0, r1
 }
 
+// FindGeneratingOlderThan provides a mock function with given fields: ctx, threshold
+func (_m *StoryConfigRepository) FindGeneratingOlderThan(ctx context.Context, threshold time.Time) ([]models.StoryConfig, error) {
+	ret := _m.Called(ctx, threshold)
+
+	if len(ret) == 0 {
+		panic("no return value specified for FindGeneratingOlderThan")
+	}
+
+	var r0 []models.StoryConfig
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, time.Time) ([]models.StoryConfig, error)); ok {
+		return rf(ctx, threshold)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, time.Time) []models.StoryConfig); ok {
+		r0 = rf(ctx, threshold)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]models.StoryConfig)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, time.Time) error); ok {
+		r1 = rf(ctx, threshold)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
 // GetByID provides a mock function with given fields: ctx, id, userID
 func (_m *StoryConfigRepository) GetByID(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*models.StoryConfig, error) {
 	ret := _m.Called(ctx, id, userID)
@@ -239,6 +273,78 @@ func (_m *StoryConfigRepository) Update(ctx context.Context, config *models.Stor
 	var r0 error
 	if rf, ok := ret.Get(0).(func(context.Context, *models.StoryConfig) error); ok {
 		r0 = rf(ctx, config)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// UpdateConfigAndInput provides a mock function with given fields: ctx, id, config, userInput
+func (_m *StoryConfigRepository) UpdateConfigAndInput(ctx context.Context, id uuid.UUID, config []byte, userInput []byte) error {
+	ret := _m.Called(ctx, id, config, userInput)
+
+	if len(ret) == 0 {
+		panic("no return value specified for UpdateConfigAndInput")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, []byte, []byte) error); ok {
+		r0 = rf(ctx, id, config, userInput)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// UpdateConfigAndInputAndStatus provides a mock function with given fields: ctx, id, configJSON, userInputJSON, status
+func (_m *StoryConfigRepository) UpdateConfigAndInputAndStatus(ctx context.Context, id uuid.UUID, configJSON json.RawMessage, userInputJSON json.RawMessage, status models.StoryStatus) error {
+	ret := _m.Called(ctx, id, configJSON, userInputJSON, status)
+
+	if len(ret) == 0 {
+		panic("no return value specified for UpdateConfigAndInputAndStatus")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, json.RawMessage, json.RawMessage, models.StoryStatus) error); ok {
+		r0 = rf(ctx, id, configJSON, userInputJSON, status)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// UpdateStatusAndConfig provides a mock function with given fields: ctx, id, status, config, title, description
+func (_m *StoryConfigRepository) UpdateStatusAndConfig(ctx context.Context, id uuid.UUID, status models.StoryStatus, config json.RawMessage, title string, description string) error {
+	ret := _m.Called(ctx, id, status, config, title, description)
+
+	if len(ret) == 0 {
+		panic("no return value specified for UpdateStatusAndConfig")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, models.StoryStatus, json.RawMessage, string, string) error); ok {
+		r0 = rf(ctx, id, status, config, title, description)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// UpdateStatusAndError provides a mock function with given fields: ctx, id, status, errorDetails
+func (_m *StoryConfigRepository) UpdateStatusAndError(ctx context.Context, id uuid.UUID, status models.StoryStatus, errorDetails string) error {
+	ret := _m.Called(ctx, id, status, errorDetails)
+
+	if len(ret) == 0 {
+		panic("no return value specified for UpdateStatusAndError")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, models.StoryStatus, string) error); ok {
+		r0 = rf(ctx, id, status, errorDetails)
 	} else {
 		r0 = ret.Error(0)
 	}

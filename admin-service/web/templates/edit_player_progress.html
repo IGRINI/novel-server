@@ -1,0 +1,110 @@
+{{ template "_layout.html" . }}
+
+{{ define "content" }}
+<div class="app-container">
+    <h2>{{ .PageTitle }}</h2>
+
+    {{ if .ProgressError }}
+        <div class="system-message system-message--error">{{ .ProgressError }}</div>
+        <a href="/admin/users/{{ .UserID }}/stories/{{ .StoryID }}" class="cta-button cta-button--secondary mt-3">Назад к деталям истории</a>
+    {{ else if not .Progress }}
+        <div class="system-message system-message--info">Данные о прогрессе недоступны.</div>
+        <a href="/admin/users/{{ .UserID }}/stories/{{ .StoryID }}" class="cta-button cta-button--secondary mt-3">Назад к деталям истории</a>
+    {{ else }}
+        <div class="content-card mb-3">
+            <div class="content-card-header">Информация</div>
+            <div class="content-card-body">
+                <p><strong>ID Прогресса:</strong> {{ .Progress.ID }}</p>
+                <p><strong>ID Истории:</strong> {{ .StoryID }}</p>
+                <p><strong>ID Пользователя (Автора):</strong> {{ .UserID }}</p> 
+                <p><strong>ID Игрока:</strong> {{ .Progress.UserID }}</p> 
+                <p><strong>Создан:</strong> {{ .Progress.CreatedAt | formatAsDateTime }}</p>
+                <p><strong>Обновлен:</strong> {{ .Progress.UpdatedAt | formatAsDateTime }}</p>
+            </div>
+        </div>
+
+        <form method="POST" action="/admin/users/{{ .UserID }}/stories/{{ .StoryID }}/progress/{{ .Progress.ID }}" class="data-form">
+            <div class="content-card mb-3">
+                <div class="content-card-header">Редактируемые данные прогресса</div>
+                <div class="content-card-body">
+                    
+                    <div class="mb-3">
+                        <label for="coreStatsJson" class="form-label"><strong>Core Stats (JSON):</strong></label>
+                        <textarea id="coreStatsJson" name="coreStatsJson" rows="10">{{ .Progress.CoreStats | toJson }}</textarea>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="storyVarsJson" class="form-label"><strong>Story Variables (JSON):</strong></label>
+                        <textarea id="storyVarsJson" name="storyVarsJson" rows="10">{{ .Progress.StoryVariables | toJson }}</textarea>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="globalFlagsJson" class="form-label"><strong>Global Flags (JSON Array):</strong></label>
+                        <textarea id="globalFlagsJson" name="globalFlagsJson" rows="5">{{ .Progress.GlobalFlags | toJson }}</textarea>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="currentStateHash" class="form-label"><strong>Current State Hash:</strong></label>
+                        <input type="text" id="currentStateHash" name="currentStateHash" value="{{ .Progress.CurrentStateHash }}" class="form-control">
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="sceneIndex" class="form-label"><strong>Scene Index:</strong></label>
+                        <input type="number" id="sceneIndex" name="sceneIndex" value="{{ .Progress.SceneIndex }}" class="form-control">
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="lastStorySummary" class="form-label"><strong>Last Story Summary:</strong></label>
+                        <textarea id="lastStorySummary" name="lastStorySummary" rows="5">{{ .Progress.LastStorySummary | derefString }}</textarea>
+                    </div>
+                     <div class="mb-3">
+                        <label for="lastFutureDirection" class="form-label"><strong>Last Future Direction:</strong></label>
+                        <textarea id="lastFutureDirection" name="lastFutureDirection" rows="5">{{ .Progress.LastFutureDirection | derefString }}</textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label for="lastVarImpactSummary" class="form-label"><strong>Last Var Impact Summary:</strong></label>
+                        <textarea id="lastVarImpactSummary" name="lastVarImpactSummary" rows="5">{{ .Progress.LastVarImpactSummary | derefString }}</textarea>
+                    </div>
+
+                </div>
+                <div class="content-card-footer">
+                    <button type="submit" class="cta-button cta-button--primary">Сохранить изменения</button>
+                    <button type="button" class="cta-button cta-button--secondary" onclick="formatJsonTextarea('coreStatsJson')">Форматировать Core Stats</button>
+                    <button type="button" class="cta-button cta-button--secondary" onclick="formatJsonTextarea('storyVarsJson')">Форматировать Story Vars</button>
+                    <button type="button" class="cta-button cta-button--secondary" onclick="formatJsonTextarea('globalFlagsJson')">Форматировать Flags</button>
+                    <a href="/admin/users/{{ .UserID }}/stories/{{ .StoryID }}" class="cta-button cta-button--secondary">Отмена</a>
+                </div>
+            </div>
+        </form>
+        
+    {{ end }}
+</div>
+
+<script>
+// Функция для форматирования JSON в textarea
+function formatJsonTextarea(textareaId) {
+    const textarea = document.getElementById(textareaId);
+    if (textarea && textarea.value.trim()) {
+        try {
+            const jsonObject = JSON.parse(textarea.value);
+            textarea.value = JSON.stringify(jsonObject, null, 2); // Форматируем с отступами
+        } catch (e) {
+            console.warn(`Could not parse JSON in textarea #${textareaId}:`, e);
+            alert(`Некорректный JSON в поле ${textareaId}! Пожалуйста, исправьте перед сохранением.`);
+        }
+    }
+}
+
+// Добавляем функцию toJson в FuncMap, если ее еще нет (нужно делать на стороне Go)
+// Временно предполагаем, что она есть или .Progress поля уже строки JSON
+// Для простоты пока убираем автоформатирование при загрузке
+/*
+document.addEventListener('DOMContentLoaded', (event) => {
+    formatJsonTextarea('coreStatsJson');
+    formatJsonTextarea('storyVarsJson');
+    formatJsonTextarea('globalFlagsJson');
+});
+*/
+</script>
+
+{{ end }} 

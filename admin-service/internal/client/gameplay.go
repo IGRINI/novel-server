@@ -26,4 +26,18 @@ type GameplayServiceClient interface {
 	UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string, status models.StoryStatus) error
 	UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON string, status models.StoryStatus) error
 	UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error
+
+	// DeleteSceneInternal удаляет сцену по ее ID.
+	DeleteSceneInternal(ctx context.Context, sceneID uuid.UUID) error
+
+	// --- Методы для работы с прогрессом игроков --- //
+
+	// ListStoryPlayersInternal получает список состояний игроков для данной истории.
+	ListStoryPlayersInternal(ctx context.Context, storyID uuid.UUID) ([]models.PlayerGameState, error)
+
+	// GetPlayerProgressInternal получает детали прогресса игрока.
+	GetPlayerProgressInternal(ctx context.Context, progressID uuid.UUID) (*models.PlayerProgress, error)
+
+	// UpdatePlayerProgressInternal обновляет детали прогресса игрока.
+	UpdatePlayerProgressInternal(ctx context.Context, progressID uuid.UUID, progressData map[string]interface{}) error
 }

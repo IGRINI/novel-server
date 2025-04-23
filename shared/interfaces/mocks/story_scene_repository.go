@@ -95,6 +95,72 @@ func (_m *StorySceneRepository) GetByID(ctx context.Context, id uuid.UUID) (*mod
 	return r0, r1
 }
 
+// ListByStoryID provides a mock function with given fields: ctx, publishedStoryID
+func (_m *StorySceneRepository) ListByStoryID(ctx context.Context, publishedStoryID uuid.UUID) ([]models.StoryScene, error) {
+	ret := _m.Called(ctx, publishedStoryID)
+
+	if len(ret) == 0 {
+		panic("no return value specified for ListByStoryID")
+	}
+
+	var r0 []models.StoryScene
+	var r1 error
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID) ([]models.StoryScene, error)); ok {
+		return rf(ctx, publishedStoryID)
+	}
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID) []models.StoryScene); ok {
+		r0 = rf(ctx, publishedStoryID)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).([]models.StoryScene)
+		}
+	}
+
+	if rf, ok := ret.Get(1).(func(context.Context, uuid.UUID) error); ok {
+		r1 = rf(ctx, publishedStoryID)
+	} else {
+		r1 = ret.Error(1)
+	}
+
+	return r0, r1
+}
+
+// UpdateContent provides a mock function with given fields: ctx, id, content
+func (_m *StorySceneRepository) UpdateContent(ctx context.Context, id uuid.UUID, content []byte) error {
+	ret := _m.Called(ctx, id, content)
+
+	if len(ret) == 0 {
+		panic("no return value specified for UpdateContent")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, []byte) error); ok {
+		r0 = rf(ctx, id, content)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
+// Upsert provides a mock function with given fields: ctx, scene
+func (_m *StorySceneRepository) Upsert(ctx context.Context, scene *models.StoryScene) error {
+	ret := _m.Called(ctx, scene)
+
+	if len(ret) == 0 {
+		panic("no return value specified for Upsert")
+	}
+
+	var r0 error
+	if rf, ok := ret.Get(0).(func(context.Context, *models.StoryScene) error); ok {
+		r0 = rf(ctx, scene)
+	} else {
+		r0 = ret.Error(0)
+	}
+
+	return r0
+}
+
 // NewStorySceneRepository creates a new instance of StorySceneRepository. It also registers a testing interface on the mock and a cleanup function to assert the mocks expectations.
 // The first argument is typically a *testing.T value.
 func NewStorySceneRepository(t interface {

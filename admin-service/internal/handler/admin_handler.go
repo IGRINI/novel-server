@@ -55,9 +55,15 @@ func (h *AdminHandler) RegisterRoutes(router *gin.Engine) {
 			userGroup.GET("/drafts/:draft_id", h.showDraftDetailsPage)
 			userGroup.POST("/drafts/:draft_id", h.handleUpdateDraft)
 			userGroup.GET("/stories", h.listUserStories)
-			userGroup.GET("/stories/:story_id", h.showPublishedStoryDetailsPage)
-			userGroup.POST("/stories/:story_id", h.handleUpdateStory)
-			userGroup.POST("/stories/:story_id/scenes/:scene_id", h.handleUpdateScene)
+			storyGroup := userGroup.Group("/stories/:story_id")
+			{
+				storyGroup.GET("", h.showPublishedStoryDetailsPage)
+				storyGroup.POST("", h.handleUpdateStory)
+				storyGroup.POST("/scenes/:scene_id", h.handleUpdateScene)
+				storyGroup.POST("/scenes/:scene_id/delete", h.handleDeleteScene)
+				storyGroup.GET("/progress/:progress_id/edit", h.showEditPlayerProgressPage)
+				storyGroup.POST("/progress/:progress_id", h.handleUpdatePlayerProgress)
+			}
 			userGroup.POST("/send-notification", h.handleSendUserNotification)
 		}
 

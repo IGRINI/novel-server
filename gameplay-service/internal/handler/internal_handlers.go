@@ -126,90 +126,6 @@ func (h *GameplayHandler) listUserStoriesInternal(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// <<< ДОБАВЛЕНО: Обработчик для получения деталей черновика >>>
-func (h *GameplayHandler) getDraftDetailsInternal(c *gin.Context) {
-	log := h.logger.With(zap.String("handler", "getDraftDetailsInternal"))
-	draftIDStr := c.Param("draft_id")
-	draftID, err := uuid.Parse(draftIDStr)
-	if err != nil {
-		log.Warn("Invalid draft ID format", zap.String("draft_id", draftIDStr), zap.Error(err))
-		c.JSON(http.StatusBadRequest, sharedModels.ErrorResponse{Message: "Invalid draft ID format"})
-		return
-	}
-	log = log.With(zap.String("draftID", draftID.String()))
-	log.Info("Internal request for draft details")
-
-	// Вызываем новый метод сервиса (DraftService)
-	draft, err := h.service.GetDraftDetailsInternal(c.Request.Context(), draftID)
-	if err != nil {
-		// Обрабатываем ошибку (например, NotFound)
-		if errors.Is(err, sharedModels.ErrNotFound) {
-			log.Info("Draft not found")
-			c.JSON(http.StatusNotFound, sharedModels.ErrorResponse{Message: "Draft not found"})
-		} else {
-			log.Error("Failed to get draft details internally", zap.Error(err))
-			c.JSON(http.StatusInternalServerError, sharedModels.ErrorResponse{Message: "Failed to retrieve draft details"})
-		}
-		return
-	}
-	c.JSON(http.StatusOK, draft)
-}
-
-// <<< ДОБАВЛЕНО: Обработчик для получения деталей опубликованной истории >>>
-func (h *GameplayHandler) getPublishedStoryDetailsInternal(c *gin.Context) {
-	log := h.logger.With(zap.String("handler", "getPublishedStoryDetailsInternal"))
-	storyIDStr := c.Param("story_id")
-	storyID, err := uuid.Parse(storyIDStr)
-	if err != nil {
-		log.Warn("Invalid story ID format", zap.String("story_id", storyIDStr), zap.Error(err))
-		c.JSON(http.StatusBadRequest, sharedModels.ErrorResponse{Message: "Invalid story ID format"})
-		return
-	}
-	log = log.With(zap.String("storyID", storyID.String()))
-	log.Info("Internal request for published story details")
-
-	// Вызываем новый метод сервиса (StoryBrowsingService)
-	story, err := h.service.GetPublishedStoryDetailsInternal(c.Request.Context(), storyID)
-	if err != nil {
-		// Обрабатываем ошибку (например, NotFound)
-		if errors.Is(err, sharedModels.ErrNotFound) {
-			log.Info("Published story not found")
-			c.JSON(http.StatusNotFound, sharedModels.ErrorResponse{Message: "Published story not found"})
-		} else {
-			log.Error("Failed to get published story details internally", zap.Error(err))
-			c.JSON(http.StatusInternalServerError, sharedModels.ErrorResponse{Message: "Failed to retrieve published story details"})
-		}
-		return
-	}
-	c.JSON(http.StatusOK, story)
-}
-
-// <<< ДОБАВЛЕНО: Обработчик для получения списка сцен истории >>>
-func (h *GameplayHandler) listStoryScenesInternal(c *gin.Context) {
-	log := h.logger.With(zap.String("handler", "listStoryScenesInternal"))
-	storyIDStr := c.Param("story_id")
-	storyID, err := uuid.Parse(storyIDStr)
-	if err != nil {
-		log.Warn("Invalid story ID format", zap.String("story_id", storyIDStr), zap.Error(err))
-		c.JSON(http.StatusBadRequest, sharedModels.ErrorResponse{Message: "Invalid story ID format"})
-		return
-	}
-	log = log.With(zap.String("storyID", storyID.String()))
-	log.Info("Internal request for story scenes list")
-
-	// Вызываем новый метод сервиса (StoryBrowsingService)
-	scenes, err := h.service.ListStoryScenesInternal(c.Request.Context(), storyID)
-	if err != nil {
-		// Можно добавить обработку NotFound, если решено, что пустой список - это ошибка
-		log.Error("Failed to list story scenes internally", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, sharedModels.ErrorResponse{Message: "Failed to retrieve story scenes"})
-		return
-	}
-
-	// Возвращаем список сцен (может быть пустым)
-	c.JSON(http.StatusOK, scenes)
-}
-
 // <<< ДОБАВЛЕНО: Обработчик для обновления черновика >>>
 func (h *GameplayHandler) updateDraftInternal(c *gin.Context) {
 	log := h.logger.With(zap.String("handler", "updateDraftInternal"))
@@ -333,4 +249,65 @@ func (h *GameplayHandler) updateSceneInternal(c *gin.Context) {
 
 	log.Info("Internal scene update successful")
 	c.JSON(http.StatusOK, gin.H{"message": "Scene updated successfully"}) // Отвечаем JSON для AJAX запроса
+}
+
+// <<< Добавлено: Обработчик для удаления сцены >>>
+func (h *GameplayHandler) deleteSceneInternal(c *gin.Context) {
+	log := h.logger.With(zap.String("handler", "deleteSceneInternal"))
+
+	// Парсим ID сцены из URL
+	sceneIDStr := c.Param("scene_id")
+	sceneID, err := uuid.Parse(sceneIDStr)
+	if err != nil {
+		log.Warn("Invalid scene ID format for deletion", zap.String("scene_id", sceneIDStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid scene ID", sharedModels.ErrBadRequest), h.logger)
+		return
+	}
+	log = log.With(zap.String("sceneID", sceneID.String()))
+
+	log.Info("Handling internal scene delete request")
+
+	// Вызываем метод сервиса (предполагаем, что он существует)
+	err = h.service.DeleteSceneInternal(c.Request.Context(), sceneID)
+	if err != nil {
+		log.Error("Error deleting scene internally", zap.Error(err))
+		handleServiceError(c, err, h.logger) // Обрабатываем стандартные ошибки (NotFound и др.)
+		return
+	}
+
+	log.Info("Internal scene delete successful")
+	c.Status(http.StatusNoContent) // Успешное удаление
+}
+
+// <<< Добавлено: Обработчик для получения списка состояний игроков >>>
+func (h *GameplayHandler) listStoryPlayersInternal(c *gin.Context) {
+	log := h.logger.With(zap.String("handler", "listStoryPlayersInternal"))
+
+	// Парсим ID истории из URL
+	storyIDStr := c.Param("story_id")
+	storyID, err := uuid.Parse(storyIDStr)
+	if err != nil {
+		log.Warn("Invalid story ID format for player list", zap.String("story_id", storyIDStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID", sharedModels.ErrBadRequest), h.logger)
+		return
+	}
+	log = log.With(zap.String("storyID", storyID.String()))
+
+	log.Info("Handling internal list story players request")
+
+	// Вызываем метод сервиса (предполагаем, что он существует)
+	playerStates, err := h.service.ListStoryPlayersInternal(c.Request.Context(), storyID)
+	if err != nil {
+		log.Error("Error listing story players internally", zap.Error(err))
+		handleServiceError(c, err, h.logger) // Обрабатываем ошибки (NotFound, Internal и т.д.)
+		return
+	}
+
+	// Если сервис вернул nil вместо пустого среза, инициализируем его
+	if playerStates == nil {
+		playerStates = make([]sharedModels.PlayerGameState, 0)
+	}
+
+	log.Info("Internal list story players successful", zap.Int("count", len(playerStates)))
+	c.JSON(http.StatusOK, playerStates)
 }

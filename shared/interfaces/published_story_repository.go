@@ -9,6 +9,8 @@ import (
 )
 
 // PublishedStoryRepository defines the interface for interacting with published story data.
+//
+//go:generate mockery --name PublishedStoryRepository --output ./mocks --outpkg mocks --case=underscore
 type PublishedStoryRepository interface {
 	// Create inserts a new published story record. Used internally during publishing.
 	Create(ctx context.Context, story *models.PublishedStory) error

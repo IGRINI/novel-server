@@ -35,7 +35,7 @@ type LikeService interface {
 type likeServiceImpl struct {
 	likeRepo      interfaces.LikeRepository
 	publishedRepo interfaces.PublishedStoryRepository
-	progressRepo  interfaces.PlayerProgressRepository // <<< ДОБАВЛЕНО
+	gameStateRepo interfaces.PlayerGameStateRepository // <<< ДОБАВЛЕНО
 	// <<< ДОБАВЛЕНО: Клиент для взаимодействия с auth-service >>>
 	authClient interfaces.AuthServiceClient // Используем интерфейс
 	logger     *zap.Logger
@@ -45,15 +45,15 @@ type likeServiceImpl struct {
 func NewLikeService(
 	likeRepo interfaces.LikeRepository,
 	publishedRepo interfaces.PublishedStoryRepository,
-	progressRepo interfaces.PlayerProgressRepository, // <<< ДОБАВЛЕНО
+	gameStateRepo interfaces.PlayerGameStateRepository, // <<< ДОБАВЛЕНО
 	authClient interfaces.AuthServiceClient, // <<< ДОБАВЛЕНО: Инъекция клиента
 	logger *zap.Logger,
 ) LikeService {
 	return &likeServiceImpl{
 		likeRepo:      likeRepo,
 		publishedRepo: publishedRepo,
-		progressRepo:  progressRepo, // <<< ДОБАВЛЕНО
-		authClient:    authClient,   // <<< ДОБАВЛЕНО
+		gameStateRepo: gameStateRepo, // <<< ДОБАВЛЕНО
+		authClient:    authClient,    // <<< ДОБАВЛЕНО
 		logger:        logger.Named("LikeService"),
 	}
 }
@@ -202,7 +202,7 @@ func (s *likeServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID
 	progressExistsMap := make(map[uuid.UUID]bool)
 	var errProgress error
 	if len(likedStoryIDs) > 0 { // Only check if there are stories
-		progressExistsMap, errProgress = s.progressRepo.CheckProgressExistsForStories(ctx, userID, likedStoryIDs)
+		progressExistsMap, errProgress = s.gameStateRepo.CheckGameStateExistsForStories(ctx, userID, likedStoryIDs)
 		if errProgress != nil {
 			log.Error("Failed to check player progress for liked stories (batch)", zap.Error(errProgress))
 			// Decide how to handle: return error or proceed with progress as false?

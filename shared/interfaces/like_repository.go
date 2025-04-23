@@ -16,6 +16,8 @@ var (
 )
 
 // LikeRepository определяет методы для работы с лайками к опубликованным историям.
+//
+//go:generate mockery --name LikeRepository --output ./mocks --outpkg mocks --case=underscore
 type LikeRepository interface {
 	// AddLike добавляет запись о лайке.
 	// Возвращает ErrLikeAlreadyExists, если пользователь уже лайкнул эту историю.

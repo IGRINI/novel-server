@@ -125,7 +125,6 @@ func (h *AdminHandler) showDraftDetailsPage(c *gin.Context) {
 	availableDraftStatuses := []sharedModels.StoryStatus{
 		sharedModels.StatusDraft,
 		sharedModels.StatusGenerating,
-		sharedModels.StatusRevising,
 		sharedModels.StatusError,
 	}
 
@@ -285,16 +284,23 @@ func (h *AdminHandler) showPublishedStoryDetailsPage(c *gin.Context) {
 		}
 	}
 
+	// Получаем состояния игроков для этой истории
+	var playerStates []sharedModels.PlayerGameState
+	var playerStatesErr error
+	if storyErr == nil { // Запрашиваем, только если история найдена
+		playerStates, playerStatesErr = h.gameplayClient.ListStoryPlayersInternal(ctx, storyID)
+		if playerStatesErr != nil {
+			log.Warn("Failed to get player states for story", zap.Error(playerStatesErr))
+			// Не прерываем, покажем ошибку в шаблоне
+		}
+	}
+
 	// Определяем доступные статусы для опубликованной истории
 	availableStoryStatuses := []sharedModels.StoryStatus{
 		sharedModels.StatusSetupPending,
 		sharedModels.StatusFirstScenePending,
-		sharedModels.StatusGeneratingScene,
 		sharedModels.StatusReady,
-		sharedModels.StatusGameOverPending,
-		sharedModels.StatusCompleted,
 		sharedModels.StatusError,
-		// sharedModels.StatusSetupGenerating, // Не используется?
 	}
 
 	// Готовим данные для шаблона
@@ -317,6 +323,7 @@ func (h *AdminHandler) showPublishedStoryDetailsPage(c *gin.Context) {
 		"TargetUser":        targetUser,
 		"Story":             story,
 		"Scenes":            scenes,
+		"PlayerStates":      playerStates,
 		"AvailableStatuses": availableStoryStatuses,
 		"IsLoggedIn":        true,
 		"URLQuery":          c.Request.URL.Query(),
@@ -337,6 +344,9 @@ func (h *AdminHandler) showPublishedStoryDetailsPage(c *gin.Context) {
 	}
 	if scenesErr != nil {
 		data["ScenesError"] = "Не удалось загрузить сцены: " + scenesErr.Error()
+	}
+	if playerStatesErr != nil {
+		data["PlayerStatesError"] = "Не удалось загрузить состояния игроков: " + playerStatesErr.Error()
 	}
 
 	c.HTML(http.StatusOK, "story_details.html", data)
@@ -375,7 +385,6 @@ func (h *AdminHandler) handleUpdateDraft(c *gin.Context) {
 	for _, validStatus := range []sharedModels.StoryStatus{
 		sharedModels.StatusDraft,
 		sharedModels.StatusGenerating,
-		sharedModels.StatusRevising,
 		sharedModels.StatusError,
 	} {
 		if status == validStatus {
@@ -434,10 +443,7 @@ func (h *AdminHandler) handleUpdateStory(c *gin.Context) {
 	for _, validStatus := range []sharedModels.StoryStatus{
 		sharedModels.StatusSetupPending,
 		sharedModels.StatusFirstScenePending,
-		sharedModels.StatusGeneratingScene,
 		sharedModels.StatusReady,
-		sharedModels.StatusGameOverPending,
-		sharedModels.StatusCompleted,
 		sharedModels.StatusError,
 	} {
 		if status == validStatus {
@@ -545,4 +551,207 @@ func (h *AdminHandler) handleUpdateScene(c *gin.Context) {
 
 	log.Info("Scene updated successfully")
 	c.JSON(http.StatusOK, gin.H{"message": "Сцена успешно обновлена!"})
+}
+
+// handleDeleteScene обрабатывает POST-запрос для удаления сцены.
+func (h *AdminHandler) handleDeleteScene(c *gin.Context) {
+	ctx := c.Request.Context()
+	log := h.logger.With(zap.String("handler", "handleDeleteScene"))
+
+	// Получаем ID пользователя, истории и сцены из URL
+	targetUserIDStr := c.Param("user_id") // Хотя user_id не нужен для удаления, он часть URL
+	storyIDStr := c.Param("story_id")     // и story_id тоже
+	sceneIDStr := c.Param("scene_id")
+	sceneID, err := uuid.Parse(sceneIDStr)
+	if err != nil {
+		log.Error("Invalid scene ID format", zap.String("scene_id", sceneIDStr), zap.Error(err))
+		// Редирект с ошибкой (можно улучшить, добавив flash сообщение)
+		redirectURL := fmt.Sprintf("/admin/users/%s/stories/%s?error=invalid_scene_id", targetUserIDStr, storyIDStr)
+		c.Redirect(http.StatusSeeOther, redirectURL)
+		return
+	}
+	log = log.With(zap.String("sceneID", sceneID.String()))
+
+	// Вызов метода gameplayClient для удаления сцены
+	err = h.gameplayClient.DeleteSceneInternal(ctx, sceneID)
+
+	// Формируем URL для редиректа (обратно на страницу деталей истории)
+	redirectURL := fmt.Sprintf("/admin/users/%s/stories/%s", targetUserIDStr, storyIDStr)
+
+	if err != nil {
+		log.Error("Failed to delete scene via gameplay service", zap.Error(err))
+		errorMsg := "Не удалось удалить сцену"
+		if errors.Is(err, sharedModels.ErrNotFound) {
+			errorMsg = "Сцена не найдена"
+		}
+		redirectURL += "?error=delete_failed&msg=" + url.QueryEscape(errorMsg)
+	} else {
+		log.Info("Scene deleted successfully")
+		redirectURL += "?success=deleted"
+	}
+
+	c.Redirect(http.StatusSeeOther, redirectURL)
+}
+
+// --- Player Progress Handlers ---
+
+// showEditPlayerProgressPage отображает страницу редактирования прогресса игрока.
+func (h *AdminHandler) showEditPlayerProgressPage(c *gin.Context) {
+	ctx := c.Request.Context()
+	log := h.logger.With(zap.String("handler", "showEditPlayerProgressPage"))
+
+	// Получаем ID из URL
+	targetUserIDStr := c.Param("user_id")
+	storyIDStr := c.Param("story_id")
+	progressIDStr := c.Param("progress_id")
+
+	progressID, err := uuid.Parse(progressIDStr)
+	if err != nil {
+		log.Error("Invalid progress ID format", zap.String("progress_id", progressIDStr), zap.Error(err))
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Неверный формат ID прогресса"})
+		return
+	}
+	log = log.With(zap.String("progressID", progressID.String()))
+
+	// Получаем детали прогресса
+	progress, progressErr := h.gameplayClient.GetPlayerProgressInternal(ctx, progressID)
+	if progressErr != nil {
+		log.Error("Failed to get player progress details", zap.Error(progressErr))
+		// Можно показать ошибку на странице или редиректнуть
+		// Пока просто передадим ошибку в шаблон
+	}
+
+	// Опционально: получить User и Story для контекста (можно пропустить для упрощения)
+	// ... (код для получения targetUser и story по targetUserIDStr и storyIDStr, если нужно) ...
+
+	// Готовим данные для шаблона
+	pageTitle := fmt.Sprintf("Редактирование прогресса %s", progressID.String())
+	// if targetUser != nil && story != nil { ... добавить ID игрока и название истории ... }
+
+	data := gin.H{
+		"PageTitle":  pageTitle,
+		"Progress":   progress, // Передаем полученный прогресс
+		"UserID":     targetUserIDStr,
+		"StoryID":    storyIDStr,
+		"IsLoggedIn": true,
+	}
+	if progressErr != nil {
+		if errors.Is(progressErr, sharedModels.ErrPlayerProgressNotFound) {
+			data["ProgressError"] = "Прогресс игрока не найден."
+		} else {
+			data["ProgressError"] = "Не удалось загрузить прогресс игрока: " + progressErr.Error()
+		}
+	}
+
+	// Рендерим новый шаблон
+	c.HTML(http.StatusOK, "edit_player_progress.html", data)
+}
+
+// handleUpdatePlayerProgress обрабатывает POST-запрос для обновления прогресса игрока.
+func (h *AdminHandler) handleUpdatePlayerProgress(c *gin.Context) {
+	ctx := c.Request.Context()
+	log := h.logger.With(zap.String("handler", "handleUpdatePlayerProgress"))
+
+	// Получаем ID из URL
+	targetUserIDStr := c.Param("user_id")
+	storyIDStr := c.Param("story_id")
+	progressIDStr := c.Param("progress_id")
+	progressID, err := uuid.Parse(progressIDStr)
+	if err != nil {
+		log.Error("Invalid progress ID format on update", zap.String("progress_id", progressIDStr), zap.Error(err))
+		// Редирект на страницу редактирования с общей ошибкой
+		redirectURL := fmt.Sprintf("/admin/users/%s/stories/%s/progress/%s/edit?error=internal", targetUserIDStr, storyIDStr, progressIDStr)
+		c.Redirect(http.StatusSeeOther, redirectURL)
+		return
+	}
+	log = log.With(zap.String("progressID", progressID.String()))
+
+	// Формируем URL для редиректа в случае успеха или ошибки
+	redirectURLBase := fmt.Sprintf("/admin/users/%s/stories/%s/progress/%s/edit", targetUserIDStr, storyIDStr, progressIDStr)
+
+	// Читаем данные из формы
+	coreStatsJson := c.PostForm("coreStatsJson")
+	storyVarsJson := c.PostForm("storyVarsJson")
+	globalFlagsJson := c.PostForm("globalFlagsJson")
+	currentStateHash := c.PostForm("currentStateHash")
+	sceneIndexStr := c.PostForm("sceneIndex")
+	lastStorySummary := c.PostForm("lastStorySummary")
+	lastFutureDirection := c.PostForm("lastFutureDirection")
+	lastVarImpactSummary := c.PostForm("lastVarImpactSummary")
+
+	// Подготовка данных для обновления
+	updateData := make(map[string]interface{})
+
+	// Валидация и добавление JSON полей
+	var coreStats map[string]int
+	if coreStatsJson != "" {
+		if err := json.Unmarshal([]byte(coreStatsJson), &coreStats); err != nil {
+			log.Warn("Invalid coreStatsJson format", zap.Error(err))
+			c.Redirect(http.StatusSeeOther, redirectURLBase+"?error=invalid_core_stats_json")
+			return
+		}
+		updateData["core_stats"] = coreStats
+	} else {
+		updateData["core_stats"] = nil // Явно указываем null, если поле пустое
+	}
+
+	var storyVars map[string]interface{}
+	if storyVarsJson != "" {
+		if err := json.Unmarshal([]byte(storyVarsJson), &storyVars); err != nil {
+			log.Warn("Invalid storyVarsJson format", zap.Error(err))
+			c.Redirect(http.StatusSeeOther, redirectURLBase+"?error=invalid_story_vars_json")
+			return
+		}
+		updateData["story_variables"] = storyVars
+	} else {
+		updateData["story_variables"] = nil // Явно указываем null
+	}
+
+	var globalFlags []string
+	if globalFlagsJson != "" {
+		if err := json.Unmarshal([]byte(globalFlagsJson), &globalFlags); err != nil {
+			log.Warn("Invalid globalFlagsJson format", zap.Error(err))
+			c.Redirect(http.StatusSeeOther, redirectURLBase+"?error=invalid_global_flags_json")
+			return
+		}
+		updateData["global_flags"] = globalFlags
+	} else {
+		updateData["global_flags"] = nil // Явно указываем null
+	}
+
+	// Добавление остальных полей
+	updateData["current_state_hash"] = currentStateHash
+
+	sceneIndex, err := strconv.Atoi(sceneIndexStr)
+	if err != nil {
+		log.Warn("Invalid sceneIndex format", zap.String("sceneIndex", sceneIndexStr), zap.Error(err))
+		c.Redirect(http.StatusSeeOther, redirectURLBase+"?error=invalid_scene_index")
+		return
+	}
+	updateData["scene_index"] = sceneIndex
+
+	// Для строковых полей просто передаем как есть
+	// gameplay-service должен сам обработать пустые строки, если нужно
+	updateData["last_story_summary"] = lastStorySummary
+	updateData["last_future_direction"] = lastFutureDirection
+	updateData["last_var_impact_summary"] = lastVarImpactSummary
+
+	log.Debug("Attempting to update player progress", zap.Any("data", updateData))
+
+	// Вызов метода клиента
+	err = h.gameplayClient.UpdatePlayerProgressInternal(ctx, progressID, updateData)
+	if err != nil {
+		log.Error("Failed to update player progress via gameplay service", zap.Error(err))
+		errorMsg := "Не удалось обновить прогресс"
+		if errors.Is(err, sharedModels.ErrPlayerProgressNotFound) {
+			errorMsg = "Прогресс игрока не найден"
+		} else if errors.Is(err, sharedModels.ErrBadRequest) {
+			errorMsg = "Неверные данные для обновления" // Уточнить по ответу gameplay-service
+		}
+		c.Redirect(http.StatusSeeOther, redirectURLBase+"?error=update_failed&msg="+url.QueryEscape(errorMsg))
+		return
+	}
+
+	log.Info("Player progress updated successfully")
+	c.Redirect(http.StatusSeeOther, redirectURLBase+"?success=updated")
 }

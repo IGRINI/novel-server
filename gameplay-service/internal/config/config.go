@@ -20,6 +20,9 @@ type Config struct {
 	Env      string `envconfig:"ENV" default:"development"`
 	LogLevel string `envconfig:"LOG_LEVEL" default:"info"`
 
+	// <<< ДОБАВЛЕНО: Настройки CORS >>>
+	AllowedOrigins []string `envconfig:"ALLOWED_ORIGINS"` // Список разрешенных origin (через запятую)
+
 	// Настройки PostgreSQL
 	DBHost        string        `envconfig:"DB_HOST" required:"true"`
 	DBPort        string        `envconfig:"DB_PORT" default:"5432"`
@@ -50,6 +53,9 @@ type Config struct {
 
 	// <<< ДОБАВЛЕНО: Настройки генерации >>>
 	GenerationLimitPerUser int `envconfig:"GENERATION_LIMIT_PER_USER" default:"1"` // Лимит одновременных генераций на пользователя
+
+	// <<< ДОБАВЛЕНО: Настройки Consumer >>>
+	ConsumerConcurrency int `envconfig:"CONSUMER_CONCURRENCY" default:"10"` // Кол-во обработчиков сообщений
 }
 
 // GetDSN возвращает строку подключения (DSN) для PostgreSQL
@@ -115,6 +121,8 @@ func LoadConfig() (*Config, error) {
 	log.Println("  Inter-Service Secret: [ЗАГРУЖЕН]")                         // <<< Логируем загрузку
 	log.Printf("  Generation Limit Per User: %d", cfg.GenerationLimitPerUser) // <<< ДОБАВЛЕНО ЛОГИРОВАНИЕ >>>
 	log.Printf("  Auth Service URL: %s", cfg.AuthServiceURL)                  // <<< Логируем URL
+	log.Printf("  Allowed Origins: %v", cfg.AllowedOrigins)                   // <<< ДОБАВЛЕНО ЛОГИРОВАНИЕ >>>
+	log.Printf("  Consumer Concurrency: %d", cfg.ConsumerConcurrency)         // <<< ДОБАВЛЕНО ЛОГИРОВАНИЕ >>>
 
 	cfg.DBMaxConns = maxConns
 	cfg.DBIdleTimeout = time.Duration(idleTimeoutSec) * time.Second

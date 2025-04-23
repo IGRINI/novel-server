@@ -17,6 +17,8 @@ type UserInfo struct {
 
 // AuthServiceClient defines the interface for communicating with the auth service
 // from other internal services.
+//
+//go:generate mockery --name AuthServiceClient --output ./mocks --outpkg mocks --case=underscore
 type AuthServiceClient interface {
 	// GetUsersInfo fetches basic information for a list of user IDs.
 	// Returns a map of UserID to UserInfo and an error.
