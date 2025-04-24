@@ -43,6 +43,23 @@ func main() {
 		log.Fatalf("Ошибка загрузки конфигурации: %v", err)
 	}
 
+	// --- Инициализация метрик и Pushgateway --- (НОВОЕ)
+	if cfg.PushgatewayURL != "" {
+		log.Printf("Инициализация Pushgateway: %s", cfg.PushgatewayURL)
+		if err := worker.InitMetricsPusher(cfg.PushgatewayURL); err != nil {
+			// Не фатальная ошибка, просто логируем и продолжаем без пуша метрик
+			log.Printf("[WARN] Не удалось инициализировать Pushgateway: %v. Метрики не будут отправляться.", err)
+		} else {
+			// Запускаем периодическую отправку метрик, если инициализация успешна
+			go worker.StartMetricsPusher(15 * time.Second) // Отправлять каждые 15 секунд
+			// Регистрируем cleanup при завершении
+			defer worker.CleanupMetrics()
+		}
+	} else {
+		log.Println("Pushgateway URL не задан, метрики не будут отправляться.")
+	}
+	// -----------------------------------------
+
 	// Инициализация зависимостей (выносим AIClient выше, т.к. он нужен и API)
 	log.Println("Инициализация AI клиента...")
 	aiClient, err := service.NewAIClient(cfg)

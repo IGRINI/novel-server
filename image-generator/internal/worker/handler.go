@@ -24,7 +24,7 @@ var (
 			Name: "image_generator_tasks_processed_total",
 			Help: "Total number of image generation tasks processed.",
 		},
-		[]string{"status"}, // "success", "error_generation", "error_publish"
+		[]string{"status"}, // "success", "error_generation", "error_publish", "error_unmarshal"
 	)
 	taskDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "image_generator_task_duration_seconds",
@@ -44,6 +44,22 @@ var (
 		Help: "Total number of errors publishing task results.",
 	})
 )
+
+// Helper function to get a pointer to a string
+func ptrString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// Helper function to safely dereference a string pointer for logging
+func safeDerefString(s *string) string {
+	if s == nil {
+		return "<nil>"
+	}
+	return *s
+}
 
 // Handler обрабатывает входящие сообщения.
 type Handler struct {
@@ -110,7 +126,7 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 				defer wg.Done()
 				taskLog := log.With(
 					zap.String("task_id", t.TaskID),
-					zap.String("character_id", t.CharacterID),
+					zap.String("character_id", t.CharacterID.String()), // Use .String()
 					zap.String("image_reference", t.ImageReference),
 				)
 				taskLog.Info("Processing task from batch")
@@ -122,22 +138,30 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 				generationResult := h.imageService.GenerateAndStoreImage(context.Background(), t)
 				taskDuration.Observe(time.Since(taskStartTime).Seconds()) // Наблюдаем длительность
 
+				// Создаем result payload БЕЗ UserID и CharacterID, так как их нет в структуре результата
 				resultPayload := messaging.CharacterImageResultPayload{
 					TaskID:         t.TaskID,
-					UserID:         t.UserID,
-					CharacterID:    t.CharacterID,
 					ImageReference: t.ImageReference,
-					ImageURL:       generationResult.ImageURL,
+					Success:        false, // Default to false, set to true on success
 				}
+
 				if generationResult.Error != nil {
 					taskLog.Error("Failed to generate and store image for task", zap.Error(generationResult.Error))
-					resultPayload.Error = generationResult.Error.Error()
+					// Используем ErrorMessage и передаем указатель на строку ошибки
+					errMsg := generationResult.Error.Error()
+					resultPayload.ErrorMessage = &errMsg
+
 					// Инкрементируем счетчики ошибок
 					sanaApiErrors.Inc() // Пример: считаем как ошибку API
 					saveErrors.Inc()    // Пример: считаем как ошибку сохранения (уточнить логику в imageService)
 					tasksProcessed.WithLabelValues("error_generation").Inc()
 
 				} else {
+					resultPayload.Success = true
+					// Передаем указатель на URL изображения
+					if generationResult.ImageURL != "" {
+						resultPayload.ImageURL = &generationResult.ImageURL
+					}
 					// Инкрементируем счетчик успешных задач
 					tasksProcessed.WithLabelValues("success").Inc()
 				}
@@ -153,11 +177,13 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 
 		var publishErrorsEncountered bool
 		for result := range resultsChan {
-			resultLog := log.With(zap.String("task_id", result.TaskID), zap.String("character_id", result.CharacterID))
-			if result.Error != "" {
-				resultLog.Warn("Publishing error result for task from batch", zap.String("error", result.Error))
+			// Убираем CharacterID из лога, так как его нет в result
+			resultLog := log.With(zap.String("task_id", result.TaskID), zap.String("image_reference", result.ImageReference))
+			// Используем ErrorMessage и ImageURL (с безопасным разыменованием для лога)
+			if result.ErrorMessage != nil {
+				resultLog.Warn("Publishing error result for task from batch", zap.String("error", *result.ErrorMessage))
 			} else {
-				resultLog.Info("Publishing success result for task from batch", zap.String("image_url", result.ImageURL))
+				resultLog.Info("Publishing success result for task from batch", zap.String("image_url", safeDerefString(result.ImageURL)))
 			}
 
 			if pubErr := h.resultPublisher.Publish(ctx, result, msg.CorrelationId); pubErr != nil {
@@ -165,6 +191,7 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 				publishErrorsEncountered = true
 				// Инкрементируем счетчик ошибок публикации
 				publishResultErrors.Inc()
+				tasksProcessed.WithLabelValues("error_publish").Inc()
 			}
 		}
 
@@ -173,8 +200,8 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 		} else {
 			log.Info("Finished processing batch, all results published successfully.")
 		}
-		// Ack батча не зависит от метрик
-		return true // Ack the batch message
+		// Ack батча не зависит от ошибок публикации отдельных результатов
+		return true // Ack the original batch message
 	}
 
 	// Если не удалось распарсить как батч, пытаемся как одиночную задачу
@@ -193,9 +220,9 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 	// Обработка как одиночной задачи
 	log := h.logger.With(zap.String("task_id", taskPayload.TaskID), zap.String("correlation_id", msg.CorrelationId))
 	log.Info("Received single character image generation task")
+	// Убираем UserID, используем .String() для CharacterID
 	log = log.With(
-		zap.String("user_id", taskPayload.UserID),
-		zap.String("character_id", taskPayload.CharacterID),
+		zap.String("character_id", taskPayload.CharacterID.String()),
 		zap.String("image_reference", taskPayload.ImageReference),
 	)
 
@@ -205,17 +232,19 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 	generationResult := h.imageService.GenerateAndStoreImage(context.Background(), taskPayload)
 	taskDuration.Observe(time.Since(taskStartTime).Seconds()) // Наблюдаем длительность
 
+	// Создаем result payload БЕЗ UserID и CharacterID
 	resultPayload := messaging.CharacterImageResultPayload{
 		TaskID:         taskPayload.TaskID,
-		UserID:         taskPayload.UserID,
-		CharacterID:    taskPayload.CharacterID,
 		ImageReference: taskPayload.ImageReference,
-		ImageURL:       generationResult.ImageURL,
+		Success:        false, // Default to false
 	}
 
 	if generationResult.Error != nil {
 		log.Error("Failed to generate and store image", zap.Error(generationResult.Error))
-		resultPayload.Error = generationResult.Error.Error()
+		// Используем ErrorMessage и передаем указатель
+		errMsg := generationResult.Error.Error()
+		resultPayload.ErrorMessage = &errMsg
+
 		// Инкрементируем счетчики ошибок
 		sanaApiErrors.Inc() // Пример
 		saveErrors.Inc()    // Пример
@@ -225,23 +254,32 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 			log.Error("Failed to publish error result", zap.Error(pubErr), zap.Any("payload", resultPayload))
 			// Инкрементируем счетчик ошибок публикации
 			publishResultErrors.Inc()
+			tasksProcessed.WithLabelValues("error_publish").Inc()
 			return false // Nack - не смогли опубликовать ошибку
 		}
 		log.Warn("Published error result for image generation task")
-		return false // Nack - задача не выполнена, но ошибка опубликована
+		// Nack: задача не выполнена, но ошибка опубликована.
+		// Повторная обработка не поможет.
+		return false // Nack the original message
+	} else {
+		resultPayload.Success = true
+		// Передаем указатель на URL изображения
+		if generationResult.ImageURL != "" {
+			resultPayload.ImageURL = &generationResult.ImageURL
+		}
+		log.Info("Image generated and stored successfully", zap.String("image_url", safeDerefString(resultPayload.ImageURL)))
+		// Инкрементируем счетчик успешных задач
+		tasksProcessed.WithLabelValues("success").Inc()
+
+		if pubErr := h.resultPublisher.Publish(ctx, resultPayload, msg.CorrelationId); pubErr != nil {
+			log.Error("Failed to publish success result", zap.Error(pubErr), zap.Any("payload", resultPayload))
+			// Инкрементируем счетчик ошибок публикации
+			publishResultErrors.Inc()
+			tasksProcessed.WithLabelValues("error_publish").Inc()
+			return false // Nack - задача выполнена, но результат не опубликован
+		}
+		log.Info("Published success result for image generation task")
+		// Ack: задача выполнена и результат опубликован.
+		return true // Ack the original message
 	}
-
-	log.Info("Image generated and stored successfully", zap.String("image_url", generationResult.ImageURL))
-	// Инкрементируем счетчик успешных задач
-	tasksProcessed.WithLabelValues("success").Inc()
-
-	if pubErr := h.resultPublisher.Publish(ctx, resultPayload, msg.CorrelationId); pubErr != nil {
-		log.Error("Failed to publish success result", zap.Error(pubErr), zap.Any("payload", resultPayload))
-		// Инкрементируем счетчик ошибок публикации
-		publishResultErrors.Inc()
-		return false // Nack - задача выполнена, но результат не опубликован
-	}
-	log.Info("Published success result for image generation task")
-
-	return true // Ack - все успешно для одиночной задачи
 }

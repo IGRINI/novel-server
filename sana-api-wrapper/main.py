@@ -56,8 +56,9 @@ app = FastAPI(lifespan=lifetime)
 class GenerationRequest(BaseModel):
     prompt: str
     seed: int | None = None
+    ratio: str = "2:3"  # New field to select crop ratio
 
-def generate_image(pipeline, device, prompt: str, seed: int | None = None) -> Image.Image:
+def generate_image(pipeline, device, prompt: str, seed: int | None = None, ratio: str = "2:3") -> Image.Image:
     logger.info(f"Generating image for prompt: '{prompt[:50]}...'")
     start_time = time.time()
 
@@ -69,9 +70,14 @@ def generate_image(pipeline, device, prompt: str, seed: int | None = None) -> Im
         generator=generator
     ).images[0]
 
-    # Crop to 2:3 center
+    # Crop to selected ratio (centered)
     width, height = image.size
-    target_ratio = 2 / 3
+    try:
+        w_ratio, h_ratio = map(float, ratio.split(":"))
+        target_ratio = w_ratio / h_ratio
+    except Exception:
+        target_ratio = 2 / 3  # Fallback
+
     target_width = width
     target_height = int(width / target_ratio)
 
@@ -107,7 +113,8 @@ async def api_generate_image(request: GenerationRequest):
             pipeline,
             device,
             request.prompt,
-            request.seed
+            request.seed,
+            request.ratio
         )
 
         # Save to temporary BMP file

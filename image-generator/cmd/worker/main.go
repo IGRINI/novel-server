@@ -19,12 +19,15 @@ import (
 	"novel-server/image-generator/internal/service"
 	"novel-server/image-generator/internal/worker"
 	"novel-server/shared/logger"
-	"novel-server/shared/messaging" // Для интерфейса Publisher
+	// Для интерфейса Publisher
 )
 
 const (
-	maxReconnectAttempts = 5
+	maxReconnectAttempts = 50
 	reconnectDelay       = 5 * time.Second
+	dlxName              = "image_generation_tasks_dlx" // Dead Letter Exchange
+	dlqName              = "image_generation_tasks_dlq" // Dead Letter Queue
+	dlqRoutingKey        = "image-dlq"                  // Routing key для DLQ (можно использовать имя очереди)
 )
 
 func main() {
@@ -49,40 +52,61 @@ func main() {
 	appLogger.Info("Image generation service initialized")
 
 	// --- 4. Инициализация RabbitMQ ---
-	// Используем отдельный контекст для управления подключением RabbitMQ
 	mqCtx, mqCancel := context.WithCancel(context.Background())
-	defer mqCancel() // Отменяем контекст при выходе из main
+	defer mqCancel()
 
+	var initialConn *amqp091.Connection
+	// var resultPublisher messaging.Publisher // Инициализируем позже
+	// var sharedChannel *amqp091.Channel // Инициализируем позже
+	var errMq error
+
+	// Шаг 1: Подключаемся к RabbitMQ
+	initialConn, errMq = connectRabbitMQWithRetry(mqCtx, appLogger, cfg.RabbitMQ.URL)
+	if errMq != nil {
+		appLogger.Fatal("Failed initial RabbitMQ connection", zap.Error(errMq))
+	}
+	defer initialConn.Close() // Закрываем соединение при выходе
+	appLogger.Info("RabbitMQ connected successfully")
+
+	// Шаг 2: Открываем общий канал
+	sharedChannel, errMq := initialConn.Channel()
+	if errMq != nil {
+		appLogger.Fatal("Failed to open RabbitMQ channel", zap.Error(errMq))
+	}
+	defer sharedChannel.Close() // Закрываем канал при выходе
+	appLogger.Info("RabbitMQ channel opened successfully")
+
+	// Шаг 3: Настраиваем DLX/DLQ
+	if err := setupDLX(appLogger, sharedChannel); err != nil {
+		appLogger.Fatal("Failed to setup DLX/DLQ", zap.Error(err))
+	}
+	appLogger.Info("DLX/DLQ setup complete")
+
+	// Шаг 4: Инициализируем Result Publisher
+	resultPublisher, errMq := newRabbitMQPublisher(sharedChannel, cfg.RabbitMQ.ResultExchange, cfg.RabbitMQ.ResultRoutingKey, cfg.RabbitMQ.ResultQueueName)
+	if errMq != nil {
+		appLogger.Fatal("Failed to create RabbitMQ result publisher", zap.Error(errMq))
+	}
+	appLogger.Info("RabbitMQ result publisher initialized")
+
+	// --- ЗАПУСК МОНИТОРИНГА (ПОКА ЗАКОММЕНТИРОВАНО) ---
 	var wg sync.WaitGroup
-	var conn *amqp091.Connection
-	var resultPublisher messaging.Publisher
-
-	// Запускаем управление подключением в отдельной горутине
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		conn, resultPublisher = manageRabbitMQConnection(mqCtx, appLogger, cfg.RabbitMQ)
-		appLogger.Info("RabbitMQ connection manager exited")
-	}()
+	// wg.Add(1)
+	// go func() {
+	// 	defer wg.Done()
+	// monitorRabbitMQConnection(mqCtx, appLogger, cfg.RabbitMQ, initialConn, sharedChannel, resultPublisher.(*rabbitMQPublisher)) // Нужна доработка monitor
+	// 	appLogger.Info("RabbitMQ connection monitor exited")
+	// }()
 
 	// --- 5. Инициализация обработчика сообщений ---
-	// Ждем, пока publisher будет инициализирован (первое подключение)
-	for resultPublisher == nil {
-		appLogger.Info("Waiting for RabbitMQ result publisher initialization...")
-		time.Sleep(1 * time.Second)
-		if mqCtx.Err() != nil { // Проверяем, не отменился ли контекст
-			appLogger.Fatal("Failed to initialize RabbitMQ publisher within context deadline")
-		}
-	}
 	messageHandler := worker.NewHandler(appLogger, imageService, resultPublisher, cfg.PushGatewayURL)
 	appLogger.Info("Message handler initialized")
 
 	// --- 6. Запуск Consumer'а ---
-	// Запускаем прослушивание очереди в отдельной горутине
-	wg.Add(1)
+	wg.Add(1) // Добавляем в группу ожидания Consumer'а
 	go func() {
 		defer wg.Done()
-		startConsumer(mqCtx, appLogger, cfg.RabbitMQ, conn, messageHandler)
+		startConsumer(mqCtx, appLogger, cfg.RabbitMQ, sharedChannel, messageHandler)
 		appLogger.Info("RabbitMQ consumer exited")
 	}()
 
@@ -96,7 +120,7 @@ func main() {
 	appLogger.Info("Shutting down Image Generator Worker...")
 
 	// --- 8. Graceful Shutdown ---
-	mqCancel() // Сигнализируем горутинам RabbitMQ о завершении
+	mqCancel()
 
 	// Ожидаем завершения горутин RabbitMQ
 	appLogger.Info("Waiting for background tasks to finish...")
@@ -105,103 +129,143 @@ func main() {
 	appLogger.Info("Image Generator Worker shut down gracefully")
 }
 
-// manageRabbitMQConnection управляет подключением и переподключением к RabbitMQ,
-// а также инициализирует resultPublisher.
-func manageRabbitMQConnection(ctx context.Context, logger *zap.Logger, cfg config.RabbitMQConfig) (*amqp091.Connection, messaging.Publisher) {
+// connectRabbitMQWithRetry пытается подключиться к RabbitMQ с несколькими попытками.
+// Возвращает только соединение или ошибку.
+func connectRabbitMQWithRetry(ctx context.Context, logger *zap.Logger, url string) (*amqp091.Connection, error) {
 	var conn *amqp091.Connection
 	var err error
-	var publisher *rabbitMQPublisher
 
-	for attempt := 1; ; attempt++ {
-		conn, err = amqp091.Dial(cfg.URL)
+	logger.Info("Attempting to connect to RabbitMQ...",
+		zap.Int("max_attempts", maxReconnectAttempts),
+		zap.Duration("delay", reconnectDelay),
+	)
+
+	for attempt := 1; attempt <= maxReconnectAttempts; attempt++ {
+		conn, err = amqp091.Dial(url)
 		if err == nil {
-			logger.Info("RabbitMQ connected successfully")
+			logger.Info("RabbitMQ connected successfully", zap.Int("attempt", attempt))
+			// --- УСПЕХ: Возвращаем только соединение ---
+			return conn, nil
+		}
 
-			// Инициализируем publisher при успешном подключении
-			publisher, err = newRabbitMQPublisher(conn, cfg.ResultExchange, cfg.ResultRoutingKey, cfg.ResultQueueName)
-			if err != nil {
-				logger.Error("Failed to create RabbitMQ publisher", zap.Error(err))
-				conn.Close() // Закрываем соединение, если паблишер не создался
-				conn = nil
-			} else {
-				logger.Info("RabbitMQ result publisher initialized")
-				break // Успешно подключились и создали паблишер
+		logger.Error("Failed to connect to RabbitMQ",
+			zap.Int("attempt", attempt),
+			zap.Int("max_attempts", maxReconnectAttempts),
+			zap.Error(err),
+		)
+
+		// Не последняя попытка, ждем перед следующей
+		if attempt < maxReconnectAttempts {
+			select {
+			case <-time.After(reconnectDelay):
+				logger.Info("Retrying RabbitMQ connection...")
+			case <-ctx.Done():
+				logger.Info("Context cancelled during connect retry, stopping attempts")
+				return nil, ctx.Err() // Возвращаем ошибку контекста
 			}
 		}
-
-		logger.Error("Failed to connect to RabbitMQ", zap.Int("attempt", attempt), zap.Error(err))
-		if attempt >= maxReconnectAttempts {
-			logger.Fatal("Max reconnect attempts reached, shutting down")
-			return nil, nil // Не должно достигнуть из-за Fatal
-		}
-
-		select {
-		case <-time.After(reconnectDelay):
-			logger.Info("Retrying RabbitMQ connection...")
-		case <-ctx.Done():
-			logger.Info("Context cancelled, stopping RabbitMQ connection attempts")
-			return nil, nil
-		}
 	}
 
-	// Следим за разрывом соединения
-	notifyClose := make(chan *amqp091.Error)
-	conn.NotifyClose(notifyClose)
+	// Если цикл завершился без успеха
+	finalErr := fmt.Errorf("failed to connect to RabbitMQ after %d attempts: %w", maxReconnectAttempts, err)
+	logger.Error("Shutting down due to persistent RabbitMQ connection failure", zap.Error(finalErr))
+	return nil, finalErr // Возвращаем финальную ошибку
+}
 
-	select {
-	case closeErr := <-notifyClose:
-		logger.Warn("RabbitMQ connection closed", zap.Error(closeErr))
-		// Попытка переподключения
-		return manageRabbitMQConnection(ctx, logger, cfg) // Рекурсивный вызов для переподключения
-	case <-ctx.Done():
-		logger.Info("Context cancelled, closing RabbitMQ connection")
-		if conn != nil {
-			conn.Close()
-		}
-		if publisher != nil {
-			publisher.Close()
-		}
-		return nil, nil
+// --- НОВАЯ ФУНКЦИЯ МОНИТОРИНГА (пока не используется, нужно доработать) ---
+// func monitorRabbitMQConnection(
+// ...
+// ) {
+// ...
+// }
+
+// setupDLX функция настройки DLX/DLQ
+func setupDLX(logger *zap.Logger, ch *amqp091.Channel) error {
+	logger.Info("Setting up Dead Letter Exchange and Queue", zap.String("dlx", dlxName), zap.String("dlq", dlqName))
+
+	// Объявляем Dead Letter Exchange (DLX)
+	err := ch.ExchangeDeclare(
+		dlxName,  // name
+		"direct", // type
+		true,     // durable
+		false,    // auto-deleted
+		false,    // internal
+		false,    // no-wait
+		nil,      // arguments
+	)
+	if err != nil {
+		return fmt.Errorf("failed to declare DLX '%s': %w", dlxName, err)
 	}
+	logger.Debug("DLX declared", zap.String("dlx", dlxName))
+
+	// Объявляем Dead Letter Queue (DLQ)
+	_, err = ch.QueueDeclare(
+		dlqName, // name
+		true,    // durable
+		false,   // delete when unused
+		false,   // exclusive
+		false,   // no-wait
+		nil,     // arguments
+	)
+	if err != nil {
+		return fmt.Errorf("failed to declare DLQ '%s': %w", dlqName, err)
+	}
+	logger.Debug("DLQ declared", zap.String("dlq", dlqName))
+
+	// Связываем DLQ с DLX
+	err = ch.QueueBind(
+		dlqName,       // queue name
+		dlqRoutingKey, // routing key
+		dlxName,       // exchange
+		false,
+		nil,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to bind DLQ '%s' to DLX '%s': %w", dlqName, dlxName, err)
+	}
+	logger.Debug("DLQ bound to DLX", zap.String("dlq", dlqName), zap.String("dlx", dlxName), zap.String("key", dlqRoutingKey))
+	return nil
 }
 
 // startConsumer запускает прослушивание очереди задач.
-func startConsumer(ctx context.Context, logger *zap.Logger, cfg config.RabbitMQConfig, conn *amqp091.Connection, handler *worker.Handler) {
-	if conn == nil {
-		logger.Error("Cannot start consumer, RabbitMQ connection is nil")
+func startConsumer(ctx context.Context, logger *zap.Logger, cfg config.RabbitMQConfig, ch *amqp091.Channel, handler *worker.Handler) {
+	if ch == nil {
+		logger.Error("Cannot start consumer, RabbitMQ channel is nil")
 		return
 	}
 
-	ch, err := conn.Channel()
-	if err != nil {
-		logger.Error("Failed to open RabbitMQ channel for consumer", zap.Error(err))
-		// Соединение могло закрыться, manageRabbitMQConnection должно переподключиться
-		return
-	}
-	defer ch.Close()
+	// Канал уже открыт и передан нам
+	// defer ch.Close() // Не закрываем общий канал здесь
 
-	// Объявляем очередь задач
+	// Аргументы для DLX
+	queueArgs := amqp091.Table{
+		"x-dead-letter-exchange":    dlxName,
+		"x-dead-letter-routing-key": dlqRoutingKey,
+		// Можно добавить другие аргументы по умолчанию, если нужно, например, x-queue-mode: lazy
+	}
+
+	// Объявляем очередь задач с DLX аргументами
 	q, err := ch.QueueDeclare(
 		cfg.TaskQueue.Name,
 		cfg.TaskQueue.Durable,
 		cfg.TaskQueue.AutoDelete,
 		cfg.TaskQueue.Exclusive,
 		cfg.TaskQueue.NoWait,
-		nil, // arguments
+		queueArgs, // Используем аргументы с DLX
 	)
 	if err != nil {
-		logger.Error("Failed to declare task queue", zap.String("queue", cfg.TaskQueue.Name), zap.Error(err))
+		logger.Error("Failed to declare task queue with DLX args", zap.String("queue", cfg.TaskQueue.Name), zap.Error(err))
 		return
 	}
-	logger.Info("Task queue declared", zap.String("queue", q.Name), zap.Int("messages", q.Messages), zap.Int("consumers", q.Consumers))
+	logger.Info("Task queue declared with DLX args", zap.String("queue", q.Name), zap.Int("messages", q.Messages), zap.Int("consumers", q.Consumers))
 
 	// Настраиваем Quality of Service (prefetch count)
-	// Это важно, чтобы воркер не брал слишком много задач сразу
 	if err := ch.Qos(1, 0, false); err != nil {
 		logger.Error("Failed to set QoS", zap.Error(err))
 		return
 	}
 
+	// Используем переданный канал `ch`
 	msgs, err := ch.Consume(
 		q.Name,           // queue
 		cfg.ConsumerName, // consumer tag
@@ -216,24 +280,23 @@ func startConsumer(ctx context.Context, logger *zap.Logger, cfg config.RabbitMQC
 		return
 	}
 
-	logger.Info("Consumer started, waiting for messages...")
+	logger.Info("Consumer started, waiting for messages on shared channel...")
 
 	for {
 		select {
 		case msg, ok := <-msgs:
 			if !ok {
 				logger.Warn("Consumer channel closed by RabbitMQ")
-				// Канал закрылся, возможно, из-за разрыва соединения.
-				// manageRabbitMQConnection должен обработать это и перезапустить нас.
+				// Канал закрылся, manageRabbitMQConnection должен обработать это.
 				return
 			}
 			logger.Debug("Received a message", zap.Uint64("delivery_tag", msg.DeliveryTag))
 			if handler.HandleDelivery(ctx, msg) {
-				if ackErr := msg.Ack(false); ackErr != nil { // Ack - подтверждение успешной обработки
+				if ackErr := msg.Ack(false); ackErr != nil {
 					logger.Error("Failed to ack message", zap.Uint64("delivery_tag", msg.DeliveryTag), zap.Error(ackErr))
 				}
 			} else {
-				if nackErr := msg.Nack(false, true); nackErr != nil { // Nack - сообщение не обработано, requeue=true (можно настроить)
+				if nackErr := msg.Nack(false, false); nackErr != nil {
 					logger.Error("Failed to nack message", zap.Uint64("delivery_tag", msg.DeliveryTag), zap.Error(nackErr))
 				}
 			}
@@ -244,26 +307,31 @@ func startConsumer(ctx context.Context, logger *zap.Logger, cfg config.RabbitMQC
 	}
 }
 
-// --- Простая реализация RabbitMQ Publisher ---
+// --- Простая реализация RabbitMQ Publisher (изменения) ---
 
 type rabbitMQPublisher struct {
-	conn         *amqp091.Connection
-	ch           *amqp091.Channel
+	// conn         *amqp091.Connection // Больше не храним conn
+	ch           *amqp091.Channel // Используем общий канал
 	exchangeName string
 	routingKey   string
-	queueName    string // Используется для объявления очереди, если exchange пустой
+	queueName    string
 	logger       *zap.Logger
 	mu           sync.Mutex
+	isClosed     bool // Флаг, что паблишер неактивен (канал закрыт извне)
 }
 
-func newRabbitMQPublisher(conn *amqp091.Connection, exchange, routingKey, queueName string) (*rabbitMQPublisher, error) {
-	ch, err := conn.Channel()
-	if err != nil {
-		return nil, fmt.Errorf("failed to open channel for publisher: %w", err)
+// Принимает существующий канал
+func newRabbitMQPublisher(ch *amqp091.Channel, exchange, routingKey, queueName string) (*rabbitMQPublisher, error) {
+	// Канал уже открыт и передан нам
+	if ch == nil {
+		return nil, errors.New("cannot create publisher with nil channel")
 	}
+
+	publisherLogger := zap.L().Named("rabbitmq_publisher")
 
 	// Если exchange не указан, объявляем очередь (предполагаем direct to queue)
 	if exchange == "" && queueName != "" {
+		publisherLogger.Debug("Declaring result queue", zap.String("queue", queueName))
 		_, err := ch.QueueDeclare(
 			queueName,
 			true,  // durable
@@ -273,9 +341,10 @@ func newRabbitMQPublisher(conn *amqp091.Connection, exchange, routingKey, queueN
 			nil,   // arguments
 		)
 		if err != nil {
-			ch.Close()
+			// Не закрываем канал здесь, т.к. он общий!
 			return nil, fmt.Errorf("failed to declare result queue %s: %w", queueName, err)
 		}
+		publisherLogger.Debug("Result queue declared", zap.String("queue", queueName))
 		// Если exchange не задан, routing key должен быть именем очереди
 		if routingKey == "" {
 			routingKey = queueName
@@ -283,12 +352,12 @@ func newRabbitMQPublisher(conn *amqp091.Connection, exchange, routingKey, queueN
 	} // TODO: Добавить объявление Exchange, если exchangeName не пустой
 
 	return &rabbitMQPublisher{
-		conn:         conn,
-		ch:           ch,
+		// conn:         conn, // Убрали conn
+		ch:           ch, // Сохраняем общий канал
 		exchangeName: exchange,
 		routingKey:   routingKey,
 		queueName:    queueName,
-		logger:       zap.L().Named("rabbitmq_publisher"), // Используем глобальный логгер
+		logger:       publisherLogger,
 	}, nil
 }
 
@@ -296,8 +365,8 @@ func (p *rabbitMQPublisher) Publish(ctx context.Context, payload interface{}, co
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.ch == nil {
-		return errors.New("publisher channel is closed")
+	if p.isClosed || p.ch == nil {
+		return errors.New("publisher channel is closed or publisher is marked as closed")
 	}
 
 	body, err := json.Marshal(payload)
@@ -305,6 +374,7 @@ func (p *rabbitMQPublisher) Publish(ctx context.Context, payload interface{}, co
 		return fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
+	// Используем общий канал
 	err = p.ch.PublishWithContext(ctx,
 		p.exchangeName,
 		p.routingKey,
@@ -314,24 +384,30 @@ func (p *rabbitMQPublisher) Publish(ctx context.Context, payload interface{}, co
 			ContentType:   "application/json",
 			CorrelationId: correlationID,
 			Body:          body,
-			DeliveryMode:  amqp091.Persistent, // Делаем сообщения постоянными
+			DeliveryMode:  amqp091.Persistent,
 		},
 	)
 	if err != nil {
-		// Попытка переподключения канала, если ошибка связана с каналом/соединением
-		// (В данной простой реализации этого нет, но можно добавить)
+		// Ошибка может быть из-за закрытого канала/соединения
+		p.logger.Error("Failed to publish message", zap.Error(err))
+		// Не пытаемся пересоздать канал здесь, т.к. он управляется извне
 		return fmt.Errorf("failed to publish message: %w", err)
 	}
 	return nil
 }
 
+// Close() больше не закрывает канал, а помечает паблишер
 func (p *rabbitMQPublisher) Close() error {
+	// Этот метод вызывается при штатном завершении, но канал закрывается в manageRabbitMQConnection
+	p.MarkClosed()
+	return nil
+}
+
+// MarkClosed помечает паблишер как неактивный (канал закрыт извне)
+func (p *rabbitMQPublisher) MarkClosed() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.ch != nil {
-		err := p.ch.Close()
-		p.ch = nil // Устанавливаем в nil после закрытия
-		return err
-	}
-	return nil // Канал уже закрыт
+	p.isClosed = true
+	p.ch = nil // Обнуляем ссылку на канал
+	p.mu.Unlock()
+	p.logger.Info("Publisher marked as closed")
 }

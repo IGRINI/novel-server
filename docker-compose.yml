@@ -373,12 +373,6 @@ services:
       #   target: /run/secrets/apns_key
       - source: inter_service_secret # Пример секрета для связи с TokenService
         target: /run/secrets/inter_service_secret
-    healthcheck: # <<< Добавляем Healthcheck
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:${NOTIFICATION_HEALTH_PORT:-8088}/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s # Даем время на запуск HTTP сервера
     networks:
       - novel_network
 
@@ -483,12 +477,12 @@ services:
       IMAGE_PUBLIC_BASE_URL: https://crion.space/generated-images # Базовый URL для формирования ссылки
       IMAGE_PROMPT_STYLE_SUFFIX: ${IMAGE_PROMPT_STYLE_SUFFIX} # <<< Строка для добавления к промптам
       PUSHGATEWAY_URL: http://pushgateway:9091 # <<< URL для Pushgateway внутри Docker
-      # <<< ИЗМЕНЕНО: URL для sana-api-wrapper, работающего на хосте >>>
-      SANA_API_URL: http://host.docker.internal:8000
+      # <<< ИЗМЕНЕНО: Используем правильное имя переменной >>>
+      SANA_SERVER_BASE_URL: http://host.docker.internal:8000 
       # Добавить другие нужные переменные (логгирование, очереди и т.д.)
       # Например, имя очереди для задач и результатов:
-      IMAGE_GENERATOR_TASK_QUEUE: ${IMAGE_GENERATOR_TASK_QUEUE:-image_generation_tasks}
-      IMAGE_GENERATOR_RESULT_QUEUE: ${IMAGE_GENERATOR_RESULT_QUEUE:-image_generation_results}
+      RABBITMQ_CHARACTER_IMAGE_TASK_QUEUE_NAME: ${RABBITMQ_CHARACTER_IMAGE_TASK_QUEUE_NAME}
+      IMAGE_GENERATION_RESULT_QUEUE: ${IMAGE_GENERATION_RESULT_QUEUE}
     networks:
       - novel_network
     restart: unless-stopped

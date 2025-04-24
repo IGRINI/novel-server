@@ -3,6 +3,8 @@ package messaging
 import (
 	"context"
 	"novel-server/shared/models"
+
+	"github.com/google/uuid"
 )
 
 // PromptType определяет тип запроса к AI генератору
@@ -12,25 +14,81 @@ type PromptType string
 const (
 	PromptTypeNarrator               PromptType = "narrator"                  // Генерация базовых параметров мира по запросу пользователя
 	PromptTypeNovelSetup             PromptType = "novel_setup"               // Генерация стартового состояния мира (статы, персонажи)
-	PromptTypeNovelFirstSceneCreator PromptType = "novel_first_scene_creator" // Генерация первой сцены
-	PromptTypeNovelCreator           PromptType = "novel_creator"             // Генерация следующей сцены
+	PromptTypeNovelFirstSceneCreator PromptType = "novel_first_scene_creator" // Генерация первой сцены (DEPRECATED? Use NovelCreator)
+	PromptTypeNovelCreator           PromptType = "novel_creator"             // Генерация следующей сцены (или первой)
 	PromptTypeNovelGameOverCreator   PromptType = "novel_game_over_creator"   // Генерация финальной сцены (конец игры)
 	// Добавить другие типы по необходимости
 )
 
-// GenerationTaskPayload - структура сообщения для задачи генерации
+// GenerationTaskPayload defines the structure for AI generation tasks.
+// This is sent TO the story-generator service.
+// It contains all necessary context marshalled into UserInput.
 type GenerationTaskPayload struct {
-	TaskID           string     `json:"taskId"`                     // Уникальный ID задачи
-	UserID           string     `json:"userId"`                     // ID пользователя
-	PromptType       PromptType `json:"promptType"`                 // Тип промпта для AI
-	UserInput        string     `json:"userInput"`                  // Входные данные для AI (например, запрос пользователя или JSON)
-	StoryConfigID    string     `json:"storyConfigId,omitempty"`    // ID черновика (для Narrator, Setup). Убрали omitempty? Проверить
-	PublishedStoryID string     `json:"publishedStoryId,omitempty"` // ID опубликованной истории (для Creator, GameOver)
-	StateHash        string     `json:"state_hash,omitempty"`       // Хеш состояния (для Creator, GameOver)
-	GameStateID      string     `json:"gameStateId,omitempty"`      // ID состояния игры игрока (для обновления по callback)
+	TaskID           string     `json:"task_id"`
+	UserID           string     `json:"user_id"`                      // User ID as string
+	PublishedStoryID string     `json:"published_story_id,omitempty"` // Story ID as string (for scene/game over)
+	StoryConfigID    string     `json:"story_config_id,omitempty"`    // Draft ID as string (for narrator/setup)
+	PromptType       PromptType `json:"prompt_type"`
+	UserInput        string     `json:"user_input"`            // JSON string containing cfg, stp, cs, uc, pss, pfd, pvis, sv, gf
+	StateHash        string     `json:"state_hash,omitempty"`  // Required for PromptTypeNovelCreator
+	GameStateID      string     `json:"gameStateId,omitempty"` // Required for subsequent scene/game over results processing
 }
 
-// NotificationStatus определяет статус уведомления
+// GameOverReason details why the game ended.
+// This structure is used *within* GameOverTaskPayload.
+type GameOverReason struct {
+	StatName  string `json:"sn"`   // stat_name
+	Condition string `json:"cond"` // "min" or "max"
+	Value     int    `json:"val"`  // final value
+}
+
+// GameOverTaskPayload defines the structure for requesting game over text generation.
+// This is sent TO the story-generator service.
+type GameOverTaskPayload struct {
+	TaskID           string                `json:"task_id"`
+	UserID           string                `json:"user_id"`
+	PublishedStoryID string                `json:"published_story_id"`
+	GameStateID      string                `json:"gameStateId"`
+	LastState        models.PlayerProgress `json:"lst"` // The final PlayerProgress node
+	Reason           GameOverReason        `json:"rsn"` // Reason for game over
+	// --- MODIFIED FIELDS --- Use minimal structs for context needed by AI ---
+	NovelConfig models.MinimalConfigForGameOver `json:"cfg"` // Minimal Config (language, genre, player prefs)
+	NovelSetup  models.MinimalSetupForGameOver  `json:"stp"` // Minimal Setup (character names)
+	// CanContinue field might be needed if continuation logic exists
+	// CanContinue      bool                            `json:"can_continue,omitempty"`
+}
+
+// CharacterImageTaskPayload defines the structure for a single image generation task.
+type CharacterImageTaskPayload struct {
+	TaskID           string    `json:"task_id"`            // Unique ID for this specific task
+	PublishedStoryID uuid.UUID `json:"published_story_id"` // Story context
+	CharacterID      uuid.UUID `json:"character_id"`       // Character context (optional, can be zero UUID)
+	CharacterName    string    `json:"character_name"`     // Character name from setup
+	ImageReference   string    `json:"image_reference"`    // Unique reference ID for the image (e.g., character_{id}_{taskid})
+	Prompt           string    `json:"prompt"`             // Image generation prompt
+	NegativePrompt   string    `json:"negative_prompt,omitempty"`
+	Width            int       `json:"width,omitempty"`
+	Height           int       `json:"height,omitempty"`
+	Ratio            string    `json:"ratio"` // <<< ДОБАВЛЕНО: Соотношение сторон ("2:3" или "3:2")
+}
+
+// CharacterImageTaskBatchPayload defines a batch of image generation tasks.
+type CharacterImageTaskBatchPayload struct {
+	BatchID          string                      `json:"batch_id"` // Unique ID for this batch
+	PublishedStoryID uuid.UUID                   `json:"published_story_id"`
+	Tasks            []CharacterImageTaskPayload `json:"tasks"` // Array of individual tasks
+}
+
+// CharacterImageResultPayload defines the result of an image generation task.
+type CharacterImageResultPayload struct {
+	TaskID         string  `json:"task_id"`         // Matches the ID from CharacterImageTaskPayload
+	ImageReference string  `json:"image_reference"` // Matches the reference from the task
+	Success        bool    `json:"success"`
+	ErrorMessage   *string `json:"error,omitempty"`     // Error message if success is false
+	ImageURL       *string `json:"image_url,omitempty"` // URL to the generated image (e.g., S3/MinIO URL) if success is true
+}
+
+// NotificationStatus defines the status of a notification.
 type NotificationStatus string
 
 const (
@@ -38,67 +96,18 @@ const (
 	NotificationStatusError   NotificationStatus = "error"
 )
 
-// NotificationPayload - структура сообщения для уведомления пользователя
+// NotificationPayload - structure for user notifications.
 type NotificationPayload struct {
-	TaskID           string             `json:"task_id"`                      // ID задачи, которая завершилась
-	UserID           string             `json:"user_id"`                      // ID пользователя для отправки уведомления
-	PromptType       PromptType         `json:"prompt_type"`                  // Тип промпта, который выполнялся
-	Status           NotificationStatus `json:"status"`                       // Статус выполнения (success/error)
-	GeneratedText    string             `json:"generated_text,omitempty"`     // Сгенерированный текст (при успехе)
-	ErrorDetails     string             `json:"error_details,omitempty"`      // Детали ошибки (при ошибке)
-	StoryConfigID    string             `json:"story_config_id,omitempty"`    // Опционально: ID конфигурации истории, если применимо
-	PublishedStoryID string             `json:"published_story_id,omitempty"` // !!! ДОБАВЛЕНО: ID опубликованной истории
-	StateHash        string             `json:"state_hash,omitempty"`         // <<< Добавлено: Хеш состояния, для которого генерировалась сцена
-	GameStateID      string             `json:"gameStateId,omitempty"`        // <<< ДОБАВЛЕНО: ID состояния игры для обновления
-}
-
-// GameOverReason details why the game ended.
-type GameOverReason struct {
-	StatName  string `json:"sn"`   // stat_name
-	Condition string `json:"cond"` // "min" or "max"
-	Value     int    `json:"val"`  // final value
-}
-
-// GameOverTaskPayload defines the data sent to generate a game over ending.
-type GameOverTaskPayload struct {
-	TaskID           string                   `json:"task_id"`
-	UserID           string                   `json:"user_id"` // User ID as string
-	PublishedStoryID string                   `json:"published_story_id"`
-	GameStateID      string                   `json:"gameStateId,omitempty"` // ID состояния игры игрока (для обновления по callback)
-	PromptType       PromptType               `json:"prompt_type"`           // Should be PromptTypeNovelGameOverCreator
-	NovelConfig      models.Config            `json:"cfg"`                   // NovelConfig (extracted from PublishedStory.Config)
-	NovelSetup       models.NovelSetupContent `json:"setup"`                 // NovelSetup (extracted from PublishedStory.Setup)
-	LastState        models.PlayerProgress    `json:"lst"`                   // The final player progress state
-	Reason           GameOverReason           `json:"rsn"`                   // Reason for game over
-}
-
-// CharacterImageTaskPayload представляет задачу на генерацию изображения для одного персонажа.
-type CharacterImageTaskPayload struct {
-	TaskID         string   `json:"task_id"`                  // Уникальный ID для этой конкретной задачи генерации
-	UserID         string   `json:"user_id"`                  // ID пользователя, для логов и возможной приоритизации
-	CharacterID    string   `json:"character_id"`             // ID создаваемого персонажа/сущности в gameplay-service
-	Prompt         string   `json:"prompt"`                   // Текстовый промпт для генерации
-	NegativePrompt string   `json:"negative_prompt"`          // Отрицательный промпт
-	ImageReference string   `json:"image_reference"`          // Уникальный идентификатор изображения (например, хеш промпта), чтобы избежать дублирования
-	Seed           *int64   `json:"seed,omitempty"`           // Опциональный сид для воспроизводимости
-	Steps          *int     `json:"steps,omitempty"`          // Опциональное количество шагов
-	GuidanceScale  *float64 `json:"guidance_scale,omitempty"` // Опциональный CFG scale
-}
-
-// CharacterImageTaskBatchPayload представляет батч задач на генерацию изображений персонажей.
-type CharacterImageTaskBatchPayload struct {
-	BatchID string                      `json:"batch_id"` // Уникальный ID для всего батча
-	Tasks   []CharacterImageTaskPayload `json:"tasks"`    // Список задач в батче
-}
-
-// CharacterImageResultPayload содержит результат генерации изображения.
-type CharacterImageResultPayload struct {
-	TaskID         string `json:"task_id"`         // ID исходной задачи CharacterImageTaskPayload
-	UserID         string `json:"user_id"`         // ID пользователя
-	CharacterID    string `json:"character_id"`    // ID персонажа из задачи
-	ImageReference string `json:"image_reference"` // Идентификатор изображения из задачи
-	ImageURL       string `json:"image_url"`       // URL сгенерированного и сохраненного изображения (если успех)
-	Error          string `json:"error,omitempty"` // Описание ошибки (если генерация не удалась)
+	TaskID           string             `json:"task_id"`                      // ID of the task that completed
+	UserID           string             `json:"user_id"`                      // User to notify
+	PromptType       PromptType         `json:"prompt_type"`                  // Type of task performed
+	Status           NotificationStatus `json:"status"`                       // success/error
+	GeneratedText    string             `json:"generated_text,omitempty"`     // Generated text (on success)
+	ErrorDetails     string             `json:"error_details,omitempty"`      // Error details (on error)
+	StoryConfigID    string             `json:"story_config_id,omitempty"`    // Optional: ID of the related draft
+	PublishedStoryID string             `json:"published_story_id,omitempty"` // Optional: ID of the related published story
+	StateHash        string             `json:"state_hash,omitempty"`         // Optional: State hash for scene generation
+	GameStateID      string             `json:"gameStateId,omitempty"`        // Optional: Game state ID for updates
 }
 
 // Publisher - интерфейс для отправки сообщений в очередь.

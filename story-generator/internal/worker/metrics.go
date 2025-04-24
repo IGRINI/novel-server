@@ -1,9 +1,11 @@
 package worker
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -82,17 +84,40 @@ func InitMetricsPusher(pushgatewayURL string) error {
 	return nil
 }
 
+// StartMetricsPusher запускает горутину для периодической отправки метрик.
+func StartMetricsPusher(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	go func() {
+		for range ticker.C {
+			if pusher == nil {
+				ticker.Stop()
+				log.Println("[Metrics] Pusher is nil, stopping periodic push.")
+				return
+			}
+			if err := pushMetrics(); err != nil {
+				// Ошибка уже логируется внутри pushMetrics
+			}
+		}
+	}()
+	log.Printf("[Metrics] Started periodic pusher with interval %v", interval)
+}
+
 // pushMetrics отправляет текущие метрики в Pushgateway.
-func pushMetrics() {
+func pushMetrics() error {
 	if pusher == nil {
-		log.Println("[Metrics] Error: Pusher not initialized.")
-		return
+		// Не инициализирован или была ошибка
+		// log.Println("[Metrics] Error: Pusher not initialized.") // Не логируем здесь, чтобы не спамить
+		return errors.New("pusher not initialized")
 	}
+
+	// Пушим все зарегистрированные метрики
 	err := pusher.Push()
 	if err != nil {
-		// Логируем ошибку, но не падаем. Следующий инкремент попробует снова.
 		log.Printf("[Metrics] Error pushing metrics to Pushgateway: %v", err)
+		return err
 	}
+	log.Println("[Metrics] Metrics pushed successfully.")
+	return nil
 }
 
 // MetricsIncrementTasksReceived увеличивает счетчик полученных задач и отправляет метрики.
@@ -120,17 +145,19 @@ func MetricsAddTokensUsed(count float64) {
 }
 
 // CleanupMetrics удаляет метрики этого инстанса из Pushgateway.
-// Должна вызываться при graceful shutdown.
-func CleanupMetrics() error {
+// Должна вызываться через defer в main.
+func CleanupMetrics() {
 	if pusher == nil {
-		log.Println("[Metrics] Cleanup: Pusher not initialized, nothing to delete.")
-		return nil
+		log.Println("[Metrics] Cleanup skipped: Pusher not initialized.")
+		return
 	}
+
 	log.Printf("[Metrics] Deleting metrics from Pushgateway for job '%s', grouping key: %v", jobName, groupingKey)
 	err := pusher.Delete()
 	if err != nil {
-		return fmt.Errorf("could not delete metrics from Pushgateway: %w", err)
+		// Ошибка может быть, если Pushgateway недоступен, но мы все равно пытаемся удалить
+		log.Printf("[Metrics] Error deleting metrics from Pushgateway: %v", err)
+	} else {
+		log.Printf("[Metrics] Successfully deleted metrics from Pushgateway.")
 	}
-	log.Printf("[Metrics] Successfully deleted metrics from Pushgateway.")
-	return nil
 }

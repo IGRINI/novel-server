@@ -90,10 +90,11 @@ FCM_CREDENTIALS_PATH=./secrets/firebase-service-account.json # <<< УКАЖИ П
 
 # --- Image Generator ---
 # Общие имена очередей
-IMAGE_GENERATOR_TASK_QUEUE=image_generation_tasks     # Очередь задач (gameplay -> image-gen)
-IMAGE_GENERATION_RESULT_QUEUE=image_generation_results # Очередь результатов (image-gen -> gameplay)
+# <<< ИЗМЕНЕНО: Используем имя переменной, ожидаемое конфигом image-generator >>>
+RABBITMQ_CHARACTER_IMAGE_TASK_QUEUE_NAME=image_generation_tasks # Очередь задач (gameplay -> image-gen)
+IMAGE_GENERATION_RESULT_QUEUE=image_generation_results       # Очередь результатов (image-gen -> gameplay)
 
-SANA_API_URL=http://localhost:8000 # <<< URL для локально запущенного SANA API Wrapper (на хосте/WSL)
+SANA_SERVER_BASE_URL=http://localhost:8000 # URL для локально запущенного SANA API Wrapper (на хосте/WSL)
 
 # Настройки S3/Minio хранилища
 # --- ЗАКОММЕНТИРОВАНО: S3/Minio больше не используется для сохранения картинок, используется volume --- 

@@ -3,6 +3,7 @@ package interfaces
 import (
 	"context"
 	"novel-server/shared/models"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -37,6 +38,12 @@ type PlayerGameStateRepository interface {
 
 	// ListByStoryID получает все состояния игры для указанной истории.
 	ListByStoryID(ctx context.Context, publishedStoryID uuid.UUID) ([]models.PlayerGameState, error)
+
+	// FindAndMarkStaleGeneratingAsError находит состояния игры игрока, которые 'зависли'
+	// в статусе генерации сцены или концовки, и обновляет их статус на Error.
+	// staleThreshold: длительность, после которой состояние считается зависшим.
+	// Возвращает количество обновленных записей и ошибку.
+	FindAndMarkStaleGeneratingAsError(ctx context.Context, staleThreshold time.Duration) (int64, error)
 
 	// TODO: Potentially add methods like ListPlayerGameStates(ctx, playerID) if needed.
 }

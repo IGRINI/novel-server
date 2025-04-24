@@ -121,7 +121,10 @@ func main() {
 	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret, storyConfigRepo, publishedRepo, cfg)
 
 	// --- Проверка зависших задач --- //
-	go markStuckTasksAsError(storyConfigRepo, logger)
+	go markStuckDraftsAsError(storyConfigRepo, logger)
+	go markStuckPublishedStoriesAsError(publishedRepo, 1*time.Hour, logger)
+	// <<< ДОБАВЛЕНО: Проверка зависших состояний игры игрока >>>
+	go markStuckPlayerGameStatesAsError(playerGameStateRepo, 30*time.Minute, logger)
 
 	// --- Инициализация консьюмера уведомлений --- //
 	notificationConsumer, err := messaging.NewNotificationConsumer(
@@ -271,29 +274,32 @@ func main() {
 	logger.Info("Gameplay Service успешно остановлен")
 }
 
-// <<< НОВАЯ ФУНКЦИЯ: Установка статуса Error для зависших задач >>>
-func markStuckTasksAsError(repo sharedInterfaces.StoryConfigRepository, logger *zap.Logger) {
+// <<< ПЕРЕИМЕНОВАНО и немного изменено >>>
+// markStuckDraftsAsError устанавливает статус Error для зависших ЧЕРНОВИКОВ (StoryConfig).
+func markStuckDraftsAsError(repo sharedInterfaces.StoryConfigRepository, logger *zap.Logger) {
 	// Небольшая задержка перед проверкой
 	time.Sleep(5 * time.Second)
-	logger.Info("Проверка зависших задач для установки статуса Error...")
+	logger.Info("Checking for stuck draft tasks (StoryConfig) to set Error status...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // Увеличим таймаут на случай большого кол-ва задач
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	// Используем существующий метод для поиска 'generating' и 'revising'
 	stuckConfigs, err := repo.FindGeneratingConfigs(ctx)
 	if err != nil {
-		logger.Error("Не удалось получить список зависших задач для установки статуса Error", zap.Error(err))
+		logger.Error("Failed to get list of stuck draft tasks to set Error status", zap.Error(err))
 		return
 	}
 
 	if len(stuckConfigs) == 0 {
-		logger.Info("Зависших задач для установки статуса Error не найдено.")
+		logger.Info("No stuck draft tasks found to set Error status.")
 		return
 	}
 
-	logger.Info("Найдено зависших задач для установки статуса Error", zap.Int("count", len(stuckConfigs)))
+	logger.Info("Found stuck draft tasks to set Error status", zap.Int("count", len(stuckConfigs)))
 	updatedCount := 0
 	errorCount := 0
+	errorDetails := "Task timed out or got stuck during generation/revision."
 
 	for _, cfg := range stuckConfigs {
 		logFields := []zap.Field{
@@ -302,32 +308,75 @@ func markStuckTasksAsError(repo sharedInterfaces.StoryConfigRepository, logger *
 			zap.String("currentStatus", string(cfg.Status)),
 		}
 
-		// Проверяем еще раз на всякий случай, вдруг статус изменился пока мы работали
+		// Проверяем еще раз статус 'generating' (убираем Revising)
 		if cfg.Status != sharedModels.StatusGenerating {
-			logger.Info("Статус задачи изменился, пропускаем обновление", logFields...)
+			logger.Info("Draft task status changed, skipping update", logFields...)
 			continue
 		}
 
-		cfg.Status = sharedModels.StatusError
-		cfg.UpdatedAt = time.Now().UTC()
-
-		// Используем новый контекст для обновления, чтобы не зависеть от общего таймаута
+		// Используем UpdateStatusAndError, чтобы записать причину
 		updateCtx, updateCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := repo.Update(updateCtx, cfg); err != nil {
-			logger.Error("Ошибка установки статуса Error для зависшей задачи", append(logFields, zap.Error(err))...)
+		if err := repo.UpdateStatusAndError(updateCtx, cfg.ID, sharedModels.StatusError, errorDetails); err != nil {
+			logger.Error("Error setting Error status for stuck draft task", append(logFields, zap.Error(err))...)
 			errorCount++
 		} else {
-			logger.Warn("Установлен статус Error для зависшей задачи", logFields...)
+			logger.Warn("Set Error status for stuck draft task", logFields...)
 			updatedCount++
 		}
 		updateCancel()
 	}
 
-	logger.Info("Завершение обработки зависших задач",
+	logger.Info("Finished processing stuck draft tasks",
 		zap.Int("totalFound", len(stuckConfigs)),
 		zap.Int("updatedToError", updatedCount),
 		zap.Int("updateErrors", errorCount),
 	)
+}
+
+// <<< НОВАЯ ФУНКЦИЯ >>>
+// markStuckPublishedStoriesAsError устанавливает статус Error для зависших ОПУБЛИКОВАННЫХ историй.
+func markStuckPublishedStoriesAsError(repo sharedInterfaces.PublishedStoryRepository, staleThreshold time.Duration, logger *zap.Logger) {
+	// Небольшая задержка перед проверкой (чуть больше, чем для черновиков)
+	time.Sleep(10 * time.Second)
+	logger.Info("Checking for stuck published stories to set Error status...", zap.Duration("staleThreshold", staleThreshold))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // Таймаут на всю операцию
+	defer cancel()
+
+	updatedCount, err := repo.FindAndMarkStaleGeneratingAsError(ctx, staleThreshold)
+	if err != nil {
+		logger.Error("Failed to find and mark stale published stories", zap.Error(err))
+		return
+	}
+
+	if updatedCount == 0 {
+		logger.Info("No stuck published stories found to set Error status.")
+	} else {
+		logger.Warn("Set Error status for stuck published stories", zap.Int64("count", updatedCount))
+	}
+}
+
+// <<< НОВАЯ ФУНКЦИЯ >>>
+// markStuckPlayerGameStatesAsError устанавливает статус Error для зависших состояний игры игрока.
+func markStuckPlayerGameStatesAsError(repo sharedInterfaces.PlayerGameStateRepository, staleThreshold time.Duration, logger *zap.Logger) {
+	// Небольшая задержка перед проверкой (еще чуть больше)
+	time.Sleep(15 * time.Second)
+	logger.Info("Checking for stuck player game states to set Error status...", zap.Duration("staleThreshold", staleThreshold))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // Таймаут на всю операцию
+	defer cancel()
+
+	updatedCount, err := repo.FindAndMarkStaleGeneratingAsError(ctx, staleThreshold)
+	if err != nil {
+		logger.Error("Failed to find and mark stale player game states", zap.Error(err))
+		return
+	}
+
+	if updatedCount == 0 {
+		logger.Info("No stuck player game states found to set Error status.")
+	} else {
+		logger.Warn("Set Error status for stuck player game states", zap.Int64("count", updatedCount))
+	}
 }
 
 // setupDatabase инициализирует и возвращает пул соединений с БД

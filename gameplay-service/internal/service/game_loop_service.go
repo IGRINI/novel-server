@@ -325,28 +325,32 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, playerID uuid.UUID
 		reasonCondition := ""
 		finalValue := nextProgress.CoreStats[gameOverStat]
 		if def, ok := setupContent.CoreStatsDefinition[gameOverStat]; ok {
-			if def.GameOverConditions.Min {
+			// Determine condition based on which limit was hit
+			if def.GameOverConditions.Min && finalValue <= 0 { // Assuming 0 is the min boundary
 				reasonCondition = "min"
-			} else if def.GameOverConditions.Max {
+			} else if def.GameOverConditions.Max && finalValue >= 100 { // Assuming 100 is the max boundary
 				reasonCondition = "max"
 			}
 		}
 		reason := sharedMessaging.GameOverReason{StatName: gameOverStat, Condition: reasonCondition, Value: finalValue}
-		var novelConfig sharedModels.Config
-		_ = json.Unmarshal(publishedStory.Config, &novelConfig)
 
-		lastStateProgress := *nextProgress
-		lastStateProgress.ID = finalProgressNodeID
+		// --- MODIFICATION START: Use Minimal Config/Setup ---
+		minimalGameOverConfig := sharedModels.ToMinimalConfigForGameOver(publishedStory.Config)
+		minimalGameOverSetup := sharedModels.ToMinimalSetupForGameOver(&setupContent) // Pass parsed setup
+		// --- MODIFICATION END ---
+
+		lastStateProgress := *nextProgress         // Create a copy
+		lastStateProgress.ID = finalProgressNodeID // Assign the correct ID
 
 		gameOverPayload := sharedMessaging.GameOverTaskPayload{
 			TaskID:           taskID,
-			UserID:           playerID.String(),
-			PublishedStoryID: publishedStoryID.String(),
-			GameStateID:      gameState.ID.String(),
-			LastState:        lastStateProgress,
+			UserID:           playerID.String(),         // Use string UUID
+			PublishedStoryID: publishedStoryID.String(), // Use string UUID
+			GameStateID:      gameState.ID.String(),     // Use string UUID
+			LastState:        lastStateProgress,         // Pass the final PlayerProgress node
 			Reason:           reason,
-			NovelConfig:      novelConfig,
-			NovelSetup:       setupContent,
+			NovelConfig:      minimalGameOverConfig, // Use minimal config
+			NovelSetup:       minimalGameOverSetup,  // Use minimal setup
 		}
 		if err := s.publisher.PublishGameOverTask(ctx, gameOverPayload); err != nil {
 			s.logger.Error("Failed to publish game over generation task", append(logFields, zap.Error(err))...)
@@ -1197,40 +1201,38 @@ func createGenerationPayload(
 	currentStateHash string,
 ) (sharedMessaging.GenerationTaskPayload, error) {
 
-	var configMap map[string]interface{}
-	if len(story.Config) > 0 {
-		if err := json.Unmarshal(story.Config, &configMap); err != nil {
-			// Log warning but don't necessarily fail, maybe generation can proceed without full config?
-			log.Printf("WARN: Failed to parse Config JSON for generation task StoryID %s: %v", story.ID, err)
-			// return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Config JSON: %w", err)
-			configMap = make(map[string]interface{}) // Provide empty map
-		}
-	} else {
-		log.Printf("WARN: Missing Config in PublishedStory ID %s for generation task", story.ID)
-		configMap = make(map[string]interface{}) // Provide empty map
+	// --- MODIFICATION START: Parse full config/setup and create minimal versions ---
+	if story.Config == nil || story.Setup == nil {
+		log.Printf("ERROR: Story Config or Setup is nil for StoryID %s", story.ID)
+		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("story config or setup is nil")
+	}
+	var fullConfig sharedModels.Config
+	if err := json.Unmarshal(story.Config, &fullConfig); err != nil {
+		log.Printf("WARN: Failed to parse Config JSON for generation task StoryID %s: %v", story.ID, err)
+		// Continue with empty minimal config? Or return error?
+		// Return error for now, as config is likely important.
+		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Config JSON: %w", err)
+	}
+	var fullSetup sharedModels.NovelSetupContent
+	if err := json.Unmarshal(story.Setup, &fullSetup); err != nil {
+		log.Printf("WARN: Failed to parse Setup JSON for generation task StoryID %s: %v", story.ID, err)
+		// Continue with empty minimal setup? Or return error?
+		// Return error for now.
+		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Setup JSON: %w", err)
 	}
 
-	var setupMap map[string]interface{}
-	if len(story.Setup) > 0 {
-		if err := json.Unmarshal(story.Setup, &setupMap); err != nil {
-			log.Printf("WARN: Failed to parse Setup JSON for generation task StoryID %s: %v", story.ID, err)
-			// return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Setup JSON: %w", err)
-			setupMap = make(map[string]interface{}) // Provide empty map
-		}
-	} else {
-		log.Printf("WARN: Missing Setup in PublishedStory ID %s for generation task", story.ID)
-		setupMap = make(map[string]interface{}) // Provide empty map
-	}
+	minimalConfig := sharedModels.ToMinimalConfigForScene(&fullConfig)
+	minimalSetup := sharedModels.ToMinimalSetupForScene(&fullSetup)
+	// --- MODIFICATION END ---
 
 	compressedInputData := make(map[string]interface{})
 
-	// --- Essential Data ---
-	compressedInputData["cfg"] = configMap // Story config (parsed JSON, БЕЗ core_stats)
-	compressedInputData["stp"] = setupMap  // Story setup (parsed JSON)
+	// --- Essential Data: Use MINIMAL structs here ---
+	compressedInputData["cfg"] = minimalConfig // Minimal Config
+	compressedInputData["stp"] = minimalSetup  // Minimal Setup
 
 	// --- Current State (before this choice) ---
 	if progress.CoreStats != nil {
-		// Filter core stats if needed (e.g., remove zero values?)
 		compressedInputData["cs"] = progress.CoreStats
 	}
 	// Filter non-transient global flags before sending
@@ -1244,7 +1246,7 @@ func createGenerationPayload(
 	compressedInputData["gf"] = nonTransientFlags
 
 	// Include summaries from the *previous* step (the scene the player just saw)
-	compressedInputData["pss"] = progress.LastStorySummary
+	compressedInputData["pss"] = progress.LastStorySummary // Use correct field names
 	compressedInputData["pfd"] = progress.LastFutureDirection
 	compressedInputData["pvis"] = progress.LastVarImpactSummary
 
@@ -1261,24 +1263,30 @@ func createGenerationPayload(
 	compressedInputData["sv"] = nonTransientVars // Only non-nil, non-transient vars resulting from choice
 
 	// Include info about the choice(s) the user just made
-	compressedInputData["uc"] = madeChoicesInfo
+	userChoiceMap := make(map[string]string) // Convert UserChoiceInfo for AI prompt
+	if len(madeChoicesInfo) > 0 {
+		lastChoice := madeChoicesInfo[len(madeChoicesInfo)-1] // Simplified: use last choice
+		userChoiceMap["d"] = lastChoice.Desc
+		userChoiceMap["t"] = lastChoice.Text
+	}
+	compressedInputData["uc"] = userChoiceMap
 
-	// <<< ИЗМЕНЕНИЕ: Сериализуем всё в UserInput >>>
+	// Marshal the compressed data into UserInput JSON string
 	userInputBytes, errMarshal := json.Marshal(compressedInputData)
 	if errMarshal != nil {
 		log.Printf("ERROR: Failed to marshal compressedInputData for generation task StoryID %s: %v", story.ID, errMarshal)
 		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error marshaling input data: %w", errMarshal)
 	}
 	userInputJSON := string(userInputBytes)
-	// <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
 
 	payload := sharedMessaging.GenerationTaskPayload{
 		TaskID:           uuid.New().String(),
-		UserID:           userID.String(),
-		PublishedStoryID: story.ID.String(),
+		UserID:           userID.String(),   // Use string UUID
+		PublishedStoryID: story.ID.String(), // Use string UUID
 		PromptType:       sharedMessaging.PromptTypeNovelCreator,
-		UserInput:        userInputJSON,    // <-- Передаем весь JSON сюда
-		StateHash:        currentStateHash, // <<< Используем переданный хеш
+		UserInput:        userInputJSON, // Use the marshaled JSON string
+		StateHash:        currentStateHash,
+		// GameStateID is added later before publishing
 	}
 
 	return payload, nil
@@ -1305,56 +1313,44 @@ func createInitialSceneGenerationPayload(
 	story *sharedModels.PublishedStory,
 ) (sharedMessaging.GenerationTaskPayload, error) {
 
-	// Парсинг Config
-	var configMap map[string]interface{}
-	if len(story.Config) > 0 {
-		if err := json.Unmarshal(story.Config, &configMap); err != nil {
-			log.Printf("WARN: Failed to parse Config JSON for initial scene generation task StoryID %s: %v", story.ID, err)
-			configMap = make(map[string]interface{}) // Пустая карта при ошибке
-		}
-	} else {
-		log.Printf("WARN: Missing Config in PublishedStory ID %s for initial scene generation task", story.ID)
-		configMap = make(map[string]interface{}) // Пустая карта
+	// --- MODIFICATION START: Parse full config/setup and create minimal versions ---
+	if story.Config == nil || story.Setup == nil {
+		log.Printf("ERROR: Story Config or Setup is nil for initial scene generation, StoryID %s", story.ID)
+		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("story config or setup is nil")
+	}
+	var fullConfig sharedModels.Config
+	if err := json.Unmarshal(story.Config, &fullConfig); err != nil {
+		log.Printf("WARN: Failed to parse Config JSON for initial scene task StoryID %s: %v", story.ID, err)
+		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Config JSON: %w", err)
+	}
+	var fullSetup sharedModels.NovelSetupContent
+	if err := json.Unmarshal(story.Setup, &fullSetup); err != nil {
+		log.Printf("WARN: Failed to parse Setup JSON for initial scene task StoryID %s: %v", story.ID, err)
+		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Setup JSON: %w", err)
 	}
 
-	// Парсинг Setup и извлечение начальных статов
-	var setupMap map[string]interface{}
-	initialCoreStats := make(map[string]int)
-	if len(story.Setup) > 0 {
-		var setupContent sharedModels.NovelSetupContent
-		if err := json.Unmarshal(story.Setup, &setupContent); err != nil {
-			log.Printf("WARN: Failed to parse Setup JSON for initial scene generation task StoryID %s: %v", story.ID, err)
-			setupMap = make(map[string]interface{}) // Пустая карта при ошибке
-		} else {
-			// Успешно распарсили Setup, извлекаем начальные статы
-			setupMap = make(map[string]interface{}) // Создаем setupMap для передачи
-			errMarshal := json.Unmarshal(story.Setup, &setupMap)
-			if errMarshal != nil { // Доп. проверка на маршалинг в map
-				log.Printf("WARN: Failed to marshal parsed Setup back to map for initial scene generation task StoryID %s: %v", story.ID, errMarshal)
-				setupMap = make(map[string]interface{})
-			}
+	minimalConfig := sharedModels.ToMinimalConfigForScene(&fullConfig)
+	minimalSetup := sharedModels.ToMinimalSetupForScene(&fullSetup)
+	// --- MODIFICATION END ---
 
-			if setupContent.CoreStatsDefinition != nil {
-				for statName, definition := range setupContent.CoreStatsDefinition {
-					initialCoreStats[statName] = definition.Initial // Используем начальное значение из Setup
-				}
-			}
+	// Extract initial stats from the full setup
+	initialCoreStats := make(map[string]int)
+	if fullSetup.CoreStatsDefinition != nil {
+		for statName, definition := range fullSetup.CoreStatsDefinition {
+			initialCoreStats[statName] = definition.Initial
 		}
-	} else {
-		log.Printf("WARN: Missing Setup in PublishedStory ID %s for initial scene generation task", story.ID)
-		setupMap = make(map[string]interface{}) // Пустая карта
 	}
 
 	compressedInputData := make(map[string]interface{})
-	compressedInputData["cfg"] = configMap
-	compressedInputData["stp"] = setupMap
-	compressedInputData["cs"] = initialCoreStats                // Начальные статы
-	compressedInputData["sv"] = make(map[string]interface{})    // Пусто
-	compressedInputData["gf"] = []string{}                      // Пусто
-	compressedInputData["uc"] = []sharedModels.UserChoiceInfo{} // <<< USE SHARED MODEL (Пусто)
-	compressedInputData["pss"] = ""                             // Пусто
-	compressedInputData["pfd"] = ""                             // Пусто
-	compressedInputData["pvis"] = ""                            // Пусто
+	compressedInputData["cfg"] = minimalConfig               // Minimal Config
+	compressedInputData["stp"] = minimalSetup                // Minimal Setup
+	compressedInputData["cs"] = initialCoreStats             // Initial stats
+	compressedInputData["sv"] = make(map[string]interface{}) // Empty for first scene
+	compressedInputData["gf"] = []string{}                   // Empty for first scene
+	compressedInputData["uc"] = make(map[string]string)      // Empty user choice map for first scene
+	compressedInputData["pss"] = ""                          // Empty summary for first scene
+	compressedInputData["pfd"] = ""                          // Empty direction for first scene
+	compressedInputData["pvis"] = ""                         // Empty var impact for first scene
 
 	userInputBytes, errMarshal := json.Marshal(compressedInputData)
 	if errMarshal != nil {
@@ -1365,11 +1361,12 @@ func createInitialSceneGenerationPayload(
 
 	payload := sharedMessaging.GenerationTaskPayload{
 		TaskID:           uuid.New().String(),
-		UserID:           userID.String(), // UserID все еще нужен для идентификации задачи
-		PublishedStoryID: story.ID.String(),
-		PromptType:       sharedMessaging.PromptTypeNovelCreator, // Первая сцена тоже генерируется им
+		UserID:           userID.String(),                        // Use string UUID
+		PublishedStoryID: story.ID.String(),                      // Use string UUID
+		PromptType:       sharedMessaging.PromptTypeNovelCreator, // First scene uses NovelCreator prompt type now
 		UserInput:        userInputJSON,
-		StateHash:        sharedModels.InitialStateHash, // Явно указываем хеш начальной сцены
+		StateHash:        sharedModels.InitialStateHash, // Use the constant for initial state hash
+		// GameStateID is added later before publishing
 	}
 
 	return payload, nil

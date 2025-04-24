@@ -78,13 +78,14 @@ func NewImageGenerationService(
 // SanaAPIRequest - структура запроса к SANA API.
 type SanaAPIRequest struct {
 	Prompt string `json:"prompt"`
+	Ratio  string `json:"ratio"`
 }
 
 // GenerateAndStoreImage - реализует основную логику.
 func (s *imageServiceImpl) GenerateAndStoreImage(ctx context.Context, taskPayload sharedMessaging.CharacterImageTaskPayload) GenerateImageResult {
 	log := s.logger.With(
-		zap.String("user_id", taskPayload.UserID),
-		zap.String("character_id", taskPayload.CharacterID),
+		// zap.String("user_id", taskPayload.UserID), // UserID нет в taskPayload
+		zap.String("character_id", taskPayload.CharacterID.String()), // Use .String()
 		zap.String("image_reference", taskPayload.ImageReference),
 		zap.String("prompt_hash", fmt.Sprintf("%x", uuid.NewSHA1(uuid.NameSpaceDNS, []byte(taskPayload.Prompt+s.promptStyleSuffix)))),
 		zap.String("task_id", taskPayload.TaskID),
@@ -95,8 +96,17 @@ func (s *imageServiceImpl) GenerateAndStoreImage(ctx context.Context, taskPayloa
 	fullPrompt := taskPayload.Prompt + s.promptStyleSuffix
 	log.Debug("Full prompt for SANA API", zap.String("prompt", fullPrompt))
 
+	// Используем ratio из полезной нагрузки задачи
+	imageRatio := taskPayload.Ratio
+	if imageRatio == "" {
+		log.Warn("Ratio not provided in task payload, defaulting to 2:3", zap.String("reference", taskPayload.ImageReference))
+		imageRatio = "2:3" // Значение по умолчанию, если не передано
+	} else {
+		log.Info("Using image ratio from task payload", zap.String("ratio", imageRatio), zap.String("reference", taskPayload.ImageReference))
+	}
+
 	// 1. Вызов SANA Sprint API
-	imageData, err := s.callSanaAPI(ctx, fullPrompt)
+	imageData, err := s.callSanaAPI(ctx, fullPrompt, imageRatio)
 	if err != nil {
 		log.Error("SANA API call failed", zap.Error(err))
 		return GenerateImageResult{Error: fmt.Errorf("%w: %v", ErrImageGenerationFailed, err)}
@@ -141,12 +151,13 @@ func (s *imageServiceImpl) GenerateAndStoreImage(ctx context.Context, taskPayloa
 }
 
 // callSanaAPI - вызывает SANA API.
-func (s *imageServiceImpl) callSanaAPI(ctx context.Context, prompt string) ([]byte, error) {
+func (s *imageServiceImpl) callSanaAPI(ctx context.Context, prompt string, ratio string) ([]byte, error) {
 	log := s.logger.With(zap.String("api_url", s.sanaConfig.BaseURL))
 
 	// Формируем тело запроса
 	reqPayload := SanaAPIRequest{
 		Prompt: prompt,
+		Ratio:  ratio,
 	}
 	reqBodyBytes, err := json.Marshal(reqPayload)
 	if err != nil {

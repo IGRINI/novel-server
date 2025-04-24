@@ -2,12 +2,14 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"novel-server/shared/interfaces"
 	"novel-server/shared/models"
 	"novel-server/shared/utils"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -1082,4 +1084,560 @@ func (r *pgPublishedStoryRepository) ListByUserIDOffset(ctx context.Context, use
 
 	r.logger.Debug("Published stories listed successfully by user with offset/limit", append(logFields, zap.Int("count", len(stories)))...)
 	return stories, nil
+}
+
+const findAndMarkStaleGeneratingQuery = `
+UPDATE published_stories
+SET status = $1, -- StatusError
+    error_details = $2, -- Сообщение об ошибке
+    updated_at = NOW()
+WHERE status = ANY($3::story_status[]) -- Массив зависших статусов
+  AND updated_at < $4 -- Порог времени
+`
+
+// FindAndMarkStaleGeneratingAsError находит опубликованные истории, которые 'зависли' в статусе генерации,
+// и обновляет их статус на StatusError.
+func (r *pgPublishedStoryRepository) FindAndMarkStaleGeneratingAsError(ctx context.Context, staleThreshold time.Duration) (int64, error) {
+	staleStatuses := []string{
+		string(models.StatusSetupPending),
+		string(models.StatusSetupGenerating),
+		string(models.StatusFirstScenePending),
+		string(models.StatusInitialGeneration),
+	}
+	thresholdTime := time.Now().UTC().Add(-staleThreshold)
+	errorMessage := "Generation process timed out or got stuck."
+
+	logFields := []zap.Field{
+		zap.Strings("staleStatuses", staleStatuses),
+		zap.Duration("staleThreshold", staleThreshold),
+		zap.Time("thresholdTime", thresholdTime),
+	}
+	r.logger.Info("Finding and marking stale generating published stories as Error", logFields...)
+
+	commandTag, err := r.db.Exec(ctx, findAndMarkStaleGeneratingQuery,
+		models.StatusError, // $1: Новый статус
+		errorMessage,       // $2: Сообщение об ошибке
+		staleStatuses,      // $3: Массив статусов для поиска
+		thresholdTime,      // $4: Временной порог
+	)
+
+	if err != nil {
+		r.logger.Error("Failed to execute update query for stale published stories", append(logFields, zap.Error(err))...)
+		return 0, fmt.Errorf("ошибка обновления статуса зависших опубликованных историй: %w", err)
+	}
+
+	affectedRows := commandTag.RowsAffected()
+	r.logger.Info("Finished marking stale published stories", append(logFields, zap.Int64("updatedCount", affectedRows))...)
+
+	return affectedRows, nil
+}
+
+// CheckInitialGenerationStatus проверяет, готовы ли Setup и Первая сцена (проверяя статус).
+func (r *pgPublishedStoryRepository) CheckInitialGenerationStatus(ctx context.Context, id uuid.UUID) (bool, error) {
+	query := `SELECT status FROM published_stories WHERE id = $1`
+	var status models.StoryStatus
+	logFields := []zap.Field{zap.String("publishedStoryID", id.String())}
+	r.logger.Debug("Checking initial generation status for published story", logFields...)
+
+	err := r.db.QueryRow(ctx, query, id).Scan(&status)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			r.logger.Warn("Published story not found for initial generation status check", logFields...)
+			return false, models.ErrNotFound
+		}
+		r.logger.Error("Failed to query status for initial generation check", append(logFields, zap.Error(err))...)
+		return false, fmt.Errorf("ошибка получения статуса истории %s: %w", id, err)
+	}
+
+	isReady := (status == models.StatusReady)
+	r.logger.Debug("Initial generation status check complete", append(logFields, zap.Bool("isReady", isReady))...)
+	return isReady, nil
+}
+
+// GetConfigAndSetup получает Config и Setup по ID истории.
+func (r *pgPublishedStoryRepository) GetConfigAndSetup(ctx context.Context, id uuid.UUID) (json.RawMessage, json.RawMessage, error) {
+	query := `SELECT config, setup FROM published_stories WHERE id = $1`
+	var config, setup json.RawMessage
+	logFields := []zap.Field{zap.String("publishedStoryID", id.String())}
+	r.logger.Debug("Getting config and setup for published story", logFields...)
+
+	err := r.db.QueryRow(ctx, query, id).Scan(&config, &setup)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			r.logger.Warn("Published story not found for config/setup retrieval", logFields...)
+			return nil, nil, models.ErrNotFound
+		}
+		r.logger.Error("Failed to query config/setup", append(logFields, zap.Error(err))...)
+		return nil, nil, fmt.Errorf("ошибка получения config/setup для истории %s: %w", id, err)
+	}
+
+	r.logger.Debug("Config and setup retrieved successfully", append(logFields, zap.Int("configSize", len(config)), zap.Int("setupSize", len(setup)))...)
+	return config, setup, nil
+}
+
+// ListPublicSummaries получает список публичных историй с пагинацией.
+func (r *pgPublishedStoryRepository) ListPublicSummaries(ctx context.Context, userID *uuid.UUID, cursor string, limit int, sortBy string, filterAdult bool) ([]models.PublishedStorySummary, string, error) {
+	if limit <= 0 {
+		limit = 10 // Default limit
+	}
+	fetchLimit := limit + 1
+
+	// Определяем поле и направление сортировки
+	orderByField := "created_at"
+	orderByDir := "DESC"
+	isLikesSort := false // <<< ДОБАВЛЕНО: Флаг для типа сортировки
+	sortBy = strings.ToLower(sortBy)
+	if sortBy == "likes" {
+		orderByField = "likes_count"
+		isLikesSort = true // <<< ДОБАВЛЕНО
+	} else if sortBy == "newest" {
+		orderByField = "created_at"
+	} // Добавить другие варианты сортировки при необходимости
+
+	// Декодируем курсор в зависимости от поля сортировки
+	var cursorValue interface{}
+	var cursorID uuid.UUID
+	var err error
+	if isLikesSort { // <<< ИЗМЕНЕНО: Проверка флага
+		var likes int64
+		likes, cursorID, err = utils.DecodeIntCursor(cursor) // <<< ИЗМЕНЕНО: Используем DecodeIntCursor
+		cursorValue = likes
+	} else { // По умолчанию сортировка по created_at
+		var createdTime time.Time
+		createdTime, cursorID, err = utils.DecodeCursor(cursor)
+		cursorValue = createdTime
+	}
+	if err != nil {
+		// Не возвращаем ошибку, если курсор просто пустой
+		if cursor != "" {
+			r.logger.Warn("Invalid cursor provided for ListPublicSummaries", zap.String("cursor", cursor), zap.String("sortBy", sortBy), zap.Error(err))
+			return nil, "", fmt.Errorf("invalid cursor: %w", err)
+		}
+		// Если курсор пустой, ошибки нет, продолжаем без курсора
+		err = nil // Сбрасываем ошибку
+		if isLikesSort {
+			cursorValue = int64(0) // Устанавливаем значение по умолчанию для пустого курсора
+		} else {
+			cursorValue = time.Time{}
+		}
+		cursorID = uuid.Nil
+	}
+
+	// Строим запрос
+	var queryBuilder strings.Builder
+	args := []interface{}{}
+	paramIndex := 1
+
+	queryBuilder.WriteString(`
+        SELECT
+            ps.id,
+            ps.title,
+            ps.description, -- Используем полное описание, если short нет
+            ps.user_id,     -- author_id
+            -- TODO: JOIN с users для получения author_name
+            '' AS author_name, -- Заглушка для имени автора
+            ps.created_at,
+            ps.is_adult_content,
+            ps.likes_count,
+            ps.status,
+            ps.cover_image_url,
+            (CASE WHEN $`)
+	queryBuilder.WriteString(fmt.Sprintf("%d", paramIndex)) // Динамический индекс для userID в CASE
+	args = append(args, userID)                             // Добавляем userID в аргументы ($1)
+	paramIndex++
+	queryBuilder.WriteString(`::uuid IS NOT NULL THEN EXISTS (
+                SELECT 1 FROM story_likes sl WHERE sl.published_story_id = ps.id AND sl.user_id = $1 -- Используем $1 снова
+            ) ELSE FALSE END) AS is_liked
+        FROM published_stories ps
+        WHERE ps.is_public = TRUE AND ps.status = $`)
+	queryBuilder.WriteString(fmt.Sprintf("%d", paramIndex)) // ($2)
+	args = append(args, models.StatusReady)
+	paramIndex++
+
+	if filterAdult {
+		queryBuilder.WriteString(" AND ps.is_adult_content = FALSE")
+	}
+
+	// Добавляем условие курсора, если он был предоставлен
+	if cursor != "" {
+		comparisonOperator := "<" // Для DESC сортировки
+		// NOTE: Для ASC сортировки нужно будет поменять оператор
+		queryBuilder.WriteString(fmt.Sprintf(" AND (ps.%s, ps.id) %s ($%d, $%d)", orderByField, comparisonOperator, paramIndex, paramIndex+1))
+		args = append(args, cursorValue, cursorID)
+		paramIndex += 2
+	}
+
+	// Добавляем сортировку и лимит
+	queryBuilder.WriteString(fmt.Sprintf(" ORDER BY ps.%s %s, ps.id %s LIMIT $%d", orderByField, orderByDir, orderByDir, paramIndex))
+	args = append(args, fetchLimit)
+
+	query := queryBuilder.String()
+	logFields := []zap.Field{
+		zap.Any("userID", userID), // Используем Any, т.к. userID может быть nil
+		zap.String("cursor", cursor),
+		zap.Int("limit", limit),
+		zap.String("sortBy", sortBy),
+		zap.Bool("filterAdult", filterAdult),
+		// zap.String("query", query), // Можно раскомментировать для отладки
+	}
+	r.logger.Debug("Listing public story summaries", logFields...)
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		r.logger.Error("Failed to query public story summaries", append(logFields, zap.Error(err))...)
+		return nil, "", fmt.Errorf("ошибка получения списка публичных историй: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]models.PublishedStorySummary, 0, limit)
+	// var lastSummary models.PublishedStorySummary // <<< УДАЛЕНО: Не используется
+
+	for rows.Next() {
+		var s models.PublishedStorySummary
+		var description sql.NullString // Используем sql.NullString для description
+
+		if err := rows.Scan(
+			&s.ID,
+			&s.Title,
+			&description, // Сканируем в sql.NullString
+			&s.AuthorID,
+			&s.AuthorName, // Заглушка
+			&s.PublishedAt,
+			&s.IsAdultContent,
+			&s.LikesCount,
+			&s.Status,
+			&s.CoverImageURL,
+			&s.IsLiked,
+		); err != nil {
+			r.logger.Error("Failed to scan public story summary row", append(logFields, zap.Error(err))...)
+			// Важно не прерывать весь процесс, если одна строка битая
+			continue // Пропускаем эту строку
+		}
+		// Устанавливаем ShortDescription из Description, если оно есть
+		if description.Valid {
+			s.ShortDescription = description.String
+		}
+
+		summaries = append(summaries, s)
+		// lastSummary = s // <<< УДАЛЕНО
+	}
+
+	if err := rows.Err(); err != nil {
+		r.logger.Error("Error iterating public story summary rows", append(logFields, zap.Error(err))...)
+		return nil, "", fmt.Errorf("ошибка итерации по результатам: %w", err)
+	}
+
+	var nextCursor string
+	if len(summaries) == fetchLimit {
+		// Берем последний элемент, который будет отброшен, для создания курсора
+		lastItemToEncode := summaries[limit]
+		// Обрезаем результат до запрошенного лимита
+		summaries = summaries[:limit]
+		// Формируем курсор на основе последнего элемента *отброшенного* списка
+		if isLikesSort { // <<< ИЗМЕНЕНО: Проверка флага
+			nextCursor = utils.EncodeIntCursor(lastItemToEncode.LikesCount, lastItemToEncode.ID) // <<< ИЗМЕНЕНО: Используем EncodeIntCursor
+		} else {
+			nextCursor = utils.EncodeCursor(lastItemToEncode.PublishedAt, lastItemToEncode.ID)
+		}
+	}
+
+	r.logger.Debug("Public story summaries listed successfully", append(logFields, zap.Int("count", len(summaries)), zap.Bool("hasNext", nextCursor != ""))...)
+	return summaries, nextCursor, nil
+}
+
+// ListUserSummaries получает список историй пользователя с пагинацией.
+// (Этот метод остается без изменений, т.к. он реализует часть интерфейса)
+func (r *pgPublishedStoryRepository) ListUserSummaries(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error) {
+	if limit <= 0 {
+		limit = 10 // Default limit
+	}
+	fetchLimit := limit + 1
+
+	// Для пользовательских историй сортируем только по дате создания DESC
+	orderByField := "created_at"
+	orderByDir := "DESC"
+
+	createdTime, cursorID, err := utils.DecodeCursor(cursor)
+	if err != nil {
+		if cursor != "" {
+			r.logger.Warn("Invalid cursor provided for ListUserSummaries", zap.String("cursor", cursor), zap.Stringer("userID", userID), zap.Error(err))
+			return nil, "", fmt.Errorf("invalid cursor: %w", err)
+		}
+		err = nil
+		createdTime = time.Time{}
+		cursorID = uuid.Nil
+	}
+
+	// Строим запрос
+	var queryBuilder strings.Builder
+	args := []interface{}{userID} // $1
+	paramIndex := 2
+
+	queryBuilder.WriteString(`
+        SELECT
+            ps.id,
+            ps.title,
+            ps.description, -- Используем полное описание, если short нет
+            ps.user_id,     -- author_id (здесь совпадает с userID)
+            '' AS author_name, -- Заглушка
+            ps.created_at,
+            ps.is_adult_content,
+            ps.likes_count,
+            ps.status,
+            ps.cover_image_url,
+            -- Проверяем лайк от этого же пользователя ($1)
+            EXISTS (SELECT 1 FROM story_likes sl WHERE sl.published_story_id = ps.id AND sl.user_id = $1) AS is_liked
+        FROM published_stories ps
+        WHERE ps.user_id = $1
+    `)
+
+	if filterAdult {
+		queryBuilder.WriteString(" AND ps.is_adult_content = FALSE")
+	}
+
+	// Добавляем условие курсора
+	if cursor != "" {
+		queryBuilder.WriteString(fmt.Sprintf(" AND (ps.%s, ps.id) < ($%d, $%d)", orderByField, paramIndex, paramIndex+1)) // $2, $3
+		args = append(args, createdTime, cursorID)
+		paramIndex += 2
+	}
+
+	// Добавляем сортировку и лимит
+	queryBuilder.WriteString(fmt.Sprintf(" ORDER BY ps.%s %s, ps.id %s LIMIT $%d", orderByField, orderByDir, orderByDir, paramIndex))
+	args = append(args, fetchLimit)
+
+	query := queryBuilder.String()
+	logFields := []zap.Field{
+		zap.Stringer("userID", userID),
+		zap.String("cursor", cursor),
+		zap.Int("limit", limit),
+		zap.Bool("filterAdult", filterAdult),
+		// zap.String("query", query), // Debug
+	}
+	r.logger.Debug("Listing user story summaries", logFields...)
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		r.logger.Error("Failed to query user story summaries", append(logFields, zap.Error(err))...)
+		return nil, "", fmt.Errorf("ошибка получения списка историй пользователя: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]models.PublishedStorySummary, 0, limit)
+	for rows.Next() {
+		var s models.PublishedStorySummary
+		var description sql.NullString
+
+		if err := rows.Scan(
+			&s.ID,
+			&s.Title,
+			&description,
+			&s.AuthorID,
+			&s.AuthorName, // Заглушка
+			&s.PublishedAt,
+			&s.IsAdultContent,
+			&s.LikesCount,
+			&s.Status,
+			&s.CoverImageURL,
+			&s.IsLiked,
+		); err != nil {
+			r.logger.Error("Failed to scan user story summary row", append(logFields, zap.Error(err))...)
+			continue // Пропускаем
+		}
+		if description.Valid {
+			s.ShortDescription = description.String
+		}
+		summaries = append(summaries, s)
+	}
+
+	if err := rows.Err(); err != nil {
+		r.logger.Error("Error iterating user story summary rows", append(logFields, zap.Error(err))...)
+		return nil, "", fmt.Errorf("ошибка итерации по результатам историй пользователя: %w", err)
+	}
+
+	var nextCursor string
+	if len(summaries) == fetchLimit {
+		lastItemToEncode := summaries[limit]
+		summaries = summaries[:limit]
+		nextCursor = utils.EncodeCursor(lastItemToEncode.PublishedAt, lastItemToEncode.ID)
+	}
+
+	r.logger.Debug("User story summaries listed successfully", append(logFields, zap.Int("count", len(summaries)), zap.Bool("hasNext", nextCursor != ""))...)
+	return summaries, nextCursor, nil
+}
+
+// <<< НАЧАЛО НОВОГО МЕТОДА >>>
+// ListUserSummariesWithProgress получает список историй пользователя с прогрессом.
+func (r *pgPublishedStoryRepository) ListUserSummariesWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummaryWithProgress, string, error) {
+	if limit <= 0 {
+		limit = 10 // Default limit
+	}
+	fetchLimit := limit + 1
+
+	// Сортируем по дате создания истории DESC
+	orderByField := "created_at"
+	orderByDir := "DESC"
+
+	createdTime, cursorID, err := utils.DecodeCursor(cursor)
+	if err != nil {
+		if cursor != "" {
+			r.logger.Warn("Invalid cursor provided for ListUserSummariesWithProgress", zap.String("cursor", cursor), zap.Stringer("userID", userID), zap.Error(err))
+			return nil, "", fmt.Errorf("invalid cursor: %w", err)
+		}
+		err = nil
+		createdTime = time.Time{}
+		cursorID = uuid.Nil
+	}
+
+	// Строим запрос
+	var queryBuilder strings.Builder
+	args := []interface{}{userID} // $1
+	paramIndex := 2
+
+	// Запрос похож на ListUserSummaries, но с LEFT JOIN на player_progress
+	queryBuilder.WriteString(`
+        SELECT
+            ps.id,
+            ps.title,
+            ps.description, -- Используем полное описание
+            ps.user_id,     -- author_id (здесь совпадает с userID)
+            '' AS author_name, -- Заглушка
+            ps.created_at,
+            ps.is_adult_content,
+            ps.likes_count,
+            ps.status,
+            ps.cover_image_url,
+            -- Проверяем лайк от этого же пользователя ($1)
+            EXISTS (SELECT 1 FROM story_likes sl WHERE sl.published_story_id = ps.id AND sl.user_id = $1) AS is_liked,
+            -- Проверяем наличие прогресса у этого пользователя ($1)
+            (pp.user_id IS NOT NULL) AS has_player_progress
+        FROM published_stories ps
+        LEFT JOIN player_progress pp ON ps.id = pp.published_story_id AND pp.user_id = $1
+        WHERE ps.user_id = $1
+    `)
+
+	if filterAdult {
+		queryBuilder.WriteString(" AND ps.is_adult_content = FALSE")
+	}
+
+	// Добавляем условие курсора
+	if cursor != "" {
+		queryBuilder.WriteString(fmt.Sprintf(" AND (ps.%s, ps.id) < ($%d, $%d)", orderByField, paramIndex, paramIndex+1)) // $2, $3
+		args = append(args, createdTime, cursorID)
+		paramIndex += 2
+	}
+
+	// Добавляем сортировку и лимит
+	queryBuilder.WriteString(fmt.Sprintf(" ORDER BY ps.%s %s, ps.id %s LIMIT $%d", orderByField, orderByDir, orderByDir, paramIndex))
+	args = append(args, fetchLimit)
+
+	query := queryBuilder.String()
+	logFields := []zap.Field{
+		zap.Stringer("userID", userID),
+		zap.String("cursor", cursor),
+		zap.Int("limit", limit),
+		zap.Bool("filterAdult", filterAdult),
+		// zap.String("query", query), // Debug
+	}
+	r.logger.Debug("Listing user story summaries with progress", logFields...)
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		r.logger.Error("Failed to query user story summaries with progress", append(logFields, zap.Error(err))...)
+		return nil, "", fmt.Errorf("ошибка получения списка историй пользователя с прогрессом: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]models.PublishedStorySummaryWithProgress, 0, limit)
+	for rows.Next() {
+		var s models.PublishedStorySummaryWithProgress
+		var description sql.NullString
+		var hasProgress bool // Переменная для сканирования has_player_progress
+
+		// Сканируем все поля из SELECT
+		if err := rows.Scan(
+			&s.ID,
+			&s.Title,
+			&description,
+			&s.AuthorID,
+			&s.AuthorName, // Заглушка
+			&s.PublishedAt,
+			&s.IsAdultContent,
+			&s.LikesCount,
+			&s.Status,
+			&s.CoverImageURL,
+			&s.IsLiked,
+			&hasProgress, // Сканируем наличие прогресса
+		); err != nil {
+			r.logger.Error("Failed to scan user story summary with progress row", append(logFields, zap.Error(err))...)
+			continue // Пропускаем
+		}
+		if description.Valid {
+			s.ShortDescription = description.String
+		}
+		s.HasPlayerProgress = hasProgress // Присваиваем отсканированное значение
+
+		summaries = append(summaries, s)
+	}
+
+	if err := rows.Err(); err != nil {
+		r.logger.Error("Error iterating user story summary with progress rows", append(logFields, zap.Error(err))...)
+		return nil, "", fmt.Errorf("ошибка итерации по результатам историй пользователя с прогрессом: %w", err)
+	}
+
+	var nextCursor string
+	if len(summaries) == fetchLimit {
+		lastItemToEncode := summaries[limit]
+		summaries = summaries[:limit]
+		// Курсор для этого метода формируется по PublishedAt (created_at) истории
+		nextCursor = utils.EncodeCursor(lastItemToEncode.PublishedAt, lastItemToEncode.ID)
+	}
+
+	r.logger.Debug("User story summaries with progress listed successfully", append(logFields, zap.Int("count", len(summaries)), zap.Bool("hasNext", nextCursor != ""))...)
+	return summaries, nextCursor, nil
+}
+
+// <<< КОНЕЦ НОВОГО МЕТОДА >>>
+
+// UpdatePreviewImageReference обновляет ссылку на изображение превью.
+func (r *pgPublishedStoryRepository) UpdatePreviewImageReference(ctx context.Context, id uuid.UUID, imageRef *string) error {
+	query := `
+		UPDATE published_stories
+		SET cover_image_url = $1, updated_at = NOW()
+		WHERE id = $2
+	`
+	logFields := []zap.Field{
+		zap.String("publishedStoryID", id.String()),
+		zap.Any("imageRef", imageRef), // Логируем Any, так как может быть nil
+	}
+	r.logger.Debug("Updating preview image reference for published story", logFields...)
+
+	commandTag, err := r.db.Exec(ctx, query, imageRef, id)
+	if err != nil {
+		r.logger.Error("Failed to update preview image reference", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления ссылки на превью для истории %s: %w", id, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		// Проверяем, существует ли история, чтобы вернуть правильную ошибку
+		existsQuery := `SELECT EXISTS(SELECT 1 FROM published_stories WHERE id = $1)`
+		var exists bool
+		if checkErr := r.db.QueryRow(ctx, existsQuery, id).Scan(&exists); checkErr != nil {
+			r.logger.Error("Failed to check story existence after preview update failed", append(logFields, zap.Error(checkErr))...)
+			// Возвращаем исходную ошибку, так как проверка не удалась
+			return models.ErrNotFound
+		}
+		if !exists {
+			r.logger.Warn("Attempted to update preview image for non-existent story", logFields...)
+			return models.ErrNotFound // История не найдена
+		}
+		// Если история существует, но RowsAffected == 0, это может быть ОК (например, новое значение совпало со старым)
+		// или указывать на другую проблему. Пока считаем это не ошибкой.
+		r.logger.Debug("Preview image reference update resulted in 0 rows affected (possibly value unchanged or other issue)", logFields...)
+
+	} else {
+		r.logger.Info("Preview image reference updated successfully", logFields...)
+	}
+
+	return nil
 }

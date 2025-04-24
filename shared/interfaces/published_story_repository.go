@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"novel-server/shared/models"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -83,4 +84,28 @@ type PublishedStoryRepository interface {
 
 	// ListByUserIDOffset retrieves a paginated list of stories created by a specific user using cursor pagination with offset.
 	ListByUserIDOffset(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.PublishedStory, error)
+
+	// ListPublicSummaries получает список публичных историй с пагинацией.
+	ListPublicSummaries(ctx context.Context, userID *uuid.UUID, cursor string, limit int, sortBy string, filterAdult bool) ([]models.PublishedStorySummary, string, error)
+
+	// ListUserSummaries получает список историй пользователя с пагинацией.
+	ListUserSummaries(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error)
+
+	// ListUserSummariesWithProgress получает список историй пользователя с прогрессом.
+	ListUserSummariesWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummaryWithProgress, string, error)
+
+	// CheckInitialGenerationStatus проверяет, готовы ли Setup и Первая сцена.
+	CheckInitialGenerationStatus(ctx context.Context, id uuid.UUID) (bool, error)
+
+	// GetConfigAndSetup получает Config и Setup по ID истории.
+	GetConfigAndSetup(ctx context.Context, id uuid.UUID) (json.RawMessage, json.RawMessage, error)
+
+	// UpdatePreviewImageReference обновляет ссылку на изображение превью.
+	UpdatePreviewImageReference(ctx context.Context, id uuid.UUID, imageRef *string) error
+
+	// FindAndMarkStaleGeneratingAsError находит опубликованные истории, которые 'зависли' в статусе генерации,
+	// и обновляет их статус на StatusError.
+	// staleThreshold: длительность, после которой история считается зависшей (например, 1 час).
+	// Возвращает количество обновленных записей и ошибку.
+	FindAndMarkStaleGeneratingAsError(ctx context.Context, staleThreshold time.Duration) (int64, error)
 }

@@ -130,7 +130,6 @@ func (p *NotificationProcessor) Process(ctx context.Context, delivery amqp.Deliv
 		// Успешно распарсили как CharacterImageResultPayload
 		p.logger.Info("Processing as CharacterImageResultPayload",
 			zap.String("task_id", imageResult.TaskID), // Используем TaskID из imageResult
-			zap.String("character_id", imageResult.CharacterID),
 			zap.String("image_reference", imageResult.ImageReference),
 			zap.String("correlation_id", delivery.CorrelationId),
 		)
@@ -229,34 +228,36 @@ func (p *NotificationProcessor) processNotificationPayloadInternal(ctx context.C
 func (p *NotificationProcessor) processImageResult(ctx context.Context, result sharedMessaging.CharacterImageResultPayload) error {
 	logFields := []zap.Field{
 		zap.String("task_id", result.TaskID),
-		zap.String("user_id", result.UserID),
-		zap.String("character_id", result.CharacterID),
 		zap.String("image_reference", result.ImageReference),
 	}
 	p.logger.Info("Processing CharacterImageResultPayload", logFields...)
 
-	if result.Error != "" {
-		p.logger.Error("Image generation failed for reference", append(logFields, zap.String("error", result.Error))...)
+	if !result.Success { // Check the Success field
+		errMsg := "Unknown error"
+		if result.ErrorMessage != nil {
+			errMsg = *result.ErrorMessage
+		}
+		p.logger.Error("Image generation failed for reference", append(logFields, zap.String("error", errMsg))...)
 		// Ошибку обработали (залогировали), но сообщение подтверждаем, т.к. повторная обработка не поможет.
-		// В идеале, можно добавить механизм retry с backoff на стороне image-generator или здесь.
 		return nil // Ack
 	}
 
-	if result.ImageURL == "" {
-		p.logger.Error("Image generation succeeded but returned empty URL", logFields...)
+	if result.ImageURL == nil || *result.ImageURL == "" { // Check pointer and value
+		p.logger.Error("Image generation succeeded but returned empty or nil URL", logFields...)
 		// Это странная ситуация, логируем как ошибку, но подтверждаем.
 		return nil // Ack
 	}
 
-	p.logger.Info("Image generated successfully, saving URL", append(logFields, zap.String("image_url", result.ImageURL))...)
+	imageURL := *result.ImageURL // Dereference the pointer
+	p.logger.Info("Image generated successfully, saving URL", append(logFields, zap.String("image_url", imageURL))...)
 
 	dbCtx, cancel := context.WithTimeout(ctx, 10*time.Second) // Короткий таймаут для сохранения URL
 	defer cancel()
 
 	// Используем imageReferenceRepo для сохранения URL
-	err := p.imageReferenceRepo.SaveOrUpdateImageReference(dbCtx, result.ImageReference, result.ImageURL)
+	err := p.imageReferenceRepo.SaveOrUpdateImageReference(dbCtx, result.ImageReference, imageURL)
 	if err != nil {
-		p.logger.Error("Failed to save image URL for reference", append(logFields, zap.String("image_url", result.ImageURL), zap.Error(err))...)
+		p.logger.Error("Failed to save image URL for reference", append(logFields, zap.String("image_url", imageURL), zap.Error(err))...)
 		// Не смогли сохранить URL. Возвращаем ошибку, чтобы сообщение было обработано повторно (nack).
 		return fmt.Errorf("failed to save image URL for reference %s: %w", result.ImageReference, err)
 	}

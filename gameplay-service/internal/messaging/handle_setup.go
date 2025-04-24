@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,6 +14,51 @@ import (
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
 )
+
+// MinimalConfigForFirstScene - структура для минимального конфига, отправляемого для PromptTypeNovelFirstSceneCreator
+// Содержит только поля, необходимые этому промпту
+type MinimalConfigForFirstScene struct {
+	Language       string                   `json:"ln,omitempty"`     // Required
+	IsAdultContent bool                     `json:"ac,omitempty"`     // Required
+	Genre          string                   `json:"gn,omitempty"`     // <<< ДОБАВЛЕНО
+	PlayerName     string                   `json:"pn,omitempty"`     // Player Name из конфига
+	PlayerGender   string                   `json:"pg,omitempty"`     // <<< ДОБАВЛЕНО
+	PlayerDesc     string                   `json:"p_desc,omitempty"` // <<< ДОБАВЛЕНО (основное описание)
+	WorldContext   string                   `json:"wc,omitempty"`     // <<< ДОБАВЛЕНО
+	StorySummary   string                   `json:"ss,omitempty"`     // <<< ДОБАВЛЕНО
+	PlayerPrefs    sharedModels.PlayerPrefs `json:"pp,omitempty"`     // <<< ДОБАВЛЕНО (структура без Style)
+}
+
+// ToMinimalConfigForFirstScene преобразует полный конфиг в минимальный
+func ToMinimalConfigForFirstScene(configBytes []byte) MinimalConfigForFirstScene {
+	var fullConfig sharedModels.Config
+	// Игнорируем ошибку, если конфиг некорректный, просто вернем пустые поля
+	_ = json.Unmarshal(configBytes, &fullConfig)
+
+	// Создаем минимальную структуру PlayerPrefs
+	minimalPrefs := sharedModels.PlayerPrefs{
+		Themes:               fullConfig.PlayerPrefs.Themes,
+		Tone:                 fullConfig.PlayerPrefs.Tone,
+		PlayerDescription:    fullConfig.PlayerPrefs.PlayerDescription,
+		WorldLore:            fullConfig.PlayerPrefs.WorldLore,
+		DesiredLocations:     fullConfig.PlayerPrefs.DesiredLocations,
+		DesiredCharacters:    fullConfig.PlayerPrefs.DesiredCharacters,
+		CharacterVisualStyle: fullConfig.PlayerPrefs.CharacterVisualStyle,
+		Style:                fullConfig.PlayerPrefs.Style,
+	}
+
+	return MinimalConfigForFirstScene{
+		Language:       fullConfig.Language,
+		IsAdultContent: fullConfig.IsAdultContent,
+		Genre:          fullConfig.Genre, // <<< ДОБАВЛЕНО
+		PlayerName:     fullConfig.PlayerName,
+		PlayerGender:   fullConfig.PlayerGender, // <<< ДОБАВЛЕНО
+		PlayerDesc:     fullConfig.PlayerDesc,   // <<< ДОБАВЛЕНО
+		WorldContext:   fullConfig.WorldContext, // <<< ДОБАВЛЕНО
+		StorySummary:   fullConfig.StorySummary, // <<< ДОБАВЛЕНО
+		PlayerPrefs:    minimalPrefs,            // <<< ДОБАВЛЕНО
+	}
+}
 
 func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context, notification sharedMessaging.NotificationPayload, publishedStoryID uuid.UUID) error {
 	taskID := notification.TaskID
@@ -86,34 +130,62 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 		}
 		p.logger.Info("PublishedStory status updated -> FirstScenePending and Setup saved", zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()))
 
+		// Объявляем simplifiedSetup здесь, чтобы она была доступна ниже
+		var simplifiedSetup map[string]interface{}
+
 		var setupContent sharedModels.NovelSetupContent
+		var fullConfig sharedModels.Config
+		var characterVisualStyle string
+		var storyStyle string // <<< Переменная для pp.st
+
 		if err := json.Unmarshal(setupBytes, &setupContent); err != nil {
-			p.logger.Warn("Failed to unmarshal setup JSON to NovelSetupContent for image task trigger",
+			p.logger.Warn("Failed to unmarshal setup JSON for image task trigger",
 				zap.String("task_id", taskID),
 				zap.String("published_story_id", publishedStoryID.String()),
 				zap.Error(err),
 			)
+			// Не можем продолжать без setupContent
 		} else {
+			// Распарсим конфиг, чтобы получить cvs и st
+			if errCfg := json.Unmarshal(publishedStory.Config, &fullConfig); errCfg != nil {
+				p.logger.Warn("Failed to unmarshal config JSON to get CharacterVisualStyle",
+					zap.String("task_id", taskID),
+					zap.String("published_story_id", publishedStoryID.String()),
+					zap.Error(errCfg),
+				)
+				// Продолжаем без cvs, если не удалось распарсить
+			} else {
+				characterVisualStyle = fullConfig.PlayerPrefs.CharacterVisualStyle
+				storyStyle = fullConfig.PlayerPrefs.Style // <<< Извлекаем Style (st)
+
+				// Форматируем строки стилей для добавления
+				if characterVisualStyle != "" {
+					characterVisualStyle = ", " + characterVisualStyle
+				}
+				if storyStyle != "" {
+					storyStyle = ", " + storyStyle // <<< Форматируем Style
+				}
+			}
+
 			p.logger.Info("Triggering image generation check",
 				zap.String("task_id", taskID),
 				zap.String("published_story_id", publishedStoryID.String()),
 			)
-			// Собираем задачи для батча
 			imageTasks := make([]sharedMessaging.CharacterImageTaskPayload, 0, len(setupContent.Characters))
 
 			for _, charData := range setupContent.Characters {
-				if charData.ImageRef == "" {
+				if charData.ImageRef == "" || charData.Prompt == "" { // Пропускаем, если нет референса или основного промпта
 					continue
 				}
 				imageRef := charData.ImageRef
-				prompt := charData.Prompt
-				characterIDForTask := uuid.New().String() // Генерируем ID для задачи
+				basePrompt := charData.Prompt // Исходный промпт персонажа
+				characterIDForTask := uuid.New()
 
 				logFieldsImg := []zap.Field{
 					zap.String("task_id", taskID),
 					zap.String("published_story_id", publishedStoryID.String()),
 					zap.String("image_ref", imageRef),
-					zap.String("character_task_id", characterIDForTask),
+					zap.String("character_task_id", characterIDForTask.String()),
 				}
 				p.logger.Info("Checking image for character", logFieldsImg...)
 				_, errCheck := p.imageReferenceRepo.GetImageURLByReference(dbCtx, imageRef)
@@ -121,15 +193,17 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 					p.logger.Info("Found existing URL for ImageRef. Generation not required.", logFieldsImg...)
 				} else if errors.Is(errCheck, interfaces.ErrNotFound) {
 					p.logger.Info("URL for ImageRef not found. Adding image generation task to batch.", logFieldsImg...)
-					// Добавляем задачу в слайс
+
+					// <<< ИЗМЕНЕНИЕ: Формируем полный промпт >>>
+					fullCharacterPrompt := basePrompt + characterVisualStyle // Добавляем стиль из конфига
+
 					imageTask := sharedMessaging.CharacterImageTaskPayload{
-						TaskID:         characterIDForTask, // Используем сгенерированный ID
-						UserID:         publishedStory.UserID.String(),
-						CharacterID:    characterIDForTask, // Используем сгенерированный ID задачи как ID персонажа для этой задачи
-						Prompt:         prompt,
-						NegativePrompt: "", // TODO: Get from charData when available
+						TaskID:         characterIDForTask.String(),
+						CharacterID:    characterIDForTask,
+						Prompt:         fullCharacterPrompt, // <<< Используем полный промпт
+						NegativePrompt: charData.NegPrompt,  // Используем поле из setup
 						ImageReference: imageRef,
-						// Опциональные параметры (seed, steps, guidance) можно добавить сюда, если они есть в charData
+						Ratio:          "2:3", // <<< ДОБАВЛЕНО: Соотношение для персонажа
 					}
 					imageTasks = append(imageTasks, imageTask)
 
@@ -138,7 +212,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 				}
 			}
 
-			// Отправляем батч, если есть задачи
+			// Отправляем батч персонажей...
 			if len(imageTasks) > 0 {
 				batchPayload := sharedMessaging.CharacterImageTaskBatchPayload{
 					BatchID: uuid.New().String(),
@@ -170,20 +244,20 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 					zap.String("task_id", taskID),
 					zap.String("published_story_id", publishedStoryID.String()),
 				)
-				// Формируем ImageReference для превью
 				previewImageRef := fmt.Sprintf("history_preview_%s", publishedStoryID.String())
 
-				// Формируем полный промпт с суффиксом из конфига
-				fullPreviewPrompt := setupContent.StoryPreviewImagePrompt + p.cfg.StoryPreviewPromptStyleSuffix // Убедимся, что cfg доступен в p
+				// <<< ИЗМЕНЕНИЕ: Формируем полный промпт для превью с обоими стилями >>>
+				basePreviewPrompt := setupContent.StoryPreviewImagePrompt
+				// Добавляем оба стиля, если они есть
+				fullPreviewPromptWithStyles := basePreviewPrompt + storyStyle + characterVisualStyle
 
-				// Создаем задачу для генерации превью
 				previewTask := sharedMessaging.CharacterImageTaskPayload{
-					TaskID:         uuid.New().String(),            // Новый ID для этой задачи
-					UserID:         publishedStory.UserID.String(), // ID пользователя истории
-					CharacterID:    publishedStoryID.String(),      // Используем ID истории как CharacterID для превью
-					Prompt:         fullPreviewPrompt,
-					NegativePrompt: "", // Не используется
+					TaskID:         uuid.New().String(),
+					CharacterID:    publishedStoryID,
+					Prompt:         fullPreviewPromptWithStyles, // <<< Используем промпт с обоими стилями
+					NegativePrompt: "",
 					ImageReference: previewImageRef,
+					Ratio:          "3:2", // <<< ДОБАВЛЕНО: Соотношение для превью
 				}
 
 				// Оборачиваем в батч из одной задачи
@@ -217,42 +291,42 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 				)
 			}
 			// <<< КОНЕЦ: Логика генерации превью истории >>>
+
+			// --- НАЧАЛО: Формирование УПРОЩЕННОГО stp для FirstScene ---
+			simplifiedChars := make([]map[string]string, 0, len(setupContent.Characters))
+			for _, char := range setupContent.Characters {
+				simplifiedChar := map[string]string{
+					"n": char.Name,
+					"d": char.Description,
+				}
+				if char.Personality != "" {
+					simplifiedChar["p"] = char.Personality
+				}
+				simplifiedChars = append(simplifiedChars, simplifiedChar)
+			}
+			simplifiedSetup = map[string]interface{}{"chars": simplifiedChars}
+			// --- КОНЕЦ: Формирование УПРОЩЕННОГО stp ---
 		}
 
-		configBytes := publishedStory.Config
+		// --- НАЧАЛО: Формирование UserInput для FirstScene ---
 		combinedInputMap := make(map[string]interface{})
-		if len(configBytes) > 0 && string(configBytes) != "null" {
-			if err := json.Unmarshal(configBytes, &combinedInputMap); err != nil {
-				log.Printf("[processor][TaskID: %s] ПРЕДУПРЕЖДЕНИЕ: Не удалось распарсить Config для задачи FirstScene PublishedStory %s: %v. Задача будет отправлена без Config.", taskID, publishedStoryID, err)
-				combinedInputMap = make(map[string]interface{})
-			}
-		} else {
-			log.Printf("[processor][TaskID: %s] ПРЕДУПРЕЖДЕНИЕ: Config отсутствует или null для задачи FirstScene PublishedStory %s. Задача будет отправлена без Config.", taskID, publishedStoryID)
-		}
-		var setupMapForTask map[string]interface{}
-		_ = json.Unmarshal(setupBytes, &setupMapForTask)
-		combinedInputMap["stp"] = setupMapForTask
-		initialCoreStats := make(map[string]int)
-		if csd, ok := setupMapForTask["csd"].(map[string]interface{}); ok {
-			for key, val := range csd {
-				if statDef, okDef := val.(map[string]interface{}); okDef {
-					if initVal, okVal := statDef["iv"].(float64); okVal {
-						initialCoreStats[key] = int(initVal)
-					}
-				}
-			}
-		}
-		combinedInputMap["cs"] = initialCoreStats
+
+		// 1. Добавляем минимальный конфиг под ключом "cfg"
+		minimalConfig := ToMinimalConfigForFirstScene(publishedStory.Config)
+		combinedInputMap["cfg"] = minimalConfig
+
+		// 2. Добавляем упрощенный сетап под ключом "stp"
+		combinedInputMap["stp"] = simplifiedSetup
+
+		// 3. Добавляем пустые плейсхолдеры для состояния
 		combinedInputMap["sv"] = make(map[string]interface{})
 		combinedInputMap["gf"] = []string{}
 		combinedInputMap["uc"] = []sharedModels.UserChoiceInfo{}
 		combinedInputMap["pss"] = ""
 		combinedInputMap["pfd"] = ""
 		combinedInputMap["pvis"] = ""
-		delete(combinedInputMap, "t")
-		delete(combinedInputMap, "sd")
-		delete(combinedInputMap, "gn")
-		delete(combinedInputMap, "ln")
+
+		// --- КОНЕЦ: Формирование UserInput для FirstScene ---
 
 		combinedInputBytes, errMarshal := json.Marshal(combinedInputMap)
 		if errMarshal != nil {
@@ -261,6 +335,9 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 				zap.String("published_story_id", publishedStoryID.String()),
 				zap.Error(errMarshal),
 			)
+			// Важно: Не возвращаем ошибку, чтобы не блокировать обработку других уведомлений,
+			// но и не отправляем задачу, так как payload некорректен.
+			// Статус истории останется FirstScenePending, потребует ручного вмешательства или Retry.
 			return nil
 		}
 		combinedInputJSON := string(combinedInputBytes)
@@ -279,6 +356,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 				zap.String("published_story_id", publishedStoryID.String()),
 				zap.Error(errPub),
 			)
+			// Статус истории останется FirstScenePending
 		} else {
 			p.logger.Info("First scene generation task sent successfully",
 				zap.String("task_id", taskID),
