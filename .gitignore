@@ -24,3 +24,5 @@
 # Build results
 /build/ 
 novel-client/node_modules/
+
+sana-api-wrapper/sana-local/

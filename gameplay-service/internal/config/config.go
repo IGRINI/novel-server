@@ -58,6 +58,9 @@ type Config struct {
 
 	// <<< ДОБАВЛЕНО: Настройки Consumer >>>
 	ConsumerConcurrency int `envconfig:"CONSUMER_CONCURRENCY" default:"10"` // Кол-во обработчиков сообщений
+
+	// <<< ДОБАВЛЕНО: Стиль для промптов >>>
+	StoryPreviewPromptStyleSuffix string `envconfig:"STORY_PREVIEW_PROMPT_STYLE_SUFFIX"`
 }
 
 // GetDSN возвращает строку подключения (DSN) для PostgreSQL

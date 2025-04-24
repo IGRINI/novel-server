@@ -98,44 +98,125 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 				zap.String("task_id", taskID),
 				zap.String("published_story_id", publishedStoryID.String()),
 			)
+			// Собираем задачи для батча
+			imageTasks := make([]sharedMessaging.CharacterImageTaskPayload, 0, len(setupContent.Characters))
+
 			for _, charData := range setupContent.Characters {
 				if charData.ImageRef == "" {
 					continue
 				}
 				imageRef := charData.ImageRef
 				prompt := charData.Prompt
-				// negPrompt := charData.NegativePrompt // Field missing
-				characterID := uuid.New().String()
+				characterIDForTask := uuid.New().String() // Генерируем ID для задачи
 
 				logFieldsImg := []zap.Field{
 					zap.String("task_id", taskID),
 					zap.String("published_story_id", publishedStoryID.String()),
 					zap.String("image_ref", imageRef),
-					zap.String("character_id", characterID),
+					zap.String("character_task_id", characterIDForTask),
 				}
 				p.logger.Info("Checking image for character", logFieldsImg...)
 				_, errCheck := p.imageReferenceRepo.GetImageURLByReference(dbCtx, imageRef)
 				if errCheck == nil {
 					p.logger.Info("Found existing URL for ImageRef. Generation not required.", logFieldsImg...)
 				} else if errors.Is(errCheck, interfaces.ErrNotFound) {
-					p.logger.Info("URL for ImageRef not found. Sending image generation task.", logFieldsImg...)
-					imageTaskPayload := sharedMessaging.CharacterImageTaskPayload{
-						TaskID:         uuid.New().String(),
+					p.logger.Info("URL for ImageRef not found. Adding image generation task to batch.", logFieldsImg...)
+					// Добавляем задачу в слайс
+					imageTask := sharedMessaging.CharacterImageTaskPayload{
+						TaskID:         characterIDForTask, // Используем сгенерированный ID
 						UserID:         publishedStory.UserID.String(),
-						CharacterID:    characterID,
+						CharacterID:    characterIDForTask, // Используем сгенерированный ID задачи как ID персонажа для этой задачи
 						Prompt:         prompt,
-						NegativePrompt: "", // TODO: Получить из charData, когда поле добавят в NovelSetupContent
+						NegativePrompt: "", // TODO: Get from charData when available
 						ImageReference: imageRef,
+						// Опциональные параметры (seed, steps, guidance) можно добавить сюда, если они есть в charData
 					}
-					if errPub := p.characterImageTaskPub.PublishCharacterImageTask(ctx, imageTaskPayload); errPub != nil {
-						p.logger.Error("Failed to publish character image task", append(logFieldsImg, zap.Error(errPub))...)
-					} else {
-						p.logger.Info("Character image task published successfully", logFieldsImg...)
-					}
+					imageTasks = append(imageTasks, imageTask)
+
 				} else {
 					p.logger.Error("Error checking ImageRef in DB. Skipping generation.", append(logFieldsImg, zap.Error(errCheck))...)
 				}
 			}
+
+			// Отправляем батч, если есть задачи
+			if len(imageTasks) > 0 {
+				batchPayload := sharedMessaging.CharacterImageTaskBatchPayload{
+					BatchID: uuid.New().String(),
+					Tasks:   imageTasks,
+				}
+				p.logger.Info("Publishing character image task batch",
+					zap.String("batch_id", batchPayload.BatchID),
+					zap.Int("task_count", len(batchPayload.Tasks)),
+					zap.String("published_story_id", publishedStoryID.String()),
+				)
+				if errPub := p.characterImageTaskBatchPub.PublishCharacterImageTaskBatch(ctx, batchPayload); errPub != nil {
+					p.logger.Error("Failed to publish character image task batch", zap.Error(errPub),
+						zap.String("batch_id", batchPayload.BatchID),
+						zap.String("published_story_id", publishedStoryID.String()),
+					)
+					// TODO: Подумать о стратегии отката или повторной попытки для всего батча?
+					// Пока просто логируем ошибку.
+				} else {
+					p.logger.Info("Character image task batch published successfully",
+						zap.String("batch_id", batchPayload.BatchID),
+						zap.String("published_story_id", publishedStoryID.String()),
+					)
+				}
+			}
+
+			// <<< НАЧАЛО: Логика генерации превью истории >>>
+			if setupContent.StoryPreviewImagePrompt != "" {
+				p.logger.Info("Generating story preview image",
+					zap.String("task_id", taskID),
+					zap.String("published_story_id", publishedStoryID.String()),
+				)
+				// Формируем ImageReference для превью
+				previewImageRef := fmt.Sprintf("history_preview_%s", publishedStoryID.String())
+
+				// Формируем полный промпт с суффиксом из конфига
+				fullPreviewPrompt := setupContent.StoryPreviewImagePrompt + p.cfg.StoryPreviewPromptStyleSuffix // Убедимся, что cfg доступен в p
+
+				// Создаем задачу для генерации превью
+				previewTask := sharedMessaging.CharacterImageTaskPayload{
+					TaskID:         uuid.New().String(),            // Новый ID для этой задачи
+					UserID:         publishedStory.UserID.String(), // ID пользователя истории
+					CharacterID:    publishedStoryID.String(),      // Используем ID истории как CharacterID для превью
+					Prompt:         fullPreviewPrompt,
+					NegativePrompt: "", // Не используется
+					ImageReference: previewImageRef,
+				}
+
+				// Оборачиваем в батч из одной задачи
+				previewBatchPayload := sharedMessaging.CharacterImageTaskBatchPayload{
+					BatchID: uuid.New().String(),
+					Tasks:   []sharedMessaging.CharacterImageTaskPayload{previewTask},
+				}
+
+				// Отправляем задачу
+				if errPub := p.characterImageTaskBatchPub.PublishCharacterImageTaskBatch(ctx, previewBatchPayload); errPub != nil {
+					p.logger.Error("Failed to publish story preview image task", zap.Error(errPub),
+						zap.String("preview_batch_id", previewBatchPayload.BatchID),
+						zap.String("published_story_id", publishedStoryID.String()),
+					)
+					// Не критично для основного потока, просто логируем
+				} else {
+					p.logger.Info("Story preview image task published successfully",
+						zap.String("preview_batch_id", previewBatchPayload.BatchID),
+						zap.String("published_story_id", publishedStoryID.String()),
+					)
+					// <<< Опционально: Обновить поле PreviewImageReference в PublishedStory >>>
+					// previewRef := previewImageRef // Создаем копию
+					// if updateRefErr := p.publishedRepo.UpdatePreviewImageReference(dbCtx, publishedStoryID, &previewRef); updateRefErr != nil {
+					// 	p.logger.Error("Failed to update preview image reference in DB", zap.Error(updateRefErr), zap.String("published_story_id", publishedStoryID.String()))
+					// }
+				}
+			} else {
+				p.logger.Warn("StoryPreviewImagePrompt (spi) is empty in setup, skipping preview generation.",
+					zap.String("task_id", taskID),
+					zap.String("published_story_id", publishedStoryID.String()),
+				)
+			}
+			// <<< КОНЕЦ: Логика генерации превью истории >>>
 		}
 
 		configBytes := publishedStory.Config

@@ -181,6 +181,7 @@ services:
       SERVER_PORT: ${GAMEPLAY_SERVER_PORT} # Внутренний порт сервиса
       SERVICE_ID: gameplay-service
       AUTH_SERVICE_URL: http://auth-service:8081 # Добавляем URL для auth-service
+      STORY_PREVIEW_PROMPT_STYLE_SUFFIX: ${STORY_PREVIEW_PROMPT_STYLE_SUFFIX} # <<< Добавлено
     secrets:
       - source: db_password
         target: /run/secrets/db_password
@@ -460,6 +461,50 @@ services:
     restart: unless-stopped # Перезапускать, если не остановлен вручную
 # <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
 
+# Сервис Image Generator (Воркер)
+  image-generator:
+    build:
+      context: .
+      dockerfile: image-generator/Dockerfile # Убедись, что путь верный
+    image: novel-image-generator:latest
+    container_name: novel_image_generator
+    depends_on:
+      - rabbitmq
+    volumes:
+      # <<< ДОБАВЛЕНО: Подключаем том с изображениями >>>
+      # Путь /app/generated_images - куда сервис будет сохранять файлы
+      - generated-images-data:/app/generated_images
+    environment:
+      <<: *env-vars # Наследуем общие переменные, если нужно
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/ # URL для Docker
+      SERVICE_ID: image-generator-service
+      # <<< ДОБАВЛЕНО: Переменные для image-generator >>>
+      IMAGE_SAVE_PATH: /app/generated_images # Путь сохранения внутри контейнера
+      IMAGE_PUBLIC_BASE_URL: https://crion.space/generated-images # Базовый URL для формирования ссылки
+      IMAGE_PROMPT_STYLE_SUFFIX: ${IMAGE_PROMPT_STYLE_SUFFIX} # <<< Строка для добавления к промптам
+      PUSHGATEWAY_URL: http://pushgateway:9091 # <<< URL для Pushgateway внутри Docker
+      # <<< ИЗМЕНЕНО: URL для sana-api-wrapper, работающего на хосте >>>
+      SANA_API_URL: http://host.docker.internal:8000
+      # Добавить другие нужные переменные (логгирование, очереди и т.д.)
+      # Например, имя очереди для задач и результатов:
+      IMAGE_GENERATOR_TASK_QUEUE: ${IMAGE_GENERATOR_TASK_QUEUE:-image_generation_tasks}
+      IMAGE_GENERATOR_RESULT_QUEUE: ${IMAGE_GENERATOR_RESULT_QUEUE:-image_generation_results}
+    networks:
+      - novel_network
+    restart: unless-stopped
+
+# <<< ДОБАВЛЕНО: Сервис для раздачи сгенерированных изображений >>>
+  image-server:
+    image: nginx:alpine
+    container_name: novel_image_server
+    volumes:
+      # Подключаем том с изображениями в директорию Nginx
+      # Путь /usr/share/nginx/html/generated-images будет доступен по HTTP
+      - generated-images-data:/usr/share/nginx/html/generated-images:ro # Read-only
+    networks:
+      - novel_network
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:
@@ -468,6 +513,8 @@ volumes:
   grafana_data: {} # Volume для данных Grafana
   # Добавляем том для данных Traefik (если нужно хранить SSL сертификаты и т.д.)
   # traefik_data:
+  # <<< ДОБАВЛЕНО: Том для хранения сгенерированных изображений >>>
+  generated-images-data: {}
 
 # Определяем сеть, чтобы сервисы могли общаться друг с другом по именам
 networks:

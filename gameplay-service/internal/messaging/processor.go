@@ -10,6 +10,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
 
+	"novel-server/gameplay-service/internal/config"
 	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
 )
@@ -25,16 +26,18 @@ const (
 // NotificationProcessor обрабатывает логику уведомлений.
 // Вынесен в отдельную структуру для тестируемости.
 type NotificationProcessor struct {
-	repo                  interfaces.StoryConfigRepository     // Используем shared интерфейс
-	publishedRepo         interfaces.PublishedStoryRepository  // !!! ДОБАВЛЕНО: Для PublishedStory
-	sceneRepo             interfaces.StorySceneRepository      // !!! ДОБАВЛЕНО: Для StoryScene
-	playerGameStateRepo   interfaces.PlayerGameStateRepository // <<< ДОБАВЛЕНО: Для PlayerGameState
-	imageReferenceRepo    interfaces.ImageReferenceRepository  // <<< ИСПОЛЬЗУЕМ ИНТЕРФЕЙС
-	clientPub             ClientUpdatePublisher                // Для отправки обновлений клиенту
-	taskPub               TaskPublisher                        // !!! ДОБАВЛЕНО: Для отправки новых задач генерации
-	pushPub               PushNotificationPublisher            // <<< Добавляем издателя push-уведомлений
-	characterImageTaskPub CharacterImageTaskPublisher          // <<< ДОБАВЛЕНО: Для отправки задач генерации изображений
-	logger                *zap.Logger                          // <<< ДОБАВЛЕНО
+	repo                       interfaces.StoryConfigRepository     // Используем shared интерфейс
+	publishedRepo              interfaces.PublishedStoryRepository  // !!! ДОБАВЛЕНО: Для PublishedStory
+	sceneRepo                  interfaces.StorySceneRepository      // !!! ДОБАВЛЕНО: Для StoryScene
+	playerGameStateRepo        interfaces.PlayerGameStateRepository // <<< ДОБАВЛЕНО: Для PlayerGameState
+	imageReferenceRepo         interfaces.ImageReferenceRepository  // <<< ИСПОЛЬЗУЕМ ИНТЕРФЕЙС
+	clientPub                  ClientUpdatePublisher                // Для отправки обновлений клиенту
+	taskPub                    TaskPublisher                        // !!! ДОБАВЛЕНО: Для отправки новых задач генерации
+	pushPub                    PushNotificationPublisher            // <<< Добавляем издателя push-уведомлений
+	characterImageTaskPub      CharacterImageTaskPublisher          // <<< ДОБАВЛЕНО: Для отправки задач генерации изображений
+	characterImageTaskBatchPub CharacterImageTaskBatchPublisher     // <<< ДОБАВЛЕНО: Для отправки батчей задач генерации изображений
+	logger                     *zap.Logger                          // <<< ДОБАВЛЕНО
+	cfg                        *config.Config                       // <<< ДОБАВЛЕНО: Доступ к конфигурации
 }
 
 // NewNotificationProcessor создает новый экземпляр NotificationProcessor.
@@ -48,7 +51,9 @@ func NewNotificationProcessor(
 	taskPub TaskPublisher,
 	pushPub PushNotificationPublisher,
 	characterImageTaskPub CharacterImageTaskPublisher, // <<< ДОБАВЛЕНО
+	characterImageTaskBatchPub CharacterImageTaskBatchPublisher, // <<< ДОБАВЛЕНО
 	logger *zap.Logger, // <<< ДОБАВЛЕНО
+	cfg *config.Config, // <<< ДОБАВЛЕНО: Принимаем конфиг
 ) *NotificationProcessor {
 	// <<< ДОБАВЛЕНО: Проверка на nil >>>
 	if imageReferenceRepo == nil {
@@ -62,17 +67,22 @@ func NewNotificationProcessor(
 		logger = zap.NewNop() // Or initialize a default production logger
 		logger.Warn("Nil logger passed to NewNotificationProcessor, using No-op logger.")
 	}
+	if cfg == nil { // <<< ДОБАВЛЕНО: Проверка cfg
+		logger.Fatal("cfg cannot be nil for NotificationProcessor")
+	}
 	return &NotificationProcessor{
-		repo:                  repo,
-		publishedRepo:         publishedRepo,
-		sceneRepo:             sceneRepo,
-		playerGameStateRepo:   playerGameStateRepo,
-		imageReferenceRepo:    imageReferenceRepo,
-		clientPub:             clientPub,
-		taskPub:               taskPub,
-		pushPub:               pushPub,
-		characterImageTaskPub: characterImageTaskPub,
-		logger:                logger,
+		repo:                       repo,
+		publishedRepo:              publishedRepo,
+		sceneRepo:                  sceneRepo,
+		playerGameStateRepo:        playerGameStateRepo,
+		imageReferenceRepo:         imageReferenceRepo,
+		clientPub:                  clientPub,
+		taskPub:                    taskPub,
+		pushPub:                    pushPub,
+		characterImageTaskPub:      characterImageTaskPub,
+		characterImageTaskBatchPub: characterImageTaskBatchPub,
+		logger:                     logger,
+		cfg:                        cfg, // <<< ДОБАВЛЕНО
 	}
 }
 
@@ -253,10 +263,4 @@ func (p *NotificationProcessor) processImageResult(ctx context.Context, result s
 
 	p.logger.Info("Image URL saved successfully for reference", logFields...)
 	return nil // Ack
-}
-
-// extractJsonContent извлекает первый JSON блок из строки.
-// Вспомогательная функция, скопированная из consumer.go или аналогичного места.
-func extractJsonContent(raw string) string {
-	// ... existing code ...
 }

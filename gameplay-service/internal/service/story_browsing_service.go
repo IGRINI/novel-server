@@ -74,9 +74,10 @@ type PublishedStorySummaryDTO struct {
 
 // ParsedCharacterDTO represents concise character information for client response.
 type ParsedCharacterDTO struct {
-	Name        string `json:"name"`                  // 'n' from setup
-	Description string `json:"description"`           // 'd' from setup
-	Personality string `json:"personality,omitempty"` // 'p' from setup
+	Name           string `json:"name"`                     // 'n' from setup
+	Description    string `json:"description"`              // 'd' from setup
+	Personality    string `json:"personality,omitempty"`    // 'p' from setup
+	ImageReference string `json:"imageReference,omitempty"` // NEW: Unique reference for the character image
 }
 
 // PublishedStoryParsedDetailDTO represents detailed information about a published story
@@ -493,9 +494,10 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 		parsedCharacters = make([]ParsedCharacterDTO, 0, len(novelSetup.Characters))
 		for _, charSetup := range novelSetup.Characters {
 			parsedCharacters = append(parsedCharacters, ParsedCharacterDTO{
-				Name:        charSetup.Name,
-				Description: charSetup.Description,
-				Personality: charSetup.Personality,
+				Name:           charSetup.Name,
+				Description:    charSetup.Description,
+				Personality:    charSetup.Personality,
+				ImageReference: charSetup.ImageRef,
 			})
 		}
 	}

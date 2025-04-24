@@ -1,0 +1,41 @@
+# Git
+.git/
+
+# Python venv (ОЧЕНЬ ВАЖНО!)
+venv/
+**/venv/
+__pycache__/
+**/*.pyc
+
+# <<< ДОБАВЛЕНО: Исключаем всю папку sana-api-wrapper >>>
+sana-api-wrapper/
+
+# Python/ML модели и данные (если они большие и не нужны в образах Go)
+# Расскомментируй и настрой, если модели хранятся в репозитории
+# sana-api-wrapper/sana-local/
+
+# IDE / Editor config
+.idea/
+.vscode/
+*.iml
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Docker related (если что-то специфичное)
+# docker-compose*.yml # Осторожно, может быть нужен для чего-то
+# Dockerfile # Тоже осторожно
+
+# Logs
+*.log
+logs/
+
+# Build artifacts (если есть)
+bin/
+build/
+target/
+
+# Node Modules (если вдруг появятся)
+node_modules/
+**/node_modules/ 

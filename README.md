@@ -40,6 +40,25 @@
 *   **WebSocket URL:** `ws://<ваш_хост>:<порт_traefik_web>/ws`
 *   **Traefik Dashboard:** `http://<ваш_хост>:<порт_traefik_dashboard>` (по умолчанию порт 8888)
 
+### Генерация и доступ к изображениям
+
+Сгенерированные изображения (превью историй и портреты персонажей) сохраняются локально и доступны через API Gateway по следующему базовому URL:
+
+*   **Базовый URL изображений:** `https://crion.space/generated-images`
+
+Конкретные URL формируются следующим образом:
+
+*   **Превью опубликованной истории:**
+    *   Формат: `[Базовый URL изображений]/history_preview_{publishedStoryID}.jpg`
+    *   Пример: `https://crion.space/generated-images/history_preview_a1b2c3d4-e5f6-7890-1234-567890abcdef.jpg`
+    *   Где `{publishedStoryID}` - это UUID опубликованной истории.
+
+*   **Изображение персонажа:**
+    *   Формат: `[Базовый URL изображений]/{imageReference}.jpg`
+    *   Где `{imageReference}` - это уникальный идентификатор, который `gameplay-service` передает в `image-generator` при постановке задачи на генерацию изображения персонажа (например, `character_{characterID}_{taskID}`). Этот же `imageReference` возвращается в поле `characters[].imageReference` эндпоинта `GET /api/published-stories/:id`.
+    *   Пример: `https://crion.space/generated-images/character_b2c3d4e5-f6a7-8901-2345-67890abcdef12_task12345.jpg`
+    *   **Примечание:** Бэкенд не возвращает готовые URL изображений персонажей в API. Фронтенду необходимо будет получить `imageReference` (вероятно, из данных Setup истории) и самостоятельно конструировать полный URL.
+
 ### Аутентификация
 
 Для доступа к большинству эндпоинтов (кроме регистрации, входа и обновления токена) необходимо передавать JWT access токен, полученный при входе или обновлении.
@@ -517,9 +536,10 @@
           },
           \"characters\": [ // Персонажи (из Setup)
             {
-              \"name\": \"string\", // Имя персонажа
-              \"description\": \"string\", // Описание
-              \"personality\": \"string | null\" // Личность (опционально)
+              "name": "string", // Имя персонажа
+              "description": "string", // Описание
+              "personality": "string | null", // Личность (опционально)
+              "imageReference": "string | null" // <<< ДОБАВЛЕНО: Ссылка на изображение (если есть)
             }
             // ... другие персонажи
           ],

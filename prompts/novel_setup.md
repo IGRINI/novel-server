@@ -46,16 +46,16 @@
       "vt": ["string"], // visual_tags (MUST be English)
       "p": "string",    // personality (optional, in `ln`)
       "pr": "string",   // prompt (detailed, for image gen, MUST be English)
-      "np": "string",   // negative_prompt (for image gen, MUST be English)
       "ir": "string" // image_reference (deterministic, based on name or vt)
     }
     // ... Repeat for approximately 10 characters ...
-  ]
+  ],
+  "spi": "string" // <<< ДОБАВЛЕНО: Story Preview Image prompt (MUST be English)
 }
 ```
 
 **Instructions:**
-1. **CRITICAL LANGUAGE RULE: Generate ALL text content intended for narrative or display (like character names `n`, descriptions `d`, personality `p`, and enhanced core stat descriptions `csd.d`) STRICTLY in the language specified in the input `ln`.** The generated language MUST match the input `ln`. Fields like input `st`, `cvs`, and output `vt`, `pr` (image prompt), `np` (negative image prompt) are EXCEPTIONS and MUST remain/be generated in **English**.
+1. **CRITICAL LANGUAGE RULE: Generate ALL text content intended for narrative or display (like character names `n`, descriptions `d`, personality `p`, and enhanced core stat descriptions `csd.d`) STRICTLY in the language specified in the input `ln`.** The generated language MUST match the input `ln`. Fields like input `st`, `cvs`, and output `vt`, `pr` (image prompt) are EXCEPTIONS and MUST remain/be generated in **English**.
 2. Receive input JSON config (structure above).
 3. Generate **COMPRESSED JSON output ONLY** (structure above). Output must be a **single line, no markdown, no extra formatting**.
 4. **Strict JSON syntax** (quotes, commas, brackets).
@@ -74,8 +74,9 @@
    - Always use snake_case for all parts of `ir`.
    - The result must be deterministic — identical `vt` should always result in the same `ir`. The process should prioritize common tags for gender/age/theme and then pick distinctive descriptors.
 10. **Player Character Exclusion:** The generated `chars` array is for Non-Player Characters (NPCs) only. **DO NOT** include the player character (protagonist) in this list under any circumstances.
+11. **Story Preview Prompt:** Generate a detailed image generation prompt for a story preview image in the `spi` field. This prompt MUST be in English and should capture the essence of the story based on the world context (`wc`), story summary (`ss`), genre (`gn`), franchise (`fr`), and themes (`th`). It should evoke the main mood and setting of the story.
 
 **Example Output JSON:**
 ```json
-{"csd":{"Power":{"iv":50,"d":"Your political influence and authority.","go":{"min":true,"max":false},"ic":"Crown"},"Wealth":{"iv":30,"d":"The state of your treasury.","go":{"min":true,"max":false},"ic":"Dollar"},"People":{"iv":40,"d":"The mood of your subjects.","go":{"min":true,"max":false},"ic":"GroupOfPeople"},"Army":{"iv":25,"d":"The strength of your military forces.","go":{"min":true,"max":false},"ic":"Sword"}},"chars":[{"n":"Advisor Valerius","d":"An old, calculating advisor with sharp eyes.","vt":["male","old","fantasy","robe","scroll"],"p":"Cunning and pragmatic.","pr":"Elderly male fantasy advisor, thin face, sharp calculating eyes, wearing dark elaborate robes embroidered with silver thread, holding an ancient scroll, dimly lit stone chamber background, detailed realistic painting style.","np":"young, smiling, simple clothes, bright light, cartoon","ir":"ch_male_old_fantasy_robe_scroll"},{"n":"Captain Elena","d":"A stern, capable captain of the Royal Guard.","vt":["female","adult","medieval","armor","sword","scar"],"p":"Loyal and disciplined.","pr":"Adult female knight captain, stern expression, wearing practical steel plate armor with kingdom sigil, prominent scar across left eyebrow, hand resting on sword hilt, castle courtyard background, medieval painting style.","np":"smiling, relaxed, magic, futuristic","ir":"ch_female_adult_medieval_armor_scar"}]}
+{"csd":{"Power":{"iv":50,"d":"Your political influence and authority.","go":{"min":true,"max":false},"ic":"Crown"},"Wealth":{"iv":30,"d":"The state of your treasury.","go":{"min":true,"max":false},"ic":"Dollar"},"People":{"iv":40,"d":"The mood of your subjects.","go":{"min":true,"max":false},"ic":"GroupOfPeople"},"Army":{"iv":25,"d":"The strength of your military forces.","go":{"min":true,"max":false},"ic":"Sword"}},"chars":[{"n":"Advisor Valerius","d":"An old, calculating advisor with sharp eyes.","vt":["male","old","fantasy","robe","scroll"],"p":"Cunning and pragmatic.","pr":"Elderly male fantasy advisor, thin face, sharp calculating eyes, wearing dark elaborate robes embroidered with silver thread, holding an ancient scroll, dimly lit stone chamber background, detailed realistic painting style.","ir":"ch_male_old_fantasy_robe_scroll"},{"n":"Captain Elena","d":"A stern, capable captain of the Royal Guard.","vt":["female","adult","medieval","armor","sword","scar"],"p":"Loyal and disciplined.","pr":"Adult female knight captain, stern expression, wearing practical steel plate armor with kingdom sigil, prominent scar across left eyebrow, hand resting on sword hilt, castle courtyard background, medieval painting style.","ir":"ch_female_adult_medieval_armor_scar"}],"spi":"Epic fantasy kingdom landscape at dusk, a grand castle silhouetted against a dramatic sky, banners fluttering in the wind, hints of political intrigue and impending conflict, medieval painting illustration style."}
 ```

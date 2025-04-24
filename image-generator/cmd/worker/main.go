@@ -42,7 +42,7 @@ func main() {
 
 	// --- 3. Инициализация сервиса генерации изображений ---
 	// NewImageGenerationService теперь возвращает ошибку, нужно обработать
-	imageService, err := service.NewImageGenerationService(appLogger, cfg.SanaServer, cfg.Storage)
+	imageService, err := service.NewImageGenerationService(appLogger, cfg)
 	if err != nil {
 		appLogger.Fatal("Failed to initialize image generation service", zap.Error(err))
 	}
@@ -74,7 +74,7 @@ func main() {
 			appLogger.Fatal("Failed to initialize RabbitMQ publisher within context deadline")
 		}
 	}
-	messageHandler := worker.NewHandler(appLogger, imageService, resultPublisher)
+	messageHandler := worker.NewHandler(appLogger, imageService, resultPublisher, cfg.PushGatewayURL)
 	appLogger.Info("Message handler initialized")
 
 	// --- 6. Запуск Consumer'а ---

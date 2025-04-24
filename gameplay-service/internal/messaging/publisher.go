@@ -26,6 +26,11 @@ type CharacterImageTaskPublisher interface {
 	PublishCharacterImageTask(ctx context.Context, payload sharedMessaging.CharacterImageTaskPayload) error
 }
 
+// CharacterImageTaskBatchPublisher defines the interface for publishing batches of character image generation tasks.
+type CharacterImageTaskBatchPublisher interface {
+	PublishCharacterImageTaskBatch(ctx context.Context, payload sharedMessaging.CharacterImageTaskBatchPayload) error
+}
+
 // ClientUpdatePublisher defines the interface for publishing updates to the client.
 type ClientUpdatePublisher interface {
 	PublishClientUpdate(ctx context.Context, payload ClientStoryUpdate) error // Используем новую структуру
@@ -117,7 +122,6 @@ func NewRabbitMQTaskPublisher(conn *amqp.Connection, queueName string) (TaskPubl
 	return &rabbitMQPublisher{channel: ch, queueName: queueName}, nil
 }
 
-// <<< НОВЫЙ КОНСТРУКТОР >>>
 // NewRabbitMQCharacterImageTaskPublisher creates a new instance of CharacterImageTaskPublisher.
 func NewRabbitMQCharacterImageTaskPublisher(conn *amqp.Connection, queueName string) (CharacterImageTaskPublisher, error) {
 	ch, err := conn.Channel()
@@ -140,6 +144,31 @@ func NewRabbitMQCharacterImageTaskPublisher(conn *amqp.Connection, queueName str
 		return nil, fmt.Errorf("character image task publisher: не удалось объявить очередь '%s': %w", queueName, err)
 	}
 	log.Printf("CharacterImageTaskPublisher: Очередь '%s' успешно объявлена/найдена.", queueName)
+	return &rabbitMQPublisher{channel: ch, queueName: queueName}, nil
+}
+
+// NewRabbitMQCharacterImageTaskBatchPublisher creates a new instance of CharacterImageTaskBatchPublisher.
+// It uses the same queue as the single task publisher.
+func NewRabbitMQCharacterImageTaskBatchPublisher(conn *amqp.Connection, queueName string) (CharacterImageTaskBatchPublisher, error) {
+	ch, err := conn.Channel()
+	if err != nil {
+		return nil, fmt.Errorf("character image task batch publisher: не удалось открыть канал: %w", err)
+	}
+	// Объявляем ту же очередь, что и для одиночных задач. Consumer будет разбираться.
+	_, err = ch.QueueDeclare(
+		queueName, // name
+		true,      // durable
+		false,     // delete when unused
+		false,     // exclusive
+		false,     // no-wait
+		nil,       // arguments (можно добавить DLX, если нужно, синхронно с одиночным)
+	)
+	if err != nil {
+		log.Printf("CharacterImageTaskBatchPublisher ERROR: Не удалось объявить очередь '%s': %v", queueName, err)
+		ch.Close()
+		return nil, fmt.Errorf("character image task batch publisher: не удалось объявить очередь '%s': %w", queueName, err)
+	}
+	log.Printf("CharacterImageTaskBatchPublisher: Очередь '%s' успешно объявлена/найдена.", queueName)
 	return &rabbitMQPublisher{channel: ch, queueName: queueName}, nil
 }
 
@@ -206,6 +235,28 @@ func (p *rabbitMQPublisher) PublishCharacterImageTask(ctx context.Context, paylo
 		log.Printf("[CharTaskID: %s][CharID: %s] Ошибка публикации CharacterImageTask: %v", payload.TaskID, payload.CharacterID, err)
 		return fmt.Errorf("ошибка публикации задачи генерации изображения для CharID %s: %w", payload.CharacterID, err)
 	}
+	return nil
+}
+
+// PublishCharacterImageTaskBatch publishes a batch of character image generation tasks.
+func (p *rabbitMQPublisher) PublishCharacterImageTaskBatch(ctx context.Context, payload sharedMessaging.CharacterImageTaskBatchPayload) error {
+	if len(payload.Tasks) == 0 {
+		log.Printf("[BatchID: %s] Попытка публикации пустого батча задач генерации изображений.", payload.BatchID)
+		return nil // Нет задач для публикации
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("[BatchID: %s] Ошибка сериализации CharacterImageTaskBatchPayload: %v", payload.BatchID, err)
+		return fmt.Errorf("ошибка сериализации батча задач генерации изображений BatchID %s: %w", payload.BatchID, err)
+	}
+
+	err = p.publishMessage(ctx, body)
+	if err != nil {
+		log.Printf("[BatchID: %s] Ошибка публикации CharacterImageTaskBatch: %v", payload.BatchID, err)
+		return fmt.Errorf("ошибка публикации батча задач генерации изображений BatchID %s: %w", payload.BatchID, err)
+	}
+	log.Printf("[BatchID: %s] Батч из %d задач генерации изображений успешно опубликован.", payload.BatchID, len(payload.Tasks))
 	return nil
 }
 

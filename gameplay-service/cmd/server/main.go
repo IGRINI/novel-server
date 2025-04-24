@@ -100,6 +100,11 @@ func main() {
 	if err != nil {
 		logger.Fatal("Не удалось создать CharacterImageTaskPublisher", zap.Error(err))
 	}
+	// <<< ДОБАВЛЕНО: Создание паблишера для БАТЧЕЙ задач генерации изображений >>>
+	characterImageTaskBatchPublisher, err := messaging.NewRabbitMQCharacterImageTaskBatchPublisher(rabbitConn, cfg.ImageGeneratorTaskQueue) // Используем ту же очередь
+	if err != nil {
+		logger.Fatal("Не удалось создать CharacterImageTaskBatchPublisher", zap.Error(err))
+	}
 
 	// --- Инициализация HTTP клиента для Auth Service --- //
 	authServiceClient := clients.NewHTTPAuthServiceClient(
@@ -125,16 +130,17 @@ func main() {
 		storyConfigRepo,
 		publishedRepo,
 		sceneRepo,
-		playerGameStateRepo, // Передаем как интерфейс (он реализует sharedInterfaces.PlayerGameStateRepository)
-		imageReferenceRepo,  // Передаем созданный репозиторий
+		playerGameStateRepo,
+		imageReferenceRepo,
 		clientUpdatePublisher,
 		taskPublisher,
-		pushPublisher,               // <<< Передаем созданный pushPublisher
-		characterImageTaskPublisher, // <<< Передаем созданный паблишер изображений
-		logger,                      // <<< Передаем логгер для процессора
+		pushPublisher,
+		characterImageTaskPublisher,
+		characterImageTaskBatchPublisher,
+		logger,
 		// Параметры самого консьюмера:
-		cfg.InternalUpdatesQueueName,
-		cfg, // Передаем весь конфиг для самого консьюмера
+		cfg.InternalUpdatesQueueName, // queueName
+		cfg,                          // cfg (для консьюмера и процессора)
 	)
 	if err != nil {
 		logger.Fatal("Не удалось создать консьюмер уведомлений", zap.Error(err))
@@ -153,10 +159,12 @@ func main() {
 		rabbitConn,
 		// Используем те же зависимости, что и для основного консьюмера
 		storyConfigRepo, publishedRepo, sceneRepo, playerGameStateRepo, imageReferenceRepo,
-		clientUpdatePublisher, taskPublisher, pushPublisher, characterImageTaskPublisher, logger,
+		clientUpdatePublisher, taskPublisher, pushPublisher, characterImageTaskPublisher,
+		characterImageTaskBatchPublisher,
+		logger,
 		// Но слушаем другую очередь:
-		cfg.ImageGeneratorResultQueue, // <<< Очередь результатов генерации изображений
-		cfg,
+		cfg.ImageGeneratorResultQueue, // queueName
+		cfg,                           // cfg (для консьюмера и процессора)
 	)
 	if err != nil {
 		logger.Fatal("Не удалось создать консьюмер результатов изображений", zap.Error(err))

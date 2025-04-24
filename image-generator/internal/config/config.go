@@ -11,11 +11,14 @@ import (
 
 // Config структура для хранения всей конфигурации приложения.
 type Config struct {
-	AppEnv     string `env:"APP_ENV" env-default:"development"`
-	Logger     logger.Config
-	RabbitMQ   RabbitMQConfig   // Конфигурация RabbitMQ
-	SanaServer SanaServerConfig // Конфигурация SANA сервера
-	Storage    StorageConfig    // <<< ДОБАВЛЕНО: Конфигурация S3/Minio
+	AppEnv             string `env:"APP_ENV" env-default:"development"`
+	Logger             logger.Config
+	RabbitMQ           RabbitMQConfig   // Конфигурация RabbitMQ
+	SanaServer         SanaServerConfig // Конфигурация SANA сервера
+	PushGatewayURL     string           `env:"PUSHGATEWAY_URL" env-required:"true"`                                                                                                                                                                                                                                                             // <<< ДОБАВЛЕНО: URL для Pushgateway
+	PromptStyleSuffix  string           `env:"IMAGE_PROMPT_STYLE_SUFFIX" env-default:", a stylized portrait of a story character in moody, atmospheric lighting, with neon glow accents, soft shadows, minimal background, cohesive color grading, dark color palette, and subtle mystical or technological elements depending on the setting"` // <<< ДОБАВЛЕНО: Строка для добавления к промпту
+	ImageSavePath      string           `env:"IMAGE_SAVE_PATH" env-required:"true"`                                                                                                                                                                                                                                                             // <<< Добавлено: Путь для сохранения изображений
+	ImagePublicBaseURL string           `env:"IMAGE_PUBLIC_BASE_URL" env-required:"true"`                                                                                                                                                                                                                                                       // <<< Добавлено: Базовый URL для изображений
 }
 
 // RabbitMQConfig конфигурация для подключения к RabbitMQ.
@@ -41,16 +44,6 @@ type QueueConfig struct {
 type SanaServerConfig struct {
 	BaseURL string `env:"SANA_SERVER_BASE_URL" env-required:"true"`
 	Timeout int    `env:"SANA_SERVER_TIMEOUT_SEC" env-default:"120"` // Таймаут в секундах
-}
-
-// StorageConfig конфигурация для подключения к S3-совместимому хранилищу.
-type StorageConfig struct {
-	Endpoint        string `env:"STORAGE_ENDPOINT" env-required:"true"`
-	AccessKeyID     string `env:"STORAGE_ACCESS_KEY_ID" env-required:"true"`
-	SecretAccessKey string `env:"STORAGE_SECRET_ACCESS_KEY" env-required:"true"`
-	UseSSL          bool   `env:"STORAGE_USE_SSL" env-default:"true"`
-	BucketName      string `env:"STORAGE_BUCKET_NAME" env-required:"true"`
-	Region          string `env:"STORAGE_REGION" env-default:"us-east-1"` // Регион может быть важен для некоторых S3 API
 }
 
 // Load загружает конфигурацию из переменных окружения и .env файла.

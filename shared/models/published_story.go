@@ -46,7 +46,8 @@ type PublishedStory struct {
 	IsLiked        bool      `json:"is_liked" db:"-"` // Это поле заполняется на уровне запроса для конкретного пользователя
 }
 
-// CharacterDefinition defines the structure for a character within NovelSetupContent.
+// CharacterDefinition represents a character described in the setup JSON.
+// Uses specific json tags for compact storage.
 type CharacterDefinition struct {
 	Name        string   `json:"n"`            // name
 	Description string   `json:"d"`            // description
@@ -54,14 +55,15 @@ type CharacterDefinition struct {
 	Personality string   `json:"p,omitempty"`  // personality (optional)
 	Prompt      string   `json:"pr,omitempty"` // prompt (English)
 	NegPrompt   string   `json:"np,omitempty"` // negative_prompt (English)
-	ImageRef    string   `json:"ir,omitempty"` // image_reference (English, snake_case)
+	ImageRef    string   `json:"ir,omitempty"` // image_reference (the unique ID used for the image file/URL)
 }
 
 // NovelSetupContent defines the expected structure of the JSON stored in PublishedStory.Setup.
 // Based on the AI prompt format.
 type NovelSetupContent struct {
-	CoreStatsDefinition map[string]StatDefinition `json:"csd"`             // core_stats_definition
-	Characters          []CharacterDefinition     `json:"chars,omitempty"` // characters (NEW)
+	CoreStatsDefinition     map[string]StatDefinition `json:"csd"`             // core_stats_definition
+	Characters              []CharacterDefinition     `json:"chars,omitempty"` // characters (NEW)
+	StoryPreviewImagePrompt string                    `json:"spi,omitempty"`   // <<< ДОБАВЛЕНО
 	// TODO: Добавить другие поля из setup по мере необходимости (backgrounds и т.д.)
 }
 

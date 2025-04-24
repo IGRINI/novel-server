@@ -93,12 +93,20 @@ FCM_CREDENTIALS_PATH=./secrets/firebase-service-account.json # <<< УКАЖИ П
 IMAGE_GENERATOR_TASK_QUEUE=image_generation_tasks     # Очередь задач (gameplay -> image-gen)
 IMAGE_GENERATION_RESULT_QUEUE=image_generation_results # Очередь результатов (image-gen -> gameplay)
 
-SANA_SERVER_BASE_URL=http://localhost:8084 # <<< ВАЖНО: УКАЖИ ПРАВИЛЬНЫЙ URL ТВОЕГО SANA СЕРВЕРА!
+SANA_API_URL=http://localhost:8000 # <<< URL для локально запущенного SANA API Wrapper (на хосте/WSL)
 
 # Настройки S3/Minio хранилища
-STORAGE_ENDPOINT=localhost:9000         # <<< УКАЖИ ПРАВИЛЬНЫЙ Endpoint (e.g., minio:9000 in Docker)
-STORAGE_ACCESS_KEY_ID=minioadmin          # <<< УКАЖИ ПРАВИЛЬНЫЙ Access Key
-STORAGE_SECRET_ACCESS_KEY=minioadmin      # <<< УКАЖИ ПРАВИЛЬНЫЙ Secret Key (нужно читать из secrets/storage_secret_access_key)
-STORAGE_BUCKET_NAME=generated-images      # <<< УКАЖИ ПРАВИЛЬНОЕ Имя Bucket'а
-STORAGE_USE_SSL=false                     # Установи true, если твой S3/Minio использует SSL
-# STORAGE_REGION=us-east-1                # Раскомментируй и установи регион, если нужно
+# --- ЗАКОММЕНТИРОВАНО: S3/Minio больше не используется для сохранения картинок, используется volume --- 
+# STORAGE_ENDPOINT=localhost:9000         # <<< Endpoint (e.g., minio:9000 in Docker)
+# STORAGE_ACCESS_KEY_ID=minioadmin          # <<< Access Key
+
+IMAGE_SAVE_PATH=/app/generated_images # <<< Путь сохранения внутри контейнера image-generator (из docker-compose)
+IMAGE_PUBLIC_BASE_URL=https://crion.space/generated-images # <<< Публичный базовый URL для доступа к картинкам (из docker-compose)
+
+PUSHGATEWAY_URL=http://localhost:9091 # <<< URL для Pushgateway при локальном запуске (если не в Docker)
+
+# <<< ДОБАВЛЕНО: Строка, добавляемая к каждому промпту для генерации изображений >>>
+IMAGE_PROMPT_STYLE_SUFFIX=", a stylized portrait of a story character in moody, atmospheric lighting, with neon glow accents, soft shadows, minimal background, cohesive color grading, dark color palette, and subtle mystical or technological elements depending on the setting"
+
+# <<< ДОБАВЛЕНО: Строка, добавляемая к промпту для превью истории >>>
+STORY_PREVIEW_PROMPT_STYLE_SUFFIX=", a cinematic key art illustration for an interactive story, moody and atmospheric lighting, strong silhouette or central figure, minimal background detail, glowing accents, dark color palette with story-themed elements, dramatic composition, highly detailed digital painting"

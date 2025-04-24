@@ -1,0 +1,18 @@
+# --- Web API ---
+fastapi>=0.100.0
+uvicorn[standard]>=0.24.0
+python-dotenv>=1.0.0
+
+# --- Torch stack (версия не указана, ставь вручную с подходящим CUDA) ---
+torch
+torchvision
+torchaudio
+
+# --- Diffusion stack ---
+transformers>=4.37.0
+diffusers>=0.25.0
+accelerate>=0.25.0
+xformers
+
+# --- Image handling ---
+pillow>=10.0.0

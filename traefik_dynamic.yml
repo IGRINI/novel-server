@@ -85,6 +85,14 @@ http:
       service: "websocket-service"
       priority: 11 # Higher priority for exact path
 
+    # <<< ДОБАВЛЕНО: Роутер для Image Server >>>
+    image-server-router:
+      entryPoints:
+        - "web"
+      rule: "PathPrefix(`/generated-images`)" # Маршрут для статики
+      service: "image-server-service"
+      priority: 10 # Приоритет как у других сервисов API
+
   # ============================================
   # Services (Load Balancers)
   # ============================================
@@ -118,3 +126,9 @@ http:
       loadBalancer:
         servers:
           - url: "http://websocket-service:8083"
+
+    # <<< ДОБАВЛЕНО: Сервис для Image Server (Nginx) >>>
+    image-server-service:
+      loadBalancer:
+        servers:
+          - url: "http://image-server:80" # Nginx внутри контейнера слушает порт 80

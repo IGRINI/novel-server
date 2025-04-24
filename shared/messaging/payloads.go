@@ -72,26 +72,33 @@ type GameOverTaskPayload struct {
 	Reason           GameOverReason           `json:"rsn"`                   // Reason for game over
 }
 
-// CharacterImageTaskPayload - структура сообщения для задачи генерации изображения персонажа.
-// Отправляется gameplay-service в image-generator.
+// CharacterImageTaskPayload представляет задачу на генерацию изображения для одного персонажа.
 type CharacterImageTaskPayload struct {
-	TaskID         string `json:"task_id"`         // Уникальный ID задачи (можно correlation_id)
-	UserID         string `json:"user_id"`         // ID пользователя
-	CharacterID    string `json:"character_id"`    // Уникальный ID персонажа (присвоен gameplay-service)
-	Prompt         string `json:"prompt"`          // Промпт для генерации (из novel_setup JSON, поле 'pr')
-	NegativePrompt string `json:"negative_prompt"` // Негативный промпт (из novel_setup JSON, поле 'np')
-	ImageReference string `json:"image_reference"` // Референс для возможного кеширования/детерминизма (из novel_setup JSON, поле 'ir')
+	TaskID         string   `json:"task_id"`                  // Уникальный ID для этой конкретной задачи генерации
+	UserID         string   `json:"user_id"`                  // ID пользователя, для логов и возможной приоритизации
+	CharacterID    string   `json:"character_id"`             // ID создаваемого персонажа/сущности в gameplay-service
+	Prompt         string   `json:"prompt"`                   // Текстовый промпт для генерации
+	NegativePrompt string   `json:"negative_prompt"`          // Отрицательный промпт
+	ImageReference string   `json:"image_reference"`          // Уникальный идентификатор изображения (например, хеш промпта), чтобы избежать дублирования
+	Seed           *int64   `json:"seed,omitempty"`           // Опциональный сид для воспроизводимости
+	Steps          *int     `json:"steps,omitempty"`          // Опциональное количество шагов
+	GuidanceScale  *float64 `json:"guidance_scale,omitempty"` // Опциональный CFG scale
 }
 
-// CharacterImageResultPayload - структура сообщения с результатом генерации изображения персонажа.
-// Отправляется image-generator в gameplay-service.
+// CharacterImageTaskBatchPayload представляет батч задач на генерацию изображений персонажей.
+type CharacterImageTaskBatchPayload struct {
+	BatchID string                      `json:"batch_id"` // Уникальный ID для всего батча
+	Tasks   []CharacterImageTaskPayload `json:"tasks"`    // Список задач в батче
+}
+
+// CharacterImageResultPayload содержит результат генерации изображения.
 type CharacterImageResultPayload struct {
-	TaskID         string `json:"task_id"`             // ID исходной задачи (из CharacterImageTaskPayload)
-	UserID         string `json:"user_id"`             // ID пользователя
-	CharacterID    string `json:"character_id"`        // ID персонажа
-	ImageURL       string `json:"image_url,omitempty"` // URL сгенерированного и сохраненного изображения (если успех)
-	Error          string `json:"error,omitempty"`     // Описание ошибки, если генерация не удалась
-	ImageReference string `json:"image_reference"`     // <<< ДОБАВЛЯЕМ ImageReference, чтобы gameplay-service знал, какой ключ обновить >>>
+	TaskID         string `json:"task_id"`         // ID исходной задачи CharacterImageTaskPayload
+	UserID         string `json:"user_id"`         // ID пользователя
+	CharacterID    string `json:"character_id"`    // ID персонажа из задачи
+	ImageReference string `json:"image_reference"` // Идентификатор изображения из задачи
+	ImageURL       string `json:"image_url"`       // URL сгенерированного и сохраненного изображения (если успех)
+	Error          string `json:"error,omitempty"` // Описание ошибки (если генерация не удалась)
 }
 
 // Publisher - интерфейс для отправки сообщений в очередь.

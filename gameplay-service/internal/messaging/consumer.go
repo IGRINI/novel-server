@@ -2,12 +2,13 @@ package messaging
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
 
 	"novel-server/gameplay-service/internal/config"
-	interfaces "novel-server/shared/interfaces"
+	sharedInterfaces "novel-server/shared/interfaces"
 
 	"time"
 
@@ -38,33 +39,40 @@ type NotificationConsumer struct {
 // NewNotificationConsumer создает нового консьюмера уведомлений.
 func NewNotificationConsumer(
 	conn *amqp.Connection,
-	// <<< Зависимости для NotificationProcessor >>>
-	repo interfaces.StoryConfigRepository,
-	publishedRepo interfaces.PublishedStoryRepository,
-	sceneRepo interfaces.StorySceneRepository,
-	playerGameStateRepo interfaces.PlayerGameStateRepository,
-	imageReferenceRepo interfaces.ImageReferenceRepository,
-	clientPub ClientUpdatePublisher,
+	// Зависимости для NotificationProcessor:
+	storyConfigRepo sharedInterfaces.StoryConfigRepository,
+	publishedRepo sharedInterfaces.PublishedStoryRepository,
+	sceneRepo sharedInterfaces.StorySceneRepository,
+	gameStateRepo sharedInterfaces.PlayerGameStateRepository,
+	imageReferenceRepo sharedInterfaces.ImageReferenceRepository,
+	clientUpdatePub ClientUpdatePublisher,
 	taskPub TaskPublisher,
 	pushPub PushNotificationPublisher,
-	characterImageTaskPub CharacterImageTaskPublisher, // <<< ДОБАВЛЕНО
+	characterImageTaskPub CharacterImageTaskPublisher,
+	characterImageTaskBatchPub CharacterImageTaskBatchPublisher,
 	logger *zap.Logger,
-	// <<< Параметры самого консьюмера >>>
+	// Параметры самого консьюмера:
 	queueName string,
-	cfg *config.Config, // Конфиг нужен для consumerConcurrency
+	cfg *config.Config,
 ) (*NotificationConsumer, error) {
-	// Создаем процессор, передавая все нужные зависимости
+	if conn == nil {
+		return nil, errors.New("connection is nil")
+	}
+
+	// Создаем NotificationProcessor с переданными зависимостями
 	processor := NewNotificationProcessor(
-		repo,
+		storyConfigRepo,
 		publishedRepo,
 		sceneRepo,
-		playerGameStateRepo,
+		gameStateRepo,
 		imageReferenceRepo,
-		clientPub,
+		clientUpdatePub,
 		taskPub,
 		pushPub,
 		characterImageTaskPub,
+		characterImageTaskBatchPub,
 		logger,
+		cfg,
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -76,8 +84,8 @@ func NewNotificationConsumer(
 		stopChannel: make(chan struct{}),
 		ctx:         ctx,
 		cancelFunc:  cancel,
-		config:      cfg,    // <<< СОХРАНЯЕМ КОНФИГ
-		logger:      logger, // Сохраняем логгер для самого консьюмера
+		config:      cfg,
+		logger:      logger.With(zap.String("queue", queueName)),
 	}
 	return consumer, nil
 }
