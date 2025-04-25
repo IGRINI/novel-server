@@ -108,7 +108,8 @@ func (r *pgPublishedStoryRepository) GetByID(ctx context.Context, id uuid.UUID) 
 	query := `
         SELECT
             id, user_id, config, setup, status, is_public, is_adult_content,
-            title, description, error_details, likes_count, created_at, updated_at
+            title, description, error_details, likes_count, created_at, updated_at,
+			is_first_scene_pending, are_images_pending
         FROM published_stories
         WHERE id = $1
     `
@@ -120,6 +121,7 @@ func (r *pgPublishedStoryRepository) GetByID(ctx context.Context, id uuid.UUID) 
 		&story.ID, &story.UserID, &story.Config, &story.Setup, &story.Status,
 		&story.IsPublic, &story.IsAdultContent, &story.Title, &story.Description,
 		&story.ErrorDetails, &story.LikesCount, &story.CreatedAt, &story.UpdatedAt,
+		&story.IsFirstScenePending, &story.AreImagesPending, // Добавляем сканирование новых флагов
 	)
 
 	if err != nil {
@@ -1086,17 +1088,16 @@ func (r *pgPublishedStoryRepository) ListByUserIDOffset(ctx context.Context, use
 	return stories, nil
 }
 
-const findAndMarkStaleGeneratingQuery = `
+const findAndMarkStaleGeneratingQueryBase = `
 UPDATE published_stories
 SET status = $1, -- StatusError
     error_details = $2, -- Сообщение об ошибке
     updated_at = NOW()
 WHERE status = ANY($3::story_status[]) -- Массив зависших статусов
-  AND updated_at < $4 -- Порог времени
 `
 
 // FindAndMarkStaleGeneratingAsError находит опубликованные истории, которые 'зависли' в статусе генерации,
-// и обновляет их статус на StatusError.
+// или все такие истории, если порог 0, и обновляет их статус на StatusError.
 func (r *pgPublishedStoryRepository) FindAndMarkStaleGeneratingAsError(ctx context.Context, staleThreshold time.Duration) (int64, error) {
 	staleStatuses := []string{
 		string(models.StatusSetupPending),
@@ -1104,22 +1105,32 @@ func (r *pgPublishedStoryRepository) FindAndMarkStaleGeneratingAsError(ctx conte
 		string(models.StatusFirstScenePending),
 		string(models.StatusInitialGeneration),
 	}
-	thresholdTime := time.Now().UTC().Add(-staleThreshold)
 	errorMessage := "Generation process timed out or got stuck."
+	args := []interface{}{
+		models.StatusError, // $1
+		errorMessage,       // $2
+		staleStatuses,      // $3
+	}
+	query := findAndMarkStaleGeneratingQueryBase
+	thresholdTime := time.Now().UTC().Add(-staleThreshold)
 
 	logFields := []zap.Field{
 		zap.Strings("staleStatuses", staleStatuses),
 		zap.Duration("staleThreshold", staleThreshold),
-		zap.Time("thresholdTime", thresholdTime),
 	}
+
+	// Добавляем условие времени только если staleThreshold > 0
+	if staleThreshold > 0 {
+		query += " AND updated_at < $4" // $4 будет thresholdTime
+		args = append(args, thresholdTime)
+		logFields = append(logFields, zap.Time("thresholdTime", thresholdTime))
+	} else {
+		r.logger.Info("Stale threshold is zero, checking all specified stale statuses regardless of time.", logFields...)
+	}
+
 	r.logger.Info("Finding and marking stale generating published stories as Error", logFields...)
 
-	commandTag, err := r.db.Exec(ctx, findAndMarkStaleGeneratingQuery,
-		models.StatusError, // $1: Новый статус
-		errorMessage,       // $2: Сообщение об ошибке
-		staleStatuses,      // $3: Массив статусов для поиска
-		thresholdTime,      // $4: Временной порог
-	)
+	commandTag, err := r.db.Exec(ctx, query, args...)
 
 	if err != nil {
 		r.logger.Error("Failed to execute update query for stale published stories", append(logFields, zap.Error(err))...)
@@ -1641,3 +1652,84 @@ func (r *pgPublishedStoryRepository) UpdatePreviewImageReference(ctx context.Con
 
 	return nil
 }
+
+// <<< НАЧАЛО: РЕАЛИЗАЦИЯ UpdateStatusFlagsAndSetup >>>
+func (r *pgPublishedStoryRepository) UpdateStatusFlagsAndSetup(ctx context.Context, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, isFirstScenePending bool, areImagesPending bool) error {
+	query := `
+        UPDATE published_stories
+        SET
+            status = $2::story_status,
+            setup = $3,
+            is_first_scene_pending = $4,
+            are_images_pending = $5,
+            updated_at = NOW(),
+			error_details = NULL -- Сбрасываем ошибку при успешном обновлении Setup
+        WHERE id = $1
+    `
+	logFields := []zap.Field{
+		zap.String("publishedStoryID", id.String()),
+		zap.String("newStatus", string(status)),
+		zap.Bool("isFirstScenePending", isFirstScenePending),
+		zap.Bool("areImagesPending", areImagesPending),
+		zap.Int("setupSize", len(setup)),
+	}
+	r.logger.Debug("Updating published story status, flags, and setup", logFields...)
+
+	commandTag, err := r.db.Exec(ctx, query, id, status, setup, isFirstScenePending, areImagesPending)
+	if err != nil {
+		r.logger.Error("Failed to update published story status, flags, and setup", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления статуса/флагов/Setup для истории %s: %w", id, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("No rows affected when updating published story status, flags, and setup (story not found?)", logFields...)
+		return models.ErrNotFound // Возвращаем ErrNotFound, если история не найдена
+	}
+
+	r.logger.Info("Published story status, flags, and setup updated successfully", logFields...)
+	return nil
+}
+
+// <<< КОНЕЦ: РЕАЛИЗАЦИЯ UpdateStatusFlagsAndSetup >>>
+
+// <<< НАЧАЛО: РЕАЛИЗАЦИЯ UpdateStatusFlagsAndDetails >>>
+func (r *pgPublishedStoryRepository) UpdateStatusFlagsAndDetails(ctx context.Context, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, errorDetails *string) error {
+	query := `
+        UPDATE published_stories
+        SET
+            status = $2::story_status,
+            is_first_scene_pending = $3,
+            are_images_pending = $4,
+            error_details = $5,
+            updated_at = NOW()
+        WHERE id = $1
+    `
+	logFields := []zap.Field{
+		zap.String("publishedStoryID", id.String()),
+		zap.String("newStatus", string(status)),
+		zap.Bool("isFirstScenePending", isFirstScenePending),
+		zap.Bool("areImagesPending", areImagesPending),
+	}
+	if errorDetails != nil {
+		logFields = append(logFields, zap.Stringp("errorDetails", errorDetails))
+	} else {
+		logFields = append(logFields, zap.Bool("clearErrorDetails", true))
+	}
+	r.logger.Debug("Updating published story status, flags, and error details", logFields...)
+
+	commandTag, err := r.db.Exec(ctx, query, id, status, isFirstScenePending, areImagesPending, errorDetails)
+	if err != nil {
+		r.logger.Error("Failed to update published story status, flags, and error details", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления статуса/флагов/деталей ошибки для истории %s: %w", id, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("No rows affected when updating published story status, flags, and error details (story not found?)", logFields...)
+		return models.ErrNotFound // Возвращаем ErrNotFound, если история не найдена
+	}
+
+	r.logger.Info("Published story status, flags, and error details updated successfully", logFields...)
+	return nil
+}
+
+// <<< КОНЕЦ: РЕАЛИЗАЦИЯ UpdateStatusFlagsAndDetails >>>

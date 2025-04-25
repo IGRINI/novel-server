@@ -205,22 +205,29 @@ func NewGameplayService(
 	playerProgressRepo interfaces.PlayerProgressRepository,
 	playerGameStateRepo interfaces.PlayerGameStateRepository,
 	likeRepo interfaces.LikeRepository,
-	publisher messaging.TaskPublisher,
+	imageReferenceRepo interfaces.ImageReferenceRepository,
+	generationPublisher messaging.TaskPublisher,
+	characterImageTaskBatchPub messaging.CharacterImageTaskBatchPublisher,
 	pool *pgxpool.Pool,
 	logger *zap.Logger,
 	authClient interfaces.AuthServiceClient,
 	cfg *config.Config,
 ) GameplayService {
 	// <<< СОЗДАЕМ DraftService >>>
-	draftSvc := NewDraftService(configRepo, publisher, logger, cfg)
+	draftSvc := NewDraftService(configRepo, generationPublisher, logger, cfg)
 	// <<< СОЗДАЕМ PublishingService >>>
-	publishingSvc := NewPublishingService(configRepo, publishedRepo, publisher, pool, logger)
+	publishingSvc := NewPublishingService(configRepo, publishedRepo, generationPublisher, pool, logger)
 	// <<< СОЗДАЕМ LikeService >>>
 	likeSvc := NewLikeService(likeRepo, publishedRepo, playerGameStateRepo, authClient, logger)
 	// <<< СОЗДАЕМ StoryBrowsingService >>>
 	storyBrowsingSvc := NewStoryBrowsingService(publishedRepo, sceneRepo, playerProgressRepo, playerGameStateRepo, likeRepo, authClient, logger)
 	// <<< СОЗДАЕМ GameLoopService >>>
-	gameLoopSvc := NewGameLoopService(publishedRepo, sceneRepo, playerProgressRepo, playerGameStateRepo, publisher, configRepo, logger)
+	gameLoopSvc := NewGameLoopService(
+		publishedRepo, sceneRepo, playerProgressRepo, playerGameStateRepo,
+		generationPublisher, configRepo,
+		imageReferenceRepo,
+		characterImageTaskBatchPub,
+		logger)
 
 	return &gameplayServiceImpl{
 		configRepo:           configRepo,
@@ -234,7 +241,7 @@ func NewGameplayService(
 		likeService:          likeSvc,
 		storyBrowsingService: storyBrowsingSvc,
 		gameLoopService:      gameLoopSvc,
-		publisher:            publisher,
+		publisher:            generationPublisher,
 		pool:                 pool,
 		logger:               logger.Named("GameplayService"),
 		authClient:           authClient,

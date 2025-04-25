@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
-	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
 )
@@ -74,15 +73,17 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 	}
 
 	if notification.Status == sharedMessaging.NotificationStatusSuccess {
-		if publishedStory.Status != sharedModels.StatusSetupGenerating {
-			p.logger.Warn("PublishedStory not in SetupGenerating status, Setup Success update cancelled.",
+		// Разрешаем обработку успеха, если статус SetupGenerating ИЛИ SetupPending
+		// (Retry устанавливает SetupPending перед отправкой задачи)
+		if publishedStory.Status != sharedModels.StatusSetupGenerating && publishedStory.Status != sharedModels.StatusSetupPending {
+			p.logger.Warn("PublishedStory not in SetupGenerating or SetupPending status, Setup Success update cancelled.",
 				zap.String("task_id", taskID),
 				zap.String("published_story_id", publishedStoryID.String()),
 				zap.String("current_status", string(publishedStory.Status)),
 			)
-			return nil
+			return nil // Не обрабатываем успех, если статус некорректный
 		}
-		p.logger.Info("Setup Success notification", zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()))
+		p.logger.Info("Setup Success notification received, proceeding with update", zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()), zap.String("status_when_received", string(publishedStory.Status)))
 		rawGeneratedText := notification.GeneratedText
 		jsonToParse := extractJsonContent(rawGeneratedText) // Helper from consumer.go
 		if jsonToParse == "" {
@@ -92,9 +93,25 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 				zap.String("raw_text_snippet", stringShort(rawGeneratedText, 100)), // Helper from consumer.go
 			)
 			errDetails := "Failed to extract JSON block from Setup text"
-			if updateErr := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, sharedModels.StatusError, nil, nil, nil, &errDetails); updateErr != nil {
+			if updateErr := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, sharedModels.StatusError, false, false, &errDetails); updateErr != nil {
 				p.logger.Error("CRITICAL ERROR: Failed to update PublishedStory status to Error after Setup JSON extraction error" /* zap fields */, zap.Error(updateErr))
-				return fmt.Errorf("error updating Error status for PublishedStory %s: %w", publishedStoryID, updateErr)
+				// <<< НАЧАЛО: Отправка WS обновления (Ошибка извлечения JSON) >>>
+				clientUpdateErr := ClientStoryUpdate{
+					ID:           publishedStoryID.String(),
+					UserID:       publishedStory.UserID.String(),
+					UpdateType:   UpdateTypeStory,
+					Status:       string(sharedModels.StatusError),
+					ErrorDetails: &errDetails,
+				}
+				wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer wsCancel()
+				if errWs := p.clientPub.PublishClientUpdate(wsCtx, clientUpdateErr); errWs != nil {
+					p.logger.Error("Error sending ClientStoryUpdate (Setup JSON Extraction Error)", zap.String("task_id", taskID), zap.Error(errWs))
+				} else {
+					p.logger.Info("ClientStoryUpdate sent (Setup JSON Extraction Error)", zap.String("task_id", taskID), zap.String("story_id", publishedStoryID.String()))
+				}
+				// <<< КОНЕЦ: Отправка WS обновления (Ошибка извлечения JSON) >>>
+				return nil // Возвращаем nil, т.к. статус Error уже сохранен
 			}
 			return nil
 		}
@@ -109,259 +126,298 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 				zap.String("json_to_parse", jsonToParse),
 			)
 			errDetails := fmt.Sprintf("Invalid JSON received for Setup: %v", err)
-			if updateErr := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, sharedModels.StatusError, nil, nil, nil, &errDetails); updateErr != nil {
+			if updateErr := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, sharedModels.StatusError, false, false, &errDetails); updateErr != nil {
 				p.logger.Error("CRITICAL ERROR: Failed to update PublishedStory status to Error after Setup parsing error",
 					zap.String("task_id", taskID),
 					zap.String("published_story_id", publishedStoryID.String()),
 					zap.Error(updateErr),
 				)
-				return fmt.Errorf("error updating Error status for PublishedStory %s: %w", publishedStoryID, updateErr)
+				// <<< НАЧАЛО: Отправка WS обновления (Ошибка парсинга JSON Setup) >>>
+				clientUpdateErr := ClientStoryUpdate{
+					ID:           publishedStoryID.String(),
+					UserID:       publishedStory.UserID.String(),
+					UpdateType:   UpdateTypeStory,
+					Status:       string(sharedModels.StatusError),
+					ErrorDetails: &errDetails,
+				}
+				wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer wsCancel()
+				if errWs := p.clientPub.PublishClientUpdate(wsCtx, clientUpdateErr); errWs != nil {
+					p.logger.Error("Error sending ClientStoryUpdate (Setup JSON Parsing Error)", zap.String("task_id", taskID), zap.Error(errWs))
+				} else {
+					p.logger.Info("ClientStoryUpdate sent (Setup JSON Parsing Error)", zap.String("task_id", taskID), zap.String("story_id", publishedStoryID.String()))
+				}
+				// <<< КОНЕЦ: Отправка WS обновления (Ошибка парсинга JSON Setup) >>>
+				return nil // Возвращаем nil, т.к. статус Error уже сохранен
 			}
 			return nil
 		}
 
-		if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, sharedModels.StatusFirstScenePending, setupBytes, nil, nil, nil); err != nil {
-			p.logger.Error("CRITICAL ERROR: Failed to update status and Setup for PublishedStory",
-				zap.String("task_id", taskID),
-				zap.String("published_story_id", publishedStoryID.String()),
-				zap.Error(err),
-			)
-			return fmt.Errorf("error updating status/Setup for PublishedStory %s: %w", publishedStoryID, err)
-		}
-		p.logger.Info("PublishedStory status updated -> FirstScenePending and Setup saved", zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()))
-
-		// Объявляем simplifiedSetup здесь, чтобы она была доступна ниже
-		var simplifiedSetup map[string]interface{}
-
 		var setupContent sharedModels.NovelSetupContent
 		var fullConfig sharedModels.Config
 		var characterVisualStyle string
-		var storyStyle string // <<< Переменная для pp.st
+		var storyStyle string
+		var needsPreviewImage bool = false
+		var needsCharacterImages bool = false
+		imageTasks := make([]sharedMessaging.CharacterImageTaskPayload, 0)
+		var errUnmarshalSetup error
 
-		if err := json.Unmarshal(setupBytes, &setupContent); err != nil {
-			p.logger.Warn("Failed to unmarshal setup JSON for image task trigger",
+		errUnmarshalSetup = json.Unmarshal(setupBytes, &setupContent)
+		if errUnmarshalSetup != nil {
+			p.logger.Error("SETUP PARSING ERROR (before image check): Failed to unmarshal setup JSON",
 				zap.String("task_id", taskID),
 				zap.String("published_story_id", publishedStoryID.String()),
-				zap.Error(err),
+				zap.Error(errUnmarshalSetup),
 			)
-			// Не можем продолжать без setupContent
+			errDetails := fmt.Sprintf("Failed to unmarshal setup JSON: %v", errUnmarshalSetup)
+			if updateErr := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, sharedModels.StatusError, false, false, &errDetails); updateErr != nil {
+				p.logger.Error("CRITICAL ERROR: Failed to update status to Error after setup unmarshal error", zap.Error(updateErr))
+				// <<< НАЧАЛО: Отправка WS обновления (Ошибка анмаршалинга Setup) >>>
+				clientUpdateErr := ClientStoryUpdate{
+					ID:           publishedStoryID.String(),
+					UserID:       publishedStory.UserID.String(),
+					UpdateType:   UpdateTypeStory,
+					Status:       string(sharedModels.StatusError),
+					ErrorDetails: &errDetails,
+				}
+				wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer wsCancel()
+				if errWs := p.clientPub.PublishClientUpdate(wsCtx, clientUpdateErr); errWs != nil {
+					p.logger.Error("Error sending ClientStoryUpdate (Setup Unmarshal Error)", zap.String("task_id", taskID), zap.Error(errWs))
+				} else {
+					p.logger.Info("ClientStoryUpdate sent (Setup Unmarshal Error)", zap.String("task_id", taskID), zap.String("story_id", publishedStoryID.String()))
+				}
+				// <<< КОНЕЦ: Отправка WS обновления (Ошибка анмаршалинга Setup) >>>
+				return nil // Возвращаем nil, т.к. статус Error уже сохранен
+			}
+			return nil
 		} else {
-			// Распарсим конфиг, чтобы получить cvs и st
 			if errCfg := json.Unmarshal(publishedStory.Config, &fullConfig); errCfg != nil {
-				p.logger.Warn("Failed to unmarshal config JSON to get CharacterVisualStyle",
-					zap.String("task_id", taskID),
-					zap.String("published_story_id", publishedStoryID.String()),
-					zap.Error(errCfg),
-				)
-				// Продолжаем без cvs, если не удалось распарсить
+				p.logger.Warn("Failed to unmarshal config JSON to get CharacterVisualStyle/Style", zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()), zap.Error(errCfg))
 			} else {
 				characterVisualStyle = fullConfig.PlayerPrefs.CharacterVisualStyle
-				storyStyle = fullConfig.PlayerPrefs.Style // <<< Извлекаем Style (st)
-
-				// Форматируем строки стилей для добавления
+				storyStyle = fullConfig.PlayerPrefs.Style
 				if characterVisualStyle != "" {
 					characterVisualStyle = ", " + characterVisualStyle
 				}
 				if storyStyle != "" {
-					storyStyle = ", " + storyStyle // <<< Форматируем Style
+					storyStyle = ", " + storyStyle
 				}
 			}
 
-			p.logger.Info("Triggering image generation check",
-				zap.String("task_id", taskID),
-				zap.String("published_story_id", publishedStoryID.String()),
-			)
-			imageTasks := make([]sharedMessaging.CharacterImageTaskPayload, 0, len(setupContent.Characters))
+			p.logger.Info("Checking which images need generation", zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()))
+			imageTasks = make([]sharedMessaging.CharacterImageTaskPayload, 0, len(setupContent.Characters))
 
 			for _, charData := range setupContent.Characters {
-				if charData.ImageRef == "" || charData.Prompt == "" { // Пропускаем, если нет референса или основного промпта
+				if charData.ImageRef == "" || charData.Prompt == "" {
+					p.logger.Debug("Skipping character image check: missing ImageRef or Prompt", zap.String("char_name", charData.Name))
 					continue
 				}
 				imageRef := charData.ImageRef
-				basePrompt := charData.Prompt // Исходный промпт персонажа
-				characterIDForTask := uuid.New()
-
-				logFieldsImg := []zap.Field{
-					zap.String("task_id", taskID),
-					zap.String("published_story_id", publishedStoryID.String()),
-					zap.String("image_ref", imageRef),
-					zap.String("character_task_id", characterIDForTask.String()),
-				}
-				p.logger.Info("Checking image for character", logFieldsImg...)
 				_, errCheck := p.imageReferenceRepo.GetImageURLByReference(dbCtx, imageRef)
-				if errCheck == nil {
-					p.logger.Info("Found existing URL for ImageRef. Generation not required.", logFieldsImg...)
-				} else if errors.Is(errCheck, interfaces.ErrNotFound) {
-					p.logger.Info("URL for ImageRef not found. Adding image generation task to batch.", logFieldsImg...)
-
-					// <<< ИЗМЕНЕНИЕ: Формируем полный промпт >>>
-					fullCharacterPrompt := basePrompt + characterVisualStyle // Добавляем стиль из конфига
-
+				if errors.Is(errCheck, sharedModels.ErrNotFound) {
+					p.logger.Debug("Character image needs generation", zap.String("image_ref", imageRef))
+					needsCharacterImages = true
+					characterIDForTask := uuid.New()
+					fullCharacterPrompt := charData.Prompt + characterVisualStyle
 					imageTask := sharedMessaging.CharacterImageTaskPayload{
-						TaskID:         characterIDForTask.String(),
-						CharacterID:    characterIDForTask,
-						Prompt:         fullCharacterPrompt, // <<< Используем полный промпт
-						NegativePrompt: charData.NegPrompt,  // Используем поле из setup
-						ImageReference: imageRef,
-						Ratio:          "2:3", // <<< ДОБАВЛЕНО: Соотношение для персонажа
+						TaskID:           characterIDForTask.String(),
+						CharacterID:      characterIDForTask,
+						Prompt:           fullCharacterPrompt,
+						NegativePrompt:   charData.NegPrompt,
+						ImageReference:   imageRef,
+						Ratio:            "2:3",
+						PublishedStoryID: publishedStoryID,
 					}
 					imageTasks = append(imageTasks, imageTask)
-
+				} else if errCheck != nil {
+					p.logger.Error("Error checking Character ImageRef in DB", zap.String("image_ref", imageRef), zap.Error(errCheck))
 				} else {
-					p.logger.Error("Error checking ImageRef in DB. Skipping generation.", append(logFieldsImg, zap.Error(errCheck))...)
+					p.logger.Debug("Character image already exists", zap.String("image_ref", imageRef))
 				}
 			}
 
-			// Отправляем батч персонажей...
-			if len(imageTasks) > 0 {
-				batchPayload := sharedMessaging.CharacterImageTaskBatchPayload{
-					BatchID: uuid.New().String(),
-					Tasks:   imageTasks,
-				}
-				p.logger.Info("Publishing character image task batch",
-					zap.String("batch_id", batchPayload.BatchID),
-					zap.Int("task_count", len(batchPayload.Tasks)),
-					zap.String("published_story_id", publishedStoryID.String()),
-				)
-				if errPub := p.characterImageTaskBatchPub.PublishCharacterImageTaskBatch(ctx, batchPayload); errPub != nil {
-					p.logger.Error("Failed to publish character image task batch", zap.Error(errPub),
-						zap.String("batch_id", batchPayload.BatchID),
-						zap.String("published_story_id", publishedStoryID.String()),
-					)
-					// TODO: Подумать о стратегии отката или повторной попытки для всего батча?
-					// Пока просто логируем ошибку.
-				} else {
-					p.logger.Info("Character image task batch published successfully",
-						zap.String("batch_id", batchPayload.BatchID),
-						zap.String("published_story_id", publishedStoryID.String()),
-					)
-				}
-			}
-
-			// <<< НАЧАЛО: Логика генерации превью истории >>>
 			if setupContent.StoryPreviewImagePrompt != "" {
-				p.logger.Info("Generating story preview image",
-					zap.String("task_id", taskID),
-					zap.String("published_story_id", publishedStoryID.String()),
-				)
 				previewImageRef := fmt.Sprintf("history_preview_%s", publishedStoryID.String())
-
-				// <<< ИЗМЕНЕНИЕ: Формируем полный промпт для превью с обоими стилями >>>
-				basePreviewPrompt := setupContent.StoryPreviewImagePrompt
-				// Добавляем оба стиля, если они есть
-				fullPreviewPromptWithStyles := basePreviewPrompt + storyStyle + characterVisualStyle
-
-				previewTask := sharedMessaging.CharacterImageTaskPayload{
-					TaskID:         uuid.New().String(),
-					CharacterID:    publishedStoryID,
-					Prompt:         fullPreviewPromptWithStyles, // <<< Используем промпт с обоими стилями
-					NegativePrompt: "",
-					ImageReference: previewImageRef,
-					Ratio:          "3:2", // <<< ДОБАВЛЕНО: Соотношение для превью
-				}
-
-				// Оборачиваем в батч из одной задачи
-				previewBatchPayload := sharedMessaging.CharacterImageTaskBatchPayload{
-					BatchID: uuid.New().String(),
-					Tasks:   []sharedMessaging.CharacterImageTaskPayload{previewTask},
-				}
-
-				// Отправляем задачу
-				if errPub := p.characterImageTaskBatchPub.PublishCharacterImageTaskBatch(ctx, previewBatchPayload); errPub != nil {
-					p.logger.Error("Failed to publish story preview image task", zap.Error(errPub),
-						zap.String("preview_batch_id", previewBatchPayload.BatchID),
-						zap.String("published_story_id", publishedStoryID.String()),
-					)
-					// Не критично для основного потока, просто логируем
+				_, errCheck := p.imageReferenceRepo.GetImageURLByReference(dbCtx, previewImageRef)
+				if errors.Is(errCheck, sharedModels.ErrNotFound) {
+					p.logger.Debug("Preview image needs generation", zap.String("image_ref", previewImageRef))
+					needsPreviewImage = true
+				} else if errCheck != nil {
+					p.logger.Error("Error checking Preview ImageRef in DB", zap.String("image_ref", previewImageRef), zap.Error(errCheck))
 				} else {
-					p.logger.Info("Story preview image task published successfully",
-						zap.String("preview_batch_id", previewBatchPayload.BatchID),
-						zap.String("published_story_id", publishedStoryID.String()),
-					)
-					// <<< Опционально: Обновить поле PreviewImageReference в PublishedStory >>>
-					// previewRef := previewImageRef // Создаем копию
-					// if updateRefErr := p.publishedRepo.UpdatePreviewImageReference(dbCtx, publishedStoryID, &previewRef); updateRefErr != nil {
-					// 	p.logger.Error("Failed to update preview image reference in DB", zap.Error(updateRefErr), zap.String("published_story_id", publishedStoryID.String()))
-					// }
+					p.logger.Debug("Preview image already exists", zap.String("image_ref", previewImageRef))
 				}
 			} else {
-				p.logger.Warn("StoryPreviewImagePrompt (spi) is empty in setup, skipping preview generation.",
-					zap.String("task_id", taskID),
-					zap.String("published_story_id", publishedStoryID.String()),
-				)
+				p.logger.Info("StoryPreviewImagePrompt (spi) is empty in setup, no preview generation needed.")
 			}
-			// <<< КОНЕЦ: Логика генерации превью истории >>>
+		}
+		areImagesPending := needsPreviewImage || needsCharacterImages
 
-			// --- НАЧАЛО: Формирование УПРОЩЕННОГО stp для FirstScene ---
+		isFirstScenePending := true
+		if err := p.publishedRepo.UpdateStatusFlagsAndSetup(dbCtx, publishedStoryID, sharedModels.StatusFirstScenePending, setupBytes, isFirstScenePending, areImagesPending); err != nil {
+			p.logger.Error("CRITICAL ERROR: Failed to update status, flags and Setup for PublishedStory",
+				zap.String("task_id", taskID),
+				zap.String("published_story_id", publishedStoryID.String()),
+				zap.Error(err),
+			)
+			return fmt.Errorf("error updating status/flags/Setup for PublishedStory %s: %w", publishedStoryID, err)
+		}
+		p.logger.Info("PublishedStory status, flags updated and Setup saved",
+			zap.String("task_id", taskID),
+			zap.String("published_story_id", publishedStoryID.String()),
+			zap.String("new_status", string(sharedModels.StatusFirstScenePending)),
+			zap.Bool("is_first_scene_pending", isFirstScenePending),
+			zap.Bool("are_images_pending", areImagesPending),
+		)
+
+		if areImagesPending {
+			p.logger.Info("Publishing image generation tasks",
+				zap.String("task_id", taskID),
+				zap.String("published_story_id", publishedStoryID.String()),
+				zap.Bool("preview_needed", needsPreviewImage),
+				zap.Int("character_images_needed", len(imageTasks)),
+			)
+			if len(imageTasks) > 0 {
+				batchPayload := sharedMessaging.CharacterImageTaskBatchPayload{BatchID: uuid.New().String(), Tasks: imageTasks}
+				if errPub := p.characterImageTaskBatchPub.PublishCharacterImageTaskBatch(ctx, batchPayload); errPub != nil {
+					p.logger.Error("Failed to publish character image task batch", zap.Error(errPub), zap.String("batch_id", batchPayload.BatchID), zap.String("published_story_id", publishedStoryID.String()))
+				} else {
+					p.logger.Info("Character image task batch published successfully", zap.String("batch_id", batchPayload.BatchID), zap.String("published_story_id", publishedStoryID.String()))
+				}
+			}
+			if needsPreviewImage {
+				previewImageRef := fmt.Sprintf("history_preview_%s", publishedStoryID.String())
+				basePreviewPrompt := setupContent.StoryPreviewImagePrompt
+				fullPreviewPromptWithStyles := basePreviewPrompt + storyStyle + characterVisualStyle
+				previewTask := sharedMessaging.CharacterImageTaskPayload{
+					TaskID:           uuid.New().String(),
+					CharacterID:      publishedStoryID,
+					Prompt:           fullPreviewPromptWithStyles,
+					NegativePrompt:   "",
+					ImageReference:   previewImageRef,
+					Ratio:            "3:2",
+					PublishedStoryID: publishedStoryID,
+				}
+				previewBatchPayload := sharedMessaging.CharacterImageTaskBatchPayload{BatchID: uuid.New().String(), Tasks: []sharedMessaging.CharacterImageTaskPayload{previewTask}}
+				if errPub := p.characterImageTaskBatchPub.PublishCharacterImageTaskBatch(ctx, previewBatchPayload); errPub != nil {
+					p.logger.Error("Failed to publish story preview image task", zap.Error(errPub), zap.String("preview_batch_id", previewBatchPayload.BatchID), zap.String("published_story_id", publishedStoryID.String()))
+				} else {
+					p.logger.Info("Story preview image task published successfully", zap.String("preview_batch_id", previewBatchPayload.BatchID), zap.String("published_story_id", publishedStoryID.String()))
+				}
+			}
+		} else {
+			p.logger.Info("No image generation needed.", zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()))
+		}
+
+		if errUnmarshalSetup == nil {
+			var simplifiedSetup map[string]interface{}
 			simplifiedChars := make([]map[string]string, 0, len(setupContent.Characters))
 			for _, char := range setupContent.Characters {
-				simplifiedChar := map[string]string{
-					"n": char.Name,
-					"d": char.Description,
-				}
+				simplifiedChar := map[string]string{"n": char.Name, "d": char.Description}
 				if char.Personality != "" {
 					simplifiedChar["p"] = char.Personality
 				}
 				simplifiedChars = append(simplifiedChars, simplifiedChar)
 			}
 			simplifiedSetup = map[string]interface{}{"chars": simplifiedChars}
-			// --- КОНЕЦ: Формирование УПРОЩЕННОГО stp ---
-		}
 
-		// --- НАЧАЛО: Формирование UserInput для FirstScene ---
-		combinedInputMap := make(map[string]interface{})
+			combinedInputMap := make(map[string]interface{})
+			minimalConfig := ToMinimalConfigForFirstScene(publishedStory.Config)
+			combinedInputMap["cfg"] = minimalConfig
+			combinedInputMap["stp"] = simplifiedSetup
+			combinedInputMap["sv"] = make(map[string]interface{})
+			combinedInputMap["gf"] = []string{}
+			combinedInputMap["uc"] = []sharedModels.UserChoiceInfo{}
+			combinedInputMap["pss"] = ""
+			combinedInputMap["pfd"] = ""
+			combinedInputMap["pvis"] = ""
 
-		// 1. Добавляем минимальный конфиг под ключом "cfg"
-		minimalConfig := ToMinimalConfigForFirstScene(publishedStory.Config)
-		combinedInputMap["cfg"] = minimalConfig
+			combinedInputBytes, errMarshal := json.Marshal(combinedInputMap)
+			if errMarshal != nil {
+				p.logger.Error("CRITICAL ERROR: Failed to marshal JSON for FirstScene task, cannot proceed.",
+					zap.String("task_id", taskID),
+					zap.String("published_story_id", publishedStoryID.String()),
+					zap.Error(errMarshal),
+				)
+				errDetails := fmt.Sprintf("Failed to marshal payload for first scene: %v", errMarshal)
+				if updateErr := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, sharedModels.StatusError, false, false, &errDetails); updateErr != nil {
+					p.logger.Error("CRITICAL ERROR: Failed to update status to Error after FirstScene marshal error", zap.Error(updateErr))
+					// <<< НАЧАЛО: Отправка WS обновления (Ошибка маршалинга FirstScene Payload) >>>
+					clientUpdateErr := ClientStoryUpdate{
+						ID:           publishedStoryID.String(),
+						UserID:       publishedStory.UserID.String(),
+						UpdateType:   UpdateTypeStory,
+						Status:       string(sharedModels.StatusError),
+						ErrorDetails: &errDetails,
+					}
+					wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer wsCancel()
+					if errWs := p.clientPub.PublishClientUpdate(wsCtx, clientUpdateErr); errWs != nil {
+						p.logger.Error("Error sending ClientStoryUpdate (FirstScene Marshal Error)", zap.String("task_id", taskID), zap.Error(errWs))
+					} else {
+						p.logger.Info("ClientStoryUpdate sent (FirstScene Marshal Error)", zap.String("task_id", taskID), zap.String("story_id", publishedStoryID.String()))
+					}
+					// <<< КОНЕЦ: Отправка WS обновления (Ошибка маршалинга FirstScene Payload) >>>
+					return fmt.Errorf("failed to marshal FirstScene payload for %s: %w", publishedStoryID, errMarshal)
+				}
+				combinedInputJSON := string(combinedInputBytes)
+				nextTaskPayload := sharedMessaging.GenerationTaskPayload{
+					TaskID:           uuid.New().String(),
+					UserID:           publishedStory.UserID.String(),
+					PromptType:       sharedMessaging.PromptTypeNovelFirstSceneCreator,
+					PublishedStoryID: publishedStoryID.String(),
+					UserInput:        combinedInputJSON,
+					StateHash:        sharedModels.InitialStateHash,
+				}
 
-		// 2. Добавляем упрощенный сетап под ключом "stp"
-		combinedInputMap["stp"] = simplifiedSetup
-
-		// 3. Добавляем пустые плейсхолдеры для состояния
-		combinedInputMap["sv"] = make(map[string]interface{})
-		combinedInputMap["gf"] = []string{}
-		combinedInputMap["uc"] = []sharedModels.UserChoiceInfo{}
-		combinedInputMap["pss"] = ""
-		combinedInputMap["pfd"] = ""
-		combinedInputMap["pvis"] = ""
-
-		// --- КОНЕЦ: Формирование UserInput для FirstScene ---
-
-		combinedInputBytes, errMarshal := json.Marshal(combinedInputMap)
-		if errMarshal != nil {
-			p.logger.Error("ERROR: Failed to marshal JSON for FirstScene task",
-				zap.String("task_id", taskID),
-				zap.String("published_story_id", publishedStoryID.String()),
-				zap.Error(errMarshal),
-			)
-			// Важно: Не возвращаем ошибку, чтобы не блокировать обработку других уведомлений,
-			// но и не отправляем задачу, так как payload некорректен.
-			// Статус истории останется FirstScenePending, потребует ручного вмешательства или Retry.
-			return nil
-		}
-		combinedInputJSON := string(combinedInputBytes)
-		nextTaskPayload := sharedMessaging.GenerationTaskPayload{
-			TaskID:           uuid.New().String(),
-			UserID:           publishedStory.UserID.String(),
-			PromptType:       sharedMessaging.PromptTypeNovelFirstSceneCreator,
-			PublishedStoryID: publishedStoryID.String(),
-			UserInput:        combinedInputJSON,
-			StateHash:        sharedModels.InitialStateHash,
-		}
-
-		if errPub := p.taskPub.PublishGenerationTask(ctx, nextTaskPayload); errPub != nil {
-			p.logger.Error("CRITICAL ERROR: Failed to send first scene generation task",
-				zap.String("task_id", taskID),
-				zap.String("published_story_id", publishedStoryID.String()),
-				zap.Error(errPub),
-			)
-			// Статус истории останется FirstScenePending
+				if errPub := p.taskPub.PublishGenerationTask(ctx, nextTaskPayload); errPub != nil {
+					p.logger.Error("CRITICAL ERROR: Failed to send first scene generation task",
+						zap.String("task_id", taskID),
+						zap.String("next_task_id", nextTaskPayload.TaskID),
+						zap.String("published_story_id", publishedStoryID.String()),
+						zap.Error(errPub),
+					)
+					errDetails := fmt.Sprintf("Failed to publish task for first scene: %v", errPub)
+					if updateErr := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, sharedModels.StatusError, false, false, &errDetails); updateErr != nil {
+						p.logger.Error("CRITICAL ERROR: Failed to update status to Error after FirstScene publish error", zap.Error(updateErr))
+					}
+					// <<< НАЧАЛО: Отправка WS обновления (Ошибка публикации FirstScene Task) >>>
+					clientUpdateErr := ClientStoryUpdate{
+						ID:           publishedStoryID.String(),
+						UserID:       publishedStory.UserID.String(),
+						UpdateType:   UpdateTypeStory,
+						Status:       string(sharedModels.StatusError),
+						ErrorDetails: &errDetails,
+					}
+					wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer wsCancel()
+					if errWs := p.clientPub.PublishClientUpdate(wsCtx, clientUpdateErr); errWs != nil {
+						p.logger.Error("Error sending ClientStoryUpdate (FirstScene Publish Error)", zap.String("task_id", taskID), zap.Error(errWs))
+					} else {
+						p.logger.Info("ClientStoryUpdate sent (FirstScene Publish Error)", zap.String("task_id", taskID), zap.String("story_id", publishedStoryID.String()))
+					}
+					// <<< КОНЕЦ: Отправка WS обновления (Ошибка публикации FirstScene Task) >>>
+					// Не возвращаем ошибку здесь, так как статус Error уже установлен
+				} else {
+					p.logger.Info("First scene generation task sent successfully",
+						zap.String("task_id", taskID),
+						zap.String("next_task_id", nextTaskPayload.TaskID),
+						zap.String("published_story_id", publishedStoryID.String()),
+					)
+				}
+			} else {
+				p.logger.Error("Setup content could not be unmarshaled, skipping first scene generation task.",
+					zap.String("task_id", taskID),
+					zap.String("published_story_id", publishedStoryID.String()),
+					zap.Error(errUnmarshalSetup),
+				)
+			}
 		} else {
-			p.logger.Info("First scene generation task sent successfully",
+			p.logger.Error("Setup content could not be unmarshaled, skipping first scene generation task.",
 				zap.String("task_id", taskID),
-				zap.String("next_task_id", nextTaskPayload.TaskID),
 				zap.String("published_story_id", publishedStoryID.String()),
+				zap.Error(errUnmarshalSetup),
 			)
 		}
 	} else {
@@ -370,14 +426,30 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 			zap.String("published_story_id", publishedStoryID.String()),
 			zap.String("error_details", notification.ErrorDetails),
 		)
-		if err := p.publishedRepo.UpdateStatusDetails(dbCtx, publishedStoryID, sharedModels.StatusError, nil, nil, nil, &notification.ErrorDetails); err != nil {
+		if err := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, sharedModels.StatusError, false, false, &notification.ErrorDetails); err != nil {
 			p.logger.Error("CRITICAL ERROR: Failed to update PublishedStory status to Error after Setup generation error",
 				zap.String("task_id", taskID),
 				zap.String("published_story_id", publishedStoryID.String()),
 				zap.Error(err),
 			)
-			return fmt.Errorf("error updating Error status for PublishedStory %s: %w", publishedStoryID, err)
+			// <<< НАЧАЛО: Отправка WS обновления (Ошибка генерации Setup от генератора) >>>
+			clientUpdateErr := ClientStoryUpdate{
+				ID:           publishedStoryID.String(),
+				UserID:       publishedStory.UserID.String(),
+				UpdateType:   UpdateTypeStory,
+				Status:       string(sharedModels.StatusError),
+				ErrorDetails: &notification.ErrorDetails,
+			}
+			wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer wsCancel()
+			if errWs := p.clientPub.PublishClientUpdate(wsCtx, clientUpdateErr); errWs != nil {
+				p.logger.Error("Error sending ClientStoryUpdate (Setup Generator Error)", zap.String("task_id", taskID), zap.Error(errWs))
+			} else {
+				p.logger.Info("ClientStoryUpdate sent (Setup Generator Error)", zap.String("task_id", taskID), zap.String("story_id", publishedStoryID.String()))
+			}
+			// <<< КОНЕЦ: Отправка WS обновления (Ошибка генерации Setup от генератора) >>>
 		}
+		return nil // Возвращаем nil, т.к. статус Error уже сохранен
 	}
 	return nil
 }

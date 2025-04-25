@@ -118,7 +118,7 @@
             "uid": "cej0q0dbhisxsd"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (increase(story_generator_ai_estimated_cost_usd_total{job=\"story-generator\"}[$__interval]))",
+          "expr": "sum by (model) (increase(story_generator_ai_estimated_cost_usd_total{job=\"story_generator_worker\"}[$__interval]))",
           "legendFormat": "{{model}} Cost",
           "range": true,
           "refId": "A"
@@ -190,7 +190,7 @@
             "uid": "cej0q0dbhisxsd"
           },
           "editorMode": "code",
-          "expr": "sum(increase(story_generator_ai_estimated_cost_usd_total{job=\"story-generator\"}[$__range]))",
+          "expr": "sum(increase(story_generator_ai_estimated_cost_usd_total{job=\"story_generator_worker\"}[$__range]))",
           "legendFormat": "Total Cost",
           "range": true,
           "refId": "A"
@@ -279,7 +279,7 @@
             "uid": "cej0q0dbhisxsd"
           },
           "editorMode": "code",
-          "expr": "sum by (model) (rate(story_generator_ai_estimated_cost_usd_total{job=\"story-generator\"}[5m])) * 3600",
+          "expr": "sum by (model) (rate(story_generator_ai_estimated_cost_usd_total{job=\"story_generator_worker\"}[5m])) * 3600",
           "legendFormat": "{{model}} - USD/hour",
           "range": true,
           "refId": "A"
@@ -356,7 +356,7 @@
             "uid": "cej0q0dbhisxsd"
           },
           "editorMode": "code",
-          "expr": "sum(increase(story_generator_ai_estimated_cost_usd_total{job=\"story-generator\"}[$__range])) by (model)",
+          "expr": "sum(increase(story_generator_ai_estimated_cost_usd_total{job=\"story_generator_worker\"}[$__range])) by (model)",
           "format": "table",
           "instant": true,
           "legendFormat": "{{model}}",
@@ -430,7 +430,7 @@
             "uid": "cej0q0dbhisxsd"
           },
           "editorMode": "code",
-          "expr": "sum(rate(story_generator_ai_estimated_cost_usd_total{job=\"story-generator\"}[1d])) / count(count by (user_id) (increase(story_generator_ai_estimated_cost_usd_total{job=\"story-generator\"}[1d]) > 0))",
+          "expr": "sum(rate(story_generator_ai_estimated_cost_usd_total{job=\"story_generator_worker\"}[1d])) / count(count by (user_id) (increase(story_generator_ai_estimated_cost_usd_total{job=\"story_generator_worker\"}[1d]) > 0))",
           "legendFormat": "Avg Cost per User / Day",
           "instant": true,
           "refId": "A"
@@ -462,7 +462,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
           "editorMode": "code",
-          "expr": "sum by (prompt_type) (rate(story_generator_task_estimated_cost_usd_total{job=\"story-generator\"}[5m])) * 3600",
+          "expr": "sum by (prompt_type) (rate(story_generator_task_estimated_cost_usd_total{job=\"story_generator_worker\"}[5m])) * 3600",
           "legendFormat": "{{prompt_type}} - USD/hour",
           "range": true,
           "refId": "A"
@@ -498,7 +498,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
           "editorMode": "code",
-          "expr": "sum(increase(story_generator_task_estimated_cost_usd_total{job=\"story-generator\"}[$__range])) by (prompt_type)",
+          "expr": "sum(increase(story_generator_task_estimated_cost_usd_total{job=\"story_generator_worker\"}[$__range])) by (prompt_type)",
           "format": "table",
           "instant": true,
           "legendFormat": "{{prompt_type}}",
@@ -530,7 +530,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
-          "expr": "sum by (prompt_type) (rate(story_generator_task_estimated_cost_usd_per_task_sum{job=\"story-generator\"}[$Interval])) / sum by (prompt_type) (rate(story_generator_task_estimated_cost_usd_per_task_count{job=\"story-generator\"}[$Interval]))",
+          "expr": "sum by (prompt_type) (rate(story_generator_task_estimated_cost_usd_per_task_sum{job=\"story_generator_worker\"}[$Interval])) / sum by (prompt_type) (rate(story_generator_task_estimated_cost_usd_per_task_count{job=\"story_generator_worker\"}[$Interval]))",
           "legendFormat": "Avg Cost - {{prompt_type}}",
           "refId": "A"
         }
@@ -559,7 +559,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
-          "expr": "histogram_quantile(0.95, sum by (le, prompt_type) (rate(story_generator_task_estimated_cost_usd_per_task_bucket{job=\"story-generator\"}[$Interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, prompt_type) (rate(story_generator_task_estimated_cost_usd_per_task_bucket{job=\"story_generator_worker\"}[$Interval])))",
           "legendFormat": "P95 Cost - {{prompt_type}}",
           "refId": "A"
         }

@@ -17,6 +17,9 @@ const (
 	PromptTypeNovelFirstSceneCreator PromptType = "novel_first_scene_creator" // Генерация первой сцены (DEPRECATED? Use NovelCreator)
 	PromptTypeNovelCreator           PromptType = "novel_creator"             // Генерация следующей сцены (или первой)
 	PromptTypeNovelGameOverCreator   PromptType = "novel_game_over_creator"   // Генерация финальной сцены (конец игры)
+	// <<< ДОБАВЛЕНО: Типы для генерации изображений >>>
+	PromptTypeCharacterImage    PromptType = "character_image"     // Генерация изображения персонажа
+	PromptTypeStoryPreviewImage PromptType = "story_preview_image" // Генерация превью-изображения истории
 	// Добавить другие типы по необходимости
 )
 
@@ -61,6 +64,7 @@ type GameOverTaskPayload struct {
 // CharacterImageTaskPayload defines the structure for a single image generation task.
 type CharacterImageTaskPayload struct {
 	TaskID           string    `json:"task_id"`            // Unique ID for this specific task
+	UserID           string    `json:"user_id"`            // <<< ДОБАВЛЕНО: User ID as string
 	PublishedStoryID uuid.UUID `json:"published_story_id"` // Story context
 	CharacterID      uuid.UUID `json:"character_id"`       // Character context (optional, can be zero UUID)
 	CharacterName    string    `json:"character_name"`     // Character name from setup
@@ -81,11 +85,12 @@ type CharacterImageTaskBatchPayload struct {
 
 // CharacterImageResultPayload defines the result of an image generation task.
 type CharacterImageResultPayload struct {
-	TaskID         string  `json:"task_id"`         // Matches the ID from CharacterImageTaskPayload
-	ImageReference string  `json:"image_reference"` // Matches the reference from the task
-	Success        bool    `json:"success"`
-	ErrorMessage   *string `json:"error,omitempty"`     // Error message if success is false
-	ImageURL       *string `json:"image_url,omitempty"` // URL to the generated image (e.g., S3/MinIO URL) if success is true
+	TaskID           string    `json:"task_id"`            // Matches the ID from CharacterImageTaskPayload
+	PublishedStoryID uuid.UUID `json:"published_story_id"` // <<< ДОБАВЛЕНО: ID истории, к которой относится изображение
+	ImageReference   string    `json:"image_reference"`    // Matches the reference from the task
+	Success          bool      `json:"success"`
+	ErrorMessage     *string   `json:"error,omitempty"`     // Error message if success is false
+	ImageURL         *string   `json:"image_url,omitempty"` // URL to the generated image (e.g., S3/MinIO URL) if success is true
 }
 
 // NotificationStatus defines the status of a notification.
@@ -96,18 +101,25 @@ const (
 	NotificationStatusError   NotificationStatus = "error"
 )
 
-// NotificationPayload - structure for user notifications.
+// NotificationPayload is the structure for notifications sent FROM generation services back TO gameplay-service.
 type NotificationPayload struct {
-	TaskID           string             `json:"task_id"`                      // ID of the task that completed
-	UserID           string             `json:"user_id"`                      // User to notify
-	PromptType       PromptType         `json:"prompt_type"`                  // Type of task performed
-	Status           NotificationStatus `json:"status"`                       // success/error
-	GeneratedText    string             `json:"generated_text,omitempty"`     // Generated text (on success)
-	ErrorDetails     string             `json:"error_details,omitempty"`      // Error details (on error)
-	StoryConfigID    string             `json:"story_config_id,omitempty"`    // Optional: ID of the related draft
-	PublishedStoryID string             `json:"published_story_id,omitempty"` // Optional: ID of the related published story
-	StateHash        string             `json:"state_hash,omitempty"`         // Optional: State hash for scene generation
-	GameStateID      string             `json:"gameStateId,omitempty"`        // Optional: Game state ID for updates
+	TaskID           string             `json:"task_id"`                  // ID of the original task
+	Status           NotificationStatus `json:"status"`                   // success or error
+	PromptType       PromptType         `json:"prompt_type"`              // Type of prompt that was processed
+	GeneratedText    string             `json:"generated_text,omitempty"` // Result text (for text generation)
+	ErrorDetails     string             `json:"error_details,omitempty"`  // Details if status is error
+	UserID           string             `json:"user_id,omitempty"`        // Added UserID
+	StoryConfigID    string             `json:"story_config_id,omitempty"`
+	PublishedStoryID string             `json:"published_story_id,omitempty"`
+	StateHash        string             `json:"state_hash,omitempty"`
+	GameStateID      string             `json:"game_state_id,omitempty"`
+
+	// <<< ДОБАВЛЕНО: Поля для результатов генерации изображений >>>
+	ImageReference string  `json:"image_reference,omitempty"`
+	ImageURL       *string `json:"image_url,omitempty"` // Pointer for optional URL
+
+	// TODO: Поле Data может понадобиться для доп. информации (например, метаданные или URL картинки?)
+	Data map[string]interface{} `json:"data,omitempty"` // Flexible field for additional data
 }
 
 // Publisher - интерфейс для отправки сообщений в очередь.
@@ -124,7 +136,7 @@ type Publisher interface {
 // IsValidPromptType проверяет, является ли строка допустимым PromptType.
 func IsValidPromptType(pt PromptType) bool {
 	switch pt {
-	case PromptTypeNarrator, PromptTypeNovelSetup, PromptTypeNovelFirstSceneCreator, PromptTypeNovelCreator, PromptTypeNovelGameOverCreator:
+	case PromptTypeNarrator, PromptTypeNovelSetup, PromptTypeNovelFirstSceneCreator, PromptTypeNovelCreator, PromptTypeNovelGameOverCreator, PromptTypeCharacterImage, PromptTypeStoryPreviewImage:
 		return true
 	default:
 		return false

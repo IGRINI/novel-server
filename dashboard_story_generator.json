@@ -33,7 +33,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
           "editorMode": "code",
-          "expr": "sum(rate(story_generator_ai_requests_total{job=\"story-generator\"}[$Interval])) by (status, model)",
+          "expr": "sum(rate(story_generator_ai_requests_total{job=\"story_generator_worker\"}[$Interval])) by (status, model)",
           "legendFormat": "{{status}} - {{model}}",
           "range": true,
           "refId": "A"
@@ -64,7 +64,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
           "editorMode": "code",
-          "expr": "sum(rate(story_generator_ai_requests_total{job=\"story-generator\", status=\"error\"}[$Interval])) / sum(rate(story_generator_ai_requests_total{job=\"story-generator\"}[$Interval])) * 100",
+          "expr": "sum(rate(story_generator_ai_requests_total{job=\"story_generator_worker\", status=\"error\"}[$Interval])) / sum(rate(story_generator_ai_requests_total{job=\"story_generator_worker\"}[$Interval])) * 100",
           "legendFormat": "Error Rate %",
           "range": true,
           "refId": "A"
@@ -95,7 +95,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(story_generator_ai_request_duration_seconds_bucket{job=\"story-generator\"}[$Interval])) by (le, model))",
+          "expr": "histogram_quantile(0.95, sum(rate(story_generator_ai_request_duration_seconds_bucket{job=\"story_generator_worker\"}[$Interval])) by (le, model))",
           "legendFormat": "P95 Latency - {{model}}",
           "range": true,
           "refId": "A"
@@ -126,7 +126,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
           "editorMode": "code",
-          "expr": "sum(rate(story_generator_ai_prompt_tokens_sum{job=\"story-generator\"}[$Interval])) by (model) / sum(rate(story_generator_ai_prompt_tokens_count{job=\"story-generator\"}[$Interval])) by (model)",
+          "expr": "sum(rate(story_generator_ai_prompt_tokens_sum{job=\"story_generator_worker\"}[$Interval])) by (model) / sum(rate(story_generator_ai_prompt_tokens_count{job=\"story_generator_worker\"}[$Interval])) by (model)",
           "legendFormat": "Avg Prompt Tokens - {{model}}",
           "range": true,
           "refId": "A"
@@ -134,7 +134,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
           "editorMode": "code",
-          "expr": "sum(rate(story_generator_ai_completion_tokens_sum{job=\"story-generator\"}[$Interval])) by (model) / sum(rate(story_generator_ai_completion_tokens_count{job=\"story-generator\"}[$Interval])) by (model)",
+          "expr": "sum(rate(story_generator_ai_completion_tokens_sum{job=\"story_generator_worker\"}[$Interval])) by (model) / sum(rate(story_generator_ai_completion_tokens_count{job=\"story_generator_worker\"}[$Interval])) by (model)",
           "legendFormat": "Avg Completion Tokens - {{model}}",
           "range": true,
           "refId": "B"
@@ -142,7 +142,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
           "editorMode": "code",
-          "expr": "sum(rate(story_generator_ai_total_tokens_sum{job=\"story-generator\"}[$Interval])) by (model) / sum(rate(story_generator_ai_total_tokens_count{job=\"story-generator\"}[$Interval])) by (model)",
+          "expr": "sum(rate(story_generator_ai_total_tokens_sum{job=\"story_generator_worker\"}[$Interval])) by (model) / sum(rate(story_generator_ai_total_tokens_count{job=\"story_generator_worker\"}[$Interval])) by (model)",
           "legendFormat": "Avg Total Tokens - {{model}}",
           "range": true,
           "refId": "C"
@@ -172,13 +172,13 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
-          "expr": "sum(rate(story_generator_tasks_received_total{job=\"story-generator\"}[$Interval]))",
+          "expr": "sum(rate(story_generator_tasks_received_total{job=\"story_generator_worker\"}[$Interval]))",
           "legendFormat": "Received",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
-          "expr": "sum(rate(story_generator_tasks_succeeded_total{job=\"story-generator\"}[$Interval]))",
+          "expr": "sum(rate(story_generator_tasks_succeeded_total{job=\"story_generator_worker\"}[$Interval]))",
           "legendFormat": "Succeeded",
           "refId": "B"
         }
@@ -207,7 +207,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
-          "expr": "sum by(error_type) (rate(story_generator_tasks_failed_total{job=\"story-generator\"}[$Interval]))",
+          "expr": "sum by(error_type) (rate(story_generator_tasks_failed_total{job=\"story_generator_worker\"}[$Interval]))",
           "legendFormat": "Failed: {{error_type}}",
           "refId": "A"
         }
@@ -236,7 +236,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
-          "expr": "histogram_quantile(0.99, sum(rate(story_generator_task_processing_duration_seconds_bucket{job=\"story-generator\"}[$Interval])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(story_generator_task_processing_duration_seconds_bucket{job=\"story_generator_worker\"}[$Interval])) by (le))",
           "legendFormat": "P99 Processing Duration",
           "refId": "A"
         }
@@ -261,7 +261,7 @@
       "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } },
       "targets": [
         {
-          "expr": "sum(rate(process_cpu_seconds_total{job=\"story-generator\"}[$Interval])) by (job) * 100",
+          "expr": "sum(rate(process_cpu_seconds_total{job=\"story_generator_worker\"}[$Interval])) by (job) * 100",
           "legendFormat": "CPU Usage",
           "refId": "A"
         }
@@ -277,7 +277,7 @@
       "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } },
       "targets": [
         {
-          "expr": "sum(process_resident_memory_bytes{job=\"story-generator\"}) by (job)",
+          "expr": "sum(process_resident_memory_bytes{job=\"story_generator_worker\"}) by (job)",
           "legendFormat": "Memory Usage",
           "refId": "A"
         }
@@ -293,7 +293,7 @@
       "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true } },
       "targets": [
         {
-          "expr": "go_goroutines{job=\"story-generator\"}",
+          "expr": "go_goroutines{job=\"story_generator_worker\"}",
           "legendFormat": "Goroutines",
           "refId": "A"
         }
@@ -322,7 +322,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
-          "expr": "sum by (prompt_type, token_type) (rate(story_generator_task_tokens_total{job=\"story-generator\"}[$Interval]))",
+          "expr": "sum by (prompt_type, token_type) (rate(story_generator_task_tokens_total{job=\"story_generator_worker\"}[$Interval]))",
           "legendFormat": "{{prompt_type}} - {{token_type}}",
           "refId": "A"
         }
@@ -351,13 +351,13 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
-          "expr": "sum by (prompt_type) (rate(story_generator_task_tokens_per_task_sum{job=\"story-generator\", token_type=\"prompt\"}[$Interval])) / sum by (prompt_type) (rate(story_generator_task_tokens_per_task_count{job=\"story-generator\", token_type=\"prompt\"}[$Interval]))",
+          "expr": "sum by (prompt_type) (rate(story_generator_task_tokens_per_task_sum{job=\"story_generator_worker\", token_type=\"prompt\"}[$Interval])) / sum by (prompt_type) (rate(story_generator_task_tokens_per_task_count{job=\"story_generator_worker\", token_type=\"prompt\"}[$Interval]))",
           "legendFormat": "Avg Prompt Tokens - {{prompt_type}}",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
-          "expr": "sum by (prompt_type) (rate(story_generator_task_tokens_per_task_sum{job=\"story-generator\", token_type=\"completion\"}[$Interval])) / sum by (prompt_type) (rate(story_generator_task_tokens_per_task_count{job=\"story-generator\", token_type=\"completion\"}[$Interval]))",
+          "expr": "sum by (prompt_type) (rate(story_generator_task_tokens_per_task_sum{job=\"story_generator_worker\", token_type=\"completion\"}[$Interval])) / sum by (prompt_type) (rate(story_generator_task_tokens_per_task_count{job=\"story_generator_worker\", token_type=\"completion\"}[$Interval]))",
           "legendFormat": "Avg Completion Tokens - {{prompt_type}}",
           "refId": "B"
         }
@@ -386,7 +386,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "cej0q0dbhisxsd" },
-          "expr": "histogram_quantile(0.95, sum by (le, prompt_type, token_type) (rate(story_generator_task_tokens_per_task_bucket{job=\"story-generator\"}[$Interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, prompt_type, token_type) (rate(story_generator_task_tokens_per_task_bucket{job=\"story_generator_worker\"}[$Interval])))",
           "legendFormat": "P95 Tokens - {{prompt_type}} - {{token_type}}",
           "refId": "A"
         }

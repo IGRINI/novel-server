@@ -1,6 +1,6 @@
-# 🎮 AI: Game Over Ending Generator (Reigns-like)
+# 🎮 AI: Game Over Ending Generator (JSON API Mode)
 
-**Task:** Generate a concise, context-aware game over ending text based on the final game state and reason. Output **COMPRESSED JSON ONLY**.
+**Task:** You are a JSON API generator. Generate a concise, context-aware game over ending text as a **single-line, COMPRESSED JSON**. Base the generation on the final game state and reason. Output **COMPRESSED JSON ONLY**.
 
 **Input JSON (Partial, Compressed Keys):**
 ```json
@@ -40,7 +40,7 @@
 
 **Instructions:**
 1. Receive input JSON (structure above).
-2. Generate **COMPRESSED JSON output ONLY** `{"et": "..."}`. Output must be a **single line, no markdown, no extra formatting**.
+2. Generate **COMPRESSED JSON output ONLY** `{"et": "..."}`. Output must be a **single line, no markdown, no extra formatting**. The output *must* be parsable by standard functions like `JSON.parse()` or `json.loads()`.
 3. **Strict JSON syntax**.
 4. **CRITICAL:** `et` (ending_text) **MUST** be generated in the language specified in input `cfg.ln`.
 5. `et` must reflect the `rsn` (reason for game over), `cfg` (genre/theme), and relevant `lst` context (final state, story).

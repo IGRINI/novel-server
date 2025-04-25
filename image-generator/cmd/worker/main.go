@@ -41,6 +41,14 @@ func main() {
 	}
 	defer appLogger.Sync()
 	appLogger.Info("Logger initialized", zap.String("level", cfg.Logger.Level))
+
+	// <<< ДОБАВЛЕНО: Лог для проверки имени очереди задач >>>
+	appLogger.Info("Loaded RabbitMQ Task Queue Config",
+		zap.String("task_queue_name_from_config", cfg.RabbitMQ.TaskQueue.Name),
+		zap.Bool("task_queue_durable", cfg.RabbitMQ.TaskQueue.Durable),
+	)
+	// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
+
 	appLogger.Info("Starting Image Generator Worker...", zap.String("env", cfg.AppEnv))
 
 	// --- 3. Инициализация сервиса генерации изображений ---
@@ -265,23 +273,27 @@ func startConsumer(ctx context.Context, logger *zap.Logger, cfg config.RabbitMQC
 		return
 	}
 
-	// Используем переданный канал `ch`
+	// --- Вызов Consume ---
+	// Используем q.Name вместо cfg.TaskQueue.Name, так как q - это результат QueueDeclare
 	msgs, err := ch.Consume(
-		q.Name,           // queue
+		q.Name,           // queue name - ИСПОЛЬЗУЕМ ИМЯ ИЗ РЕЗУЛЬТАТА DECLARE
 		cfg.ConsumerName, // consumer tag
-		false,            // auto-ack (false, мы подтверждаем вручную)
+		false,            // auto-ack (false - подтверждаем вручную)
 		cfg.TaskQueue.Exclusive,
-		false, // no-local (не используется с очередями)
+		false, // no-local (обычно false для RabbitMQ)
 		cfg.TaskQueue.NoWait,
-		nil, // args
+		nil, // arguments
 	)
 	if err != nil {
-		logger.Error("Failed to register consumer", zap.String("queue", q.Name), zap.Error(err))
-		return
+		logger.Error("Failed to register a consumer", zap.String("queue", q.Name), zap.Error(err))
+		// TODO: Нужно ли здесь как-то сигнализировать об ошибке и останавливать воркер?
+		// Возможно, стоит вернуть ошибку или использовать канал для сигнализации.
+		return // Выходим из горутины, если не удалось зарегистрировать консьюмера
 	}
 
-	logger.Info("Consumer started, waiting for messages on shared channel...")
+	logger.Info("Consumer started, waiting for messages on shared channel...", zap.String("queue", q.Name)) // <-- Используем q.Name для лога
 
+	// --- Цикл обработки сообщений ---
 	for {
 		select {
 		case msg, ok := <-msgs:

@@ -367,8 +367,9 @@ func (r *pgStoryConfigRepository) FindGeneratingConfigs(ctx context.Context) ([]
 }
 
 // <<< ДОБАВЛЕНО: Реализация FindGeneratingOlderThan >>>
+// <<< ИЗМЕНЕНО: Явно перечисляем поля, как в FindGeneratingConfigs >>>
 const findGeneratingOlderThanQuery = `
-SELECT id, user_id, title, description, user_input, config, status, created_at, updated_at, language
+SELECT id, user_id, title, description, user_input, config, status, created_at, updated_at
 FROM story_configs
 WHERE status = 'generating' AND created_at < $1
 ORDER BY created_at ASC`
@@ -391,25 +392,44 @@ func (r *pgStoryConfigRepository) FindGeneratingOlderThan(ctx context.Context, t
 	defer rows.Close()
 
 	configs := make([]sharedModels.StoryConfig, 0)
-	for rows.Next() { // <<< Ручное сканирование >>>
+	// <<< ИЗМЕНЕНО: Логика сканирования и десериализации JSON, как в FindGeneratingConfigs >>>
+	for rows.Next() {
 		var config sharedModels.StoryConfig
+		var userInputJSON []byte
+		var configJSON []byte // Для необработанного JSON из БД
+
 		if err := rows.Scan(
 			&config.ID,
 			&config.UserID,
 			&config.Title,
 			&config.Description,
-			&config.UserInput,
-			&config.Config,
+			&userInputJSON, // Сканируем JSON как байты
+			&configJSON,    // Сканируем JSON как байты
 			&config.Status,
 			&config.CreatedAt,
 			&config.UpdatedAt,
-			&config.Language,
+			// &config.Language, // Убрали language, т.к. его нет в запросе
 		); err != nil {
 			r.logger.Error("Failed to scan story config row in FindGeneratingOlderThan", append(logFields, zap.Error(err))...)
-			// Не прерываем весь процесс, просто пропускаем эту строку?
-			// Или возвращаем ошибку? Пока вернем ошибку.
 			return nil, fmt.Errorf("ошибка сканирования строки черновика: %w", err)
 		}
+
+		// Десериализуем user_input
+		if err := json.Unmarshal(userInputJSON, &config.UserInput); err != nil {
+			r.logger.Warn("Failed to unmarshal user_input in FindGeneratingOlderThan", zap.String("storyConfigID", config.ID.String()), zap.Error(err))
+			config.UserInput = nil // Оставляем nil при ошибке
+		}
+
+		// Десериализуем config (если не NULL)
+		if len(configJSON) > 0 {
+			if err := json.Unmarshal(configJSON, &config.Config); err != nil {
+				r.logger.Warn("Failed to unmarshal config in FindGeneratingOlderThan", zap.String("storyConfigID", config.ID.String()), zap.Error(err))
+				config.Config = nil // Оставляем nil при ошибке
+			}
+		} else {
+			config.Config = nil // Устанавливаем в nil, если в БД был NULL
+		}
+
 		configs = append(configs, config)
 	} // <<< Конец ручного сканирования >>>
 
@@ -531,5 +551,83 @@ func (r *pgStoryConfigRepository) UpdateStatusAndError(ctx context.Context, id u
 	}
 
 	r.logger.Info("Story config status and error details updated successfully", logFields...)
+	return nil
+}
+
+// <<< КОНЕЦ НОВОГО МЕТОДА >>>
+
+// FindAndMarkStaleGeneratingDraftsAsError находит черновики со статусом 'generating',
+// чье время последнего обновления старше указанного порога, или все такие черновики, если порог 0,
+// и устанавливает им статус 'Error'.
+// Возвращает количество обновленных записей и ошибку.
+func (r *pgStoryConfigRepository) FindAndMarkStaleGeneratingDraftsAsError(ctx context.Context, staleThreshold time.Duration) (int64, error) {
+	queryBase := `
+		UPDATE story_configs
+		SET status = $1, error_details = $2, updated_at = NOW()
+		WHERE status = $3
+	`
+	errorDetails := "Task timed out or got stuck during generation."
+	args := []interface{}{
+		models.StatusError,      // $1
+		errorDetails,            // $2
+		models.StatusGenerating, // $3
+	}
+	query := queryBase
+	staleTime := time.Now().Add(-staleThreshold)
+
+	logFields := []zap.Field{
+		zap.String("status_to_set", string(models.StatusError)),
+		zap.String("required_status", string(models.StatusGenerating)),
+		zap.Duration("stale_threshold_duration", staleThreshold),
+	}
+
+	// Добавляем условие времени только если staleThreshold > 0
+	if staleThreshold > 0 {
+		query += " AND updated_at < $4" // $4 будет staleTime
+		args = append(args, staleTime)
+		logFields = append(logFields, zap.Time("stale_time_threshold", staleTime))
+	} else {
+		r.logger.Info("Stale threshold is zero, checking all generating drafts regardless of time.", logFields...)
+	}
+
+	r.logger.Debug("Executing FindAndMarkStaleGeneratingDraftsAsError", logFields...)
+
+	cmdTag, err := r.db.Exec(ctx, query, args...) // Передаем собранные аргументы
+	if err != nil {
+		r.logger.Error("Error executing FindAndMarkStaleGeneratingDraftsAsError", zap.Error(err))
+		return 0, fmt.Errorf("ошибка при обновлении статуса зависших черновиков: %w", err)
+	}
+
+	updatedCount := cmdTag.RowsAffected()
+	r.logger.Info("FindAndMarkStaleGeneratingDraftsAsError completed", zap.Int64("updated_count", updatedCount))
+
+	return updatedCount, nil
+}
+
+// UpdateStatus обновляет статус конфигурации истории
+func (r *pgStoryConfigRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status models.StoryStatus) error {
+	query := `
+        UPDATE story_configs SET
+            status = $1, updated_at = $2
+        WHERE id = $3
+    `
+	logFields := []zap.Field{
+		zap.String("storyConfigID", id.String()),
+		zap.String("newStatus", string(status)),
+	}
+	r.logger.Debug("Updating story config status", logFields...)
+
+	commandTag, err := r.db.Exec(ctx, query, status, time.Now().UTC(), id)
+	if err != nil {
+		r.logger.Error("Failed to update story config status", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления статуса story config %s: %w", id, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("Story config not found for status update", logFields...)
+		return models.ErrNotFound
+	}
+
+	r.logger.Info("Story config status updated successfully", logFields...)
 	return nil
 }

@@ -108,4 +108,12 @@ type PublishedStoryRepository interface {
 	// staleThreshold: длительность, после которой история считается зависшей (например, 1 час).
 	// Возвращает количество обновленных записей и ошибку.
 	FindAndMarkStaleGeneratingAsError(ctx context.Context, staleThreshold time.Duration) (int64, error)
+
+	// UpdateStatusFlagsAndSetup обновляет статус, Setup и флаги ожидания для истории.
+	// Используется после успешной генерации Setup.
+	UpdateStatusFlagsAndSetup(ctx context.Context, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, isFirstScenePending bool, areImagesPending bool) error
+
+	// UpdateStatusFlagsAndDetails обновляет статус, флаги ожидания и детали ошибки.
+	// Используется при установке статуса Error или потенциально других переходах.
+	UpdateStatusFlagsAndDetails(ctx context.Context, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, errorDetails *string) error
 }

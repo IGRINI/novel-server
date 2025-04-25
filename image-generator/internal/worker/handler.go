@@ -118,7 +118,7 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 		log.Info("Received character image generation task batch")
 
 		var wg sync.WaitGroup
-		resultsChan := make(chan messaging.CharacterImageResultPayload, len(batchPayload.Tasks))
+		resultsChan := make(chan messaging.NotificationPayload, len(batchPayload.Tasks))
 
 		for _, task := range batchPayload.Tasks {
 			wg.Add(1)
@@ -138,11 +138,12 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 				generationResult := h.imageService.GenerateAndStoreImage(context.Background(), t)
 				taskDuration.Observe(time.Since(taskStartTime).Seconds()) // Наблюдаем длительность
 
-				// Создаем result payload БЕЗ UserID и CharacterID, так как их нет в структуре результата
+				// Создаем result payload
 				resultPayload := messaging.CharacterImageResultPayload{
-					TaskID:         t.TaskID,
-					ImageReference: t.ImageReference,
-					Success:        false, // Default to false, set to true on success
+					TaskID:           t.TaskID,
+					PublishedStoryID: t.PublishedStoryID,
+					ImageReference:   t.ImageReference,
+					Success:          false, // Default to false, set to true on success
 				}
 
 				if generationResult.Error != nil {
@@ -165,7 +166,26 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 					// Инкрементируем счетчик успешных задач
 					tasksProcessed.WithLabelValues("success").Inc()
 				}
-				resultsChan <- resultPayload
+
+				// Создаем NotificationPayload
+				notificationPayload := messaging.NotificationPayload{
+					TaskID:           t.TaskID,
+					PublishedStoryID: t.PublishedStoryID.String(),
+					UserID:           t.UserID,
+					PromptType:       determinePromptTypeFromResult(resultPayload), // Определяем тип
+					ImageReference:   resultPayload.ImageReference,                 // <<< ДОБАВЛЕНО
+				}
+				if resultPayload.Success {
+					notificationPayload.Status = messaging.NotificationStatusSuccess
+					notificationPayload.ImageURL = resultPayload.ImageURL // <<< ДОБАВЛЕНО (только при успехе)
+				} else {
+					notificationPayload.Status = messaging.NotificationStatusError
+					if resultPayload.ErrorMessage != nil {
+						notificationPayload.ErrorDetails = *resultPayload.ErrorMessage
+					}
+				}
+
+				resultsChan <- notificationPayload // Отправляем NotificationPayload в канал
 			}(task)
 		}
 
@@ -176,18 +196,16 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 		}()
 
 		var publishErrorsEncountered bool
-		for result := range resultsChan {
-			// Убираем CharacterID из лога, так как его нет в result
-			resultLog := log.With(zap.String("task_id", result.TaskID), zap.String("image_reference", result.ImageReference))
-			// Используем ErrorMessage и ImageURL (с безопасным разыменованием для лога)
-			if result.ErrorMessage != nil {
-				resultLog.Warn("Publishing error result for task from batch", zap.String("error", *result.ErrorMessage))
+		for notificationResult := range resultsChan {
+			resultLog := log.With(zap.String("task_id", notificationResult.TaskID), zap.String("prompt_type", string(notificationResult.PromptType)))
+			if notificationResult.Status == messaging.NotificationStatusError {
+				resultLog.Warn("Publishing error notification for task from batch", zap.String("error", notificationResult.ErrorDetails))
 			} else {
-				resultLog.Info("Publishing success result for task from batch", zap.String("image_url", safeDerefString(result.ImageURL)))
+				resultLog.Info("Publishing success notification for task from batch")
 			}
 
-			if pubErr := h.resultPublisher.Publish(ctx, result, msg.CorrelationId); pubErr != nil {
-				resultLog.Error("Failed to publish result for task from batch", zap.Error(pubErr))
+			if pubErr := h.resultPublisher.Publish(ctx, notificationResult, msg.CorrelationId); pubErr != nil {
+				resultLog.Error("Failed to publish notification result for task from batch", zap.Error(pubErr))
 				publishErrorsEncountered = true
 				// Инкрементируем счетчик ошибок публикации
 				publishResultErrors.Inc()
@@ -220,9 +238,10 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 	// Обработка как одиночной задачи
 	log := h.logger.With(zap.String("task_id", taskPayload.TaskID), zap.String("correlation_id", msg.CorrelationId))
 	log.Info("Received single character image generation task")
-	// Убираем UserID, используем .String() для CharacterID
+	// Используем .String() для CharacterID и PublishedStoryID
 	log = log.With(
 		zap.String("character_id", taskPayload.CharacterID.String()),
+		zap.String("published_story_id", taskPayload.PublishedStoryID.String()),
 		zap.String("image_reference", taskPayload.ImageReference),
 	)
 
@@ -232,11 +251,12 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 	generationResult := h.imageService.GenerateAndStoreImage(context.Background(), taskPayload)
 	taskDuration.Observe(time.Since(taskStartTime).Seconds()) // Наблюдаем длительность
 
-	// Создаем result payload БЕЗ UserID и CharacterID
+	// Создаем result payload
 	resultPayload := messaging.CharacterImageResultPayload{
-		TaskID:         taskPayload.TaskID,
-		ImageReference: taskPayload.ImageReference,
-		Success:        false, // Default to false
+		TaskID:           taskPayload.TaskID,
+		PublishedStoryID: taskPayload.PublishedStoryID,
+		ImageReference:   taskPayload.ImageReference,
+		Success:          false, // Default to false
 	}
 
 	if generationResult.Error != nil {
@@ -250,36 +270,70 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 		saveErrors.Inc()    // Пример
 		tasksProcessed.WithLabelValues("error_generation").Inc()
 
-		if pubErr := h.resultPublisher.Publish(ctx, resultPayload, msg.CorrelationId); pubErr != nil {
-			log.Error("Failed to publish error result", zap.Error(pubErr), zap.Any("payload", resultPayload))
-			// Инкрементируем счетчик ошибок публикации
+		// Создаем NotificationPayload
+		notificationPayload := messaging.NotificationPayload{
+			TaskID:           taskPayload.TaskID,
+			PublishedStoryID: taskPayload.PublishedStoryID.String(),
+			UserID:           taskPayload.UserID,
+			PromptType:       determinePromptTypeFromResult(resultPayload), // Определяем тип
+			ImageReference:   resultPayload.ImageReference,                 // <<< ДОБАВЛЕНО
+		}
+		notificationPayload.Status = messaging.NotificationStatusError
+		notificationPayload.ErrorDetails = *resultPayload.ErrorMessage
+
+		// Публикуем результат NotificationPayload
+		if pubErr := h.resultPublisher.Publish(ctx, notificationPayload, msg.CorrelationId); pubErr != nil {
+			log.Error("Failed to publish notification result for single task", zap.Error(pubErr))
+			// Инкрементируем метрики
 			publishResultErrors.Inc()
 			tasksProcessed.WithLabelValues("error_publish").Inc()
-			return false // Nack - не смогли опубликовать ошибку
+			return false // Nack - ошибка публикации
 		}
-		log.Warn("Published error result for image generation task")
-		// Nack: задача не выполнена, но ошибка опубликована.
-		// Повторная обработка не поможет.
-		return false // Nack the original message
+
+		log.Warn("Successfully processed and published notification for single task")
+		return true // Ack
 	} else {
 		resultPayload.Success = true
-		// Передаем указатель на URL изображения
 		if generationResult.ImageURL != "" {
 			resultPayload.ImageURL = &generationResult.ImageURL
 		}
-		log.Info("Image generated and stored successfully", zap.String("image_url", safeDerefString(resultPayload.ImageURL)))
-		// Инкрементируем счетчик успешных задач
+		// Инкрементируем метрику успеха
 		tasksProcessed.WithLabelValues("success").Inc()
 
-		if pubErr := h.resultPublisher.Publish(ctx, resultPayload, msg.CorrelationId); pubErr != nil {
-			log.Error("Failed to publish success result", zap.Error(pubErr), zap.Any("payload", resultPayload))
-			// Инкрементируем счетчик ошибок публикации
+		// Создаем NotificationPayload
+		notificationPayload := messaging.NotificationPayload{
+			TaskID:           taskPayload.TaskID,
+			PublishedStoryID: taskPayload.PublishedStoryID.String(),
+			UserID:           taskPayload.UserID,
+			PromptType:       determinePromptTypeFromResult(resultPayload), // Определяем тип
+			ImageReference:   resultPayload.ImageReference,                 // <<< ДОБАВЛЕНО
+		}
+		notificationPayload.Status = messaging.NotificationStatusSuccess
+		notificationPayload.ImageURL = resultPayload.ImageURL // <<< ДОБАВЛЕНО (только при успехе)
+
+		// Публикуем результат NotificationPayload
+		if pubErr := h.resultPublisher.Publish(ctx, notificationPayload, msg.CorrelationId); pubErr != nil {
+			log.Error("Failed to publish notification result for single task", zap.Error(pubErr))
+			// Инкрементируем метрики
 			publishResultErrors.Inc()
 			tasksProcessed.WithLabelValues("error_publish").Inc()
-			return false // Nack - задача выполнена, но результат не опубликован
+			return false // Nack - ошибка публикации
 		}
-		log.Info("Published success result for image generation task")
-		// Ack: задача выполнена и результат опубликован.
-		return true // Ack the original message
+
+		log.Info("Successfully processed and published notification for single task")
+		return true // Ack
 	}
+}
+
+// determinePromptTypeFromResult определяет PromptType на основе ImageReference.
+func determinePromptTypeFromResult(result messaging.CharacterImageResultPayload) messaging.PromptType {
+	// Простое правило: если reference начинается с "ch_", то это персонаж,
+	// если с "history_preview_", то это превью. Иначе - неизвестно.
+	if len(result.ImageReference) > 3 && result.ImageReference[:3] == "ch_" {
+		return messaging.PromptTypeCharacterImage
+	} else if len(result.ImageReference) > 16 && result.ImageReference[:16] == "history_preview_" {
+		return messaging.PromptTypeStoryPreviewImage
+	}
+	// По умолчанию или если не распознано
+	return "unknown_image_type" // Возвращаем это, чтобы увидеть проблему в логах gameplay
 }

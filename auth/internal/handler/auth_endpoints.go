@@ -65,7 +65,11 @@ func (h *AuthHandler) register(c *gin.Context) {
 
 	registrationsTotal.Inc()
 
-	c.JSON(http.StatusCreated, gin.H{"message": "user registered successfully", "user_id": user.ID.String(), "display_name": user.DisplayName, "email": user.Email})
+	c.JSON(http.StatusCreated, gin.H{
+		"id":       user.ID.String(),
+		"username": user.Username,
+		"email":    user.Email,
+	})
 }
 
 func (h *AuthHandler) login(c *gin.Context) {

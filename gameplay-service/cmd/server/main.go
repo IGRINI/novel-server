@@ -15,7 +15,6 @@ import (
 
 	// <<< Добавляем импорт shared/messaging
 	sharedMiddleware "novel-server/shared/middleware" // <<< Импортируем shared/middleware
-	sharedModels "novel-server/shared/models"
 	"os"
 	"os/signal"
 	"syscall"
@@ -115,13 +114,35 @@ func main() {
 	logger.Info("Auth Service client initialized")
 
 	// --- Инициализация сервисов (ОТКАТ ЛИШНИХ ИЗМЕНЕНИЙ) --- //
-	gameplayService := service.NewGameplayService(storyConfigRepo, publishedRepo, sceneRepo, playerProgressRepo, playerGameStateRepo, likeRepo, taskPublisher, dbPool, logger, authServiceClient, cfg)
+	gameplayService := service.NewGameplayService(
+		storyConfigRepo,
+		publishedRepo,
+		sceneRepo,
+		playerProgressRepo,
+		playerGameStateRepo,
+		likeRepo,
+		imageReferenceRepo,
+		taskPublisher,
+		characterImageTaskBatchPublisher,
+		dbPool,
+		logger,
+		authServiceClient,
+		cfg,
+	)
 
 	// --- Инициализация хендлеров (ОТКАТ ЛИШНИХ ИЗМЕНЕНИЙ) --- //
 	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret, storyConfigRepo, publishedRepo, cfg)
 
-	// --- Проверка зависших задач --- //
-	go markStuckDraftsAsError(storyConfigRepo, logger)
+	// --- Первоначальная проверка зависших задач (БЕЗ учета времени) --- //
+	logger.Info("Performing initial check for stuck tasks...")
+	markStuckDraftsAsError(storyConfigRepo, 0, logger)               // staleThreshold = 0 для проверки без времени
+	markStuckPublishedStoriesAsError(publishedRepo, 0, logger)       // staleThreshold = 0 для проверки без времени
+	markStuckPlayerGameStatesAsError(playerGameStateRepo, 0, logger) // staleThreshold = 0 для проверки без времени
+	logger.Info("Initial check for stuck tasks completed.")
+
+	// --- Запуск периодической проверки зависших задач (С учетом времени) --- //
+	logger.Info("Starting periodic checks for stuck tasks...")
+	go markStuckDraftsAsError(storyConfigRepo, 1*time.Hour, logger)
 	go markStuckPublishedStoriesAsError(publishedRepo, 1*time.Hour, logger)
 	// <<< ДОБАВЛЕНО: Проверка зависших состояний игры игрока >>>
 	go markStuckPlayerGameStatesAsError(playerGameStateRepo, 30*time.Minute, logger)
@@ -276,61 +297,26 @@ func main() {
 
 // <<< ПЕРЕИМЕНОВАНО и немного изменено >>>
 // markStuckDraftsAsError устанавливает статус Error для зависших ЧЕРНОВИКОВ (StoryConfig).
-func markStuckDraftsAsError(repo sharedInterfaces.StoryConfigRepository, logger *zap.Logger) {
+func markStuckDraftsAsError(repo sharedInterfaces.StoryConfigRepository, staleThreshold time.Duration, logger *zap.Logger) {
 	// Небольшая задержка перед проверкой
 	time.Sleep(5 * time.Second)
-	logger.Info("Checking for stuck draft tasks (StoryConfig) to set Error status...")
+	logger.Info("Checking for stuck draft tasks (StoryConfig) to set Error status...", zap.Duration("staleThreshold", staleThreshold))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // Таймаут на всю операцию
 	defer cancel()
 
-	// Используем существующий метод для поиска 'generating' и 'revising'
-	stuckConfigs, err := repo.FindGeneratingConfigs(ctx)
+	// <<< ИЗМЕНЕНО: Используем новый метод репозитория >>>
+	updatedCount, err := repo.FindAndMarkStaleGeneratingDraftsAsError(ctx, staleThreshold)
 	if err != nil {
-		logger.Error("Failed to get list of stuck draft tasks to set Error status", zap.Error(err))
+		logger.Error("Failed to find and mark stale draft tasks", zap.Error(err))
 		return
 	}
 
-	if len(stuckConfigs) == 0 {
+	if updatedCount == 0 {
 		logger.Info("No stuck draft tasks found to set Error status.")
-		return
+	} else {
+		logger.Warn("Set Error status for stuck draft tasks", zap.Int64("count", updatedCount))
 	}
-
-	logger.Info("Found stuck draft tasks to set Error status", zap.Int("count", len(stuckConfigs)))
-	updatedCount := 0
-	errorCount := 0
-	errorDetails := "Task timed out or got stuck during generation/revision."
-
-	for _, cfg := range stuckConfigs {
-		logFields := []zap.Field{
-			zap.String("storyConfigID", cfg.ID.String()),
-			zap.String("userID", cfg.UserID.String()),
-			zap.String("currentStatus", string(cfg.Status)),
-		}
-
-		// Проверяем еще раз статус 'generating' (убираем Revising)
-		if cfg.Status != sharedModels.StatusGenerating {
-			logger.Info("Draft task status changed, skipping update", logFields...)
-			continue
-		}
-
-		// Используем UpdateStatusAndError, чтобы записать причину
-		updateCtx, updateCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := repo.UpdateStatusAndError(updateCtx, cfg.ID, sharedModels.StatusError, errorDetails); err != nil {
-			logger.Error("Error setting Error status for stuck draft task", append(logFields, zap.Error(err))...)
-			errorCount++
-		} else {
-			logger.Warn("Set Error status for stuck draft task", logFields...)
-			updatedCount++
-		}
-		updateCancel()
-	}
-
-	logger.Info("Finished processing stuck draft tasks",
-		zap.Int("totalFound", len(stuckConfigs)),
-		zap.Int("updatedToError", updatedCount),
-		zap.Int("updateErrors", errorCount),
-	)
 }
 
 // <<< НОВАЯ ФУНКЦИЯ >>>

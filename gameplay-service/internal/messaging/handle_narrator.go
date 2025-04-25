@@ -15,6 +15,8 @@ import (
 	sharedModels "novel-server/shared/models"
 )
 
+// Определение ClientStoryUpdate удалено, так как оно находится в publisher.go
+
 func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, notification sharedMessaging.NotificationPayload, storyConfigID uuid.UUID) error {
 	taskID := notification.TaskID // Получаем taskID из уведомления
 	dbCtx, cancel := context.WithTimeout(ctx, 15*time.Second)

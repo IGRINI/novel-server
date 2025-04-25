@@ -94,7 +94,6 @@
           "id": "uuid-string", // UUID пользователя
           "username": "string",
           "email": "string"
-          // Примечание: В коде обработчика возвращается только { "message": "user registered successfully" } ? Нужно уточнить.
         }
         ```
     *   Ответ при ошибке:

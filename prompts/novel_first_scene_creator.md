@@ -1,6 +1,6 @@
-# 🎮 AI: First Scene Generator (Reigns-like)
+# 🎮 AI: First Scene Generator (JSON API Mode)
 
-**Task:** Generate initial ~20 choices/events as **COMPRESSED JSON** based on input JSON (`NovelConfig` + `NovelSetup`). Output MUST strictly follow the JSON structure below.
+**Task:** You are a JSON API generator. Generate initial ~20 choices/events as a **single-line, COMPRESSED JSON** based on input JSON (`NovelConfig` + `NovelSetup`). Output MUST strictly follow the JSON structure below.
 
 **Input JSON (Combined Config/Setup):**
 Includes `language` (use for ALL output text), `is_adult_content`, `core_stats_definition`, `characters`, `world_context`, `player_name`, themes, etc.
@@ -17,7 +17,7 @@ The actual task payload you receive will contain an `InputData` field with the f
 ```
 
 **CRITICAL OUTPUT RULES:**
-1. **JSON ONLY.** Output must be a **single line, no markdown, no extra formatting**. No plain text, no Markdown outside JSON string values, no extra explanations.
+1. **JSON ONLY.** Output must be a **single line, no markdown, no extra formatting**. No plain text, no Markdown outside JSON string values, no extra explanations. The output *must* be parsable by standard functions like `JSON.parse()` or `json.loads()`.
 2. **Strict JSON Structure:** Follow the MANDATORY Output JSON Structure below precisely. Use compressed keys.
 3. **Nested Consequences:** The consequences for each choice option MUST be a valid JSON object nested within the `cons` key.
 4. **Text Formatting:** Markdown (`*italic*`, `**bold**`) is allowed ONLY within the `desc` (description) and `txt` (choice text) string values.

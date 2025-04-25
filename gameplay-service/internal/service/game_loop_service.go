@@ -64,13 +64,15 @@ type GameLoopService interface {
 }
 
 type gameLoopServiceImpl struct {
-	publishedRepo       interfaces.PublishedStoryRepository
-	sceneRepo           interfaces.StorySceneRepository
-	playerProgressRepo  interfaces.PlayerProgressRepository
-	playerGameStateRepo interfaces.PlayerGameStateRepository
-	publisher           messaging.TaskPublisher
-	storyConfigRepo     interfaces.StoryConfigRepository
-	logger              *zap.Logger
+	publishedRepo              interfaces.PublishedStoryRepository
+	sceneRepo                  interfaces.StorySceneRepository
+	playerProgressRepo         interfaces.PlayerProgressRepository
+	playerGameStateRepo        interfaces.PlayerGameStateRepository
+	publisher                  messaging.TaskPublisher
+	storyConfigRepo            interfaces.StoryConfigRepository
+	imageReferenceRepo         interfaces.ImageReferenceRepository
+	characterImageTaskBatchPub messaging.CharacterImageTaskBatchPublisher
+	logger                     *zap.Logger
 }
 
 // NewGameLoopService creates a new instance of GameLoopService.
@@ -81,16 +83,20 @@ func NewGameLoopService(
 	playerGameStateRepo interfaces.PlayerGameStateRepository,
 	publisher messaging.TaskPublisher,
 	storyConfigRepo interfaces.StoryConfigRepository,
+	imageReferenceRepo interfaces.ImageReferenceRepository,
+	characterImageTaskBatchPub messaging.CharacterImageTaskBatchPublisher,
 	logger *zap.Logger,
 ) GameLoopService {
 	return &gameLoopServiceImpl{
-		publishedRepo:       publishedRepo,
-		sceneRepo:           sceneRepo,
-		playerProgressRepo:  playerProgressRepo,
-		playerGameStateRepo: playerGameStateRepo,
-		publisher:           publisher,
-		storyConfigRepo:     storyConfigRepo,
-		logger:              logger.Named("GameLoopService"),
+		publishedRepo:              publishedRepo,
+		sceneRepo:                  sceneRepo,
+		playerProgressRepo:         playerProgressRepo,
+		playerGameStateRepo:        playerGameStateRepo,
+		publisher:                  publisher,
+		storyConfigRepo:            storyConfigRepo,
+		imageReferenceRepo:         imageReferenceRepo,
+		characterImageTaskBatchPub: characterImageTaskBatchPub,
+		logger:                     logger.Named("GameLoopService"),
 	}
 }
 
@@ -508,9 +514,6 @@ func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID,
 	}
 
 	// 3. Check if Setup generation failed or Scene generation failed
-	// Check if Setup generation failed or Scene generation failed
-	// <<< ИЗМЕНЕНО: Улучшенная проверка на существование Setup >>>
-	// Считаем Setup отсутствующим, если он nil ИЛИ содержит JSON 'null'.
 	setupExists := story.Setup != nil && string(story.Setup) != "null"
 
 	if !setupExists {
@@ -554,25 +557,33 @@ func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID,
 		// --- Error occurred during Scene generation (Setup exists and is not JSON null) ---
 		log.Info("Setup exists, retrying Scene generation")
 
+		// <<< ДОБАВЛЕНО: Проверка и генерация картинок Setup >>>
+		var setupContent sharedModels.NovelSetupContent
+		if errUnmarshal := json.Unmarshal(story.Setup, &setupContent); errUnmarshal != nil {
+			log.Error("Failed to unmarshal setup JSON during scene retry, cannot check images", zap.Error(errUnmarshal))
+			// Продолжаем без проверки картинок, но логируем ошибку.
+		} else {
+			// Вызываем хелпер для проверки/генерации картинок
+			if _, errImages := s.checkAndGenerateSetupImages(ctx, userID.String(), story, &setupContent); errImages != nil {
+				// Логируем ошибку, но не прерываем Retry сцены
+				log.Error("Error during checkAndGenerateSetupImages in scene retry", zap.Error(errImages))
+			}
+		}
+		// <<< КОНЕЦ: Проверка и генерация картинок Setup >>>
+
 		// Get player progress to determine which scene to retry
 		progress, err := s.playerProgressRepo.GetByUserIDAndStoryID(ctx, userID, storyID)
 		if err != nil {
 			if errors.Is(err, sharedModels.ErrNotFound) {
 				log.Warn("Player progress not found for scene retry. Assuming retry for initial scene.")
-				// <<< НАЧАЛО ИЗМЕНЕНИЯ: Вызываем createInitialSceneGenerationPayload >>>
 				generationPayload, errPayload := createInitialSceneGenerationPayload(userID, story)
 				if errPayload != nil {
 					log.Error("Failed to create initial generation payload for scene retry", zap.Error(errPayload))
-					// Пытаемся откатить статус обратно в Error
 					if rollbackErr := s.publishedRepo.UpdateStatusDetails(context.Background(), storyID, sharedModels.StatusError, nil, nil, nil, nil); rollbackErr != nil {
 						log.Error("CRITICAL: Failed to roll back status to Error after initial payload creation error", zap.Error(rollbackErr))
 					}
 					return sharedModels.ErrInternalServer
 				}
-				// Статус уже должен быть Error, меняем его на соответствующий статус PlayerGameState при обработке ответа воркера.
-				// REMOVED: Update published story status
-				// if err := s.publishedRepo.UpdateStatusDetails(ctx, storyID, sharedModels.StatusGeneratingScene, nil, nil, nil, nil); err != nil { ... }
-				// Публикуем задачу для начальной сцены
 				if errPub := s.publisher.PublishGenerationTask(ctx, generationPayload); errPub != nil {
 					log.Error("Error publishing initial scene retry generation task. Rolling back status...", zap.Error(errPub))
 					if rollbackErr := s.publishedRepo.UpdateStatusDetails(context.Background(), storyID, sharedModels.StatusError, nil, nil, nil, nil); rollbackErr != nil {
@@ -582,20 +593,13 @@ func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID,
 				}
 				log.Info("Initial scene retry generation task published successfully", zap.String("taskID", generationPayload.TaskID), zap.String("stateHash", generationPayload.StateHash))
 				return nil // Задача для начальной сцены отправлена
-				// <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
 			} else {
-				// Другая ошибка при получении прогресса - это фатально
 				log.Error("Failed to get player progress for scene retry", zap.Error(err))
 				return sharedModels.ErrInternalServer
 			}
 		}
 
 		// Прогресс найден, продолжаем стандартную логику Retry для существующего progress
-		// Статус меняем на соответствующий статус PlayerGameState при обработке ответа воркера.
-		// REMOVED: Update published story status
-		// if err := s.publishedRepo.UpdateStatusDetails(ctx, storyID, sharedModels.StatusGeneratingScene, nil, nil, nil, nil); err != nil { ... }
-
-		// Create payload for the scene indicated by progress.CurrentStateHash
 		madeChoicesInfo := []sharedModels.UserChoiceInfo{} // No choice info on a simple retry
 		generationPayload, err := createGenerationPayload(
 			userID,
@@ -626,159 +630,9 @@ func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID,
 	}
 }
 
-// UpdateSceneInternal updates the content of a scene.
-func (s *gameLoopServiceImpl) UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error {
-	log := s.logger.With(zap.String("sceneID", sceneID.String()))
-	log.Info("UpdateSceneInternal called")
-
-	// Валидация JSON
-	var contentBytes []byte
-	if contentJSON != "" {
-		if !json.Valid([]byte(contentJSON)) {
-			log.Warn("Invalid JSON received for scene content")
-			return fmt.Errorf("%w: invalid scene content JSON format", sharedModels.ErrBadRequest)
-		}
-		contentBytes = []byte(contentJSON)
-	} else {
-		// Запрещаем делать контент пустым? Или разрешаем?
-		// Пока запретим, так как пустая сцена бессмысленна.
-		log.Warn("Attempted to set empty content for scene")
-		return fmt.Errorf("%w: scene content cannot be empty", sharedModels.ErrBadRequest)
-		// Если нужно разрешить, использовать: contentBytes = nil
-	}
-
-	// Вызов репозитория
-	err := s.sceneRepo.UpdateContent(ctx, sceneID, contentBytes)
-	if err != nil {
-		if errors.Is(err, sharedModels.ErrNotFound) {
-			log.Warn("Scene not found for update")
-			return sharedModels.ErrNotFound
-		}
-		log.Error("Failed to update scene content in repository", zap.Error(err))
-		return ErrInternal
-	}
-
-	log.Info("Scene content updated successfully by internal request")
-	return nil
-}
-
-// GetOrCreatePlayerGameState retrieves the player's game state for a story, creating it if it doesn't exist.
-func (s *gameLoopServiceImpl) GetOrCreatePlayerGameState(ctx context.Context, playerID, storyID uuid.UUID) (*sharedModels.PlayerGameState, error) {
-	log := s.logger.With(zap.String("playerID", playerID.String()), zap.String("storyID", storyID.String()))
-	log.Debug("GetOrCreatePlayerGameState called")
-
-	// 1. Try to get existing game state
-	gameState, err := s.playerGameStateRepo.GetByPlayerAndStory(ctx, playerID, storyID)
-	if err == nil {
-		log.Debug("Existing player game state found")
-		return gameState, nil
-	}
-
-	// 2. If not found, create a new one
-	if errors.Is(err, sharedModels.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
-		log.Info("Player game state not found, creating initial state")
-
-		// 2a. Fetch the published story
-		publishedStory, storyErr := s.publishedRepo.GetByID(ctx, storyID)
-		if storyErr != nil {
-			if errors.Is(storyErr, pgx.ErrNoRows) {
-				log.Error("Published story not found while trying to create initial game state")
-				return nil, sharedModels.ErrStoryNotFound
-			}
-			log.Error("Failed to get published story while creating initial game state", zap.Error(storyErr))
-			return nil, sharedModels.ErrInternalServer
-		}
-
-		// 2b. Check story status
-		if publishedStory.Status != sharedModels.StatusReady {
-			log.Warn("Attempt to create game state for story not in Ready status", zap.String("status", string(publishedStory.Status)))
-			return nil, sharedModels.ErrStoryNotReady
-		}
-
-		// 2c. Find or Create the Initial PlayerProgress node
-		var initialProgressID uuid.UUID
-		initialProgress, progressErr := s.playerProgressRepo.GetByStoryIDAndHash(ctx, storyID, sharedModels.InitialStateHash)
-
-		if progressErr == nil {
-			initialProgressID = initialProgress.ID
-			log.Debug("Found existing initial PlayerProgress node", zap.String("progressID", initialProgressID.String()))
-		} else if errors.Is(progressErr, sharedModels.ErrNotFound) || errors.Is(progressErr, pgx.ErrNoRows) {
-			log.Info("Initial PlayerProgress node not found, creating it")
-			initialStats := make(map[string]int)
-			if publishedStory.Setup != nil && string(publishedStory.Setup) != "null" {
-				var setupContent sharedModels.NovelSetupContent
-				if setupErr := json.Unmarshal(publishedStory.Setup, &setupContent); setupErr != nil {
-					log.Error("Failed to unmarshal story Setup JSON for initial progress stats", zap.Error(setupErr))
-				} else if setupContent.CoreStatsDefinition != nil {
-					for key, statDef := range setupContent.CoreStatsDefinition {
-						initialStats[key] = statDef.Initial
-					}
-					log.Debug("Initialized initial progress stats from story setup", zap.Any("initialStats", initialStats))
-				}
-			}
-
-			newInitialProgress := &sharedModels.PlayerProgress{
-				UserID:           playerID,
-				PublishedStoryID: storyID,
-				CurrentStateHash: sharedModels.InitialStateHash,
-				CoreStats:        initialStats,
-				StoryVariables:   make(map[string]interface{}),
-				GlobalFlags:      []string{},
-				SceneIndex:       0,
-			}
-			savedID, createErr := s.playerProgressRepo.Save(ctx, newInitialProgress)
-			if createErr != nil {
-				log.Error("Error creating initial player progress node in repository", zap.Error(createErr))
-				return nil, sharedModels.ErrInternalServer
-			}
-			initialProgressID = savedID
-			log.Info("Initial PlayerProgress node created successfully", zap.String("progressID", initialProgressID.String()))
-		} else {
-			log.Error("Unexpected error getting initial player progress node", zap.Error(progressErr))
-			return nil, sharedModels.ErrInternalServer
-		}
-
-		// 2d. Find the Initial Scene ID (if it exists)
-		var initialSceneID *uuid.UUID
-		initialScene, sceneErr := s.sceneRepo.FindByStoryAndHash(ctx, storyID, sharedModels.InitialStateHash)
-		if sceneErr == nil {
-			initialSceneID = &initialScene.ID
-			log.Debug("Found initial scene", zap.String("sceneID", initialSceneID.String()))
-		} else if !errors.Is(sceneErr, pgx.ErrNoRows) {
-			log.Error("Error fetching initial scene by hash", zap.Error(sceneErr))
-		}
-
-		// 2e. Create the new PlayerGameState
-		now := time.Now().UTC()
-		newGameState := &sharedModels.PlayerGameState{
-			PlayerID:         playerID,
-			PublishedStoryID: storyID,
-			PlayerProgressID: &initialProgressID,
-			CurrentSceneID:   initialSceneID,
-			PlayerStatus:     sharedModels.PlayerStatusPlaying,
-			StartedAt:        now,
-			LastActivityAt:   now,
-		}
-
-		// 2f. Save the new PlayerGameState
-		createdStateID, saveErr := s.playerGameStateRepo.Save(ctx, newGameState)
-		if saveErr != nil {
-			log.Error("Error creating initial player game state in repository", zap.Error(saveErr))
-			return nil, sharedModels.ErrInternalServer
-		}
-		newGameState.ID = createdStateID
-
-		log.Info("Initial player game state created successfully", zap.String("gameStateID", createdStateID.String()))
-		return newGameState, nil
-
-	} else {
-		log.Error("Unexpected error getting player game state", zap.Error(err))
-		return nil, sharedModels.ErrInternalServer
-	}
-}
-
 // RetryStoryGeneration handles the logic for retrying generation for a published story.
 // It checks if the error occurred during Setup or Scene generation and restarts the appropriate task.
+// <<< ВАЖНО: Нужно также обновить этот дублирующий метод или удалить его >>>
 func (s *gameLoopServiceImpl) RetryStoryGeneration(ctx context.Context, storyID, userID uuid.UUID) error {
 	log := s.logger.With(zap.String("publishedStoryID", storyID.String()), zap.String("userID", userID.String()))
 	log.Info("RetryStoryGeneration called")
@@ -801,9 +655,6 @@ func (s *gameLoopServiceImpl) RetryStoryGeneration(ctx context.Context, storyID,
 	}
 
 	// 3. Check if Setup generation failed or Scene generation failed
-	// Check if Setup generation failed or Scene generation failed
-	// <<< ИЗМЕНЕНО: Улучшенная проверка на существование Setup >>>
-	// Считаем Setup отсутствующим, если он nil ИЛИ содержит JSON 'null'.
 	setupExists := story.Setup != nil && string(story.Setup) != "null"
 
 	if !setupExists {
@@ -847,25 +698,33 @@ func (s *gameLoopServiceImpl) RetryStoryGeneration(ctx context.Context, storyID,
 		// --- Error occurred during Scene generation (Setup exists and is not JSON null) ---
 		log.Info("Setup exists, retrying Scene generation")
 
+		// <<< ДОБАВЛЕНО: Проверка и генерация картинок Setup >>>
+		var setupContent sharedModels.NovelSetupContent
+		if errUnmarshal := json.Unmarshal(story.Setup, &setupContent); errUnmarshal != nil {
+			log.Error("Failed to unmarshal setup JSON during scene retry, cannot check images", zap.Error(errUnmarshal))
+			// Продолжаем без проверки картинок, но логируем ошибку.
+		} else {
+			// Вызываем хелпер для проверки/генерации картинок
+			if _, errImages := s.checkAndGenerateSetupImages(ctx, userID.String(), story, &setupContent); errImages != nil {
+				// Логируем ошибку, но не прерываем Retry сцены
+				log.Error("Error during checkAndGenerateSetupImages in scene retry", zap.Error(errImages))
+			}
+		}
+		// <<< КОНЕЦ: Проверка и генерация картинок Setup >>>
+
 		// Get player progress to determine which scene to retry
 		progress, err := s.playerProgressRepo.GetByUserIDAndStoryID(ctx, userID, storyID)
 		if err != nil {
 			if errors.Is(err, sharedModels.ErrNotFound) {
 				log.Warn("Player progress not found for scene retry. Assuming retry for initial scene.")
-				// <<< НАЧАЛО ИЗМЕНЕНИЯ: Вызываем createInitialSceneGenerationPayload >>>
 				generationPayload, errPayload := createInitialSceneGenerationPayload(userID, story)
 				if errPayload != nil {
 					log.Error("Failed to create initial generation payload for scene retry", zap.Error(errPayload))
-					// Пытаемся откатить статус обратно в Error
 					if rollbackErr := s.publishedRepo.UpdateStatusDetails(context.Background(), storyID, sharedModels.StatusError, nil, nil, nil, nil); rollbackErr != nil {
 						log.Error("CRITICAL: Failed to roll back status to Error after initial payload creation error", zap.Error(rollbackErr))
 					}
 					return sharedModels.ErrInternalServer
 				}
-				// Статус уже должен быть Error, меняем его на соответствующий статус PlayerGameState при обработке ответа воркера.
-				// REMOVED: Update published story status
-				// if err := s.publishedRepo.UpdateStatusDetails(ctx, storyID, sharedModels.StatusGeneratingScene, nil, nil, nil, nil); err != nil { ... }
-				// Публикуем задачу для начальной сцены
 				if errPub := s.publisher.PublishGenerationTask(ctx, generationPayload); errPub != nil {
 					log.Error("Error publishing initial scene retry generation task. Rolling back status...", zap.Error(errPub))
 					if rollbackErr := s.publishedRepo.UpdateStatusDetails(context.Background(), storyID, sharedModels.StatusError, nil, nil, nil, nil); rollbackErr != nil {
@@ -875,20 +734,13 @@ func (s *gameLoopServiceImpl) RetryStoryGeneration(ctx context.Context, storyID,
 				}
 				log.Info("Initial scene retry generation task published successfully", zap.String("taskID", generationPayload.TaskID), zap.String("stateHash", generationPayload.StateHash))
 				return nil // Задача для начальной сцены отправлена
-				// <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
 			} else {
-				// Другая ошибка при получении прогресса - это фатально
 				log.Error("Failed to get player progress for scene retry", zap.Error(err))
 				return sharedModels.ErrInternalServer
 			}
 		}
 
 		// Прогресс найден, продолжаем стандартную логику Retry для существующего progress
-		// Статус меняем на соответствующий статус PlayerGameState при обработке ответа воркера.
-		// REMOVED: Update published story status
-		// if err := s.publishedRepo.UpdateStatusDetails(ctx, storyID, sharedModels.StatusGeneratingScene, nil, nil, nil, nil); err != nil { ... }
-
-		// Create payload for the scene indicated by progress.CurrentStateHash
 		madeChoicesInfo := []sharedModels.UserChoiceInfo{} // No choice info on a simple retry
 		generationPayload, err := createGenerationPayload(
 			userID,
@@ -1033,6 +885,121 @@ func (s *gameLoopServiceImpl) UpdatePlayerProgressInternal(ctx context.Context, 
 
 	log.Info("Player progress updated successfully internally")
 	return nil
+}
+
+// GetOrCreatePlayerGameState retrieves the player's game state for a story, creating it if it doesn't exist.
+func (s *gameLoopServiceImpl) GetOrCreatePlayerGameState(ctx context.Context, playerID, storyID uuid.UUID) (*sharedModels.PlayerGameState, error) {
+	log := s.logger.With(zap.String("playerID", playerID.String()), zap.String("storyID", storyID.String()))
+	log.Debug("GetOrCreatePlayerGameState called")
+
+	// 1. Try to get existing game state
+	gameState, err := s.playerGameStateRepo.GetByPlayerAndStory(ctx, playerID, storyID)
+	if err == nil {
+		log.Debug("Existing player game state found")
+		return gameState, nil
+	}
+
+	// 2. If not found, create a new one
+	if errors.Is(err, sharedModels.ErrNotFound) || errors.Is(err, pgx.ErrNoRows) {
+		log.Info("Player game state not found, creating initial state")
+
+		// 2a. Fetch the published story
+		publishedStory, storyErr := s.publishedRepo.GetByID(ctx, storyID)
+		if storyErr != nil {
+			if errors.Is(storyErr, pgx.ErrNoRows) {
+				log.Error("Published story not found while trying to create initial game state")
+				return nil, sharedModels.ErrStoryNotFound
+			}
+			log.Error("Failed to get published story while creating initial game state", zap.Error(storyErr))
+			return nil, sharedModels.ErrInternalServer
+		}
+
+		// 2b. Check story status
+		if publishedStory.Status != sharedModels.StatusReady {
+			log.Warn("Attempt to create game state for story not in Ready status", zap.String("status", string(publishedStory.Status)))
+			return nil, sharedModels.ErrStoryNotReady
+		}
+
+		// 2c. Find or Create the Initial PlayerProgress node
+		var initialProgressID uuid.UUID
+		initialProgress, progressErr := s.playerProgressRepo.GetByStoryIDAndHash(ctx, storyID, sharedModels.InitialStateHash)
+
+		if progressErr == nil {
+			initialProgressID = initialProgress.ID
+			log.Debug("Found existing initial PlayerProgress node", zap.String("progressID", initialProgressID.String()))
+		} else if errors.Is(progressErr, sharedModels.ErrNotFound) || errors.Is(progressErr, pgx.ErrNoRows) {
+			log.Info("Initial PlayerProgress node not found, creating it")
+			initialStats := make(map[string]int)
+			if publishedStory.Setup != nil && string(publishedStory.Setup) != "null" {
+				var setupContent sharedModels.NovelSetupContent
+				if setupErr := json.Unmarshal(publishedStory.Setup, &setupContent); setupErr != nil {
+					log.Error("Failed to unmarshal story Setup JSON for initial progress stats", zap.Error(setupErr))
+				} else if setupContent.CoreStatsDefinition != nil {
+					for key, statDef := range setupContent.CoreStatsDefinition {
+						initialStats[key] = statDef.Initial
+					}
+					log.Debug("Initialized initial progress stats from story setup", zap.Any("initialStats", initialStats))
+				}
+			}
+
+			newInitialProgress := &sharedModels.PlayerProgress{
+				UserID:           playerID,
+				PublishedStoryID: storyID,
+				CurrentStateHash: sharedModels.InitialStateHash,
+				CoreStats:        initialStats,
+				StoryVariables:   make(map[string]interface{}),
+				GlobalFlags:      []string{},
+				SceneIndex:       0,
+			}
+			savedID, createErr := s.playerProgressRepo.Save(ctx, newInitialProgress)
+			if createErr != nil {
+				log.Error("Error creating initial player progress node in repository", zap.Error(createErr))
+				return nil, sharedModels.ErrInternalServer
+			}
+			initialProgressID = savedID
+			log.Info("Initial PlayerProgress node created successfully", zap.String("progressID", initialProgressID.String()))
+		} else {
+			log.Error("Unexpected error getting initial player progress node", zap.Error(progressErr))
+			return nil, sharedModels.ErrInternalServer
+		}
+
+		// 2d. Find the Initial Scene ID (if it exists)
+		var initialSceneID *uuid.UUID
+		initialScene, sceneErr := s.sceneRepo.FindByStoryAndHash(ctx, storyID, sharedModels.InitialStateHash)
+		if sceneErr == nil {
+			initialSceneID = &initialScene.ID
+			log.Debug("Found initial scene", zap.String("sceneID", initialSceneID.String()))
+		} else if !errors.Is(sceneErr, pgx.ErrNoRows) {
+			log.Error("Error fetching initial scene by hash", zap.Error(sceneErr))
+		}
+
+		// 2e. Create the new PlayerGameState
+		now := time.Now().UTC()
+		newGameState := &sharedModels.PlayerGameState{
+			PlayerID:         playerID,
+			PublishedStoryID: storyID,
+			PlayerProgressID: &initialProgressID,
+			CurrentSceneID:   initialSceneID,
+			PlayerStatus:     sharedModels.PlayerStatusPlaying,
+			StartedAt:        now,
+			LastActivityAt:   now,
+		}
+
+		// 2f. Save the new PlayerGameState
+		createdStateID, saveErr := s.playerGameStateRepo.Save(ctx, newGameState)
+		if saveErr != nil {
+			log.Error("Error creating initial player game state in repository", zap.Error(saveErr))
+			return nil, sharedModels.ErrInternalServer
+		}
+		newGameState.ID = createdStateID
+
+		log.Info("Initial player game state created successfully", zap.String("gameStateID", createdStateID.String()))
+		return newGameState, nil
+
+	} else {
+		log.Error("Unexpected error getting player game state", zap.Error(err))
+		return nil, sharedModels.ErrInternalServer
+	}
 }
 
 // --- Helper Functions ---
@@ -1370,4 +1337,187 @@ func createInitialSceneGenerationPayload(
 	}
 
 	return payload, nil
+}
+
+// <<< НАЧАЛО: Перемещенная вспомогательная функция >>>
+// checkAndGenerateSetupImages parses the setup, checks image needs, updates flags, and publishes tasks.
+func (s *gameLoopServiceImpl) checkAndGenerateSetupImages(ctx context.Context, userID string, story *sharedModels.PublishedStory, setupContent *sharedModels.NovelSetupContent) (bool, error) {
+	log := s.logger.With(zap.String("publishedStoryID", story.ID.String()), zap.String("userID", userID))
+	log.Info("Checking and generating setup images if needed")
+
+	var ( // Initialize variables
+		needsCharacterImages bool
+		needsPreviewImage    bool
+		imageTasks           = make([]sharedMessaging.CharacterImageTaskPayload, 0, len(setupContent.Characters))
+		characterVisualStyle string
+		storyStyle           string
+		fullConfig           sharedModels.Config
+	)
+
+	if story.Config != nil {
+		if errCfg := json.Unmarshal(story.Config, &fullConfig); errCfg != nil {
+			log.Warn("Failed to unmarshal config JSON to get CharacterVisualStyle/Style for image generation", zap.Error(errCfg))
+			// Continue without style information, prompts might be less specific
+		} else {
+			characterVisualStyle = fullConfig.PlayerPrefs.CharacterVisualStyle
+			storyStyle = fullConfig.PlayerPrefs.Style
+			if characterVisualStyle != "" {
+				characterVisualStyle = ", " + characterVisualStyle
+			}
+			if storyStyle != "" {
+				storyStyle = ", " + storyStyle
+			}
+		}
+	} else {
+		log.Warn("Story config is nil, cannot extract visual style for image generation")
+	}
+
+	log.Info("Checking which character images need generation")
+	for _, charData := range setupContent.Characters {
+		if charData.ImageRef == "" || charData.Prompt == "" {
+			log.Debug("Skipping character image check: missing ImageRef or Prompt", zap.String("char_name", charData.Name))
+			continue
+		}
+		imageRef := charData.ImageRef
+		_, errCheck := s.imageReferenceRepo.GetImageURLByReference(ctx, imageRef)
+
+		// <<< ИСПРАВЛЕНО: Используем sharedModels.ErrNotFound и убираем проверку по строке >>>
+		if errors.Is(errCheck, sharedModels.ErrNotFound) || errors.Is(errCheck, pgx.ErrNoRows) {
+			log.Debug("Character image needs generation", zap.String("image_ref", imageRef))
+			needsCharacterImages = true
+			characterIDForTask := uuid.New()
+			fullCharacterPrompt := charData.Prompt + characterVisualStyle
+			imageTask := sharedMessaging.CharacterImageTaskPayload{
+				TaskID:           characterIDForTask.String(),
+				UserID:           userID, // <<< ДОБАВЛЕНО: Передаем userID
+				CharacterID:      characterIDForTask,
+				Prompt:           fullCharacterPrompt,
+				NegativePrompt:   charData.NegPrompt,
+				ImageReference:   imageRef,
+				Ratio:            "2:3",
+				PublishedStoryID: story.ID,
+			}
+			imageTasks = append(imageTasks, imageTask)
+		} else if errCheck != nil { // Ловим другие ошибки
+			log.Error("Error checking Character ImageRef in DB", zap.String("image_ref", imageRef), zap.Error(errCheck))
+		} else { // Ошибки нет
+			log.Debug("Character image already exists", zap.String("image_ref", imageRef))
+		}
+	}
+
+	log.Info("Checking if preview image needs generation")
+	if setupContent.StoryPreviewImagePrompt != "" {
+		previewImageRef := fmt.Sprintf("history_preview_%s", story.ID.String())
+		_, errCheck := s.imageReferenceRepo.GetImageURLByReference(ctx, previewImageRef)
+
+		// <<< ИСПРАВЛЕНО: Используем sharedModels.ErrNotFound и убираем проверку по строке >>>
+		if errors.Is(errCheck, sharedModels.ErrNotFound) || errors.Is(errCheck, pgx.ErrNoRows) {
+			log.Debug("Preview image needs generation", zap.String("image_ref", previewImageRef))
+			needsPreviewImage = true
+		} else if errCheck != nil { // Ловим другие ошибки
+			log.Error("Error checking Preview ImageRef in DB", zap.String("image_ref", previewImageRef), zap.Error(errCheck))
+		} else { // Ошибки нет
+			log.Debug("Preview image already exists", zap.String("image_ref", previewImageRef))
+		}
+	} else {
+		log.Info("StoryPreviewImagePrompt (spi) is empty in setup, no preview generation needed.")
+	}
+
+	areImagesPending := needsPreviewImage || needsCharacterImages
+
+	if areImagesPending {
+		log.Info("Updating story flags: are_images_pending=true")
+		// Update only the flag, don't change status or other fields here.
+		// <<< ИСПРАВЛЕНО: Передаем bool значения напрямую >>>
+		if err := s.publishedRepo.UpdateStatusFlagsAndDetails(
+			ctx,                       // context
+			story.ID,                  // storyID
+			story.Status,              // status (не меняем)
+			story.IsFirstScenePending, // is_first_scene_pending (передаем текущее значение)
+			areImagesPending,          // are_images_pending (передаем новое значение)
+			nil,                       // error_details
+		); err != nil {
+			log.Error("CRITICAL ERROR: Failed to update are_images_pending flag for PublishedStory", zap.Error(err))
+			// Return the error, as subsequent steps depend on this flag being correct.
+			return false, fmt.Errorf("failed to update are_images_pending flag for story %s: %w", story.ID, err)
+		}
+
+		log.Info("Publishing image generation tasks",
+			zap.Bool("preview_needed", needsPreviewImage),
+			zap.Int("character_images_needed", len(imageTasks)),
+		)
+		if len(imageTasks) > 0 {
+			batchPayload := sharedMessaging.CharacterImageTaskBatchPayload{BatchID: uuid.New().String(), Tasks: imageTasks}
+			if errPub := s.characterImageTaskBatchPub.PublishCharacterImageTaskBatch(ctx, batchPayload); errPub != nil {
+				log.Error("Failed to publish character image task batch", zap.Error(errPub), zap.String("batch_id", batchPayload.BatchID))
+				// Do not return error here, allow scene retry to proceed. Logged the error.
+			} else {
+				log.Info("Character image task batch published successfully", zap.String("batch_id", batchPayload.BatchID))
+			}
+		}
+		if needsPreviewImage {
+			previewImageRef := fmt.Sprintf("history_preview_%s", story.ID.String())
+			basePreviewPrompt := setupContent.StoryPreviewImagePrompt
+			fullPreviewPromptWithStyles := basePreviewPrompt + storyStyle + characterVisualStyle
+			previewTask := sharedMessaging.CharacterImageTaskPayload{
+				TaskID:           uuid.New().String(),
+				UserID:           userID,   // <<< ДОБАВЛЕНО: Передаем userID
+				CharacterID:      story.ID, // Use story ID as character ID for preview
+				Prompt:           fullPreviewPromptWithStyles,
+				NegativePrompt:   "",
+				ImageReference:   previewImageRef,
+				Ratio:            "3:2",
+				PublishedStoryID: story.ID,
+			}
+			previewBatchPayload := sharedMessaging.CharacterImageTaskBatchPayload{BatchID: uuid.New().String(), Tasks: []sharedMessaging.CharacterImageTaskPayload{previewTask}}
+			if errPub := s.characterImageTaskBatchPub.PublishCharacterImageTaskBatch(ctx, previewBatchPayload); errPub != nil {
+				log.Error("Failed to publish story preview image task", zap.Error(errPub), zap.String("preview_batch_id", previewBatchPayload.BatchID))
+				// Do not return error here, allow scene retry to proceed. Logged the error.
+			} else {
+				log.Info("Story preview image task published successfully", zap.String("preview_batch_id", previewBatchPayload.BatchID))
+			}
+		}
+	} else {
+		log.Info("No image generation needed based on Setup and existing references.")
+	}
+
+	return areImagesPending, nil // Return whether images were pending and nil error
+}
+
+// <<< КОНЕЦ: Перемещенная вспомогательная функция >>>
+
+// UpdateSceneInternal updates the content of a scene.
+func (s *gameLoopServiceImpl) UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error {
+	log := s.logger.With(zap.String("sceneID", sceneID.String()))
+	log.Info("UpdateSceneInternal called")
+
+	// Валидация JSON
+	var contentBytes []byte
+	if contentJSON != "" {
+		if !json.Valid([]byte(contentJSON)) {
+			log.Warn("Invalid JSON received for scene content")
+			return fmt.Errorf("%w: invalid scene content JSON format", sharedModels.ErrBadRequest)
+		}
+		contentBytes = []byte(contentJSON)
+	} else {
+		// Запрещаем делать контент пустым? Или разрешаем?
+		// Пока запретим, так как пустая сцена бессмысленна.
+		log.Warn("Attempted to set empty content for scene")
+		return fmt.Errorf("%w: scene content cannot be empty", sharedModels.ErrBadRequest)
+		// Если нужно разрешить, использовать: contentBytes = nil
+	}
+
+	// Вызов репозитория
+	err := s.sceneRepo.UpdateContent(ctx, sceneID, contentBytes)
+	if err != nil {
+		if errors.Is(err, sharedModels.ErrNotFound) {
+			log.Warn("Scene not found for update")
+			return sharedModels.ErrNotFound
+		}
+		log.Error("Failed to update scene content in repository", zap.Error(err))
+		return sharedModels.ErrInternalServer // Use shared error
+	}
+
+	log.Info("Scene content updated successfully by internal request")
+	return nil
 }

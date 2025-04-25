@@ -43,7 +43,7 @@ func (r *pgPlayerGameStateRepository) Save(ctx context.Context, state *models.Pl
 	state.LastActivityAt = now // Always update last activity time
 
 	query := `
-        INSERT INTO player_game_state
+        INSERT INTO player_game_states
             (id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at)
         VALUES
             ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -95,7 +95,7 @@ func (r *pgPlayerGameStateRepository) Save(ctx context.Context, state *models.Pl
 func (r *pgPlayerGameStateRepository) Get(ctx context.Context, playerID, publishedStoryID uuid.UUID) (*models.PlayerGameState, error) {
 	query := `
         SELECT id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at
-        FROM player_game_state
+        FROM player_game_states
         WHERE player_id = $1 AND published_story_id = $2
     `
 	state := &models.PlayerGameState{}
@@ -137,7 +137,7 @@ func (r *pgPlayerGameStateRepository) GetByPlayerAndStory(ctx context.Context, p
 	// Используем ту же логику, что и в Get
 	query := `
         SELECT id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at
-        FROM player_game_state
+        FROM player_game_states
         WHERE player_id = $1 AND published_story_id = $2
     `
 	state := &models.PlayerGameState{}
@@ -177,7 +177,7 @@ func (r *pgPlayerGameStateRepository) GetByPlayerAndStory(ctx context.Context, p
 func (r *pgPlayerGameStateRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.PlayerGameState, error) {
 	query := `
         SELECT id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at
-        FROM player_game_state
+        FROM player_game_states
         WHERE id = $1
     `
 	state := &models.PlayerGameState{}
@@ -214,7 +214,7 @@ func (r *pgPlayerGameStateRepository) GetByID(ctx context.Context, id uuid.UUID)
 // ПРИМЕЧАНИЕ: Этот метод был переименован/заменен на DeleteByPlayerAndStory в интерфейсе,
 // но его логика может быть полезна или идентична.
 func (r *pgPlayerGameStateRepository) Delete(ctx context.Context, playerID, publishedStoryID uuid.UUID) error {
-	query := `DELETE FROM player_game_state WHERE player_id = $1 AND published_story_id = $2`
+	query := `DELETE FROM player_game_states WHERE player_id = $1 AND published_story_id = $2`
 	logFields := []zap.Field{
 		zap.String("playerID", playerID.String()),
 		zap.String("publishedStoryID", publishedStoryID.String()),
@@ -241,7 +241,7 @@ func (r *pgPlayerGameStateRepository) Delete(ctx context.Context, playerID, publ
 // Returns nil if the record was deleted or did not exist.
 func (r *pgPlayerGameStateRepository) DeleteByPlayerAndStory(ctx context.Context, playerID, publishedStoryID uuid.UUID) error {
 	// Используем ту же логику, что и в Delete, но с правильной сигнатурой.
-	query := `DELETE FROM player_game_state WHERE player_id = $1 AND published_story_id = $2`
+	query := `DELETE FROM player_game_states WHERE player_id = $1 AND published_story_id = $2`
 	logFields := []zap.Field{
 		zap.String("playerID", playerID.String()),
 		zap.String("publishedStoryID", publishedStoryID.String()),
@@ -268,7 +268,7 @@ func (r *pgPlayerGameStateRepository) DeleteByPlayerAndStory(ctx context.Context
 func (r *pgPlayerGameStateRepository) ListByStoryID(ctx context.Context, publishedStoryID uuid.UUID) ([]models.PlayerGameState, error) {
 	query := `
         SELECT id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at
-        FROM player_game_state
+        FROM player_game_states
         WHERE published_story_id = $1
         ORDER BY last_activity_at DESC -- Or started_at?
     `
@@ -314,40 +314,47 @@ func (r *pgPlayerGameStateRepository) ListByStoryID(ctx context.Context, publish
 	return states, nil
 }
 
-const findAndMarkStalePlayerGeneratingQuery = `
-UPDATE player_game_state
+const findAndMarkStalePlayerGeneratingQueryBase = `
+UPDATE player_game_states
 SET player_status = $1, -- PlayerStatusError
     error_details = $2, -- Сообщение об ошибке
     last_activity_at = NOW() -- Обновляем время активности
 WHERE (player_status = $3 OR player_status = $4) -- PlayerStatusGeneratingScene или PlayerStatusGameOverPending
-  AND last_activity_at < $5 -- Порог времени
 `
 
 // FindAndMarkStaleGeneratingAsError находит состояния игры игрока, которые 'зависли'
-// в статусе генерации сцены или концовки, и обновляет их статус на Error.
+// в статусе генерации сцены или концовки (или все такие, если порог 0), и обновляет их статус на Error.
 func (r *pgPlayerGameStateRepository) FindAndMarkStaleGeneratingAsError(ctx context.Context, staleThreshold time.Duration) (int64, error) {
-	staleStatuses := []models.PlayerStatus{
-		models.PlayerStatusGeneratingScene,
-		models.PlayerStatusGameOverPending,
-	}
-	thresholdTime := time.Now().UTC().Add(-staleThreshold)
+	staleStatus1 := models.PlayerStatusGeneratingScene
+	staleStatus2 := models.PlayerStatusGameOverPending
 	errorMessage := "Player state generation process timed out or got stuck."
+	args := []interface{}{
+		models.PlayerStatusError, // $1: Новый статус
+		errorMessage,             // $2: Сообщение об ошибке
+		staleStatus1,             // $3: Зависший статус 1
+		staleStatus2,             // $4: Зависший статус 2
+	}
+	query := findAndMarkStalePlayerGeneratingQueryBase
+	thresholdTime := time.Now().UTC().Add(-staleThreshold)
 
 	logFields := []zap.Field{
-		zap.Any("staleStatuses", staleStatuses),
+		zap.Any("staleStatuses", []models.PlayerStatus{staleStatus1, staleStatus2}),
 		zap.Duration("staleThreshold", staleThreshold),
-		zap.Time("thresholdTime", thresholdTime),
 	}
+
+	// Добавляем условие времени только если staleThreshold > 0
+	if staleThreshold > 0 {
+		query += " AND last_activity_at < $5" // $5 будет thresholdTime
+		args = append(args, thresholdTime)
+		logFields = append(logFields, zap.Time("thresholdTime", thresholdTime))
+	} else {
+		r.logger.Info("Stale threshold is zero, checking all generating/game_over_pending states regardless of time.", logFields...)
+	}
+
 	r.logger.Info("Finding and marking stale generating player game states as Error", logFields...)
 
-	// Передаем статусы по отдельности, т.к. ANY() в pgx работает с массивами Go не всегда очевидно
-	commandTag, err := r.db.Exec(ctx, findAndMarkStalePlayerGeneratingQuery,
-		models.PlayerStatusError,           // $1: Новый статус
-		errorMessage,                       // $2: Сообщение об ошибке
-		models.PlayerStatusGeneratingScene, // $3: Зависший статус 1
-		models.PlayerStatusGameOverPending, // $4: Зависший статус 2
-		thresholdTime,                      // $5: Временной порог
-	)
+	// Передаем собранные аргументы
+	commandTag, err := r.db.Exec(ctx, query, args...)
 
 	if err != nil {
 		r.logger.Error("Failed to execute update query for stale player game states", append(logFields, zap.Error(err))...)
@@ -368,7 +375,7 @@ func (r *pgPlayerGameStateRepository) CheckGameStateExistsForStories(ctx context
 
 	query := `
         SELECT published_story_id
-        FROM player_game_state
+        FROM player_game_states
         WHERE player_id = $1 AND published_story_id = ANY($2::uuid[])
     `
 	logFields := []zap.Field{

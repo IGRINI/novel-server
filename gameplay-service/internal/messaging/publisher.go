@@ -57,18 +57,20 @@ type PushNotification struct {
 // Определяем структуру для отфильтрованного сообщения клиенту
 // (Пока поля примерные, нужно уточнить точный набор)
 type ClientStoryUpdate struct {
-	ID                string   `json:"id"`
-	UserID            string   `json:"user_id"` // UserID нужен для websocket-service
-	Status            string   `json:"status"`
-	Title             string   `json:"title,omitempty"`
-	Description       string   `json:"description,omitempty"`
-	Themes            []string `json:"themes,omitempty"`             // Из pp.th
-	WorldLore         []string `json:"world_lore,omitempty"`         // Из pp.wl
-	PlayerDescription string   `json:"player_description,omitempty"` // Из p_desc
-	IsCompleted       bool     `json:"is_completed"`                 // Флаг завершения истории
-	EndingText        *string  `json:"ending_text,omitempty"`        // Текст концовки, если status == completed
-	ErrorDetails      *string  `json:"error_details,omitempty"`      // Если status == error
-	UpdateType        string   `json:"update_type"`                  // <<< Тип обновления (draft_update, story_update)
+	ID                string   `json:"id"`                           // StoryConfig ID or PublishedStory ID
+	UserID            string   `json:"user_id"`                      // User ID
+	UpdateType        string   `json:"type"`                         // "draft_update" or "story_update"
+	Status            string   `json:"status"`                       // New status (Draft, Generating, Ready, Error, Completed, etc.)
+	Title             string   `json:"title,omitempty"`              // Title (mainly for Draft)
+	Description       string   `json:"description,omitempty"`        // Description (mainly for Draft)
+	ErrorDetails      *string  `json:"error_details,omitempty"`      // Error details if status is Error
+	PlayerDescription string   `json:"player_description,omitempty"` // Specific fields from config/setup
+	Themes            []string `json:"themes,omitempty"`
+	WorldLore         []string `json:"world_lore,omitempty"`
+	// Fields specific to published story updates
+	SceneID    string  `json:"scene_id,omitempty"`    // ID of the new scene
+	StateHash  string  `json:"state_hash,omitempty"`  // Hash of the state leading to the new scene
+	EndingText *string `json:"ending_text,omitempty"` // Text for completed stories
 }
 
 // rabbitMQPublisher implements the TaskPublisher, ClientUpdatePublisher, PushNotificationPublisher, CharacterImageTaskPublisher interfaces for RabbitMQ.
@@ -128,22 +130,22 @@ func NewRabbitMQCharacterImageTaskPublisher(conn *amqp.Connection, queueName str
 	if err != nil {
 		return nil, fmt.Errorf("character image task publisher: не удалось открыть канал: %w", err)
 	}
-	// Паблишер объявляет очередь, чтобы быть уверенным в её существовании.
-	// Параметры должны совпадать с ожиданиями consumer'а (image-generator).
-	_, err = ch.QueueDeclare(
-		queueName, // name
-		true,      // durable
-		false,     // delete when unused
-		false,     // exclusive
-		false,     // no-wait
-		nil,       // arguments (можно добавить DLX, если нужно)
-	)
-	if err != nil {
-		log.Printf("CharacterImageTaskPublisher ERROR: Не удалось объявить очередь '%s': %v", queueName, err)
-		ch.Close()
-		return nil, fmt.Errorf("character image task publisher: не удалось объявить очередь '%s': %w", queueName, err)
-	}
-	log.Printf("CharacterImageTaskPublisher: Очередь '%s' успешно объявлена/найдена.", queueName)
+	// <<< ИЗМЕНЕНО: Удален вызов QueueDeclare >>>
+	// Паблишер не должен объявлять очередь, параметры которой (DLX) устанавливает консьюмер.
+	// _, err = ch.QueueDeclare(
+	// 	queueName, // name
+	// 	true,      // durable
+	// 	false,     // delete when unused
+	// 	false,     // exclusive
+	// 	false,     // no-wait
+	// 	nil,       // arguments
+	// )
+	// if err != nil {
+	// 	log.Printf("CharacterImageTaskPublisher ERROR: Не удалось объявить очередь '%s': %v", queueName, err)
+	// 	ch.Close()
+	// 	return nil, fmt.Errorf("character image task publisher: не удалось объявить очередь '%s': %w", queueName, err)
+	// }
+	log.Printf("CharacterImageTaskPublisher: Инициализирован для очереди '%s' (объявление пропускается).", queueName)
 	return &rabbitMQPublisher{channel: ch, queueName: queueName}, nil
 }
 
@@ -154,21 +156,22 @@ func NewRabbitMQCharacterImageTaskBatchPublisher(conn *amqp.Connection, queueNam
 	if err != nil {
 		return nil, fmt.Errorf("character image task batch publisher: не удалось открыть канал: %w", err)
 	}
-	// Объявляем ту же очередь, что и для одиночных задач. Consumer будет разбираться.
-	_, err = ch.QueueDeclare(
-		queueName, // name
-		true,      // durable
-		false,     // delete when unused
-		false,     // exclusive
-		false,     // no-wait
-		nil,       // arguments (можно добавить DLX, если нужно, синхронно с одиночным)
-	)
-	if err != nil {
-		log.Printf("CharacterImageTaskBatchPublisher ERROR: Не удалось объявить очередь '%s': %v", queueName, err)
-		ch.Close()
-		return nil, fmt.Errorf("character image task batch publisher: не удалось объявить очередь '%s': %w", queueName, err)
-	}
-	log.Printf("CharacterImageTaskBatchPublisher: Очередь '%s' успешно объявлена/найдена.", queueName)
+	// <<< ИЗМЕНЕНО: Удален вызов QueueDeclare >>>
+	// Паблишер не должен объявлять очередь, параметры которой (DLX) устанавливает консьюмер.
+	// _, err = ch.QueueDeclare(
+	// 	queueName, // name
+	// 	true,      // durable
+	// 	false,     // delete when unused
+	// 	false,     // exclusive
+	// 	false,     // no-wait
+	// 	nil,       // arguments
+	// )
+	// if err != nil {
+	// 	log.Printf("CharacterImageTaskBatchPublisher ERROR: Не удалось объявить очередь '%s': %v", queueName, err)
+	// 	ch.Close()
+	// 	return nil, fmt.Errorf("character image task batch publisher: не удалось объявить очередь '%s': %w", queueName, err)
+	// }
+	log.Printf("CharacterImageTaskBatchPublisher: Инициализирован для очереди '%s' (объявление пропускается).", queueName)
 	return &rabbitMQPublisher{channel: ch, queueName: queueName}, nil
 }
 

@@ -1,6 +1,6 @@
-# 🎮 AI: Game Setup Generator (Reigns-like)
+# 🎮 AI: Game Setup Generator (JSON API Mode)
 
-**Task:** Setup initial game state (core stats, characters) based on input config. Output **COMPRESSED JSON ONLY**.
+**Task:** You are a JSON API generator. Setup initial game state (core stats, characters) as a **single-line, COMPRESSED JSON** based on input config. Output **COMPRESSED JSON ONLY**.
 
 **Input Config JSON (Partial, provided by engine):**
 ```json
@@ -55,9 +55,9 @@
 ```
 
 **Instructions:**
-1. **CRITICAL LANGUAGE RULE: Generate ALL text content intended for narrative or display (like character names `n`, descriptions `d`, personality `p`, and enhanced core stat descriptions `csd.d`) STRICTLY in the language specified in the input `ln`.** The generated language MUST match the input `ln`. Fields like input `st`, `cvs`, and output `vt`, `pr` (image prompt) are EXCEPTIONS and MUST remain/be generated in **English**.
+1. **CRITICAL LANGUAGE RULE:** Generate ALL text content intended for narrative or display (like character names `n`, descriptions `d`, personality `p`, and enhanced core stat descriptions `csd.d`) STRICTLY in the language specified in the input `ln`. The generated language MUST match the input `ln`. Fields like input `st`, `cvs`, and output `vt`, `pr` (image prompt) are EXCEPTIONS and MUST remain/be generated in **English**.
 2. Receive input JSON config (structure above).
-3. Generate **COMPRESSED JSON output ONLY** (structure above). Output must be a **single line, no markdown, no extra formatting**.
+3. Generate **COMPRESSED JSON output ONLY** (structure above). Output must be a **single line, no markdown, no extra formatting**. The output *must* be parsable by standard functions like `JSON.parse()` or `json.loads()`.
 4. **Strict JSON syntax** (quotes, commas, brackets).
 5. Strictly follow input `ac` flag.
 6. Generate **approximately 10 characters** in the `chars` array, relevant to the story context.

@@ -40,7 +40,7 @@ func NewPgPlayerProgressRepository(pool *pgxpool.Pool, logger *zap.Logger) inter
 
 const getPlayerProgressBaseFields = `
 	id, user_id, published_story_id, current_core_stats, current_story_variables, 
-	global_flags, current_state_hash, scene_index, created_at, updated_at, 
+	current_global_flags, current_state_hash, scene_index, created_at, updated_at, 
 	last_story_summary, last_future_direction, last_var_impact_summary
 `
 
@@ -52,7 +52,7 @@ const getPlayerProgressByStoryAndHashQuery = `SELECT ` + getPlayerProgressBaseFi
 const getPlayerProgressByUserAndStoryQuery = `SELECT ` + getPlayerProgressBaseFields + ` FROM player_progress WHERE user_id = $1 AND published_story_id = $2`
 
 const insertPlayerProgressQuery = `
-INSERT INTO player_progress (user_id, published_story_id, current_core_stats, current_story_variables, global_flags, current_state_hash, scene_index, created_at, updated_at, last_story_summary, last_future_direction, last_var_impact_summary)
+INSERT INTO player_progress (user_id, published_story_id, current_core_stats, current_story_variables, current_global_flags, current_state_hash, scene_index, created_at, updated_at, last_story_summary, last_future_direction, last_var_impact_summary)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 RETURNING id, created_at` // Return ID and CreatedAt
 
@@ -62,7 +62,7 @@ UPDATE player_progress SET
     published_story_id = $3,
     current_core_stats = $4,
     current_story_variables = $5,
-    global_flags = $6,
+    current_global_flags = $6,
     current_state_hash = $7,
     scene_index = $8,
     updated_at = $9,
@@ -459,7 +459,7 @@ func isValidPlayerProgressField(field string) bool {
 		"published_story_id",
 		"current_core_stats",      // JSONB
 		"current_story_variables", // JSONB
-		"global_flags",            // text[]
+		"current_global_flags",    // text[]
 		"current_state_hash",
 		"scene_index",
 		"updated_at", // Обычно обновляется автоматически

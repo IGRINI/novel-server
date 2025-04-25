@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"novel-server/gameplay-service/internal/config"
 	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
+	sharedModels "novel-server/shared/models"
 )
 
 // Типы обновлений для ClientStoryUpdate
@@ -20,6 +22,9 @@ const (
 	UpdateTypeDraft = "draft_update"
 	UpdateTypeStory = "story_update"
 )
+
+// Регулярное выражение для извлечения UUID из ImageReference - БОЛЬШЕ НЕ НУЖНО
+// var storyIDRegex = regexp.MustCompile(`[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}`)
 
 // --- NotificationProcessor ---
 
@@ -96,71 +101,40 @@ func (p *NotificationProcessor) Process(ctx context.Context, delivery amqp.Deliv
 	var notification sharedMessaging.NotificationPayload
 	errNotification := json.Unmarshal(delivery.Body, &notification)
 
-	if errNotification == nil {
-		// Успешно распарсили как NotificationPayload
-		p.logger.Info("Processing as NotificationPayload",
-			zap.String("task_id", notification.TaskID),
-			zap.String("prompt_type", string(notification.PromptType)),
+	if errNotification != nil {
+		// Если не удалось распарсить как NotificationPayload
+		p.logger.Error("Failed to unmarshal message body as NotificationPayload",
+			zap.Error(errNotification),
 			zap.String("correlation_id", delivery.CorrelationId),
+			zap.ByteString("body", delivery.Body), // Логируем тело сообщения для отладки
 		)
-		// Вызываем внутренний метод для обработки NotificationPayload
-		errProcess := p.processNotificationPayloadInternal(ctx, notification)
-		if errProcess != nil {
-			p.logger.Error("Error processing NotificationPayload",
-				zap.String("task_id", notification.TaskID),
-				zap.Error(errProcess),
-				zap.String("correlation_id", delivery.CorrelationId),
-			)
-			// Nack(false, false) будет вызван в StartConsuming
-			return errProcess // Возвращаем ошибку, чтобы вызвать Nack
-		}
-		p.logger.Info("NotificationPayload processed successfully",
-			zap.String("task_id", notification.TaskID),
-			zap.String("correlation_id", delivery.CorrelationId),
-		)
-		// Ack будет вызван в StartConsuming
-		return nil // Успех
+		// Nack(false, false) будет вызван в StartConsuming
+		return fmt.Errorf("unknown message format: failed to parse as NotificationPayload: %w", errNotification)
 	}
 
-	// Попытка 2: Обработать как CharacterImageResultPayload
-	var imageResult sharedMessaging.CharacterImageResultPayload
-	errImageResult := json.Unmarshal(delivery.Body, &imageResult)
-
-	if errImageResult == nil {
-		// Успешно распарсили как CharacterImageResultPayload
-		p.logger.Info("Processing as CharacterImageResultPayload",
-			zap.String("task_id", imageResult.TaskID), // Используем TaskID из imageResult
-			zap.String("image_reference", imageResult.ImageReference),
-			zap.String("correlation_id", delivery.CorrelationId),
-		)
-		// Вызываем внутренний метод для обработки CharacterImageResultPayload
-		errProcess := p.processImageResult(ctx, imageResult)
-		if errProcess != nil {
-			p.logger.Error("Error processing CharacterImageResultPayload",
-				zap.String("task_id", imageResult.TaskID),
-				zap.Error(errProcess),
-				zap.String("correlation_id", delivery.CorrelationId),
-			)
-			// Nack(false, false) будет вызван в StartConsuming
-			return errProcess // Возвращаем ошибку, чтобы вызвать Nack
-		}
-		p.logger.Info("CharacterImageResultPayload processed successfully",
-			zap.String("task_id", imageResult.TaskID),
-			zap.String("correlation_id", delivery.CorrelationId),
-		)
-		// Ack будет вызван в StartConsuming
-		return nil // Успех
-	}
-
-	// Если не удалось распарсить ни как NotificationPayload, ни как CharacterImageResultPayload
-	p.logger.Error("Failed to unmarshal message body into known payload types",
-		zap.Error(errNotification),
-		zap.Error(errImageResult),
+	// Успешно распарсили как NotificationPayload
+	p.logger.Info("Processing as NotificationPayload",
+		zap.String("task_id", notification.TaskID),
+		zap.String("prompt_type", string(notification.PromptType)),
 		zap.String("correlation_id", delivery.CorrelationId),
-		zap.ByteString("body", delivery.Body), // Логируем тело сообщения для отладки
 	)
-	// Nack(false, false) будет вызван в StartConsuming
-	return fmt.Errorf("unknown message format: failed to parse as NotificationPayload (%v) or CharacterImageResultPayload (%v)", errNotification, errImageResult)
+	// Вызываем внутренний метод для обработки NotificationPayload
+	errProcess := p.processNotificationPayloadInternal(ctx, notification)
+	if errProcess != nil {
+		p.logger.Error("Error processing NotificationPayload",
+			zap.String("task_id", notification.TaskID),
+			zap.Error(errProcess),
+			zap.String("correlation_id", delivery.CorrelationId),
+		)
+		// Nack(false, false) будет вызван в StartConsuming
+		return errProcess // Возвращаем ошибку, чтобы вызвать Nack
+	}
+	p.logger.Info("NotificationPayload processed successfully",
+		zap.String("task_id", notification.TaskID),
+		zap.String("correlation_id", delivery.CorrelationId),
+	)
+	// Ack будет вызван в StartConsuming
+	return nil // Успех
 }
 
 // processNotificationPayloadInternal обрабатывает задачи генерации текста
@@ -218,50 +192,207 @@ func (p *NotificationProcessor) processNotificationPayloadInternal(ctx context.C
 		// <<< ИЗМЕНЕНИЕ: Передаем распарсенный publishedStoryID >>>
 		return p.handleSceneGenerationNotification(ctx, notification, publishedStoryID) // Вызов функции из handle_scene.go
 
+	// <<< ДОБАВЛЕНО: Обработка новых типов >>>
+	case sharedMessaging.PromptTypeCharacterImage, sharedMessaging.PromptTypeStoryPreviewImage:
+		p.logger.Info("Processing image generation result notification",
+			zap.String("task_id", taskID),
+			zap.String("prompt_type", string(notification.PromptType)),
+			zap.String("published_story_id_str", notification.PublishedStoryID), // Лог ID как строка
+			zap.String("image_reference", notification.ImageReference),
+			zap.String("status", string(notification.Status)),
+		)
+
+		// Валидация ID истории
+		publishedStoryID, err := uuid.Parse(notification.PublishedStoryID)
+		if err != nil || publishedStoryID == uuid.Nil {
+			p.logger.Error("Invalid or missing PublishedStoryID in image notification. Acking.",
+				zap.String("task_id", taskID),
+				zap.String("published_story_id_str", notification.PublishedStoryID),
+				zap.Error(err),
+			)
+			return nil // Ack, так как повторная обработка не поможет
+		}
+
+		logFields := []zap.Field{
+			zap.String("task_id", taskID),
+			zap.String("image_reference", notification.ImageReference),
+			zap.Stringer("publishedStoryID", publishedStoryID),
+		}
+
+		// Обработка ошибки генерации
+		if notification.Status == sharedMessaging.NotificationStatusError {
+			p.logger.Error("Image generation failed", append(logFields, zap.String("error_details", notification.ErrorDetails))...)
+			// TODO: Возможно, стоит как-то помечать историю или reference как ошибочный?
+			// Сейчас просто подтверждаем сообщение (Ack), так как ошибка уже произошла.
+			return nil // Ack
+		}
+
+		// Обработка успешной генерации
+		if notification.Status == sharedMessaging.NotificationStatusSuccess {
+			// Проверка наличия URL и референса
+			if notification.ImageURL == nil || *notification.ImageURL == "" {
+				p.logger.Error("Image generation succeeded but returned empty or nil URL. Acking.", logFields...)
+				return nil // Ack
+			}
+			if notification.ImageReference == "" {
+				p.logger.Error("Image generation succeeded but returned empty ImageReference. Acking.", logFields...)
+				return nil // Ack
+			}
+
+			imageURL := *notification.ImageURL
+			imageReference := notification.ImageReference
+			p.logger.Info("Image generated successfully, saving URL", append(logFields, zap.String("image_url", imageURL))...)
+
+			dbCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+
+			// 1. Сохраняем URL для текущего референса
+			errSave := p.imageReferenceRepo.SaveOrUpdateImageReference(dbCtx, imageReference, imageURL)
+			if errSave != nil {
+				p.logger.Error("Failed to save image URL for reference, NACKing message", append(logFields, zap.String("image_url", imageURL), zap.Error(errSave))...)
+				return fmt.Errorf("failed to save image URL for reference %s: %w", imageReference, errSave) // Nack
+			}
+			p.logger.Info("Image URL saved successfully for reference", logFields...)
+
+			// 2. Проверяем, все ли изображения для этой истории готовы
+			p.logger.Info("Checking if all images are ready for story", logFields...)
+
+			story, errGetStory := p.publishedRepo.GetByID(dbCtx, publishedStoryID)
+			if errGetStory != nil {
+				if errors.Is(errGetStory, sharedModels.ErrNotFound) {
+					p.logger.Warn("PublishedStory not found while checking image completion, maybe deleted? Acking.", logFields...)
+				} else {
+					p.logger.Error("Failed to get PublishedStory while checking image completion. Acking.", append(logFields, zap.Error(errGetStory))...)
+				}
+				// Не можем проверить статус, подтверждаем сообщение.
+				return nil // Ack
+			}
+
+			// Если флаг are_images_pending уже false, ничего не делаем.
+			if !story.AreImagesPending {
+				p.logger.Info("Story already marked as images not pending. Skipping further checks.", logFields...)
+				return nil // Ack
+			}
+
+			var setupContent sharedModels.NovelSetupContent
+			if story.Setup == nil || len(story.Setup) == 0 {
+				p.logger.Error("Setup is missing or empty for PublishedStory, cannot verify all images. Acking.", logFields...)
+				return nil // Ack
+			}
+			if errUnmarshal := json.Unmarshal(story.Setup, &setupContent); errUnmarshal != nil {
+				p.logger.Error("Failed to unmarshal Setup JSON for PublishedStory, cannot verify all images. Acking.", append(logFields, zap.Error(errUnmarshal))...)
+				return nil // Ack
+			}
+
+			// Собираем все необходимые референсы
+			requiredRefs := make([]string, 0)
+			if setupContent.StoryPreviewImagePrompt != "" {
+				requiredRefs = append(requiredRefs, fmt.Sprintf("history_preview_%s", publishedStoryID.String()))
+			}
+			for _, char := range setupContent.Characters {
+				if char.ImageRef != "" {
+					requiredRefs = append(requiredRefs, char.ImageRef)
+				}
+			}
+
+			// Определяем, были ли все изображения готовы к концу проверок
+			var allImagesReady bool
+			if len(requiredRefs) == 0 {
+				p.logger.Info("No images were required for this story according to Setup.", logFields...)
+				allImagesReady = true
+			} else {
+				allImagesReady = true // Предполагаем, что готовы
+				p.logger.Debug("Checking URLs for required image references", append(logFields, zap.Strings("refs", requiredRefs))...)
+				for _, ref := range requiredRefs {
+					_, errCheck := p.imageReferenceRepo.GetImageURLByReference(dbCtx, ref)
+					if errCheck != nil {
+						if errors.Is(errCheck, sharedModels.ErrNotFound) {
+							p.logger.Info("Required image reference still missing URL, not all images are ready yet.", append(logFields, zap.String("missing_ref", ref))...)
+							allImagesReady = false
+							break // Нашли недостающий
+						} else {
+							p.logger.Error("Error checking image reference URL, assuming not all images are ready. Acking.", append(logFields, zap.String("checked_ref", ref), zap.Error(errCheck))...)
+							// Техническая ошибка при проверке, лучше подтвердить сообщение, чтобы не зациклиться
+							return nil // Ack
+						}
+					}
+				}
+			}
+
+			// 4. Если все изображения готовы, обновляем флаг и проверяем общий статус
+			if allImagesReady {
+				p.logger.Info("All required image URLs found or none were required. Marking images as not pending.", logFields...)
+				// Обновляем флаг are_images_pending = false
+				errUpdatePending := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, story.Status, story.IsFirstScenePending, false, nil)
+				if errUpdatePending != nil {
+					p.logger.Error("Failed to update AreImagesPending flag to false. Acking.", append(logFields, zap.Error(errUpdatePending))...)
+					// Ошибка обновления флага, но URL сохранен. Ack.
+					return nil // Ack
+				}
+
+				// Проверяем, нужно ли установить статус Ready (если первая сцена тоже готова)
+				// Используем значение story.IsFirstScenePending *до* обновления флага
+				if !story.IsFirstScenePending {
+					p.logger.Info("Both first scene and images are now ready. Setting story status to Ready.", logFields...)
+					// Устанавливаем статус Ready
+					errUpdateReady := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, sharedModels.StatusReady, false, false, nil)
+					if errUpdateReady != nil {
+						p.logger.Error("Failed to set story status to Ready after all checks passed. Acking.", append(logFields, zap.Error(errUpdateReady))...)
+						// Ошибка установки Ready, но флаги обновлены. Ack.
+						return nil // Ack
+					}
+					p.logger.Info("Story status successfully set to Ready.", logFields...)
+
+					// <<< НАЧАЛО: Отправка WS обновления при StatusReady >>>
+					clientUpdateReady := ClientStoryUpdate{
+						ID:         publishedStoryID.String(),
+						UserID:     story.UserID.String(), // Используем UserID из загруженной истории
+						UpdateType: UpdateTypeStory,
+						Status:     string(sharedModels.StatusReady),
+						// SceneID, StateHash, EndingText не релевантны для этого обновления
+					}
+					wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer wsCancel()
+					if errWs := p.clientPub.PublishClientUpdate(wsCtx, clientUpdateReady); errWs != nil {
+						p.logger.Error("Error sending ClientStoryUpdate (Images Ready -> Status Ready)", append(logFields, zap.Error(errWs))...)
+					} else {
+						p.logger.Info("ClientStoryUpdate sent (Images Ready -> Status Ready)", append(logFields, zap.String("status", clientUpdateReady.Status))...)
+					}
+					// <<< КОНЕЦ: Отправка WS обновления при StatusReady >>>
+
+				} else {
+					p.logger.Info("Images are ready, but first scene is still pending. Status Ready not set yet.", logFields...)
+				}
+			} else {
+				p.logger.Info("Not all required image URLs are ready yet.", logFields...)
+			}
+
+			// Если дошли сюда без ошибок сохранения URL, подтверждаем сообщение
+			return nil // Ack
+
+		} else {
+			// Неизвестный статус
+			p.logger.Error("Unknown status in image notification. Acking.", append(logFields, zap.String("status", string(notification.Status)))...)
+			return nil // Ack
+		}
+
 	default:
 		p.logger.Error("Unknown PromptType in NotificationPayload. Nacking message.", zap.String("task_id", taskID), zap.String("prompt_type", string(notification.PromptType)))
 		return fmt.Errorf("unknown PromptType: %s", notification.PromptType)
 	}
 }
 
-// processImageResult обрабатывает результат генерации изображения
-func (p *NotificationProcessor) processImageResult(ctx context.Context, result sharedMessaging.CharacterImageResultPayload) error {
-	logFields := []zap.Field{
-		zap.String("task_id", result.TaskID),
-		zap.String("image_reference", result.ImageReference),
+// extractStoryIDFromImageReference - БОЛЬШЕ НЕ НУЖНА
+/*
+func extractStoryIDFromImageReference(ref string) (uuid.UUID, error) {
+	matches := storyIDRegex.FindStringSubmatch(ref)
+	if len(matches) == 0 {
+		return uuid.Nil, fmt.Errorf("UUID not found in image reference: %s", ref)
 	}
-	p.logger.Info("Processing CharacterImageResultPayload", logFields...)
-
-	if !result.Success { // Check the Success field
-		errMsg := "Unknown error"
-		if result.ErrorMessage != nil {
-			errMsg = *result.ErrorMessage
-		}
-		p.logger.Error("Image generation failed for reference", append(logFields, zap.String("error", errMsg))...)
-		// Ошибку обработали (залогировали), но сообщение подтверждаем, т.к. повторная обработка не поможет.
-		return nil // Ack
-	}
-
-	if result.ImageURL == nil || *result.ImageURL == "" { // Check pointer and value
-		p.logger.Error("Image generation succeeded but returned empty or nil URL", logFields...)
-		// Это странная ситуация, логируем как ошибку, но подтверждаем.
-		return nil // Ack
-	}
-
-	imageURL := *result.ImageURL // Dereference the pointer
-	p.logger.Info("Image generated successfully, saving URL", append(logFields, zap.String("image_url", imageURL))...)
-
-	dbCtx, cancel := context.WithTimeout(ctx, 10*time.Second) // Короткий таймаут для сохранения URL
-	defer cancel()
-
-	// Используем imageReferenceRepo для сохранения URL
-	err := p.imageReferenceRepo.SaveOrUpdateImageReference(dbCtx, result.ImageReference, imageURL)
+	id, err := uuid.Parse(matches[0])
 	if err != nil {
-		p.logger.Error("Failed to save image URL for reference", append(logFields, zap.String("image_url", imageURL), zap.Error(err))...)
-		// Не смогли сохранить URL. Возвращаем ошибку, чтобы сообщение было обработано повторно (nack).
-		return fmt.Errorf("failed to save image URL for reference %s: %w", result.ImageReference, err)
+		return uuid.Nil, fmt.Errorf("failed to parse extracted UUID '%s': %w", matches[0], err)
 	}
-
-	p.logger.Info("Image URL saved successfully for reference", logFields...)
-	return nil // Ack
+	return id, nil
 }
+*/

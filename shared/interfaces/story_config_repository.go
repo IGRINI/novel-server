@@ -28,6 +28,11 @@ type StoryConfigRepository interface {
 
 	FindGeneratingConfigs(ctx context.Context) ([]*models.StoryConfig, error)
 
+	// FindAndMarkStaleGeneratingDraftsAsError находит черновики со статусом 'generating',
+	// чье время последнего обновления старше указанного порога, и устанавливает им статус 'Error'.
+	// Возвращает количество обновленных записей и ошибку.
+	FindAndMarkStaleGeneratingDraftsAsError(ctx context.Context, staleThreshold time.Duration) (int64, error)
+
 	DeleteTx(ctx context.Context, tx pgx.Tx, id uuid.UUID, userID uuid.UUID) error
 
 	ListByUserID(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]models.StoryConfig, string, error)
@@ -46,4 +51,7 @@ type StoryConfigRepository interface {
 
 	// UpdateConfigAndInputAndStatus updates the config, user input and status of a story config.
 	UpdateConfigAndInputAndStatus(ctx context.Context, id uuid.UUID, configJSON, userInputJSON json.RawMessage, status models.StoryStatus) error
+
+	// UpdateStatus updates the status of a story config.
+	UpdateStatus(ctx context.Context, id uuid.UUID, status models.StoryStatus) error
 }

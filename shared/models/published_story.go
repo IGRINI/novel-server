@@ -44,6 +44,10 @@ type PublishedStory struct {
 	CreatedAt      time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at" db:"updated_at"`
 	IsLiked        bool      `json:"is_liked" db:"-"` // Это поле заполняется на уровне запроса для конкретного пользователя
+
+	// --- Флаги для отслеживания параллельной генерации ---
+	IsFirstScenePending bool `json:"is_first_scene_pending" db:"is_first_scene_pending"` // True, если первая сцена еще не сгенерирована
+	AreImagesPending    bool `json:"are_images_pending" db:"are_images_pending"`         // True, если изображения еще не сгенерированы
 }
 
 // CharacterDefinition represents a character described in the setup JSON.
