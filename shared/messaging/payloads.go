@@ -12,11 +12,11 @@ type PromptType string
 
 // Константы для типов промптов
 const (
-	PromptTypeNarrator               PromptType = "narrator"                  // Генерация базовых параметров мира по запросу пользователя
-	PromptTypeNovelSetup             PromptType = "novel_setup"               // Генерация стартового состояния мира (статы, персонажи)
-	PromptTypeNovelFirstSceneCreator PromptType = "novel_first_scene_creator" // Генерация первой сцены (DEPRECATED? Use NovelCreator)
-	PromptTypeNovelCreator           PromptType = "novel_creator"             // Генерация следующей сцены (или первой)
-	PromptTypeNovelGameOverCreator   PromptType = "novel_game_over_creator"   // Генерация финальной сцены (конец игры)
+	PromptTypeNarrator               PromptType = "narrator_unc"                  // Генерация базовых параметров мира по запросу пользователя
+	PromptTypeNovelSetup             PromptType = "novel_setup_unc"               // Генерация стартового состояния мира (статы, персонажи)
+	PromptTypeNovelFirstSceneCreator PromptType = "novel_first_scene_creator_unc" // Генерация первой сцены (DEPRECATED? Use NovelCreator)
+	PromptTypeNovelCreator           PromptType = "novel_creator_unc"             // Генерация следующей сцены (или первой)
+	PromptTypeNovelGameOverCreator   PromptType = "novel_game_over_creator_unc"   // Генерация финальной сцены (конец игры)
 	// <<< ДОБАВЛЕНО: Типы для генерации изображений >>>
 	PromptTypeCharacterImage    PromptType = "character_image"     // Генерация изображения персонажа
 	PromptTypeStoryPreviewImage PromptType = "story_preview_image" // Генерация превью-изображения истории

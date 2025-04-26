@@ -375,6 +375,14 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 				promptType = sharedMessaging.PromptTypeNarrator
 				userInputForTask = lastUserInput
 				log.Info("Retry is for initial generation")
+				// <<< ДОБАВЛЕНО: Добавление префикса языка для начальной генерации >>>
+				if prefix, ok := languagePrefixes[config.Language]; ok {
+					userInputForTask = prefix + userInputForTask
+					log.Debug("Added language prefix to prompt for initial retry", zap.String("prefix", prefix), zap.String("language", config.Language))
+				} else {
+					log.Warn("Language code not found in prefixes for initial retry, using original prompt", zap.String("language", config.Language))
+				}
+				// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
 			} else {
 				promptType = sharedMessaging.PromptTypeNarrator
 				log.Info("Retry is for a revision generation", zap.String("revisionPrompt", lastUserInput))

@@ -95,6 +95,10 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 
 	// --- Этап 2: Формирование финального UserInput для AI ---
 	originalUserInput := payload.UserInput
+	// <<< ДОБАВЛЕНО: Логирование оригинального UserInput >>>
+	log.Printf("[TaskID: %s] Original UserInput received (length: %d): %s", payload.TaskID, len(originalUserInput), originalUserInput)
+	// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
+
 	// Объединяем инструкции из файла и оригинальный UserInput
 	// userInputForAI := fmt.Sprintf("--- Instructions ---\n%s\n\n--- User Input ---\n%s", promptInstructions, originalUserInput)
 	// <<< ИЗМЕНЕНО: Используем strings.Replace >>>
@@ -138,7 +142,7 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 			payload.UserID,
 			fixedShortSystemPrompt, // <<< Передаем короткий системный промпт >>>
 			userInputForAI,         // <<< Передаем объединенный ввод >>>
-			service.GenerationParams{})
+			service.GenerationParams{Temperature: float64Ptr(0.2)})
 		cancel() // Освобождаем ресурсы контекста
 
 		aiCallDuration := time.Since(aiCallStartTime) // Время выполнения этого вызова AI
@@ -211,6 +215,9 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 	} else {
 		// Успешный ответ AI
 		log.Printf("[TaskID: %s] Финальный ответ от AI получен (длина: %d).", payload.TaskID, len(aiResponse))
+		// <<< ДОБАВЛЕНО: Логирование полного ответа AI >>>
+		log.Printf("[TaskID: %s] Полный ответ AI: %s", payload.TaskID, aiResponse)
+		// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
 		MetricsIncrementTaskSucceeded() // <<< Инкрементируем успех здесь >>>
 	}
 
@@ -359,3 +366,10 @@ func (h *TaskHandler) saveAndNotifyResult(
 	// Если ошибки сохранения не было, возвращаем nil (даже если была ошибка AI/подготовки)
 	return nil
 }
+
+// <<< ДОБАВЛЕНО: Вспомогательная функция для получения указателя на float64 >>>
+func float64Ptr(f float64) *float64 {
+	return &f
+}
+
+// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
