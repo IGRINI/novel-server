@@ -210,17 +210,21 @@ func main() {
 		defer close(done) // Сигнализируем о завершении горутины
 		for msg := range msgs {
 			// <<< Метрика: Счетчик полученных задач (НОВОЕ) >>>
-			worker.MetricsIncrementTasksReceived()
+			// <<< УДАЛЕНО: worker.MetricsIncrementTasksReceived() - вызывается внутри Handle >>>
 
 			var payload messaging.GenerationTaskPayload
 			err := json.Unmarshal(msg.Body, &payload)
 			if err != nil {
 				log.Printf("[TaskID: %s] Ошибка десериализации JSON: %v. Отклоняем сообщение (nack, no requeue).", "N/A", err)
 				// <<< Метрика: Задача с ошибкой (десериализация) (НОВОЕ) >>>
+				// <<< УДАЛЕНО: worker.MetricsIncrementTaskFailed("deserialization") - вызывается внутри Handle (если решим там ловить) или здесь оставить? Пока оставим здесь, т.к. Handle не вызывается. >>>
 				worker.MetricsIncrementTaskFailed("deserialization")
 				msg.Nack(false, false) // Nack(multiple, requeue=false) - не возвращаем в очередь
 				continue
 			}
+
+			// <<< Метрика: Счетчик полученных задач (увеличивается внутри Handle) >>>
+			worker.MetricsIncrementTasksReceived() // <<< ДОБАВЛЕНО ЗДЕСЬ, перед вызовом Handle >>>
 
 			// Вызываем обработчик
 			err = taskHandler.Handle(payload)
@@ -229,34 +233,24 @@ func main() {
 				// Requeue=false, чтобы избежать бесконечных циклов для 'плохих' задач.
 				// В идеале, такие задачи должны попадать в Dead Letter Queue.
 				log.Printf("[TaskID: %s] Ошибка обработки задачи: %v. Отклоняем сообщение (nack, no requeue).", payload.TaskID, err)
-				// <<< Метрика: Задача с ошибкой (обработка) (НОВОЕ) >>>
-				// Упрощаем определение причины, так как типы ошибок недоступны
-				reason := "processing" // Общая причина
-				worker.MetricsIncrementTaskFailed(reason)
+				// <<< Метрика: Задача с ошибкой (обработка) - вызывается внутри Handle >>>
+				// <<< УДАЛЕНО: worker.MetricsIncrementTaskFailed(...) >>>
 				msg.Nack(false, false)
 			} else {
 				// Успешная обработка - подтверждаем сообщение
 				log.Printf("[TaskID: %s] Задача успешно обработана, сохранена и уведомление отправлено. Подтверждаем сообщение (ack).", payload.TaskID)
-				// <<< Метрика: Задача успешно выполнена (НОВОЕ) >>>
-				worker.MetricsIncrementTaskSucceeded()
-				// <<< Метрика: Использованные токены (НОВОЕ) >>>
-				// !!ВАЖНО!!: Здесь нужно получить количество использованных токенов.
-				// Сейчас `taskHandler.Handle` возвращает только `error`.
-				// Нужно модифицировать `taskHandler.Handle` (и интерфейс, если он есть),
-				// чтобы он возвращал `(int, error)` или `(*Result, error)`, где Result содержит токены.
-				// Пока что поставим заглушку 0.
-				// worker.MetricsAddTokensUsed(float64(tokenCount)) // Замените tokenCount на реальное значение
-				worker.MetricsAddTokensUsed(0) // ЗАГЛУШКА
-				msg.Ack(false)                 // Ack(multiple=false)
+				// <<< Метрика: Задача успешно выполнена - вызывается внутри Handle >>>
+				// <<< УДАЛЕНО: worker.MetricsIncrementTaskSucceeded() >>>
+				// <<< Метрика: Использованные токены - вызывается внутри Handle >>>
+				// <<< УДАЛЕНО: worker.MetricsAddTokensUsed(...) >>>
+				msg.Ack(false) // Ack(multiple=false)
 			}
 		}
 		log.Println("Канал сообщений закрыт, горутина обработки завершается.")
 	}()
 
-	// Ожидаем завершения горутины обработки сообщений
-	log.Println("Ожидание завершения обработки текущих сообщений...")
-	<-done
-
+	// Ожидаем сигнала завершения
+	<-stopChan
 	log.Println("Получен сигнал завершения. Завершение работы...")
 
 	// --- Graceful Shutdown для HTTP сервера ---
@@ -271,9 +265,16 @@ func main() {
 	// ----------------------------------------
 
 	// --- Закрытие соединений RabbitMQ и DB ---
-	// (defer conn.Close() и defer ch.Close() сработают)
+	log.Println("Закрытие канала RabbitMQ...") // Закрываем канал, чтобы остановить консьюмера
+	if err := ch.Close(); err != nil {
+		log.Printf("Ошибка при закрытии канала RabbitMQ: %v", err)
+	}
+
+	log.Println("Ожидание завершения обработки текущих сообщений...")
+	<-done // Ждем, пока горутина обработки сообщений завершится
+
 	log.Println("Закрытие соединения с RabbitMQ...")
-	// conn.Close() и ch.Close() вызываются через defer
+	// conn.Close() вызывается через defer
 	log.Println("Закрытие соединения с PostgreSQL...")
 	// dbPool.Close() вызывается через defer
 	log.Println("Сервис генерации историй остановлен.")

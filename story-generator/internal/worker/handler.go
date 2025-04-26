@@ -14,69 +14,14 @@ import (
 	"novel-server/story-generator/internal/service"
 	"os"
 	"path/filepath" // Для шаблонизации промтов
+	"strings"       // <<< ДОБАВЛЕНО: для strings.Replace >>>
 	"time"
-
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-var (
-	// Счетчик полученных задач
-	tasksReceivedTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "story_generator_tasks_received_total",
-		Help: "Total number of tasks received by the worker.",
-	})
-	// Счетчик успешно обработанных задач
-	tasksSucceededTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "story_generator_tasks_succeeded_total",
-		Help: "Total number of tasks successfully processed.",
-	})
-	// Счетчик задач с ошибкой
-	tasksFailedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "story_generator_tasks_failed_total",
-		Help: "Total number of tasks failed during processing, labeled by error type.",
-	}, []string{"error_type"}) // Добавляем label для типа ошибки
-
-	// Гистограмма общей длительности обработки задачи
-	taskProcessingDuration = promauto.NewHistogram(prometheus.HistogramOpts{
-		Name:    "story_generator_task_processing_duration_seconds",
-		Help:    "Total duration of task processing.",
-		Buckets: prometheus.ExponentialBuckets(0.5, 2, 10), // Базовые бакеты: 0.5s, 1s, 2s ... ~4 min
-	})
-
-	// --- НОВЫЕ МЕТРИКИ: Токены и стоимость по типу задачи --- //
-	taskTokensTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "story_generator_task_tokens_total",
-		Help: "Total number of tokens processed by AI, labeled by prompt type and token type (prompt/completion).",
-	}, []string{"prompt_type", "token_type"})
-
-	taskEstimatedCostUSDTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "story_generator_task_estimated_cost_usd_total",
-		Help: "Total estimated cost of AI tasks in USD, labeled by prompt type.",
-	}, []string{"prompt_type"})
-
-	taskTokensPerTask = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "story_generator_task_tokens_per_task",
-		Help:    "Distribution of tokens per task, labeled by prompt type and token type.",
-		Buckets: prometheus.ExponentialBuckets(100, 2, 12), // Бакеты: 100, 200, 400, ..., ~200k
-	}, []string{"prompt_type", "token_type"})
-
-	taskEstimatedCostUSDPerTask = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "story_generator_task_estimated_cost_usd_per_task",
-		Help:    "Distribution of estimated cost per task in USD, labeled by prompt type.",
-		Buckets: prometheus.ExponentialBuckets(0.0001, 4, 10), // Бакеты: $0.0001, $0.0004, $0.0016, ..., ~$26
-	}, []string{"prompt_type"})
-)
-
-// IncrementTasksReceived инкрементирует счетчик полученных задач.
-func IncrementTasksReceived() {
-	tasksReceivedTotal.Inc()
-}
-
-// IncrementTaskFailed инкрементирует счетчик задач с ошибкой, указывая тип ошибки.
-func IncrementTaskFailed(errorType string) {
-	tasksFailedTotal.WithLabelValues(errorType).Inc()
-}
+// <<< ДОБАВЛЕНО: Короткий системный промпт >>>
+const fixedShortSystemPrompt = `You are a strict JSON API responder.
+Always answer ONLY with a single valid JSON object.
+Do not include any text, comments, or explanations.`
 
 // TaskHandler обрабатывает задачи генерации
 type TaskHandler struct {
@@ -86,7 +31,8 @@ type TaskHandler struct {
 	notifier       service.Notifier            // Сервис для отправки уведомлений
 	maxAttempts    int                         // Максимальное кол-во попыток вызова AI
 	aiTimeout      time.Duration               // Таймаут для одного вызова AI
-	baseRetryDelay time.Duration               // Добавляем поле
+	baseRetryDelay time.Duration               // Базовая задержка перед ретраем
+	aiModel        string                      // <<< ДОБАВЛЕНО: Имя модели для метрик >>>
 }
 
 // NewTaskHandler создает новый экземпляр обработчика задач
@@ -99,159 +45,234 @@ func NewTaskHandler(cfg *config.Config, aiClient service.AIClient, resultRepo re
 		maxAttempts:    cfg.AIMaxAttempts,
 		aiTimeout:      cfg.AITimeout,
 		baseRetryDelay: cfg.AIBaseRetryDelay,
+		aiModel:        cfg.AIModel, // <<< ДОБАВЛЕНО: Сохраняем имя модели >>>
 	}
 }
 
 // Handle обрабатывает одну задачу генерации
-func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) error {
+func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error) { // Возвращаем именованную ошибку для удобства defer
+	taskStartTime := time.Now() // Замеряем время начала обработки задачи
 	log.Printf("[TaskID: %s] Обработка задачи: UserID=%s, PromptType=%s",
 		payload.TaskID, payload.UserID, payload.PromptType)
 
 	// Метка для прометеуса
 	promptTypeLabel := string(payload.PromptType)
+	// Переменная для статуса задачи (для финальной метрики длительности)
+	taskStatus := "success" // По умолчанию успех
 
-	fullStartTime := time.Now()
-	createdAt := fullStartTime
+	// Defer для записи общей длительности задачи и отправки метрик
+	defer func() {
+		duration := time.Since(taskStartTime)
+		MetricsRecordTaskProcessingDuration(duration) // Записываем общую длительность
+		if err != nil {
+			// Если была ошибка на любом этапе, записываем метрику ошибки
+			// Тип ошибки уже должен быть записан ранее (prompt_preparation, user_input_empty, ai_error, save_error)
+			taskStatus = "failed" // Меняем статус для лога
+		}
+		// Принудительно отправляем все собранные метрики для этой задачи
+		if pushErr := PushMetricsNow(); pushErr != nil {
+			log.Printf("[TaskID: %s][WARN] Не удалось принудительно отправить метрики в конце задачи: %v", payload.TaskID, pushErr)
+		}
+		log.Printf("[TaskID: %s] Завершение обработки задачи. Статус: %s. Общее время: %v.", payload.TaskID, taskStatus, duration)
+	}()
 
 	// Объявляем переменные для результатов и ошибок
-	var finalSystemPrompt string
+	var promptInstructions string // Переименовали finalSystemPrompt
 	var aiResponse string
-	var err error
-	var processingTime time.Duration
+	var processingErr error // Переименовали err в processingErr чтобы не конфликтовать с именованным возвращаемым значением
 	var completedAt time.Time
-	var usageInfo service.UsageInfo // <<< Для хранения информации о токенах/стоимости
+	var totalTaskTokensPrompt, totalTaskTokensCompletion float64
+	var totalTaskCost float64
 
-	// --- Этап 1-2: Загрузка и рендеринг промта ---
-	finalSystemPrompt, err = h.preparePrompt(payload.TaskID, payload.PromptType)
-	if err != nil {
-		log.Printf("[TaskID: %s] Ошибка подготовки промта: %v", payload.TaskID, err)
-		completedAt = time.Now()
-		processingTime = completedAt.Sub(fullStartTime)
-		tasksFailedTotal.WithLabelValues("prompt_preparation").Inc()
-		taskProcessingDuration.Observe(processingTime.Seconds())
-		return fmt.Errorf("ошибка подготовки промта: %w", err)
+	// --- Этап 1: Загрузка инструкций из файла промта ---
+	promptInstructions, processingErr = h.preparePrompt(payload.TaskID, payload.PromptType)
+	if processingErr != nil {
+		log.Printf("[TaskID: %s] Ошибка подготовки инструкций из промта: %v", payload.TaskID, processingErr)
+		MetricsIncrementTaskFailed("prompt_preparation")                              // Записываем метрику ошибки
+		err = fmt.Errorf("ошибка подготовки инструкций из промта: %w", processingErr) // Устанавливаем возвращаемую ошибку
+		return err
 	}
 
-	// --- Этап 3: Вызов AI API с ретраями ---
-	userInput := payload.UserInput
-	log.Printf("[TaskID: %s] UserInput для AI API (длина: %d).", payload.TaskID, len(userInput))
+	// --- Этап 2: Формирование финального UserInput для AI ---
+	originalUserInput := payload.UserInput
+	// Объединяем инструкции из файла и оригинальный UserInput
+	// userInputForAI := fmt.Sprintf("--- Instructions ---\n%s\n\n--- User Input ---\n%s", promptInstructions, originalUserInput)
+	// <<< ИЗМЕНЕНО: Используем strings.Replace >>>
+	userInputForAI := strings.Replace(promptInstructions, "{{USER_INPUT}}", originalUserInput, 1)
+	// Проверка, что замена произошла (опционально, для отладки)
+	if userInputForAI == promptInstructions {
+		log.Printf("[TaskID: %s][WARN] Placeholder {{USER_INPUT}} не найден в файле промпта типа '%s'. AI получит только инструкции.", payload.TaskID, payload.PromptType)
+		// Можно решить, как обрабатывать эту ситуацию: вернуть ошибку или продолжить только с инструкциями.
+		// Пока продолжаем, но логируем.
+	}
 
-	if userInput == "" && payload.PromptType != "" {
-		err = fmt.Errorf("ошибка: userInput пуст для PromptType '%s'", payload.PromptType)
-		log.Printf("[TaskID: %s] %v", payload.TaskID, err)
-		completedAt = time.Now()
-		processingTime = completedAt.Sub(fullStartTime)
-		tasksFailedTotal.WithLabelValues("user_input_empty").Inc()
-		taskProcessingDuration.Observe(processingTime.Seconds())
-		return fmt.Errorf("ошибка валидации: %w", err)
+	log.Printf("[TaskID: %s] Final UserInput for AI (length: %d).", payload.TaskID, len(userInputForAI))
+
+	// --- Этап 3: Вызов AI API с ретраями ---
+	// userInput больше не используется напрямую, используем userInputForAI
+	// log.Printf("[TaskID: %s] UserInput для AI API (длина: %d).", payload.TaskID, len(originalUserInput))
+
+	// Проверка может быть нужна для originalUserInput или userInputForAI в зависимости от логики
+	if originalUserInput == "" && payload.PromptType != "" { // Пока проверяем оригинальный, т.к. инструкции всегда будут?
+		processingErr = fmt.Errorf("ошибка: userInput пуст для PromptType '%s'", payload.PromptType)
+		log.Printf("[TaskID: %s] %v", payload.TaskID, processingErr)
+		MetricsIncrementTaskFailed("user_input_empty")          // Записываем метрику ошибки
+		err = fmt.Errorf("ошибка валидации: %w", processingErr) // Устанавливаем возвращаемую ошибку
+		return err
 	}
 
 	baseDelay := h.baseRetryDelay
+	var lastSuccessfulUsageInfo service.UsageInfo // Храним usage последнего успеха
 
 	for attempt := 1; attempt <= h.maxAttempts; attempt++ {
+		aiCallStartTime := time.Now() // Время начала конкретного вызова AI
 		log.Printf("[TaskID: %s] Вызов AI API (Попытка %d/%d)...", payload.TaskID, attempt, h.maxAttempts)
-		aiStartTime := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), h.aiTimeout)
 
-		log.Printf(`[TaskID: %s][Attempt: %d] Отправка запроса в AI:
---- User Input (длина: %d) ---
-%s
-------------------------------`,
-			payload.TaskID, attempt, len(userInput), userInput)
+		// Логирование перед вызовом (опционально, может быть слишком многословно)
+		// log.Printf(`[TaskID: %s][Attempt: %d] Отправка запроса в AI...`, payload.TaskID, attempt)
 
-		aiResponse, usageInfo, err = h.aiClient.GenerateText(ctx, payload.UserID, finalSystemPrompt, userInput, service.GenerationParams{})
-		cancel()
+		var attemptUsageInfo service.UsageInfo
+		var attemptErr error
+		aiResponse, attemptUsageInfo, attemptErr = h.aiClient.GenerateText(ctx,
+			payload.UserID,
+			fixedShortSystemPrompt, // <<< Передаем короткий системный промпт >>>
+			userInputForAI,         // <<< Передаем объединенный ввод >>>
+			service.GenerationParams{})
+		cancel() // Освобождаем ресурсы контекста
 
-		processingTime = time.Since(aiStartTime)
+		aiCallDuration := time.Since(aiCallStartTime) // Время выполнения этого вызова AI
+		aiStatusLabel := "success"                    // Статус для метрики этого вызова
 
-		if err == nil {
-			log.Printf("[TaskID: %s] AI API успешно ответил (Попытка %d). Время ответа: %v", payload.TaskID, attempt, processingTime)
-			if usageInfo.TotalTokens > 0 {
-				taskTokensTotal.WithLabelValues(promptTypeLabel, "prompt").Add(float64(usageInfo.PromptTokens))
-				taskTokensTotal.WithLabelValues(promptTypeLabel, "completion").Add(float64(usageInfo.CompletionTokens))
-				taskTokensPerTask.WithLabelValues(promptTypeLabel, "prompt").Observe(float64(usageInfo.PromptTokens))
-				taskTokensPerTask.WithLabelValues(promptTypeLabel, "completion").Observe(float64(usageInfo.CompletionTokens))
-				log.Printf("[TaskID: %s][Metrics] Tokens: Prompt=%d, Completion=%d", payload.TaskID, usageInfo.PromptTokens, usageInfo.CompletionTokens)
-
-				MetricsAddTokensUsed(float64(usageInfo.TotalTokens))
+		if attemptErr == nil {
+			log.Printf("[TaskID: %s] AI API успешно ответил (Попытка %d). Время ответа: %v", payload.TaskID, attempt, aiCallDuration)
+			lastSuccessfulUsageInfo = attemptUsageInfo // Сохраняем данные последнего успешного вызова
+			MetricsRecordAIRequest(h.aiModel, aiStatusLabel, aiCallDuration)
+			// Записываем токены и стоимость *этого конкретного* AI вызова
+			if attemptUsageInfo.TotalTokens > 0 || attemptUsageInfo.EstimatedCostUSD > 0 {
+				MetricsRecordAITokens(h.aiModel, float64(attemptUsageInfo.PromptTokens), float64(attemptUsageInfo.CompletionTokens))
+				MetricsAddAICost(h.aiModel, attemptUsageInfo.EstimatedCostUSD)
+				log.Printf("[TaskID: %s][Attempt %d Metrics] Tokens: P=%d, C=%d. Cost: %.6f USD",
+					payload.TaskID, attempt, attemptUsageInfo.PromptTokens, attemptUsageInfo.CompletionTokens, attemptUsageInfo.EstimatedCostUSD)
 			}
-			if usageInfo.EstimatedCostUSD > 0 {
-				taskEstimatedCostUSDTotal.WithLabelValues(promptTypeLabel).Add(usageInfo.EstimatedCostUSD)
-				taskEstimatedCostUSDPerTask.WithLabelValues(promptTypeLabel).Observe(usageInfo.EstimatedCostUSD)
-				log.Printf("[TaskID: %s][Metrics] Estimated Cost: %.6f USD", payload.TaskID, usageInfo.EstimatedCostUSD)
-			}
-			break
+			processingErr = nil // Сбрасываем ошибку, т.к. попытка успешна
+			break               // Выходим из цикла ретраев
 		}
 
-		log.Printf("[TaskID: %s] Ошибка вызова AI API (Попытка %d/%d, время: %v): %v", payload.TaskID, attempt, h.maxAttempts, processingTime, err)
+		// Обработка ошибки вызова AI
+		aiStatusLabel = "error"    // Меняем статус для метрики
+		processingErr = attemptErr // Сохраняем последнюю ошибку
+		log.Printf("[TaskID: %s] Ошибка вызова AI API (Попытка %d/%d, время: %v): %v", payload.TaskID, attempt, h.maxAttempts, aiCallDuration, processingErr)
+		MetricsRecordAIRequest(h.aiModel, aiStatusLabel, aiCallDuration) // Записываем неудачную попытку
 
 		if attempt == h.maxAttempts {
 			log.Printf("[TaskID: %s] Достигнуто максимальное количество попыток (%d) вызова AI.", payload.TaskID, h.maxAttempts)
-			break
+			MetricsIncrementTaskFailed("ai_error")                             // Регистрируем финальную ошибку AI
+			err = fmt.Errorf("достигнуто макс. попыток AI: %w", processingErr) // Устанавливаем возвращаемую ошибку
+			// Не выходим из функции здесь, даем коду дойти до сохранения/уведомления
+			break // Выходим из цикла ретраев
 		}
 
+		// Расчет задержки перед следующей попыткой
 		delay := float64(baseDelay) * math.Pow(2, float64(attempt-1))
-		jitter := delay * 0.1
-		delay += jitter * (rand.Float64()*2 - 1)
+		jitter := delay * 0.1                    // 10% jitter
+		delay += jitter * (rand.Float64()*2 - 1) // Apply jitter (+/- 10%)
 		waitDuration := time.Duration(delay)
-		if waitDuration < baseDelay {
+		if waitDuration < baseDelay { // Ensure minimum delay
 			waitDuration = baseDelay
 		}
 
 		log.Printf("[TaskID: %s] Ожидание %v перед следующей попыткой...", payload.TaskID, waitDuration)
 		time.Sleep(waitDuration)
 	}
-	completedAt = time.Now()
-	totalDuration := completedAt.Sub(fullStartTime)
-	taskProcessingDuration.Observe(totalDuration.Seconds())
+
+	// --- Запись итоговых метрик по токенам/стоимости ЗАДАЧИ ---
+	// Используем данные последнего *успешного* вызова AI (lastSuccessfulUsageInfo)
+	// Если все попытки провалились, токенов/стоимости не будет (значения по умолчанию 0)
+	if processingErr == nil { // Только если AI в итоге успешно отработал
+		totalTaskTokensPrompt = float64(lastSuccessfulUsageInfo.PromptTokens)
+		totalTaskTokensCompletion = float64(lastSuccessfulUsageInfo.CompletionTokens)
+		totalTaskCost = lastSuccessfulUsageInfo.EstimatedCostUSD
+
+		MetricsRecordTaskTokens(promptTypeLabel, "prompt", totalTaskTokensPrompt)
+		MetricsRecordTaskTokens(promptTypeLabel, "completion", totalTaskTokensCompletion)
+		MetricsRecordTaskCost(promptTypeLabel, totalTaskCost)
+		log.Printf("[TaskID: %s][Task Final Metrics] Tokens: P=%.0f, C=%.0f. Cost: %.6f USD",
+			payload.TaskID, totalTaskTokensPrompt, totalTaskTokensCompletion, totalTaskCost)
+	}
+	// -------------------------------------------------------------
+
+	completedAt = time.Now() // Время завершения логики обработчика (до сохранения)
 
 	// Логируем финальный ответ AI или ошибку
-	if err != nil {
-		log.Printf("[TaskID: %s] Финальная ошибка после всех попыток AI: %v", payload.TaskID, err)
-		tasksFailedTotal.WithLabelValues("ai_error").Inc() // Регистрируем ошибку AI
+	if processingErr != nil {
+		log.Printf("[TaskID: %s] Финальная ошибка после всех попыток AI: %v", payload.TaskID, processingErr)
+		// Метрика tasksFailed("ai_error") уже записана выше, если все попытки неудачны
 	} else {
-		// Успешный ответ AI (возможно, после ретраев)
-		log.Printf("[TaskID: %s] Финальный ответ от AI (длина: %d): %s", payload.TaskID, len(aiResponse), aiResponse)
-		tasksSucceededTotal.Inc() // <<< Инкрементируем успех здесь, ПОСЛЕ цикла ретраев
+		// Успешный ответ AI
+		log.Printf("[TaskID: %s] Финальный ответ от AI получен (длина: %d).", payload.TaskID, len(aiResponse))
+		MetricsIncrementTaskSucceeded() // <<< Инкрементируем успех здесь >>>
 	}
 
 	// --- Этап 4-6: Сохранение и уведомление ---
-	saveErr := h.saveAndNotifyResult(payload.TaskID, payload.UserID, payload.PromptType, payload.StoryConfigID, payload.PublishedStoryID, payload.StateHash, aiResponse, err, createdAt, completedAt, processingTime)
+	saveErr := h.saveAndNotifyResult(
+		payload.TaskID,
+		payload.UserID,
+		payload.PromptType, // Используем оригинальный promptType
+		payload.StoryConfigID,
+		payload.PublishedStoryID,
+		payload.StateHash,
+		aiResponse,
+		processingErr, // Передаем ошибку AI/подготовки, если она была
+		taskStartTime, // Передаем время начала задачи
+		completedAt,   // Передаем время завершения обработки
+		// processingTime больше не передаем, т.к. не используется
+	)
 
 	if saveErr != nil {
-		tasksFailedTotal.WithLabelValues("save_error").Inc()
-		// Если была ошибка AI, возвращаем её, иначе возвращаем ошибку сохранения
-		if err != nil {
-			return err // Ошибка AI имеет приоритет для nack/DLQ
+		MetricsIncrementTaskFailed("save_error") // Записываем ошибку сохранения
+		// Если была ошибка AI/подготовки, она уже установлена как возвращаемая ошибка `err`
+		// Если ошибки AI/подготовки не было, устанавливаем ошибку сохранения как возвращаемую
+		if err == nil {
+			err = saveErr
 		}
-		return saveErr
-	} else if err != nil {
-		// Ошибки AI (после ретраев) или подготовки промта/валидации
-		return err // Возвращаем ошибку для nack/DLQ
-	} else {
-		// Успешная обработка AI и успешное сохранение/уведомление
-		// tasksSucceededTotal инкрементирован выше
-		return nil // Возвращаем nil для ack сообщения
+		// В любом случае возвращаем ошибку (err), defer обработает запись taskStatus="failed"
+		return err
+	} else if processingErr != nil {
+		// Ошибка была на этапе AI/подготовки (err уже установлено)
+		// Сохранение прошло успешно, но задача считается неуспешной из-за ошибки AI/подготовки
+		return err // Возвращаем ошибку AI/подготовки
 	}
+
+	// Успешная обработка AI и успешное сохранение/уведомление
+	// tasksSucceededTotal инкрементирован выше
+	log.Printf("[TaskID: %s] Задача успешно обработана, сохранена и уведомление отправлено.", payload.TaskID)
+	return nil // Возвращаем nil для ack сообщения
 }
 
-// preparePrompt загружает и рендерит шаблон промта
+// preparePrompt загружает инструкции из файла промта
 func (h *TaskHandler) preparePrompt(taskID string, promptType messaging.PromptType) (string, error) {
-	log.Printf("[TaskID: %s] Загрузка и рендеринг промта...", taskID)
-	promptFilePath := filepath.Join(h.PromptsDir, string(promptType)+".md")
+	log.Printf("[TaskID: %s] Загрузка инструкций из промта типа '%s'...", taskID, promptType)
+	if promptType == "" {
+		return "", fmt.Errorf("PromptType не может быть пустым")
+	}
+	promptFileName := string(promptType) + ".md"
+	promptFilePath := filepath.Join(h.PromptsDir, promptFileName)
+
 	systemPromptBytes, readErr := os.ReadFile(promptFilePath)
 	if readErr != nil {
 		return "", fmt.Errorf("ошибка чтения файла промта '%s': %w", promptFilePath, readErr)
 	}
 	systemPrompt := string(systemPromptBytes)
 
+	// Пока шаблонизация не используется, просто возвращаем содержимое файла
 	finalSystemPrompt := systemPrompt
-	log.Printf("[TaskID: %s] Промт успешно подготовлен (без шаблонизации).", taskID)
+	log.Printf("[TaskID: %s] Инструкции '%s' успешно загружены.", taskID, promptFileName)
 	return finalSystemPrompt, nil
 }
 
 // saveAndNotifyResult сохраняет результат (или ошибку) в БД и отправляет уведомление.
-// Возвращает ошибку, если задача должна быть nack-нута (ошибка AI/подготовки/сохранения).
+// Возвращает ошибку, если сохранение или уведомление не удалось.
 func (h *TaskHandler) saveAndNotifyResult(
 	taskID string,
 	userID string,
@@ -261,42 +282,49 @@ func (h *TaskHandler) saveAndNotifyResult(
 	stateHash string,
 	aiResponse string,
 	processingErr error, // Ошибка от этапа подготовки или AI
-	createdAt time.Time,
-	completedAt time.Time,
-	processingTime time.Duration, // Время последнего вызова AI или подготовки
+	createdAt time.Time, // Используем время начала задачи из Handle
+	completedAt time.Time, // Используем время завершения из Handle
+	// processingTime time.Duration, // Убрали, т.к. не используется
 ) error {
 	var errorMsg string
+	status := messaging.NotificationStatusSuccess // Статус для уведомления
 	if processingErr != nil {
 		errorMsg = processingErr.Error()
+		status = messaging.NotificationStatusError
 	}
 
-	if aiResponse == "" && errorMsg != "" {
-		aiResponse = "[генерация не удалась из-за ошибки]"
-	}
+	// Заполняем поле GeneratedText даже при ошибке (для записи в БД)
 	processedResult := aiResponse
+	if processedResult == "" && errorMsg != "" {
+		processedResult = fmt.Sprintf("[генерация не удалась: %s]", errorMsg)
+	}
 
-	log.Printf("[TaskID: %s] Сохранение результата в БД...", taskID)
+	log.Printf("[TaskID: %s] Сохранение результата в БД (статус: %s)...", taskID, status)
 
 	result := &model.GenerationResult{
 		ID:             taskID,
 		UserID:         userID,
 		PromptType:     promptType,
-		GeneratedText:  processedResult,
-		ProcessingTime: processingTime,
+		GeneratedText:  processedResult,            // Сохраняем результат или сообщение об ошибке
+		ProcessingTime: completedAt.Sub(createdAt), // Сохраняем *общую* длительность задачи
 		CreatedAt:      createdAt,
 		CompletedAt:    completedAt,
-		Error:          errorMsg,
+		Error:          errorMsg, // Сохраняем текст ошибки, если была
 	}
 
+	// Сохранение результата
 	saveCtx, saveCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer saveCancel()
 	saveErr := h.resultRepo.Save(saveCtx, result)
 	if saveErr != nil {
 		log.Printf("[TaskID: %s] Ошибка сохранения результата в БД: %v", taskID, saveErr)
-		return fmt.Errorf("ошибка сохранения результата в БД: %w", saveErr)
+		// Не возвращаем ошибку немедленно, пытаемся отправить уведомление об ошибке
+	} else {
+		log.Printf("[TaskID: %s] Результат успешно сохранен в БД.", taskID)
 	}
 
-	log.Printf("[TaskID: %s] Отправка уведомления...", taskID)
+	// Отправка уведомления
+	log.Printf("[TaskID: %s] Отправка уведомления (статус: %s)...", taskID, status)
 	notificationPayload := messaging.NotificationPayload{
 		TaskID:           taskID,
 		UserID:           userID,
@@ -304,27 +332,30 @@ func (h *TaskHandler) saveAndNotifyResult(
 		StoryConfigID:    storyConfigID,
 		PublishedStoryID: publishedStoryID,
 		StateHash:        stateHash,
+		Status:           status,
+		ErrorDetails:     errorMsg, // Передаем текст ошибки
+		GeneratedText:    "",       // Не передаем полный текст в уведомлении успеха (если не нужно)
 	}
-	if errorMsg != "" {
-		notificationPayload.Status = messaging.NotificationStatusError
-		notificationPayload.ErrorDetails = errorMsg
-	} else {
-		notificationPayload.Status = messaging.NotificationStatusSuccess
-		notificationPayload.GeneratedText = processedResult
-	}
+	// Если статус Успех, и нужно передать текст (например, превью), добавить сюда:
+	// if status == messaging.NotificationStatusSuccess {
+	//     notificationPayload.GeneratedText = processedResult // Или его часть
+	// }
 
 	notifyCtx, notifyCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer notifyCancel()
 	notifyErr := h.notifier.Notify(notifyCtx, notificationPayload)
 	if notifyErr != nil {
-		log.Printf("[TaskID: %s] ВНИМАНИЕ: Не удалось отправить уведомление: %v", taskID, notifyErr)
+		log.Printf("[TaskID: %s][WARN] Не удалось отправить уведомление: %v", taskID, notifyErr)
+		// Не считаем это критической ошибкой для ретрая задачи, просто логируем
+	} else {
+		log.Printf("[TaskID: %s] Уведомление успешно отправлено.", taskID)
 	}
 
-	if processingErr != nil {
-		log.Printf("[TaskID: %s] Ошибка обработки (processingErr), сырой ответ AI перед отправкой уведомления: '%s'", taskID, aiResponse)
-		return fmt.Errorf("задача завершилась с ошибкой подготовки/AI (сохранено, уведомление отправлено/ошибка логирована): %w", processingErr)
+	// Возвращаем ошибку сохранения, если она была, чтобы nack-нуть сообщение
+	if saveErr != nil {
+		return fmt.Errorf("ошибка сохранения результата в БД: %w", saveErr)
 	}
 
-	log.Printf("[TaskID: %s] Задача успешно обработана, сохранена и уведомление отправлено за %v.", taskID, completedAt.Sub(createdAt))
+	// Если ошибки сохранения не было, возвращаем nil (даже если была ошибка AI/подготовки)
 	return nil
 }

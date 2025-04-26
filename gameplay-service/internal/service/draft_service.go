@@ -17,6 +17,19 @@ import (
 	"go.uber.org/zap"
 )
 
+// Define language prefix map
+var languagePrefixes = map[string]string{
+	"en": "Player's app language: English. ",
+	"fr": "Langue de l'application du joueur : Français. ",
+	"de": "Sprache der Spieler-App: Deutsch. ",
+	"es": "Idioma de la aplicación del jugador: Español. ",
+	"it": "Lingua dell'app del giocatore: Italiano. ",
+	"pt": "Idioma do aplicativo do jogador: Português. ",
+	"ru": "Язык приложения игрока: Русский. ",
+	"zh": "玩家应用语言：中文。",       // Пробел после не нужен для китайского/японского
+	"ja": "プレイヤーのアプリ言語：日本語。", // Пробел после не нужен для китайского/японского
+}
+
 // Define errors specific to draft operations
 var (
 // ErrCannotRevise = errors.New("story is not in a state that allows revision (must be Draft or Error)") // Use sharedModels.ErrCannotRevise
@@ -104,11 +117,21 @@ func (s *draftServiceImpl) GenerateInitialStory(ctx context.Context, userID uuid
 	log.Info("Initial draft created and saved", zap.String("draftID", config.ID.String()))
 
 	taskID := uuid.New().String()
+
+	// Добавляем префикс языка к initialPrompt
+	userInputForTask := initialPrompt
+	if prefix, ok := languagePrefixes[language]; ok {
+		userInputForTask = prefix + initialPrompt
+		log.Debug("Added language prefix to prompt", zap.String("prefix", prefix))
+	} else {
+		log.Warn("Language code not found in prefixes, using original prompt", zap.String("language", language))
+	}
+
 	generationPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:        taskID,
 		UserID:        config.UserID.String(),
 		PromptType:    sharedMessaging.PromptTypeNarrator,
-		UserInput:     initialPrompt,
+		UserInput:     userInputForTask, // Используем модифицированный prompt
 		StoryConfigID: config.ID.String(),
 	}
 

@@ -113,7 +113,7 @@ type Config struct {
 	WorldContext     string      `json:"wc,omitempty"`     // World Context
 	StorySummary     string      `json:"ss,omitempty"`     // Story Summary
 	PlayerPrefs      PlayerPrefs `json:"pp,omitempty"`     // Player Preferences struct
-	// Поля s_so_far и fd не храним в конфиге, они генерируются на лету.
+	// Поля sssf и fd не храним в конфиге, они генерируются на лету.
 	// Поле cs (core_stats) тоже не храним здесь, оно определяется в setup.
 }
 
