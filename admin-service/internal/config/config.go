@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"novel-server/shared/utils"
@@ -17,6 +18,7 @@ type Config struct {
 	Env                  string
 	ServerPort           string
 	LogLevel             string
+	PostgresDSN          string
 	AuthServiceURL       string
 	StoryGeneratorURL    string
 	GameplayServiceURL   string
@@ -24,6 +26,7 @@ type Config struct {
 	InterServiceTokenTTL time.Duration
 	AuthServiceTimeout   time.Duration
 	ServiceID            string
+	SupportedLanguages   []string
 	// Секреты без тегов
 	JWTSecret          string
 	InterServiceSecret string
@@ -69,10 +72,19 @@ func LoadConfig(logger *zap.Logger) (*Config, error) {
 	}
 	logger.Info("Client timeout", zap.Duration("clientTimeout", clientTimeout))
 
+	// <<< Загрузка поддерживаемых языков >>>
+	supportedLangsStr := getEnv("ADMIN_SUPPORTED_LANGUAGES", "en,ru")
+	supportedLangs := strings.Split(supportedLangsStr, ",")
+	for i := range supportedLangs {
+		supportedLangs[i] = strings.TrimSpace(supportedLangs[i])
+	}
+	logger.Info("Supported languages loaded", zap.Strings("languages", supportedLangs))
+
 	cfg := &Config{
 		Env:                  getEnv("ENV", "development"),
 		ServerPort:           port,
 		LogLevel:             getEnv("LOG_LEVEL", "debug"),
+		PostgresDSN:          getEnv("DATABASE_URL", getEnv("POSTGRES_DSN", "")),
 		JWTSecret:            jwtSecret,
 		AuthServiceURL:       authServiceURL,
 		StoryGeneratorURL:    storyGeneratorURL,
@@ -82,6 +94,7 @@ func LoadConfig(logger *zap.Logger) (*Config, error) {
 		InterServiceTokenTTL: getDurationEnv("INTER_SERVICE_TOKEN_TTL", "1h"),
 		AuthServiceTimeout:   getDurationEnv("AUTH_SERVICE_TIMEOUT", "5s"),
 		ServiceID:            getEnv("SERVICE_ID", "admin-service"),
+		SupportedLanguages:   supportedLangs,
 
 		// <<< Настройки RabbitMQ >>>
 		RabbitMQ: RabbitMQConfig{
@@ -98,9 +111,11 @@ func LoadConfig(logger *zap.Logger) (*Config, error) {
 		zap.String("storyGeneratorURL", cfg.StoryGeneratorURL),
 		zap.String("gameplayServiceURL", cfg.GameplayServiceURL),
 		zap.Duration("clientTimeout", cfg.ClientTimeout),
+		zap.Bool("postgresDSNLoaded", cfg.PostgresDSN != ""),
 		zap.Bool("jwtSecretLoaded", cfg.JWTSecret != ""),
 		zap.Bool("interServiceSecretLoaded", cfg.InterServiceSecret != ""),
 		zap.String("serviceID", cfg.ServiceID),
+		zap.Strings("supportedLanguages", cfg.SupportedLanguages),
 	)
 
 	return cfg, nil

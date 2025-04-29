@@ -29,7 +29,7 @@ type Config struct {
 	PushgatewayURL string `envconfig:"PUSHGATEWAY_URL" default:"http://localhost:9091"`
 
 	// Настройки воркера
-	PromptsDir string `envconfig:"PROMPTS_DIR" default:"prompts"` // Путь относительно корня воркера или WORKDIR в Docker
+	// PromptsDir string `envconfig:"PROMPTS_DIR" default:"prompts"` // <<< Удаляем
 
 	// Настройки AI
 	AIClientType     string        `envconfig:"AI_CLIENT_TYPE" default:"openai"` // Тип клиента: "openai" или "ollama"
@@ -125,7 +125,7 @@ func LoadConfig() (*Config, error) {
 	log.Printf("Конфигурация загружена:")
 	log.Printf("  HTTP Server Port: %s", cfg.HTTPServerPort)
 	log.Printf("  RabbitMQ URL: %s", cfg.RabbitMQURL)
-	log.Printf("  Prompts Dir: %s", cfg.PromptsDir)
+	// log.Printf("  Prompts Dir: %s", cfg.PromptsDir) // <<< Удаляем логирование
 	log.Printf("  AI Client Type: %s", cfg.AIClientType)
 	log.Printf("  AI Base URL: %s", cfg.AIBaseURL)
 	log.Printf("  AI Model: %s", cfg.AIModel)

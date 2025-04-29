@@ -115,11 +115,11 @@ func (s *publishingServiceImpl) PublishDraft(ctx context.Context, draftID uuid.U
 
 	// 3. Extract necessary fields from draft.Config
 	var tempConfig struct {
-		IsAdultContent bool   `json:"ac"`
-		Language       string `json:"ln"` // Expect language code here
+		IsAdultContent bool `json:"ac"`
+		// Language       string `json:"ln"` // Язык теперь берем из поля draft.Language
 	}
 	if err = json.Unmarshal(draft.Config, &tempConfig); err != nil {
-		log.Error("Failed to unmarshal draft config to extract flags/language", zap.Error(err))
+		log.Error("Failed to unmarshal draft config to extract flags", zap.Error(err))
 		return uuid.Nil, fmt.Errorf("error reading draft configuration: %w", err)
 	}
 
@@ -130,7 +130,8 @@ func (s *publishingServiceImpl) PublishDraft(ctx context.Context, draftID uuid.U
 		Config:         draft.Config,
 		Setup:          nil, // Will be generated later
 		Status:         sharedModels.StatusSetupPending,
-		IsPublic:       false, // Private by default
+		Language:       draft.Language, // <<< КОПИРУЕМ ЯЗЫК ИЗ DRAFT >>>
+		IsPublic:       false,          // Private by default
 		IsAdultContent: tempConfig.IsAdultContent,
 		Title:          &draft.Title,
 		Description:    &draft.Description,

@@ -490,6 +490,7 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, playerID uuid.UUID
 			playerID,
 			publishedStory,
 			nextNodeProgress, // <<< ИСПОЛЬЗУЕМ nextNodeProgress >>>
+			gameState,        // <<< ПЕРЕДАЕМ gameState >>>
 			madeChoicesInfo,
 			newStateHash,
 		)
@@ -651,6 +652,7 @@ func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID,
 			userID,
 			story,
 			progress,
+			nil, // <<< ПЕРЕДАЕМ nil вместо gameState >>>
 			madeChoicesInfo,
 			progress.CurrentStateHash, // Retry for the current hash in progress
 		)
@@ -792,6 +794,7 @@ func (s *gameLoopServiceImpl) RetryStoryGeneration(ctx context.Context, storyID,
 			userID,
 			story,
 			progress,
+			nil, // <<< ПЕРЕДАЕМ nil вместо gameState >>>
 			madeChoicesInfo,
 			progress.CurrentStateHash, // Retry for the current hash in progress
 		)
@@ -1210,6 +1213,7 @@ func createGenerationPayload(
 	userID uuid.UUID,
 	story *sharedModels.PublishedStory,
 	progress *sharedModels.PlayerProgress,
+	gameState *sharedModels.PlayerGameState, // <<< ДОБАВЛЕНО: PlayerGameState >>>
 	madeChoicesInfo []sharedModels.UserChoiceInfo,
 	currentStateHash string,
 ) (sharedMessaging.GenerationTaskPayload, error) {
@@ -1222,21 +1226,35 @@ func createGenerationPayload(
 	var fullConfig sharedModels.Config
 	if err := json.Unmarshal(story.Config, &fullConfig); err != nil {
 		log.Printf("WARN: Failed to parse Config JSON for generation task StoryID %s: %v", story.ID, err)
-		// Continue with empty minimal config? Or return error?
-		// Return error for now, as config is likely important.
 		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Config JSON: %w", err)
 	}
 	var fullSetup sharedModels.NovelSetupContent
 	if err := json.Unmarshal(story.Setup, &fullSetup); err != nil {
 		log.Printf("WARN: Failed to parse Setup JSON for generation task StoryID %s: %v", story.ID, err)
-		// Continue with empty minimal setup? Or return error?
-		// Return error for now.
 		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Setup JSON: %w", err)
 	}
 
 	minimalConfig := sharedModels.ToMinimalConfigForScene(&fullConfig)
 	minimalSetup := sharedModels.ToMinimalSetupForScene(&fullSetup)
 	// --- MODIFICATION END ---
+
+	// --- Язык берем напрямую из структуры PublishedStory ---
+	storyLanguage := story.Language
+	if storyLanguage == "" {
+		log.Printf("WARN: Story language is empty for StoryID %s, defaulting to 'en'", story.ID)
+		storyLanguage = "en"
+	}
+
+	// --- Определяем тип промпта на основе статуса игры ---
+	promptType := sharedModels.PromptTypeNovelCreator
+	// Проверяем gameState только если он не nil (т.е. это не retry)
+	if gameState != nil && gameState.PlayerStatus == sharedModels.PlayerStatusGameOverPending {
+		// Используем стандартный логгер пакета, так как 's' или 'p' здесь недоступны
+		log.Printf("WARN: Attempting to create generation payload for StoryID %s while game over is pending. This should not happen.", story.ID)
+		// В теории, сюда не должны попадать. Но если попали, возможно, стоит вернуть ошибку.
+		// Пока что оставляем PromptTypeNovelCreator, но логируем предупреждение.
+		// Или, возможно, использовать специальный тип, если он будет?
+	}
 
 	compressedInputData := make(map[string]interface{})
 
@@ -1278,7 +1296,8 @@ func createGenerationPayload(
 	// Include info about the choice(s) the user just made
 	userChoiceMap := make(map[string]string) // Convert UserChoiceInfo for AI prompt
 	if len(madeChoicesInfo) > 0 {
-		lastChoice := madeChoicesInfo[len(madeChoicesInfo)-1] // Simplified: use last choice
+		// Упрощение: Берем информацию только о последнем сделанном выборе
+		lastChoice := madeChoicesInfo[len(madeChoicesInfo)-1]
 		userChoiceMap["d"] = lastChoice.Desc
 		userChoiceMap["t"] = lastChoice.Text
 	}
@@ -1296,9 +1315,10 @@ func createGenerationPayload(
 		TaskID:           uuid.New().String(),
 		UserID:           userID.String(),   // Use string UUID
 		PublishedStoryID: story.ID.String(), // Use string UUID
-		PromptType:       sharedModels.PromptTypeNovelCreator,
-		UserInput:        userInputJSON, // Use the marshaled JSON string
+		PromptType:       promptType,        // Используем определенный ранее тип
+		UserInput:        userInputJSON,     // Use the marshaled JSON string
 		StateHash:        currentStateHash,
+		Language:         storyLanguage, // <<< Используем язык из PublishedStory >>>
 		// GameStateID is added later before publishing
 	}
 

@@ -8,9 +8,10 @@ import (
 	"net/http"
 	sharedDatabase "novel-server/shared/database"
 	sharedLogger "novel-server/shared/logger"
-	"novel-server/shared/messaging"
+	sharedPayloads "novel-server/shared/messaging"
 	"novel-server/story-generator/internal/api"
 	"novel-server/story-generator/internal/config"
+	internalMessaging "novel-server/story-generator/internal/messaging"
 	"novel-server/story-generator/internal/service"
 	"novel-server/story-generator/internal/worker"
 	"os"
@@ -44,7 +45,21 @@ func main() {
 		log.Fatalf("Ошибка загрузки конфигурации: %v", err)
 	}
 
-	// --- Инициализация метрик и Pushgateway --- (НОВОЕ)
+	// --- Инициализация логгера ---
+	loggerConfig := sharedLogger.Config{
+		Level:      cfg.LogLevel,
+		Encoding:   cfg.LogEncoding,
+		OutputPath: cfg.LogOutput,
+	}
+	logger, err := sharedLogger.New(loggerConfig)
+	if err != nil {
+		log.Fatalf("Ошибка инициализации логгера: %v", err)
+	}
+	defer logger.Sync()
+	sugar := logger.Sugar()
+	sugar.Info("Логгер успешно инициализирован")
+
+	// --- Инициализация метрик и Pushgateway ---
 	if cfg.PushgatewayURL != "" {
 		log.Printf("Инициализация Pushgateway: %s", cfg.PushgatewayURL)
 		if err := worker.InitMetricsPusher(cfg.PushgatewayURL); err != nil {
@@ -61,40 +76,58 @@ func main() {
 	}
 	// -----------------------------------------
 
-	// Инициализация зависимостей (выносим AIClient выше, т.к. он нужен и API)
-	log.Println("Инициализация AI клиента...")
+	// --- Инициализация AI клиента ---
+	sugar.Info("Инициализация AI клиента...")
 	aiClient, err := service.NewAIClient(cfg)
 	if err != nil {
-		log.Fatalf("Ошибка инициализации AI клиента: %v", err)
+		sugar.Fatalf("Ошибка инициализации AI клиента: %v", err)
 	}
 
-	// Подключаемся к PostgreSQL
-	log.Println("Подключение к PostgreSQL...")
+	// --- Подключение к PostgreSQL ---
+	sugar.Info("Подключение к PostgreSQL...")
 	dbPool, err := setupDatabase(cfg)
 	if err != nil {
-		log.Fatalf("Не удалось подключиться к базе данных: %v", err)
+		sugar.Fatalf("Не удалось подключиться к базе данных: %v", err)
 	}
 	defer dbPool.Close()
-	log.Println("Успешное подключение к PostgreSQL")
+	sugar.Info("Успешное подключение к PostgreSQL")
 
-	// Подключаемся к RabbitMQ с логикой повторных попыток
+	// --- Инициализация репозиториев ---
+	sugar.Info("Инициализация репозиториев...")
+	resultRepo := sharedDatabase.NewPgGenerationResultRepository(dbPool, logger)
+	promptRepo := sharedDatabase.NewPgPromptRepository(dbPool)
+	sugar.Info("Репозитории инициализированы")
+
+	// --- Инициализация Prompt Provider ---
+	sugar.Info("Инициализация Prompt Provider...")
+	promptProvider := service.NewPromptProvider(promptRepo, logger)
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := promptProvider.LoadInitialPrompts(loadCtx); err != nil {
+		loadCancel()
+		sugar.Fatalf("Не удалось загрузить начальные промпты: %v", err)
+	}
+	loadCancel()
+	sugar.Info("Prompt Provider инициализирован и кэш заполнен")
+
+	// --- Подключение к RabbitMQ ---
+	sugar.Info("Подключение к RabbitMQ...")
 	conn, err := connectRabbitMQ(cfg.RabbitMQURL)
 	if err != nil {
-		log.Fatalf("Не удалось подключиться к RabbitMQ: %v", err)
+		sugar.Fatalf("Не удалось подключиться к RabbitMQ: %v", err)
 	}
 	defer conn.Close()
-	log.Println("Успешное подключение к RabbitMQ")
+	sugar.Info("Успешное подключение к RabbitMQ")
 
-	// Открываем канал RabbitMQ (нужен для Notifier и Consumer)
+	// Открываем канал RabbitMQ (основной для публикации и DLQ)
 	ch, err := conn.Channel()
 	if err != nil {
-		log.Fatalf("Не удалось открыть канал: %v", err)
+		sugar.Fatalf("Не удалось открыть основной канал RabbitMQ: %v", err)
 	}
 	defer ch.Close()
-	log.Println("Канал успешно открыт")
+	sugar.Info("Основной канал RabbitMQ успешно открыт")
 
-	// --- Настройка Dead Letter Queue (DLQ) ---
-	log.Printf("Настройка Dead Letter Exchange ('%s') и Queue ('%s')...", deadLetterExchange, deadLetterQueue)
+	// --- Настройка DLQ и основных очередей ---
+	sugar.Info("Настройка Dead Letter Exchange и Queue...")
 
 	// Объявляем Dead Letter Exchange (DLX)
 	err = ch.ExchangeDeclare(
@@ -107,9 +140,9 @@ func main() {
 		nil,      // arguments
 	)
 	if err != nil {
-		log.Fatalf("Не удалось объявить DLX: %v", err)
+		sugar.Fatalf("Не удалось объявить DLX: %v", err)
 	}
-	log.Printf("DLX '%s' успешно объявлен.", dlxName)
+	sugar.Infof("DLX '%s' успешно объявлен.", dlxName)
 
 	// Объявляем Dead Letter Queue (DLQ)
 	_, err = ch.QueueDeclare(
@@ -121,9 +154,9 @@ func main() {
 		nil,     // arguments
 	)
 	if err != nil {
-		log.Fatalf("Не удалось объявить Dead Letter Queue '%s': %v", dlqName, err)
+		sugar.Fatalf("Не удалось объявить Dead Letter Queue '%s': %v", dlqName, err)
 	}
-	log.Printf("DLQ '%s' успешно объявлена.", dlqName)
+	sugar.Infof("DLQ '%s' успешно объявлена.", dlqName)
 
 	// Связываем DLQ с DLX. Используем имя основной очереди как ключ маршрутизации.
 	err = ch.QueueBind(
@@ -134,9 +167,9 @@ func main() {
 		nil,
 	)
 	if err != nil {
-		log.Fatalf("Не удалось связать DLQ '%s' с DLX '%s': %v", dlqName, dlxName, err)
+		sugar.Fatalf("Не удалось связать DLQ '%s' с DLX '%s': %v", dlqName, dlxName, err)
 	}
-	log.Printf("DLQ '%s' успешно связана с DLX '%s' с ключом '%s'.", dlqName, dlxName, dlqRoutingKey)
+	sugar.Infof("DLQ '%s' успешно связана с DLX '%s' с ключом '%s'.", dlqName, dlxName, dlqRoutingKey)
 
 	// --- Объявляем основные очереди (добавляем аргументы для DLX) ---
 	queues := []string{taskQueueName, "game_over_tasks", "draft_story_tasks"}
@@ -148,7 +181,7 @@ func main() {
 		if qName == taskQueueName {
 			args["x-dead-letter-exchange"] = dlxName
 			args["x-dead-letter-routing-key"] = dlqRoutingKey
-			log.Printf("Настройка DLX для очереди '%s'", qName)
+			sugar.Infof("Настройка DLX для очереди '%s'", qName)
 		}
 		// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
 
@@ -161,139 +194,120 @@ func main() {
 			args,  // arguments (с добавленными аргументами DLX для taskQueueName)
 		)
 		if err != nil {
-			log.Fatalf("Не удалось объявить очередь '%s': %v", qName, err)
+			sugar.Fatalf("Не удалось объявить очередь '%s': %v", qName, err)
 		}
-		log.Printf("Очередь '%s' успешно объявлена.", qName)
+		sugar.Infof("Очередь '%s' успешно объявлена.", qName)
 	}
 
 	// Устанавливаем QoS
 	err = ch.Qos(1, 0, false)
 	if err != nil {
-		log.Fatalf("Не удалось установить QoS: %v", err)
+		sugar.Fatalf("Не удалось установить QoS: %v", err)
 	}
-	log.Println("QoS (prefetch count=1) установлен")
+	sugar.Info("QoS (prefetch count=1) установлен")
 
-	// <<< ДОБАВЛЕНО: Инициализация логгера >>>
-	// Создаем конфиг для логгера
-	loggerConfig := sharedLogger.Config{
-		Level:      cfg.LogLevel,    // Берем из конфига приложения
-		Encoding:   cfg.LogEncoding, // Берем из конфига приложения
-		OutputPath: cfg.LogOutput,   // Берем из конфига приложения
-	}
-	logger, err := sharedLogger.New(loggerConfig) // <<< ИЗМЕНЕНО: Используем New с конфигом >>>
-	if err != nil {
-		log.Fatalf("Ошибка инициализации логгера: %v", err)
-	}
-	defer logger.Sync() // Не забываем синхронизировать логгер при выходе
-	log.Println("Логгер успешно инициализирован")
-	// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
-
-	// Инициализация зависимостей для воркера
-	log.Println("Инициализация репозитория и нотификатора...")
-	resultRepo := sharedDatabase.NewPgGenerationResultRepository(dbPool, logger)
+	// --- Инициализация сервисов RabbitMQ ---
+	sugar.Info("Инициализация сервисов RabbitMQ (Notifier, PromptConsumer)...")
 	notifier, err := service.NewRabbitMQNotifier(ch, cfg)
 	if err != nil {
-		log.Fatalf("Не удалось создать notifier: %v", err)
+		sugar.Fatalf("Не удалось создать notifier: %v", err)
 	}
 
-	// Создаем обработчик задач воркера
-	taskHandler := worker.NewTaskHandler(cfg, aiClient, resultRepo, notifier)
+	// Создаем и запускаем PromptConsumer
+	promptConsumer := internalMessaging.NewPromptConsumer(conn, promptProvider, logger)
+	consumerCtx, consumerCancel := context.WithCancel(context.Background())
+	if err := promptConsumer.Start(consumerCtx); err != nil {
+		consumerCancel()
+		sugar.Fatalf("Не удалось запустить PromptConsumer: %v", err)
+	}
+	sugar.Info("Сервисы RabbitMQ инициализированы")
+
+	// --- Создаем обработчик задач воркера ---
+	sugar.Info("Создание обработчика задач...")
+	taskHandler := worker.NewTaskHandler(cfg, aiClient, resultRepo, notifier, promptProvider)
+	sugar.Info("Обработчик задач создан")
 
 	// --- Инициализация и запуск HTTP API сервера ---
 	apiHandler := api.NewAPIHandler(aiClient, cfg)
 	httpServer := startHTTPServer(apiHandler)
-	log.Printf("HTTP API сервер запущен на порту %s", cfg.HTTPServerPort)
+	sugar.Infof("HTTP API сервер запущен на порту %s", cfg.HTTPServerPort)
 	// -----------------------------------------------
 
-	// Начинаем потреблять сообщения из очереди для воркера
+	// --- Начинаем потреблять сообщения из основной очереди задач ---
 	msgs, err := ch.Consume(
 		taskQueueName, "", false, false, false, false, nil)
 	if err != nil {
-		log.Fatalf("Не удалось зарегистрировать консьюмера: %v", err)
+		sugar.Fatalf("Не удалось зарегистрировать основного консьюмера задач: %v", err)
 	}
 
-	// Канал для graceful shutdown
+	// --- Канал для graceful shutdown ---
 	stopChan := make(chan os.Signal, 1)
 	signal.Notify(stopChan, syscall.SIGINT, syscall.SIGTERM)
 
 	// Канал для синхронизации завершения горутины обработки сообщений
 	done := make(chan struct{})
 
-	log.Println(" [*] Ожидание сообщений и API запросов. Для выхода нажмите CTRL+C")
+	sugar.Info(" [*] Ожидание сообщений и API запросов. Для выхода нажмите CTRL+C")
 
 	// Запускаем горутину для обработки сообщений
 	go func() {
 		defer close(done) // Сигнализируем о завершении горутины
 		for msg := range msgs {
-			// <<< Метрика: Счетчик полученных задач (НОВОЕ) >>>
-			// <<< УДАЛЕНО: worker.MetricsIncrementTasksReceived() - вызывается внутри Handle >>>
-
-			var payload messaging.GenerationTaskPayload
+			var payload sharedPayloads.GenerationTaskPayload
 			err := json.Unmarshal(msg.Body, &payload)
 			if err != nil {
-				log.Printf("[TaskID: %s] Ошибка десериализации JSON: %v. Отклоняем сообщение (nack, no requeue).", "N/A", err)
-				// <<< Метрика: Задача с ошибкой (десериализация) (НОВОЕ) >>>
-				// <<< УДАЛЕНО: worker.MetricsIncrementTaskFailed("deserialization") - вызывается внутри Handle (если решим там ловить) или здесь оставить? Пока оставим здесь, т.к. Handle не вызывается. >>>
+				sugar.Errorf("Ошибка десериализации JSON: %v; Body: %s", err, string(msg.Body))
 				worker.MetricsIncrementTaskFailed("deserialization")
-				msg.Nack(false, false) // Nack(multiple, requeue=false) - не возвращаем в очередь
+				_ = msg.Nack(false, false)
 				continue
 			}
 
-			// <<< Метрика: Счетчик полученных задач (увеличивается внутри Handle) >>>
-			worker.MetricsIncrementTasksReceived() // <<< ДОБАВЛЕНО ЗДЕСЬ, перед вызовом Handle >>>
+			worker.MetricsIncrementTasksReceived()
 
-			// Вызываем обработчик
 			err = taskHandler.Handle(payload)
 			if err != nil {
-				// Ошибка при обработке - отклоняем сообщение
-				// Requeue=false, чтобы избежать бесконечных циклов для 'плохих' задач.
-				// В идеале, такие задачи должны попадать в Dead Letter Queue.
-				log.Printf("[TaskID: %s] Ошибка обработки задачи: %v. Отклоняем сообщение (nack, no requeue).", payload.TaskID, err)
-				// <<< Метрика: Задача с ошибкой (обработка) - вызывается внутри Handle >>>
-				// <<< УДАЛЕНО: worker.MetricsIncrementTaskFailed(...) >>>
-				msg.Nack(false, false)
+				sugar.Errorf("Ошибка обработки задачи: %v; Payload: %+v", err, payload)
+				_ = msg.Nack(false, false)
 			} else {
-				// Успешная обработка - подтверждаем сообщение
-				log.Printf("[TaskID: %s] Задача успешно обработана, сохранена и уведомление отправлено. Подтверждаем сообщение (ack).", payload.TaskID)
-				// <<< Метрика: Задача успешно выполнена - вызывается внутри Handle >>>
-				// <<< УДАЛЕНО: worker.MetricsIncrementTaskSucceeded() >>>
-				// <<< Метрика: Использованные токены - вызывается внутри Handle >>>
-				// <<< УДАЛЕНО: worker.MetricsAddTokensUsed(...) >>>
-				msg.Ack(false) // Ack(multiple=false)
+				_ = msg.Ack(false)
 			}
 		}
-		log.Println("Канал сообщений закрыт, горутина обработки завершается.")
+		sugar.Info("Горутина обработки сообщений завершена.")
 	}()
 
 	// Ожидаем сигнала завершения
 	<-stopChan
-	log.Println("Получен сигнал завершения. Завершение работы...")
+	sugar.Info("Получен сигнал завершения, начинаем остановку...")
 
-	// --- Graceful Shutdown для HTTP сервера ---
-	log.Println("Остановка HTTP API сервера...")
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second) // Даем больше времени
+	// --- Graceful shutdown ---
+	sugar.Info("Остановка HTTP сервера...")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		log.Printf("Ошибка при остановке HTTP сервера: %v", err)
-	} else {
-		log.Println("HTTP API сервер успешно остановлен.")
+		sugar.Errorf("Ошибка при остановке HTTP сервера: %v", err)
 	}
-	// ----------------------------------------
+	sugar.Info("HTTP сервер остановлен.")
 
-	// --- Закрытие соединений RabbitMQ и DB ---
-	log.Println("Закрытие канала RabbitMQ...") // Закрываем канал, чтобы остановить консьюмера
-	if err := ch.Close(); err != nil {
-		log.Printf("Ошибка при закрытии канала RabbitMQ: %v", err)
+	sugar.Info("Остановка PromptConsumer...")
+	consumerCancel()
+	if err := promptConsumer.Stop(); err != nil {
+		sugar.Errorf("Ошибка при остановке PromptConsumer: %v", err)
+	}
+	sugar.Info("PromptConsumer остановлен.")
+
+	sugar.Info("Отмена подписки основного консьюмера...")
+	if err := ch.Cancel("", false); err != nil {
+		sugar.Errorf("Ошибка отмены подписки основного консьюмера: %v", err)
+	}
+	sugar.Info("Ожидание завершения обработки текущих задач...")
+	select {
+	case <-done:
+		sugar.Info("Горутина обработки задач завершена.")
+	case <-time.After(15 * time.Second):
+		sugar.Warn("Таймаут ожидания завершения обработки задач.")
 	}
 
-	log.Println("Ожидание завершения обработки текущих сообщений...")
-	<-done // Ждем, пока горутина обработки сообщений завершится
-
-	log.Println("Закрытие соединения с RabbitMQ...")
-	// conn.Close() вызывается через defer
-	log.Println("Закрытие соединения с PostgreSQL...")
-	// dbPool.Close() вызывается через defer
-	log.Println("Сервис генерации историй остановлен.")
+	sugar.Info("Сервис генерации историй успешно остановлен.")
 }
 
 // setupDatabase инициализирует и возвращает пул соединений с БД

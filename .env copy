@@ -56,9 +56,6 @@ RABBITMQ_MANAGE_PORT=15672
 RABBITMQ_USER=guest # Можно переопределить
 RABBITMQ_PASS=guest # Можно переопределить
 
-# Настройки Story Generator Worker
-PROMPTS_DIR=../prompts
-
 # Настройки WebSocket Service
 WEBSOCKET_SERVER_PORT=8083 # Порт для WebSocket сервиса
 INTERNAL_UPDATES_QUEUE_NAME=internal_updates # Очередь для полных уведомлений (story-generator -> gameplay-service)

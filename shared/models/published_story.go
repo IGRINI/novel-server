@@ -34,6 +34,7 @@ type PublishedStory struct {
 	Setup  json.RawMessage `json:"setup,omitempty" db:"setup"` // Сгенерированный setup
 	Status StoryStatus     `json:"status" db:"status"`
 	// EndingText     *string         `json:"ending_text,omitempty" db:"ending_text"` // УДАЛЕНО: Концовка специфична для игрока
+	Language       string    `json:"language,omitempty" db:"language"` // <<< ДОБАВЛЕНО: Язык истории
 	IsPublic       bool      `json:"is_public" db:"is_public"`
 	IsAdultContent bool      `json:"is_adult_content" db:"is_adult_content"`
 	Title          *string   `json:"title,omitempty" db:"title"`             // Указатель, так как может быть NULL

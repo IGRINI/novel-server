@@ -3,6 +3,7 @@ package handler
 import (
 	"novel-server/admin-service/internal/client"
 	"novel-server/admin-service/internal/config"
+	"novel-server/admin-service/internal/service"
 	"novel-server/shared/interfaces"
 
 	"github.com/gin-gonic/gin"
@@ -11,10 +12,13 @@ import (
 
 type AdminHandler struct {
 	logger         *zap.Logger
+	cfg            *config.Config
 	authClient     client.AuthServiceHttpClient
 	storyGenClient client.StoryGeneratorClient
 	gameplayClient client.GameplayServiceClient
 	pushPublisher  interfaces.PushEventPublisher
+	promptService  *service.PromptService
+	promptHandler  *PromptHandler
 }
 
 func NewAdminHandler(
@@ -24,13 +28,27 @@ func NewAdminHandler(
 	storyGenClient client.StoryGeneratorClient,
 	gameplayClient client.GameplayServiceClient,
 	pushPublisher interfaces.PushEventPublisher,
+	promptService *service.PromptService,
+	promptHandler *PromptHandler,
 ) *AdminHandler {
+	if promptService == nil {
+		logger.Warn("PromptService is nil during AdminHandler initialization")
+	}
+	if promptHandler == nil {
+		logger.Warn("PromptHandler is nil during AdminHandler initialization")
+	}
+	if cfg == nil {
+		logger.Fatal("Config is nil during AdminHandler initialization")
+	}
 	return &AdminHandler{
 		logger:         logger.Named("AdminHandler"),
+		cfg:            cfg,
 		authClient:     authClient,
 		storyGenClient: storyGenClient,
 		gameplayClient: gameplayClient,
 		pushPublisher:  pushPublisher,
+		promptService:  promptService,
+		promptHandler:  promptHandler,
 	}
 }
 
@@ -71,6 +89,23 @@ func (h *AdminHandler) RegisterRoutes(router *gin.Engine) {
 		{
 			aiGroup.GET("", h.handleAIPlaygroundPage)
 			aiGroup.POST("/generate", h.handleAIPlaygroundGenerate)
+		}
+
+		// <<< НОВОЕ: Регистрация роутов для нового PromptHandler >>>
+		if h.promptHandler != nil {
+			promptHandlerGroup := adminApiGroup.Group("/prompts")
+			{
+				promptHandlerGroup.GET("", h.promptHandler.ShowPrompts)                 // GET /admin/prompts
+				promptHandlerGroup.GET("/new", h.promptHandler.ShowCreatePromptForm)    // GET /admin/prompts/new
+				promptHandlerGroup.POST("", h.promptHandler.CreatePrompt)               // POST /admin/prompts
+				promptHandlerGroup.GET("/:id/edit", h.promptHandler.ShowEditPromptForm) // GET /admin/prompts/:id/edit
+				// Используем POST для обновления и удаления, т.к. форма HTML отправляет POST
+				promptHandlerGroup.POST("/:id", h.promptHandler.UpdatePrompt)        // POST /admin/prompts/:id (Update)
+				promptHandlerGroup.POST("/:id/delete", h.promptHandler.DeletePrompt) // POST /admin/prompts/:id/delete (Delete)
+			}
+			h.logger.Info("Зарегистрированы роуты для PromptHandler в группе /admin/prompts")
+		} else {
+			h.logger.Warn("PromptHandler не инициализирован, роуты для промптов не зарегистрированы.")
 		}
 	}
 }

@@ -17,19 +17,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// Define language prefix map
-var languagePrefixes = map[string]string{
-	"en": "Player's app language: English. ",
-	"fr": "Langue de l'application du joueur : Français. ",
-	"de": "Sprache der Spieler-App: Deutsch. ",
-	"es": "Idioma de la aplicación del jugador: Español. ",
-	"it": "Lingua dell'app del giocatore: Italiano. ",
-	"pt": "Idioma do aplicativo do jogador: Português. ",
-	"ru": "Язык приложения игрока: Русский. ",
-	"zh": "玩家应用语言：中文。",       // Пробел после не нужен для китайского/японского
-	"ja": "プレイヤーのアプリ言語：日本語。", // Пробел после не нужен для китайского/японского
-}
-
 // Define errors specific to draft operations
 var (
 // ErrCannotRevise = errors.New("story is not in a state that allows revision (must be Draft or Error)") // Use sharedModels.ErrCannotRevise
@@ -118,21 +105,24 @@ func (s *draftServiceImpl) GenerateInitialStory(ctx context.Context, userID uuid
 
 	taskID := uuid.New().String()
 
-	// Добавляем префикс языка к initialPrompt
+	// Префикс языка больше не добавляем, используем поле Language в payload
 	userInputForTask := initialPrompt
-	if prefix, ok := languagePrefixes[language]; ok {
-		userInputForTask = prefix + initialPrompt
-		log.Debug("Added language prefix to prompt", zap.String("prefix", prefix))
-	} else {
-		log.Warn("Language code not found in prefixes, using original prompt", zap.String("language", language))
-	}
+	/*
+		if prefix, ok := languagePrefixes[language]; ok {
+			userInputForTask = prefix + initialPrompt
+			log.Debug("Added language prefix to prompt", zap.String("prefix", prefix))
+		} else {
+			log.Warn("Language code not found in prefixes, using original prompt", zap.String("language", language))
+		}
+	*/
 
 	generationPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:        taskID,
 		UserID:        config.UserID.String(),
 		PromptType:    sharedModels.PromptTypeNarrator,
-		UserInput:     userInputForTask,
+		UserInput:     userInputForTask, // Передаем исходный prompt пользователя
 		StoryConfigID: config.ID.String(),
+		Language:      config.Language, // <<< ПЕРЕДАЕМ ЯЗЫК ОТДЕЛЬНО >>>
 	}
 
 	if err := s.publisher.PublishGenerationTask(ctx, generationPayload); err != nil {
@@ -241,6 +231,7 @@ func (s *draftServiceImpl) ReviseDraft(ctx context.Context, id uuid.UUID, userID
 		PromptType:    sharedModels.PromptTypeNarrator,
 		UserInput:     userInputForTask,
 		StoryConfigID: config.ID.String(),
+		Language:      config.Language, // <<< ПЕРЕДАЕМ ЯЗЫК ОТДЕЛЬНО >>>
 	}
 
 	if err := s.publisher.PublishGenerationTask(ctx, generationPayload); err != nil {
@@ -375,14 +366,15 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 				promptType = sharedModels.PromptTypeNarrator
 				userInputForTask = lastUserInput
 				log.Info("Retry is for initial generation")
-				// <<< ДОБАВЛЕНО: Добавление префикса языка для начальной генерации >>>
-				if prefix, ok := languagePrefixes[config.Language]; ok {
-					userInputForTask = prefix + userInputForTask
-					log.Debug("Added language prefix to prompt for initial retry", zap.String("prefix", prefix), zap.String("language", config.Language))
-				} else {
-					log.Warn("Language code not found in prefixes for initial retry, using original prompt", zap.String("language", config.Language))
-				}
-				// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
+				// Префикс языка больше не добавляем
+				/*
+					if prefix, ok := languagePrefixes[config.Language]; ok {
+						userInputForTask = prefix + userInputForTask
+						log.Debug("Added language prefix to prompt for initial retry", zap.String("prefix", prefix), zap.String("language", config.Language))
+					} else {
+						log.Warn("Language code not found in prefixes for initial retry, using original prompt", zap.String("language", config.Language))
+					}
+				*/
 			} else {
 				promptType = sharedModels.PromptTypeNarrator
 				log.Info("Retry is for a revision generation", zap.String("revisionPrompt", lastUserInput))
@@ -430,6 +422,7 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 		PromptType:    promptType,
 		UserInput:     userInputForTask,
 		StoryConfigID: config.ID.String(),
+		Language:      config.Language, // <<< ПЕРЕДАЕМ ЯЗЫК ОТДЕЛЬНО >>>
 	}
 
 	if err := s.publisher.PublishGenerationTask(ctx, generationPayload); err != nil {

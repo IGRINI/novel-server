@@ -19,6 +19,7 @@ type GenerationTaskPayload struct {
 	UserInput        string            `json:"user_input"`            // JSON string containing cfg, stp, cs, uc, pss, pfd, pvis, sv, gf
 	StateHash        string            `json:"state_hash,omitempty"`  // Required for PromptTypeNovelCreator
 	GameStateID      string            `json:"gameStateId,omitempty"` // Required for subsequent scene/game over results processing
+	Language         string            `json:"language"`              // <<< НОВОЕ ПОЛЕ: Язык истории >>>
 }
 
 // GameOverReason details why the game ended.

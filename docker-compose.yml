@@ -215,6 +215,7 @@ services:
       <<: *env-vars
       ADMIN_SERVER_PORT: 8084
       LOG_LEVEL: ${LOG_LEVEL:-debug}
+      DATABASE_URL: postgresql://${DB_USER}@postgres:${DB_PORT}/${DB_NAME}?sslmode=${DB_SSL_MODE}
       AUTH_SERVICE_URL: http://auth-service:8081
       STORY_GENERATOR_URL: http://story-generator:8083
       GAMEPLAY_SERVICE_URL: http://gameplay-service:8082
@@ -228,9 +229,12 @@ services:
         target: /run/secrets/inter_service_secret
       - source: jwt_secret
         target: /run/secrets/jwt_secret
+      - source: db_password
+        target: /run/secrets/db_password
     depends_on:
       - auth-service
       - rabbitmq
+      - postgres
     networks:
       - novel_network
     healthcheck: # <<< Возвращаем правильный Healthcheck для admin-service
@@ -284,12 +288,10 @@ services:
       - rabbitmq
       - migrate
     volumes:
-      - ./prompts:/app/prompts
     environment:
       <<: *env-vars
       DB_HOST: postgres
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/
-      PROMPTS_DIR: /app/prompts
       SERVICE_ID: story-generator-service
       AI_BASE_URL: ${AI_BASE_URL}
       AI_MODEL: ${AI_MODEL}
@@ -299,6 +301,8 @@ services:
       INTERNAL_UPDATES_QUEUE_NAME: ${INTERNAL_UPDATES_QUEUE_NAME}
       AI_CLIENT_TYPE: ${AI_CLIENT_TYPE}
       PUSHGATEWAY_URL: http://pushgateway:9091
+      DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-10}
+      DB_MAX_IDLE_MINUTES: ${DB_MAX_IDLE_MINUTES:-5m}
     secrets:
       - source: db_password
         target: /run/secrets/db_password

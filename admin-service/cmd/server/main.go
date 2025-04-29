@@ -10,12 +10,16 @@ import (
 	"novel-server/admin-service/internal/config"
 	"novel-server/admin-service/internal/handler"
 	"novel-server/admin-service/internal/messaging"
+	"novel-server/admin-service/internal/service"
+	"novel-server/shared/database"
+	"novel-server/shared/interfaces"
+	sharedInterfaces "novel-server/shared/interfaces"
 	sharedLogger "novel-server/shared/logger"
-	sharedMiddleware "novel-server/shared/middleware"
-	sharedModels "novel-server/shared/models"
+	sharedMessaging "novel-server/shared/messaging"
+	middleware "novel-server/shared/middleware"
+	"novel-server/shared/models"
 	"os"
 	"os/signal"
-	"reflect"
 	"syscall"
 	"time"
 
@@ -25,6 +29,7 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/render"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
@@ -169,6 +174,25 @@ func main() {
 		// или использовать zap.AtomicLevel, но для простоты пока оставляем так.
 	}
 
+	// --- Подключение к PostgreSQL ---
+	var dbPool *pgxpool.Pool
+	if cfg.PostgresDSN == "" {
+		sugar.Warn("Postgres DSN не указан (DATABASE_URL или POSTGRES_DSN). Функционал, требующий БД, будет недоступен.")
+	} else {
+		dbPool, err = pgxpool.New(context.Background(), cfg.PostgresDSN)
+		if err != nil {
+			sugar.Fatalf("Не удалось подключиться к PostgreSQL: %v", err)
+		}
+		defer dbPool.Close()
+		sugar.Info("Успешно подключено к PostgreSQL")
+
+		// Проверка соединения
+		if err = dbPool.Ping(context.Background()); err != nil {
+			sugar.Fatalf("Не удалось проверить соединение с PostgreSQL: %v", err)
+		}
+		sugar.Info("Проверка соединения с PostgreSQL прошла успешно")
+	}
+
 	// --- Подключение к RabbitMQ ---
 	rabbitConn, err := connectRabbitMQ(cfg.RabbitMQ.URL, logger) // Передаем созданный логгер
 	if err != nil {
@@ -176,6 +200,28 @@ func main() {
 	}
 	defer rabbitConn.Close()
 	sugar.Info("Успешно подключено к RabbitMQ")
+
+	// --- Инициализация репозиториев ---
+	var promptRepo sharedInterfaces.PromptRepository
+	if dbPool != nil {
+		promptRepo = database.NewPgPromptRepository(dbPool)
+		sugar.Info("PromptRepository инициализирован")
+	} else {
+		// Можно создать mock-репозиторий или просто оставить nil и проверять в сервисе
+		sugar.Warn("PromptRepository не инициализирован из-за отсутствия подключения к БД")
+	}
+
+	// --- Инициализация издателей событий ---
+	promptPublisher, err := sharedMessaging.NewRabbitMQPromptPublisher(rabbitConn)
+	if err != nil {
+		sugar.Fatalf("Не удалось создать PromptEventPublisher: %v", err)
+	}
+	defer func() {
+		if err := promptPublisher.Close(); err != nil {
+			sugar.Errorf("Ошибка при закрытии канала PromptEventPublisher: %v", err)
+		}
+	}()
+	sugar.Info("PromptEventPublisher инициализирован")
 
 	// --- Создание Push Notification Publisher ---
 	pushPublisher, err := messaging.NewRabbitMQPushPublisher(rabbitConn, cfg.RabbitMQ.PushQueueName, logger)
@@ -188,18 +234,44 @@ func main() {
 		}
 	}()
 
+	// --- Инициализация сервисов ---
+	var promptSvc *service.PromptService
+	if promptRepo != nil && promptPublisher != nil { // Проверяем и репо, и паблишер
+		promptSvc = service.NewPromptService(cfg, promptRepo, promptPublisher)
+		sugar.Info("PromptService инициализирован")
+	} else {
+		sugar.Warn("PromptService не инициализирован из-за отсутствия репозитория или издателя")
+	}
+
+	// <<< НОВОЕ: Инициализация PromptHandler >>>
+	var promptHandler *handler.PromptHandler
+	if promptSvc != nil {
+		promptHandler = handler.NewPromptHandler(*promptSvc, cfg, logger) // Используем *promptSvc т.к. NewPromptHandler ожидает значение
+		sugar.Info("PromptHandler инициализирован")
+	} else {
+		sugar.Warn("PromptHandler не инициализирован из-за отсутствия PromptService")
+	}
+
 	// --- Инициализация клиентов сервисов ---
 	authClient, err := client.NewAuthServiceClient(cfg.AuthServiceURL, cfg.ClientTimeout, logger, cfg.InterServiceSecret)
 	if err != nil {
 		sugar.Fatalf("Не удалось создать AuthServiceClient: %v", err)
 	}
-
-	// <<< ПЕРЕНОС: Инициализируем другие клиенты ДО получения токена >>>
 	storyGenClient, err := client.NewStoryGeneratorClient(cfg.StoryGeneratorURL, cfg.ClientTimeout, logger, authClient)
 	if err != nil {
 		sugar.Fatalf("Не удалось создать StoryGeneratorClient: %v", err)
 	}
 	gameplayClient, err := client.NewGameplayServiceClient(cfg.GameplayServiceURL, cfg.ClientTimeout, logger, authClient)
+	if err != nil {
+		sugar.Fatalf("Не удалось создать GameplayServiceClient: %v", err)
+	}
+
+	// <<< ПЕРЕНОС: Инициализируем другие клиенты ДО получения токена >>>
+	storyGenClient, err = client.NewStoryGeneratorClient(cfg.StoryGeneratorURL, cfg.ClientTimeout, logger, authClient)
+	if err != nil {
+		sugar.Fatalf("Не удалось создать StoryGeneratorClient: %v", err)
+	}
+	gameplayClient, err = client.NewGameplayServiceClient(cfg.GameplayServiceURL, cfg.ClientTimeout, logger, authClient)
 	if err != nil {
 		sugar.Fatalf("Не удалось создать GameplayServiceClient: %v", err)
 	}
@@ -262,201 +334,220 @@ func main() {
 	// <<< КОНЕЦ БЛОКА ПОЛУЧЕНИЯ ТОКЕНА >>>
 
 	// --- Создание обработчика HTTP ---
-	h := handler.NewAdminHandler(cfg, logger, authClient, storyGenClient, gameplayClient, pushPublisher)
+	adminHandler := handler.NewAdminHandler(
+		cfg, // Передаем конфиг
+		logger,
+		authClient,
+		storyGenClient,
+		gameplayClient,
+		pushPublisher, // Push Publisher здесь
+		promptSvc,     // <<< Передаем PromptService
+		// <<< НОВОЕ: Передаем PromptHandler >>>
+		promptHandler,
+	)
+	sugar.Info("AdminHandler инициализирован")
 
 	// --- Настройка Gin ---
+	sugar.Info("Настройка Gin...")
+	gin.SetMode(gin.ReleaseMode) // Или gin.DebugMode в зависимости от cfg.Env
+	if cfg.Env == "development" {
+		gin.SetMode(gin.DebugMode)
+	}
 	router := gin.New()
-	router.RedirectTrailingSlash = true // Добавляем автоматическое перенаправление для слешей
 
-	// <<< УДАЛЯЕМ НАСТРОЙКУ ДОВЕРЕННЫХ ПРОКСИ >>>
-	/*
-		ttrustedProxiesEnv := os.Getenv("TRUSTED_PROXIES") // Читаем из ENV
-		var trustedProxies []string
-		if trustedProxiesEnv != "" {
-			trustedProxies = strings.Split(trustedProxiesEnv, ",")
-			// Удаляем лишние пробелы вокруг IP/CIDR
-			for i := range trustedProxies {
-				trustedProxies[i] = strings.TrimSpace(trustedProxies[i])
-			}
-			sugar.Infof("Настроены доверенные прокси: %v", trustedProxies)
-		} else {
-			sugar.Warn("Переменная окружения TRUSTED_PROXIES не установлена! Заголовки X-Forwarded-* НЕ будут обработаны.")
-			trustedProxies = []string{}
-		}
-		err = router.SetTrustedProxies(trustedProxies) // Передаем список
-		if err != nil {
-			sugar.Fatalf("Не удалось настроить доверенные прокси: %v", err)
-		}
-		// Обработку X-Forwarded-Proto можно оставить включенной,
-		// но она не будет иметь эффекта без доверенных прокси.
-		// Можно и закомментировать, если для IP она не нужна.
-		// router.ForwardedByClientIP = true
-	*/
+	// Логгер и Recovery Middleware (используем кастомный логгер)
+	// Вместо gin.Logger() и gin.Recovery()
+	router.Use(middleware.GinZapLogger(logger))
+	router.Use(gin.Recovery()) // Пока используем стандартный Recovery
 
-	// <<< Регистрация кастомных функций шаблонов >>>
-	// Сохраняем FuncMap для передачи в рендерер
+	// CORS Middleware
+	router.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"http://localhost:3000"}, // <<< ИЗМЕНИТЬ НА АКТУАЛЬНЫЙ АДРЕС FRONTEND
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"}, // Добавляем Authorization
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}))
+	sugar.Info("Настроен CORS")
+
+	// --- Настройка рендерера шаблонов ---
+	templatesDir := "./web/templates"
 	funcMap := template.FuncMap{
-		// Используем реальную функцию HasRole с адаптером для типа
-		"hasRole": func(userArg interface{}, targetRole string) bool {
-			// Адаптируем тип userArg к ожидаемому типу, например *sharedModels.User
-			// Если в шаблон передается другой тип, измените его здесь.
-			if u, ok := userArg.(*sharedModels.User); ok {
-				// Вызываем реальную функцию проверки роли
-				return sharedModels.HasRole(u.Roles, targetRole)
-			} else if rolesSlice, ok := userArg.([]string); ok {
-				// Обрабатываем случай, если передается слайс строк
-				return sharedModels.HasRole(rolesSlice, targetRole)
-			}
-			// Не смогли извлечь роли, логируем и возвращаем false
-			logger.Error("Функция шаблона 'hasRole' получила аргумент пользователя неподдерживаемого типа", zap.String("argType", fmt.Sprintf("%T", userArg)))
-			return false
-		},
-		// Функция для сложения двух целых чисел в шаблоне
-		"add": func(a, b int) int {
-			return a + b
-		},
-		// Функция для вычитания двух целых чисел в шаблоне
-		"sub": func(a, b int) int {
-			return a - b
-		},
-		// Функция для нахождения максимума из двух целых чисел
-		"max": func(a, b int) int {
-			if a > b {
-				return a
-			}
-			return b
-		},
-		// <<< ДОБАВЛЕНО: Кастомные функции форматирования >>>
-		"default": func(value interface{}, defaultValue string) interface{} {
-			// Проверяем, является ли значение "нулевым" (nil, пустая строка, 0 и т.д.)
-			v := reflect.ValueOf(value)
-			switch v.Kind() {
-			case reflect.String:
-				if v.String() == "" {
-					return defaultValue
-				}
-			case reflect.Ptr, reflect.Interface:
-				if v.IsNil() {
-					return defaultValue
-				}
-			case reflect.Slice, reflect.Map, reflect.Array:
-				if v.Len() == 0 {
-					return defaultValue
-				}
-			case reflect.Invalid: // Для nil интерфейса
-				return defaultValue
-			}
-			// Если значение не нулевое, возвращаем его
-			return value
-		},
-		"derefString": func(s *string) string {
-			if s != nil {
-				return *s
-			}
-			return ""
-		},
+		"add":    func(a, b int) int { return a + b },
+		"toJson": toJson, // Добавляем функцию toJson
+		// <<< Добавляем функцию для форматирования времени >>>
 		"formatAsDateTime": func(t time.Time) string {
 			if t.IsZero() {
 				return "-"
 			}
-			// Форматируем дату и время в формате ДД.ММ.ГГГГ ЧЧ:ММ:СС
-			return t.Format("02.01.2006 15:04:05")
+			return t.Format("2006-01-02 15:04:05") // Пример формата
+		},
+		"derefString": func(s *string) string {
+			if s == nil {
+				return ""
+			}
+			return *s
 		},
 		"bytesToString": func(b []byte) string {
 			return string(b)
 		},
-		"statusBadge": func(status sharedModels.StoryStatus) string {
+		"hasRole": func(userRoles []string, targetRole string) bool {
+			for _, r := range userRoles {
+				if r == targetRole {
+					return true
+				}
+			}
+			return false
+		},
+		"statusBadge": func(status models.StoryStatus) string {
 			switch status {
-			case sharedModels.StatusGenerating:
-				return "warning"
-			case sharedModels.StatusDraft:
-				return "primary"
-			case sharedModels.StatusError:
-				return "danger"
-			case sharedModels.StatusReady:
-				return "success"
-			case sharedModels.StatusSetupPending:
-				return "info"
-			default:
+			case models.StatusDraft:
 				return "secondary"
+			case models.StatusGenerating:
+				return "info"
+			case models.StatusError:
+				return "danger"
+			case models.StatusSetupPending:
+				return "warning"
+			case models.StatusFirstScenePending:
+				return "warning"
+			case models.StatusReady:
+				return "success"
+			default:
+				return "light"
 			}
 		},
-		// <<< ДОБАВЛЕНО: Регистрация функции toJson >>>
-		"toJson": toJson,
-		// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
-		// Можно добавить другие функции здесь
+		"truncate": func(maxLen int, s string) string {
+			if len(s) <= maxLen {
+				return s
+			}
+			// Обрезаем до maxLen символов и добавляем ...
+			// Осторожно с рунами!
+			runes := []rune(s)
+			if len(runes) > maxLen {
+				return string(runes[:maxLen]) + "..."
+			}
+			return s // На случай, если символов меньше, чем байт
+		},
 	}
-	router.SetFuncMap(funcMap) // Устанавливаем FuncMap для Gin, хотя кастомный рендер тоже его получит
+	multiRenderer := NewMultiTemplateRenderer(templatesDir, funcMap, logger)
+	router.HTMLRender = multiRenderer
+	sugar.Info("HTML рендерер настроен", zap.String("templatesDir", templatesDir))
 
-	// <<< Загрузка шаблонов через кастомный рендерер >>>
-	// Путь к шаблонам внутри контейнера
-	templatesDir := "/app/web/templates"
-	router.HTMLRender = NewMultiTemplateRenderer(templatesDir, funcMap, logger) // <<< Используем кастомный рендерер
+	// Статические файлы
+	router.Static("/static", "./web/static")
+	// Пытаемся отдать стиль лендинга из shared
+	router.StaticFile("/style.css", "../shared/static/style.css")
+	sugar.Info("Настроена раздача статических файлов")
 
-	router.Use(gin.Recovery())
-	router.Use(sharedMiddleware.GinZapLogger(logger))
+	// --- Регистрация маршрутов --- (Передаем router)
+	adminHandler.RegisterRoutes(router) // Маршруты админки
+	sugar.Info("Маршруты AdminHandler зарегистрированы")
 
-	// Используем АБСОЛЮТНЫЙ путь внутри контейнера
-	custom404Path := "/app/web/static/404.html"
-	router.Use(handler.CustomErrorMiddleware(logger, custom404Path))
+	// Регистрация маршрутов API (если ApiHandler инициализирован)
+	var apiHandler *handler.ApiHandler
+	if promptSvc != nil {
+		apiHandler = handler.NewApiHandler(promptSvc, logger)
+		sugar.Info("ApiHandler инициализирован")
+		api := router.Group("/api")
+		// Проверяем, что authClient реализует TokenVerifier
+		var tokenVerifier interfaces.TokenVerifier
+		if verifier, ok := (interface{}(authClient)).(interfaces.TokenVerifier); ok {
+			tokenVerifier = verifier
+			sugar.Info("Auth client implements TokenVerifier for inter-service auth.")
+		} else {
+			sugar.Fatal("Auth client does not implement TokenVerifier interface")
+		}
 
-	// CORS Middleware
-	corsConfig := cors.DefaultConfig()
-	corsConfig.AllowAllOrigins = true
-	corsConfig.AllowMethods = []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}
-	corsConfig.AllowHeaders = []string{"Origin", "Content-Type", "Accept", "Authorization", "HX-Request", "HX-Target", "HX-Current-URL"}
-	corsConfig.AllowCredentials = true
-	router.Use(cors.New(corsConfig))
+		// Применяем middleware межсервисной аутентификации
+		api.Use(middleware.InterServiceAuthMiddlewareGin(tokenVerifier, logger))
+		{
+			// <<< Маршруты для Prompts >>>
+			prompts := api.Group("/prompts")
+			{
+				prompts.POST("", apiHandler.UpsertPrompt)             // POST /api/prompts
+				prompts.GET("", apiHandler.ListPromptsByKey)          // GET /api/prompts?key=...
+				prompts.GET("/:key/:language", apiHandler.GetPrompt)  // GET /api/prompts/{key}/{language}
+				prompts.DELETE("/:key", apiHandler.DeletePromptByKey) // DELETE /api/prompts/{key}
+			}
+			// Здесь можно добавить другие API маршруты, если они есть и не обрабатываются adminHandler
+			// Например, если GetPublishedStories и другие - это тоже API:
+			// api.GET("/published-stories", apiHandler.GetPublishedStories) // (потребует добавить в ApiHandler)
+			// ... и так далее ...
+		}
+		sugar.Info("Маршруты ApiHandler зарегистрированы")
+	} else {
+		sugar.Warn("API routes for prompts are not registered because ApiHandler is not initialized.")
+	}
 
-	// Health Check Endpoint
+	// --- Health Check ---
 	healthHandler := func(c *gin.Context) {
+		// Проверка RabbitMQ
+		if rabbitConn == nil || rabbitConn.IsClosed() {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error", "component": "rabbitmq", "message": "connection closed or nil"})
+			return
+		}
+		// Проверка PostgreSQL (если используется)
+		if dbPool != nil {
+			if err := dbPool.Ping(context.Background()); err != nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"status": "error", "component": "database", "message": err.Error()})
+				return
+			}
+		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	}
 	router.GET("/health", healthHandler)
 	router.HEAD("/health", healthHandler)
 
-	// Настройка маршрутов
-	h.RegisterRoutes(router)
+	// --- Маршрут для метрик Prometheus ---
+	// Используем стандартный обработчик promhttp
+	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
+	sugar.Info("Маршрут /metrics для Prometheus настроен")
 
-	// --- Запуск HTTP сервера ---
-	serverAddr := ":" + cfg.ServerPort
+	// --- Запуск HTTP-сервера ---
 	srv := &http.Server{
-		Addr:    serverAddr,
+		Addr:    ":" + cfg.ServerPort,
 		Handler: router,
 	}
+	sugar.Info("Запуск HTTP-сервера", zap.String("port", cfg.ServerPort))
 
 	go func() {
-		sugar.Infof("Admin сервер запускается на порту %s", cfg.ServerPort)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			sugar.Fatalf("Ошибка запуска HTTP сервера: %v", err)
+			sugar.Fatalf("Ошибка запуска HTTP-сервера: %v", err)
 		}
 	}()
 
-	// --- Запуск сервера метрик Prometheus ---
-	go func() {
-		metricsAddr := ":9094" // Порт для метрик - ИЗМЕНЕН НА 9094
-		metricsMux := http.NewServeMux()
-		metricsMux.Handle("/metrics", promhttp.Handler()) // Регистрируем стандартный обработчик
-		sugar.Infof("Сервер метрик Prometheus запускается на порту %s", metricsAddr)
-		if err := http.ListenAndServe(metricsAddr, metricsMux); err != nil {
-			sugar.Fatalf("Ошибка запуска сервера метрик: %v", err)
-		}
-	}()
-
-	// --- Graceful shutdown ---
+	// --- Ожидание сигнала завершения ---
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	sugar.Info("Получен сигнал завершения, начинаем остановку сервера...")
+	sugar.Info("Получен сигнал завершения, начинаем graceful shutdown...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// --- Graceful Shutdown ---
+	ctxShutdown, cancelShutdown := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelShutdown()
 
-	if err := srv.Shutdown(ctx); err != nil {
-		sugar.Fatalf("Ошибка при остановке сервера: %v", err)
+	// Закрываем соединение с RabbitMQ (каналы закрываются в defer'ах паблишеров)
+	if rabbitConn != nil {
+		if err := rabbitConn.Close(); err != nil {
+			sugar.Errorf("Ошибка при закрытии соединения RabbitMQ: %v", err)
+		}
+		sugar.Info("Соединение с RabbitMQ закрыто")
 	}
 
-	sugar.Info("Сервер успешно остановлен")
+	// Закрываем пул соединений с БД
+	if dbPool != nil {
+		dbPool.Close()
+		sugar.Info("Пул соединений PostgreSQL закрыт")
+	}
+
+	// Останавливаем HTTP-сервер
+	if err := srv.Shutdown(ctxShutdown); err != nil {
+		sugar.Fatal("Ошибка при остановке HTTP-сервера: ", zap.Error(err))
+	}
+
+	sugar.Info("HTTP-сервер остановлен. Завершение работы.")
 }
 
 // connectRabbitMQ остается без изменений, но теперь получает корректный логгер

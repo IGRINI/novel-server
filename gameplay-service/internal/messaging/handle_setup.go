@@ -299,6 +299,15 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 								parseErr = fmt.Errorf("failed to marshal FirstScene payload for %s: %w", publishedStoryID, errMarshal)
 							} else {
 								combinedInputJSON := string(combinedInputBytes)
+
+								// <<< Используем язык напрямую из publishedStory >>>
+								storyLanguage := publishedStory.Language
+								if storyLanguage == "" {
+									p.logger.Warn("Language field is empty in published story, defaulting to 'en'",
+										zap.String("published_story_id", publishedStoryID.String()))
+									storyLanguage = "en"
+								}
+
 								nextTaskPayload := sharedMessaging.GenerationTaskPayload{
 									TaskID:           uuid.New().String(),
 									UserID:           publishedStory.UserID.String(),
@@ -306,6 +315,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 									PublishedStoryID: publishedStoryID.String(),
 									UserInput:        combinedInputJSON,
 									StateHash:        sharedModels.InitialStateHash,
+									Language:         storyLanguage, // <<< Используем извлеченный язык >>>
 								}
 
 								if errPub := p.taskPub.PublishGenerationTask(ctx, nextTaskPayload); errPub != nil {

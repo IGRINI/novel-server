@@ -1,0 +1,45 @@
+{{ template "layout.html" . }}
+
+{{ define "title" }}{{ .PageTitle }}{{ end }}
+
+{{ define "content" }}
+<div class="app-container">
+    <nav class="breadcrumbs">
+        <ul>
+            <li><a href="/admin/dashboard">Дашборд</a></li>
+            <li><a href="/admin/prompts">Управление Промптами</a></li>
+            <li>Создание ключа</li>
+        </ul>
+    </nav>
+
+    <h1>{{ .PageTitle }}</h1>
+
+    {{ if .ErrorMessage }}
+        <div class="system-message system-message--error">{{ .ErrorMessage }}</div>
+    {{ end }}
+
+    <form action="/admin/prompts/create" method="post" class="data-form">
+        <div class="content-card">
+            <div class="content-card-header">Новый ключ промпта</div>
+            <div class="content-card-body">
+                <div class="mb-3">
+                    <label for="key" class="form-label">Ключ (Key)</label>
+                    <input type="text" id="key" name="key" value="{{ .Key }}" required placeholder="например, story_intro_greeting">
+                    <small class="text-muted">Используйте латиницу, цифры и символ подчеркивания (_). Ключ нельзя будет изменить после создания.</small>
+                </div>
+                <!-- Можно добавить поле для описания ключа, если нужно -->
+                <!--
+                <div class="mb-3">
+                    <label for="description" class="form-label">Описание ключа (опционально)</label>
+                    <input type="text" id="description" name="description" value="{{ .Description }}">
+                </div>
+                -->
+            </div>
+            <div class="content-card-footer button-group">
+                <button type="submit" class="cta-button cta-button--primary">Создать ключ</button>
+                <a href="/admin/prompts" class="cta-button cta-button--secondary">Отмена</a>
+            </div>
+        </div>
+    </form>
+</div>
+{{ end }} 
