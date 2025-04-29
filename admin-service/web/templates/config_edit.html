@@ -1,0 +1,43 @@
+{{ template "layout.html" . }}
+
+{{ define "title" }}Редактировать Настройку: {{ .config.Key }}{{ end }}
+
+{{ define "content" }}
+<div class="container mt-4">
+    <h2>Редактировать Настройку: <code>{{ .config.Key }}</code></h2>
+
+    <!-- Flash Message Display -->
+    {{ if .flashMessage }}
+        <div class="alert alert-{{ if eq .flashType "success" }}success{{ else }}danger{{ end }} alert-dismissible fade show" role="alert">
+            {{ .flashMessage }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+    {{ end }}
+    <!-- End Flash Message Display -->
+
+    <form action="{{ .form_action }}" method="post">
+         <div class="mb-3">
+            <label for="key" class="form-label">Ключ</label>
+            <input type="text" class="form-control" id="key" name="key" value="{{ .config.Key }}" readonly>
+            <small class="form-text text-muted">Ключ нельзя изменить.</small>
+        </div>
+
+        <div class="mb-3">
+            <label for="value" class="form-label">Значение</label>
+            <!-- Используем textarea для длинных значений -->
+            <textarea class="form-control" id="value" name="value" rows="10" required>{{ .config.Value }}</textarea>
+        </div>
+
+        <div class="mb-3">
+            <label for="description" class="form-label">Описание</label>
+             <!-- Используем textarea -->
+            <textarea class="form-control" id="description" name="description" rows="3">{{ .config.Description | default "" }}</textarea>
+            <small class="form-text text-muted">Опциональное описание для отображения в админ-панели.</small>
+        </div>
+
+        <button type="submit" class="btn btn-success">Сохранить</button>
+        <a href="/admin/configs" class="btn btn-secondary">Отмена</a>
+    </form>
+
+</div>
+{{ end }} 

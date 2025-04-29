@@ -287,7 +287,6 @@ services:
       - postgres
       - rabbitmq
       - migrate
-    volumes:
     environment:
       <<: *env-vars
       DB_HOST: postgres

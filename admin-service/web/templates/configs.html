@@ -1,0 +1,51 @@
+{{ template "layout.html" . }}
+
+{{ define "title" }}Динамические Настройки{{ end }}
+
+{{ define "content" }}
+<div class="container mt-4">
+    <h1>Динамические Настройки</h1>
+
+    <!-- Flash Message Display -->
+    {{ if .flashMessage }}
+        <div class="alert alert-{{ if eq .flashType "success" }}success{{ else }}danger{{ end }} alert-dismissible fade show" role="alert">
+            {{ .flashMessage }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+    {{ end }}
+    <!-- End Flash Message Display -->
+
+    <p>Здесь отображаются динамические конфигурационные параметры системы, которые можно изменять без перезапуска сервисов.</p>
+
+    {{if not .configs}}
+        <div class="alert alert-warning">Динамические настройки не найдены.</div>
+    {{else}}
+        <table class="table table-striped table-bordered">
+            <thead>
+            <tr>
+                <th>Ключ</th>
+                <th>Значение</th>
+                <th>Описание</th>
+                <th>Обновлено</th>
+                <th>Действия</th>
+            </tr>
+            </thead>
+            <tbody>
+            {{ range .configs }}
+            <tr>
+                <td><code>{{ .Key }}</code></td>
+                <td><pre style="white-space: pre-wrap; word-break: break-all;">{{ .Value }}</pre></td>
+                <td>{{ .Description | default "N/A" }}</td>
+                 <!-- Форматируем время -->
+                <td>{{ .UpdatedAt.Format "2006-01-02 15:04:05" }}</td>
+                <td>
+                    <a href="/admin/configs/edit?key={{ .Key | urlquery }}" class="btn btn-primary btn-sm">Редактировать</a>
+                </td>
+            </tr>
+            {{ end }}
+            </tbody>
+        </table>
+    {{end}}
+
+</div>
+{{ end }} 

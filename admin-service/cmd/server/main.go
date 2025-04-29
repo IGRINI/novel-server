@@ -207,11 +207,28 @@ func main() {
 		promptRepo = database.NewPgPromptRepository(dbPool)
 		sugar.Info("PromptRepository инициализирован")
 	} else {
-		// Можно создать mock-репозиторий или просто оставить nil и проверять в сервисе
 		sugar.Warn("PromptRepository не инициализирован из-за отсутствия подключения к БД")
 	}
 
+	// <<< Инициализация репозитория динамических конфигов >>>
+	var dynamicConfigRepo sharedInterfaces.DynamicConfigRepository
+	if dbPool != nil {
+		dynamicConfigRepo = database.NewPgDynamicConfigRepository(dbPool, logger)
+		sugar.Info("DynamicConfigRepository инициализирован")
+	} else {
+		sugar.Warn("DynamicConfigRepository не инициализирован из-за отсутствия подключения к БД")
+	}
+
 	// --- Инициализация издателей событий ---
+	var configUpdatePublisher sharedMessaging.Publisher
+	// Используем реальный ConfigUpdatePublisher
+	configUpdatePublisher, err = sharedMessaging.NewRabbitMQConfigUpdatePublisher(rabbitConn, logger)
+	if err != nil {
+		sugar.Fatalf("Не удалось создать ConfigUpdatePublisher: %v", err)
+	}
+	// TODO: Добавить defer configUpdatePublisher.Close()?
+	sugar.Info("ConfigUpdatePublisher инициализирован")
+
 	promptPublisher, err := sharedMessaging.NewRabbitMQPromptPublisher(rabbitConn)
 	if err != nil {
 		sugar.Fatalf("Не удалось создать PromptEventPublisher: %v", err)
@@ -243,6 +260,15 @@ func main() {
 		sugar.Warn("PromptService не инициализирован из-за отсутствия репозитория или издателя")
 	}
 
+	// <<< Инициализация ConfigService >>>
+	var configSvc service.ConfigService
+	if dynamicConfigRepo != nil && configUpdatePublisher != nil {
+		configSvc = service.NewConfigService(dynamicConfigRepo, configUpdatePublisher, logger)
+		sugar.Info("ConfigService инициализирован")
+	} else {
+		sugar.Warn("ConfigService не инициализирован из-за отсутствия репозитория или издателя")
+	}
+
 	// <<< НОВОЕ: Инициализация PromptHandler >>>
 	var promptHandler *handler.PromptHandler
 	if promptSvc != nil {
@@ -250,6 +276,15 @@ func main() {
 		sugar.Info("PromptHandler инициализирован")
 	} else {
 		sugar.Warn("PromptHandler не инициализирован из-за отсутствия PromptService")
+	}
+
+	// <<< Инициализация ConfigHandler >>>
+	var configHandler *handler.ConfigHandler
+	if configSvc != nil { // Проверяем configSvc напрямую
+		configHandler = handler.NewConfigHandler(configSvc, cfg, logger)
+		sugar.Info("ConfigHandler инициализирован")
+	} else {
+		sugar.Warn("ConfigHandler не инициализирован из-за отсутствия ConfigService")
 	}
 
 	// --- Инициализация клиентов сервисов ---
@@ -504,6 +539,30 @@ func main() {
 	// Используем стандартный обработчик promhttp
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 	sugar.Info("Маршрут /metrics для Prometheus настроен")
+
+	// Группа для защищенных роутов админки
+	adminGroup := router.Group("/admin")
+	adminGroup.Use(adminHandler.AuthMiddleware) // <<< Передаем сам метод как middleware
+	{
+		adminGroup.GET("/dashboard", adminHandler.GetDashboardData) // <<< Исправлено на большую букву
+
+		// Роуты для промптов (если PromptHandler инициализирован)
+		if promptHandler != nil {
+			promptHandler.RegisterPromptRoutes(adminGroup)
+		} else {
+			sugar.Warn("Маршруты для Prompts не зарегистрированы, т.к. PromptHandler не инициализирован")
+		}
+
+		// <<< Роуты для динамических настроек (если ConfigHandler инициализирован) >>>
+		if configHandler != nil {
+			configHandler.RegisterConfigRoutes(adminGroup)
+		} else {
+			sugar.Warn("Маршруты для Configs не зарегистрированы, т.к. ConfigHandler не инициализирован")
+		}
+
+		// Роуты для статистики и управления
+		// adminGroup.GET("/stats", adminHandler.ShowStats) // <<< Закомментировано, т.к. нет обработчика
+	}
 
 	// --- Запуск HTTP-сервера ---
 	srv := &http.Server{

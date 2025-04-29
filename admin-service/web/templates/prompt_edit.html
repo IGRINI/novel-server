@@ -6,14 +6,14 @@
 <div class="container mt-4">
     <h2>{{ .title }}</h2>
 
-    {{/* --- Flash Message Display --- */}}
-    {{if .flash}}
-    <div class="alert alert-{{if eq .flash.Type "error"}}danger{{else if eq .flash.Type "success"}}success{{else}}info{{end}} alert-dismissible fade show" role="alert">
-        {{ .flash.Message }}
-        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-    </div>
-    {{end}}
-    {{/* --- End Flash Message Display --- */}}
+    <!-- Flash Message Display -->
+    {{ if .flashMessage }}
+        <div class="alert alert-{{ if eq .flashType "success" }}success{{ else }}danger{{ end }} alert-dismissible fade show" role="alert">
+            {{ .flashMessage }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+        </div>
+    {{ end }}
+    <!-- End Flash Message Display -->
 
     <form action="{{ .form_action }}" method="POST">
         {{/* Если это редактирование, используем метод PUT (скрытое поле) */}}

@@ -56,9 +56,9 @@ func (h *AdminHandler) RegisterRoutes(router *gin.Engine) {
 	router.GET("/login", h.showLoginPage)
 	router.POST("/login", h.handleLogin)
 
-	adminApiGroup := router.Group("/", h.authMiddleware)
+	adminApiGroup := router.Group("/", h.AuthMiddleware)
 	{
-		adminApiGroup.GET("/dashboard", h.getDashboardData)
+		adminApiGroup.GET("/dashboard", h.GetDashboardData)
 		adminApiGroup.GET("/users", h.listUsers)
 		adminApiGroup.GET("/logout", h.handleLogout)
 
@@ -108,4 +108,12 @@ func (h *AdminHandler) RegisterRoutes(router *gin.Engine) {
 			h.logger.Warn("PromptHandler не инициализирован, роуты для промптов не зарегистрированы.")
 		}
 	}
+}
+
+func (h *AdminHandler) AuthMiddleware(c *gin.Context) {
+	// ... (код middleware)
+}
+
+func (h *AdminHandler) GetDashboardData(c *gin.Context) {
+	// ... (код обработчика)
 }

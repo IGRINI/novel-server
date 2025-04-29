@@ -7,6 +7,7 @@ toolchain go1.24.1
 require (
 	firebase.google.com/go/v4 v4.14.1
 	github.com/docker/docker v28.0.4+incompatible
+	github.com/georgysavva/scany/v2 v2.1.4
 	github.com/gin-contrib/cors v1.7.5
 	github.com/gin-gonic/gin v1.10.0
 	github.com/golang-jwt/jwt/v5 v5.2.2

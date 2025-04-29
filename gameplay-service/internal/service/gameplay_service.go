@@ -141,6 +141,7 @@ type gameplayServiceImpl struct {
 	logger               *zap.Logger
 	authClient           interfaces.AuthServiceClient
 	cfg                  *config.Config
+	configService        *ConfigService
 }
 
 func NewGameplayService(
@@ -150,18 +151,19 @@ func NewGameplayService(
 	playerProgressRepo interfaces.PlayerProgressRepository,
 	playerGameStateRepo interfaces.PlayerGameStateRepository,
 	likeRepo interfaces.LikeRepository,
-	imageReferenceRepo interfaces.ImageReferenceRepository,
-	generationPublisher messaging.TaskPublisher,
-	characterImageTaskBatchPub messaging.CharacterImageTaskBatchPublisher,
+	imageRefRepo interfaces.ImageReferenceRepository,
+	taskPublisher messaging.TaskPublisher,
+	imgBatchPublisher messaging.CharacterImageTaskBatchPublisher,
 	pool *pgxpool.Pool,
 	logger *zap.Logger,
 	authClient interfaces.AuthServiceClient,
 	cfg *config.Config,
+	configService *ConfigService,
 ) GameplayService {
 	// <<< СОЗДАЕМ DraftService >>>
-	draftSvc := NewDraftService(configRepo, generationPublisher, logger, cfg)
+	draftSvc := NewDraftService(configRepo, taskPublisher, logger, cfg)
 	// <<< СОЗДАЕМ PublishingService >>>
-	publishingSvc := NewPublishingService(configRepo, publishedRepo, generationPublisher, pool, logger)
+	publishingSvc := NewPublishingService(configRepo, publishedRepo, taskPublisher, pool, logger)
 	// <<< СОЗДАЕМ LikeService >>>
 	likeSvc := NewLikeService(likeRepo, publishedRepo, playerGameStateRepo, authClient, logger)
 	// <<< СОЗДАЕМ StoryBrowsingService >>>
@@ -169,9 +171,9 @@ func NewGameplayService(
 	// <<< СОЗДАЕМ GameLoopService >>>
 	gameLoopSvc := NewGameLoopService(
 		publishedRepo, sceneRepo, playerProgressRepo, playerGameStateRepo,
-		generationPublisher, configRepo,
-		imageReferenceRepo,
-		characterImageTaskBatchPub,
+		taskPublisher, configRepo,
+		imageRefRepo,
+		imgBatchPublisher,
 		logger,
 		cfg,
 	)
@@ -188,11 +190,12 @@ func NewGameplayService(
 		likeService:          likeSvc,
 		storyBrowsingService: storyBrowsingSvc,
 		gameLoopService:      gameLoopSvc,
-		publisher:            generationPublisher,
+		publisher:            taskPublisher,
 		pool:                 pool,
 		logger:               logger.Named("GameplayService"),
 		authClient:           authClient,
 		cfg:                  cfg,
+		configService:        configService,
 	}
 }
 
