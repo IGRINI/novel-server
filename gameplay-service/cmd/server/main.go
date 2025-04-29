@@ -76,9 +76,8 @@ func main() {
 	playerProgressRepo := sharedDatabase.NewPgPlayerProgressRepository(dbPool, logger)
 	playerGameStateRepo := sharedDatabase.NewPgPlayerGameStateRepository(dbPool, logger)
 	likeRepo := sharedDatabase.NewPgLikeRepository(dbPool, logger)
-	// <<< ДОБАВЛЕНО: Создание репозитория для image references >>>
-	// Теперь конструктор существует
-	imageReferenceRepo := sharedDatabase.NewPgImageReferenceRepository(dbPool, logger) // Используем sharedDatabase
+	imageReferenceRepo := sharedDatabase.NewPgImageReferenceRepository(dbPool, logger)
+	genResultRepo := sharedDatabase.NewPgGenerationResultRepository(dbPool, logger)
 
 	// --- Инициализация паблишеров --- //
 	taskPublisher, err := messaging.NewRabbitMQTaskPublisher(rabbitConn, cfg.GenerationTaskQueue)
@@ -93,27 +92,24 @@ func main() {
 	if err != nil {
 		logger.Fatal("Не удалось создать PushNotificationPublisher", zap.Error(err))
 	}
-	// <<< ДОБАВЛЕНО: Создание паблишера для задач генерации изображений >>>
-	// Поле ImageGeneratorTaskQueue добавлено в config
-	characterImageTaskPublisher, err := messaging.NewRabbitMQCharacterImageTaskPublisher(rabbitConn, cfg.ImageGeneratorTaskQueue) // Используем очередь из конфига
+	characterImageTaskPublisher, err := messaging.NewRabbitMQCharacterImageTaskPublisher(rabbitConn, cfg.ImageGeneratorTaskQueue)
 	if err != nil {
 		logger.Fatal("Не удалось создать CharacterImageTaskPublisher", zap.Error(err))
 	}
-	// <<< ДОБАВЛЕНО: Создание паблишера для БАТЧЕЙ задач генерации изображений >>>
-	characterImageTaskBatchPublisher, err := messaging.NewRabbitMQCharacterImageTaskBatchPublisher(rabbitConn, cfg.ImageGeneratorTaskQueue) // Используем ту же очередь
+	characterImageTaskBatchPublisher, err := messaging.NewRabbitMQCharacterImageTaskBatchPublisher(rabbitConn, cfg.ImageGeneratorTaskQueue)
 	if err != nil {
 		logger.Fatal("Не удалось создать CharacterImageTaskBatchPublisher", zap.Error(err))
 	}
 
 	// --- Инициализация HTTP клиента для Auth Service --- //
 	authServiceClient := clients.NewHTTPAuthServiceClient(
-		cfg.AuthServiceURL,     // URL из конфига
-		cfg.InterServiceSecret, // Секрет из конфига
-		logger,                 // Логгер
+		cfg.AuthServiceURL,
+		cfg.InterServiceSecret,
+		logger,
 	)
 	logger.Info("Auth Service client initialized")
 
-	// --- Инициализация сервисов (ОТКАТ ЛИШНИХ ИЗМЕНЕНИЙ) --- //
+	// --- Инициализация сервисов --- //
 	gameplayService := service.NewGameplayService(
 		storyConfigRepo,
 		publishedRepo,
@@ -130,21 +126,20 @@ func main() {
 		cfg,
 	)
 
-	// --- Инициализация хендлеров (ОТКАТ ЛИШНИХ ИЗМЕНЕНИЙ) --- //
+	// --- Инициализация хендлеров --- //
 	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret, storyConfigRepo, publishedRepo, cfg)
 
-	// --- Первоначальная проверка зависших задач (БЕЗ учета времени) --- //
+	// --- Первоначальная проверка зависших задач --- //
 	logger.Info("Performing initial check for stuck tasks...")
-	markStuckDraftsAsError(storyConfigRepo, 0, logger)               // staleThreshold = 0 для проверки без времени
-	markStuckPublishedStoriesAsError(publishedRepo, 0, logger)       // staleThreshold = 0 для проверки без времени
-	markStuckPlayerGameStatesAsError(playerGameStateRepo, 0, logger) // staleThreshold = 0 для проверки без времени
+	markStuckDraftsAsError(storyConfigRepo, 0, logger)
+	markStuckPublishedStoriesAsError(publishedRepo, 0, logger)
+	markStuckPlayerGameStatesAsError(playerGameStateRepo, 0, logger)
 	logger.Info("Initial check for stuck tasks completed.")
 
-	// --- Запуск периодической проверки зависших задач (С учетом времени) --- //
+	// --- Запуск периодической проверки зависших задач --- //
 	logger.Info("Starting periodic checks for stuck tasks...")
 	go markStuckDraftsAsError(storyConfigRepo, 1*time.Hour, logger)
 	go markStuckPublishedStoriesAsError(publishedRepo, 1*time.Hour, logger)
-	// <<< ДОБАВЛЕНО: Проверка зависших состояний игры игрока >>>
 	go markStuckPlayerGameStatesAsError(playerGameStateRepo, 30*time.Minute, logger)
 
 	// --- Инициализация консьюмера уведомлений --- //
@@ -156,6 +151,7 @@ func main() {
 		sceneRepo,
 		playerGameStateRepo,
 		imageReferenceRepo,
+		genResultRepo,
 		clientUpdatePublisher,
 		taskPublisher,
 		pushPublisher,
@@ -163,8 +159,8 @@ func main() {
 		characterImageTaskBatchPublisher,
 		logger,
 		// Параметры самого консьюмера:
-		cfg.InternalUpdatesQueueName, // queueName
-		cfg,                          // cfg (для консьюмера и процессора)
+		cfg.InternalUpdatesQueueName,
+		cfg,
 	)
 	if err != nil {
 		logger.Fatal("Не удалось создать консьюмер уведомлений", zap.Error(err))
@@ -183,12 +179,13 @@ func main() {
 		rabbitConn,
 		// Используем те же зависимости, что и для основного консьюмера
 		storyConfigRepo, publishedRepo, sceneRepo, playerGameStateRepo, imageReferenceRepo,
+		genResultRepo,
 		clientUpdatePublisher, taskPublisher, pushPublisher, characterImageTaskPublisher,
 		characterImageTaskBatchPublisher,
 		logger,
 		// Но слушаем другую очередь:
-		cfg.ImageGeneratorResultQueue, // queueName
-		cfg,                           // cfg (для консьюмера и процессора)
+		cfg.ImageGeneratorResultQueue,
+		cfg,
 	)
 	if err != nil {
 		logger.Fatal("Не удалось создать консьюмер результатов изображений", zap.Error(err))
@@ -240,7 +237,7 @@ func main() {
 	corsConfig.MaxAge = 12 * time.Hour
 	router.Use(cors.New(corsConfig))
 
-	// --- Регистрация маршрутов (ОТКАТ ЛИШНИХ ИЗМЕНЕНИЙ) --- //
+	// --- Регистрация маршрутов --- //
 	gameplayHandler.RegisterRoutes(router) // Передаем Gin роутер
 
 	// --- Регистрация healthcheck эндпоинта для Gin --- //

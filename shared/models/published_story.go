@@ -138,6 +138,7 @@ type PublishedStorySummary struct {
 type PublishedStorySummaryWithProgress struct {
 	PublishedStorySummary
 	HasPlayerProgress bool `json:"hasPlayerProgress" db:"has_player_progress"`
+	IsPublic          bool `json:"isPublic" db:"is_public"`
 }
 
 // StatRule defines conditions for game over based on core stats.

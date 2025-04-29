@@ -157,7 +157,7 @@ func (s *publishingServiceImpl) PublishDraft(ctx context.Context, draftID uuid.U
 	setupPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:           taskID,
 		UserID:           newPublishedStory.UserID.String(),
-		PromptType:       sharedMessaging.PromptTypeNovelSetup,
+		PromptType:       sharedModels.PromptTypeNovelSetup,
 		UserInput:        configJSONString,              // <-- Передаем JSON конфиг сюда
 		PublishedStoryID: newPublishedStory.ID.String(), // Link to published story
 	}

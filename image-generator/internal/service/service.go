@@ -41,12 +41,11 @@ type ImageGenerationService interface {
 
 // imageServiceImpl - реализация ImageGenerationService.
 type imageServiceImpl struct {
-	logger            *zap.Logger
-	sanaConfig        config.SanaServerConfig
-	sanaClient        *http.Client
-	imageSavePath     string // Путь для сохранения файлов
-	imageBaseURL      string // Базовый URL для доступа к файлам
-	promptStyleSuffix string // Суффикс стиля для промпта
+	logger        *zap.Logger
+	sanaConfig    config.SanaServerConfig
+	sanaClient    *http.Client
+	imageSavePath string // Путь для сохранения файлов
+	imageBaseURL  string // Базовый URL для доступа к файлам
 }
 
 // NewImageGenerationService создает новый экземпляр imageServiceImpl.
@@ -69,9 +68,8 @@ func NewImageGenerationService(
 		sanaClient: &http.Client{
 			Timeout: time.Duration(cfg.SanaServer.Timeout) * time.Second,
 		},
-		imageSavePath:     cfg.ImageSavePath,      // Добавлено
-		imageBaseURL:      cfg.ImagePublicBaseURL, // Добавлено
-		promptStyleSuffix: cfg.PromptStyleSuffix,  // Добавлено
+		imageSavePath: cfg.ImageSavePath,      // Добавлено
+		imageBaseURL:  cfg.ImagePublicBaseURL, // Добавлено
 	}, nil
 }
 
@@ -87,14 +85,14 @@ func (s *imageServiceImpl) GenerateAndStoreImage(ctx context.Context, taskPayloa
 		// zap.String("user_id", taskPayload.UserID), // UserID нет в taskPayload
 		zap.String("character_id", taskPayload.CharacterID.String()), // Use .String()
 		zap.String("image_reference", taskPayload.ImageReference),
-		zap.String("prompt_hash", fmt.Sprintf("%x", uuid.NewSHA1(uuid.NameSpaceDNS, []byte(taskPayload.Prompt+s.promptStyleSuffix)))),
+		zap.String("prompt_hash", fmt.Sprintf("%x", uuid.NewSHA1(uuid.NameSpaceDNS, []byte(taskPayload.Prompt)))),
 		zap.String("task_id", taskPayload.TaskID),
 	)
 	log.Info("Generating character image...")
 
-	// Конкатенация промпта
-	fullPrompt := taskPayload.Prompt + s.promptStyleSuffix
-	log.Debug("Full prompt for SANA API", zap.String("prompt", fullPrompt))
+	// Используем промпт напрямую из taskPayload
+	fullPrompt := taskPayload.Prompt
+	log.Debug("Using prompt from task payload for SANA API", zap.String("prompt", fullPrompt))
 
 	// Используем ratio из полезной нагрузки задачи
 	imageRatio := taskPayload.Ratio

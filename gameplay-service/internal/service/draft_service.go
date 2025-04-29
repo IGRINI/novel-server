@@ -130,8 +130,8 @@ func (s *draftServiceImpl) GenerateInitialStory(ctx context.Context, userID uuid
 	generationPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:        taskID,
 		UserID:        config.UserID.String(),
-		PromptType:    sharedMessaging.PromptTypeNarrator,
-		UserInput:     userInputForTask, // Используем модифицированный prompt
+		PromptType:    sharedModels.PromptTypeNarrator,
+		UserInput:     userInputForTask,
 		StoryConfigID: config.ID.String(),
 	}
 
@@ -238,7 +238,7 @@ func (s *draftServiceImpl) ReviseDraft(ctx context.Context, id uuid.UUID, userID
 	generationPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:        taskID,
 		UserID:        config.UserID.String(),
-		PromptType:    sharedMessaging.PromptTypeNarrator, // Тип остается Narrator, AI сам разберется по UserInput
+		PromptType:    sharedModels.PromptTypeNarrator,
 		UserInput:     userInputForTask,
 		StoryConfigID: config.ID.String(),
 	}
@@ -365,14 +365,14 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 
 	var userInputs []string
 	var lastUserInput string
-	var promptType sharedMessaging.PromptType
+	var promptType sharedModels.PromptType
 	var userInputForTask string
 
 	if config.UserInput != nil {
 		if err := json.Unmarshal(config.UserInput, &userInputs); err == nil && len(userInputs) > 0 {
 			lastUserInput = userInputs[len(userInputs)-1]
 			if len(userInputs) == 1 {
-				promptType = sharedMessaging.PromptTypeNarrator
+				promptType = sharedModels.PromptTypeNarrator
 				userInputForTask = lastUserInput
 				log.Info("Retry is for initial generation")
 				// <<< ДОБАВЛЕНО: Добавление префикса языка для начальной генерации >>>
@@ -384,7 +384,7 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 				}
 				// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
 			} else {
-				promptType = sharedMessaging.PromptTypeNarrator
+				promptType = sharedModels.PromptTypeNarrator
 				log.Info("Retry is for a revision generation", zap.String("revisionPrompt", lastUserInput))
 
 				if len(config.Config) == 0 {

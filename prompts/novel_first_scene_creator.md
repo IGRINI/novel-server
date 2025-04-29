@@ -47,3 +47,7 @@
   ]
 }
 ```
+
+**Apply the rules above to the following User Input:**
+
+{{USER_INPUT}}

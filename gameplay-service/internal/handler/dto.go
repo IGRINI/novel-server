@@ -12,10 +12,9 @@ import (
 type GameSceneResponseDTO struct {
 	ID               uuid.UUID        `json:"id"`                     // ID текущей сцены
 	PublishedStoryID uuid.UUID        `json:"publishedStoryId"`       // ID истории
-	Type             string           `json:"type"`                   // Тип сцены: "choices", "game_over", "continuation"
-	Choices          []ChoiceBlockDTO `json:"choices,omitempty"`      // Блоки выбора (для type="choices" или "continuation")
-	EndingText       *string          `json:"endingText,omitempty"`   // Текст концовки (для type="game_over")
-	Continuation     *ContinuationDTO `json:"continuation,omitempty"` // Данные для продолжения (для type="continuation")
+	Choices          []ChoiceBlockDTO `json:"choices,omitempty"`      // Блоки выбора
+	EndingText       *string          `json:"endingText,omitempty"`   // Текст концовки
+	Continuation     *ContinuationDTO `json:"continuation,omitempty"` // Данные для продолжения
 	CurrentStats     map[string]int   `json:"currentStats,omitempty"` // Текущие статы игрока
 }
 

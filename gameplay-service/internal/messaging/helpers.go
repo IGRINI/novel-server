@@ -29,15 +29,46 @@ func castToStringSlice(slice []interface{}) []string {
 	return strSlice
 }
 
-// extractJsonContent извлекает JSON из блока ```json ... ``` или возвращает исходный текст.
+// extractJsonContent извлекает JSON из блока ```json ... ``` или пытается очистить края.
 func extractJsonContent(rawText string) string {
-	matches := jsonBlockRegex.FindStringSubmatch(rawText)
+	// 1. Сначала обрезаем пробельные символы с краев
+	cleaned := strings.TrimSpace(rawText)
+
+	// 2. Пытаемся найти полный блок ```...``` с помощью регулярного выражения
+	matches := jsonBlockRegex.FindStringSubmatch(cleaned)
 	if len(matches) > 1 {
-		// Group 1 contains the content inside ```...```
+		// Нашли полный блок. Group 1 содержит содержимое внутри ```...```
 		return strings.TrimSpace(matches[1])
 	}
-	// If no block found, return the original text trimmed
-	return strings.TrimSpace(rawText)
+
+	// 3. Полный блок ```...``` не найден regex-ом.
+	//    Пытаемся очистить некорректную/неполную обертку.
+
+	//    Сначала проверяем и удаляем суффикс ```
+	if strings.HasSuffix(cleaned, "```") {
+		cleaned = strings.TrimSuffix(cleaned, "```")
+		cleaned = strings.TrimSpace(cleaned) // Убираем пробелы/переносы перед ```
+	}
+
+	//    Затем проверяем и удаляем префикс ``` (возможно, с языком)
+	if strings.HasPrefix(cleaned, "```") {
+		firstNewline := strings.Index(cleaned, "\n")
+		if firstNewline != -1 {
+			// Нашли ``` и перенос строки после него - берем все после переноса
+			cleaned = strings.TrimSpace(cleaned[firstNewline+1:])
+		} else {
+			// Не нашли переноса строки после ```.
+			// Возможно, это ```{} или ``` json {} без переноса.
+			// Просто удаляем ```. Если там был язык (```json{}), останется "json{}",
+			// что все равно вызовет ошибку парсинга JSON - это приемлемо.
+			cleaned = strings.TrimPrefix(cleaned, "```")
+			// Дополнительно обрежем пробелы, если было '``` {}'
+			cleaned = strings.TrimSpace(cleaned)
+		}
+	}
+
+	// 4. Возвращаем результат после попыток очистки.
+	return cleaned
 }
 
 // stringShort обрезает строку до maxLen символов.

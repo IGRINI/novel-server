@@ -17,3 +17,8 @@
 2.  **Language:** `et` (ending_text) **MUST** be generated in the language specified in input `cfg.ln`.
 3.  **Content:** `et` must reflect the game over reason (`rsn`), overall context (`cfg`, `lst`), and match the tone/style (`cfg.pp.st`, `cfg.pp.tn`).
 4.  **Conciseness:** Keep `et` concise (2-4 sentences), providing a sense of finality.
+
+
+**Apply the rules above to the following User Input:**
+
+{{USER_INPUT}}

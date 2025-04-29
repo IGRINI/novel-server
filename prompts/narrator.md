@@ -64,3 +64,7 @@
     h.  Proceed to step 4.
 
 4.  **Output Requirement:** Respond **ONLY** with the final JSON object string (newly generated or modified). Ensure it's single-line, unformatted, strictly valid JSON, parsable by `JSON.parse()`/`json.loads()`. No extra text or explanation.
+
+**Apply the rules above to the following User Input:**
+
+{{USER_INPUT}}

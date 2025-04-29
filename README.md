@@ -442,8 +442,9 @@
               \"is_adult_content\": false, // <-- Обновлено поле
               \"likes_count\": 123,
               \"is_liked\": true,
-              \"hasPlayerProgress\": false // Есть ли прогресс у текущего пользователя
-              \"status\": \"ready | completed | error | ...\" // <<< ДОБАВЛЯЕМ СТАТУС НАЗАД
+              "hasPlayerProgress": false // Есть ли прогресс у текущего пользователя
+              "status": "ready | completed | error | ..." // <<< ДОБАВЛЯЕМ СТАТУС НАЗАД
+              "isPublic": true // <<< ДОБАВЛЕНО: Является ли история публичной
             }
             /* ... */
           ],
@@ -475,6 +476,7 @@
               \"is_liked\": false, // Лайкнул ли текущий пользователь
               \"hasPlayerProgress\": true // Есть ли прогресс у текущего пользователя
               \"status\": \"ready | completed | error | ...\" // <<< ДОБАВЛЯЕМ СТАТУС НАЗАД
+              "isPublic": true // <<< ДОБАВЛЕНО: Является ли история публичной
             }
             /* ... */
           ],
@@ -569,7 +571,6 @@
         {
           "id": "uuid-string", // ID текущей сцены
           "publishedStoryId": "uuid-string", // ID опубликованной истории
-          "type": "choices", // Тип сцены: "choices", "game_over", "continuation"
           "currentStats": { // <<< НОВОЕ ПОЛЕ: Текущие статы игрока
             "stat_key_1": 50,
             "stat_key_2": 35
@@ -693,6 +694,25 @@
         *   `404 Not Found`: История не найдена.
         *   `409 Conflict` (`{\"message\": \"Story is not in error state\"}`): История не в статусе ошибки.
         *   `500 Internal Server Error`: Ошибка при обновлении статуса или постановке задачи.
+
+*   **`PATCH /api/published-stories/:id/visibility`**
+    *   Описание: Изменение видимости **своей** опубликованной истории (сделать публичной или приватной).
+    *   Аутентификация: **Требуется.**
+    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
+    *   Тело запроса (`application/json`):
+        ```json
+        {
+          "is_public": true // или false
+        }
+        ```
+    *   Ответ при успехе (`204 No Content`): Видимость успешно изменена.
+    *   Ответ при ошибке:
+        *   `400 Bad Request`: Невалидный UUID или тело запроса (например, отсутствует `is_public`).
+        *   `401 Unauthorized`: Невалидный токен.
+        *   `403 Forbidden`: Попытка изменить видимость чужой истории.
+        *   `404 Not Found`: История не найдена.
+        *   `409 Conflict` (`{"message": "Story is not ready for publishing" | "Adult content cannot be made public"}`): История не готова к публикации или контент 18+ не может быть сделан публичным.
+        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 ---
 

@@ -59,8 +59,9 @@ type Config struct {
 	// <<< ДОБАВЛЕНО: Настройки Consumer >>>
 	ConsumerConcurrency int `envconfig:"CONSUMER_CONCURRENCY" default:"10"` // Кол-во обработчиков сообщений
 
-	// <<< ДОБАВЛЕНО: Стиль для промптов >>>
-	StoryPreviewPromptStyleSuffix string `envconfig:"STORY_PREVIEW_PROMPT_STYLE_SUFFIX"`
+	// <<< ДОБАВЛЕНО: Стили для промптов >>>
+	StoryPreviewPromptStyleSuffix string `envconfig:"STORY_PREVIEW_PROMPT_STYLE_SUFFIX" default:", a cinematic key art illustration for an interactive story, moody and atmospheric lighting, strong silhouette or central figure, minimal background detail, glowing accents, dark color palette with story-themed elements, dramatic composition, highly detailed digital painting"`
+	CharacterPromptStyleSuffix    string `envconfig:"CHARACTER_PROMPT_STYLE_SUFFIX" default:", a stylized portrait of a story character in moody, atmospheric lighting, with neon glow accents, soft shadows, minimal background, cohesive color grading, dark color palette, and subtle mystical or technological elements depending on the setting"`
 }
 
 // GetDSN возвращает строку подключения (DSN) для PostgreSQL
@@ -130,6 +131,13 @@ func LoadConfig() (*Config, error) {
 	log.Printf("  Auth Service URL: %s", cfg.AuthServiceURL)                  // <<< Логируем URL
 	log.Printf("  Allowed Origins: %v", cfg.AllowedOrigins)                   // <<< ДОБАВЛЕНО ЛОГИРОВАНИЕ >>>
 	log.Printf("  Consumer Concurrency: %d", cfg.ConsumerConcurrency)         // <<< ДОБАВЛЕНО ЛОГИРОВАНИЕ >>>
+	// Логируем суффиксы, если они не пустые (чтобы не засорять лог)
+	if cfg.StoryPreviewPromptStyleSuffix != "" {
+		log.Printf("  Story Preview Prompt Suffix: [CONFIGURED]")
+	}
+	if cfg.CharacterPromptStyleSuffix != "" {
+		log.Printf("  Character Prompt Suffix: [CONFIGURED]")
+	}
 
 	cfg.DBMaxConns = maxConns
 	cfg.DBIdleTimeout = time.Duration(idleTimeoutSec) * time.Second

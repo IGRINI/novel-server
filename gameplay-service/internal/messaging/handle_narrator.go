@@ -15,10 +15,8 @@ import (
 	sharedModels "novel-server/shared/models"
 )
 
-// Определение ClientStoryUpdate удалено, так как оно находится в publisher.go
-
 func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, notification sharedMessaging.NotificationPayload, storyConfigID uuid.UUID) error {
-	taskID := notification.TaskID // Получаем taskID из уведомления
+	taskID := notification.TaskID
 	dbCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
@@ -42,48 +40,77 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 			return nil
 		}
 		p.logger.Info("Narrator Success notification", zap.String("task_id", taskID), zap.String("story_config_id", storyConfigID.String()))
-		rawGeneratedText := notification.GeneratedText
-		jsonToParse := extractJsonContent(rawGeneratedText) // Helper from consumer.go
-		if jsonToParse == "" {
-			p.logger.Error("PARSING ERROR: Could not extract JSON from Narrator text",
+
+		var rawGeneratedText string
+		genResultCtx, genResultCancel := context.WithTimeout(ctx, 10*time.Second)
+		genResult, genErr := p.genResultRepo.GetByTaskID(genResultCtx, taskID)
+		genResultCancel()
+
+		if genErr != nil {
+			p.logger.Error("DB ERROR: Could not get GenerationResult by TaskID",
 				zap.String("task_id", taskID),
 				zap.String("story_config_id", storyConfigID.String()),
-				zap.String("raw_text_snippet", stringShort(rawGeneratedText, 100)), // Helper from consumer.go
+				zap.Error(genErr),
 			)
 			config.Status = sharedModels.StatusError
-			parseErr = errors.New("failed to extract JSON block")
+			parseErr = fmt.Errorf("failed to fetch generation result: %w", genErr)
+		} else if genResult.Error != "" {
+			p.logger.Error("TASK ERROR: GenerationResult indicates an error occurred during generation",
+				zap.String("task_id", taskID),
+				zap.String("story_config_id", storyConfigID.String()),
+				zap.String("gen_error", genResult.Error),
+			)
+			config.Status = sharedModels.StatusError
+			parseErr = errors.New(genResult.Error)
 		} else {
-			configBytes := []byte(jsonToParse)
-			var generatedConfig map[string]interface{}
-			parseErr = json.Unmarshal(configBytes, &generatedConfig)
-			if parseErr == nil {
-				title, titleOk := generatedConfig["t"].(string)
-				desc, descOk := generatedConfig["sd"].(string)
-				if titleOk && descOk && title != "" && desc != "" {
-					config.Config = json.RawMessage(configBytes)
-					config.Title = title
-					config.Description = desc
-					config.Status = sharedModels.StatusDraft
-					p.logger.Info("Narrator JSON parsed and key fields extracted", zap.String("task_id", taskID), zap.String("story_config_id", storyConfigID.String()))
-				} else {
-					p.logger.Error("FILLING ERROR: Narrator JSON parsed, but 't' or 'sd' missing/empty",
-						zap.String("task_id", taskID),
-						zap.String("story_config_id", storyConfigID.String()),
-						zap.Bool("title_ok", titleOk),
-						zap.Bool("title_empty", title == ""),
-						zap.Bool("desc_ok", descOk),
-						zap.Bool("desc_empty", desc == ""),
-					)
-					config.Status = sharedModels.StatusError
-				}
-			} else {
-				p.logger.Error("PARSING ERROR: Failed to parse Narrator JSON",
+			rawGeneratedText = genResult.GeneratedText
+		}
+
+		if parseErr == nil {
+			jsonToParse := extractJsonContent(rawGeneratedText)
+			if jsonToParse == "" {
+				p.logger.Error("PARSING ERROR: Could not extract JSON from Narrator text (fetched from DB)",
 					zap.String("task_id", taskID),
 					zap.String("story_config_id", storyConfigID.String()),
-					zap.Error(parseErr),
-					zap.String("json_to_parse", jsonToParse),
+					zap.String("raw_text_snippet", stringShort(rawGeneratedText, 100)),
 				)
 				config.Status = sharedModels.StatusError
+				parseErr = errors.New("failed to extract JSON block from fetched result")
+			} else {
+				configBytes := []byte(jsonToParse)
+				var generatedConfig map[string]interface{}
+				jsonUnmarshalErr := json.Unmarshal(configBytes, &generatedConfig)
+				if jsonUnmarshalErr == nil {
+					title, titleOk := generatedConfig["t"].(string)
+					desc, descOk := generatedConfig["sd"].(string)
+					if titleOk && descOk && title != "" && desc != "" {
+						config.Config = json.RawMessage(configBytes)
+						config.Title = title
+						config.Description = desc
+						config.Status = sharedModels.StatusDraft
+						p.logger.Info("Narrator JSON parsed and key fields extracted", zap.String("task_id", taskID), zap.String("story_config_id", storyConfigID.String()))
+					} else {
+						p.logger.Error("FILLING ERROR: Narrator JSON parsed, but 't' or 'sd' missing/empty",
+							zap.String("task_id", taskID),
+							zap.String("story_config_id", storyConfigID.String()),
+							zap.Bool("title_ok", titleOk),
+							zap.Bool("title_empty", title == ""),
+							zap.Bool("desc_ok", descOk),
+							zap.Bool("desc_empty", desc == ""),
+						)
+						config.Status = sharedModels.StatusError
+						parseErr = errors.New("required fields 't' or 'sd' missing or empty in generated JSON")
+					}
+				} else {
+					p.logger.Error("PARSING ERROR: Failed to parse Narrator JSON (fetched from DB)",
+						zap.String("task_id", taskID),
+						zap.String("story_config_id", storyConfigID.String()),
+						zap.Error(jsonUnmarshalErr),
+						zap.String("json_to_parse", jsonToParse),
+					)
+					config.Status = sharedModels.StatusError
+					parseErr = jsonUnmarshalErr
+				}
 			}
 		}
 		config.UpdatedAt = time.Now().UTC()
@@ -128,15 +155,15 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 
 	clientUpdate = ClientStoryUpdate{ID: config.ID.String(), UserID: config.UserID.String(), UpdateType: UpdateTypeDraft, Status: string(config.Status), Title: config.Title, Description: config.Description}
 	if config.Status == sharedModels.StatusError {
+		var errDetails string
 		if notification.ErrorDetails != "" {
-			errDetails := notification.ErrorDetails
-			clientUpdate.ErrorDetails = &errDetails
+			errDetails = notification.ErrorDetails
 		} else if parseErr != nil {
-			errDetails := fmt.Sprintf("JSON parsing error: %v", parseErr)
-			clientUpdate.ErrorDetails = &errDetails
+			errDetails = fmt.Sprintf("Processing error: %v", parseErr)
 		} else {
-			clientUpdate.ErrorDetails = nil
+			errDetails = "Unknown processing error"
 		}
+		clientUpdate.ErrorDetails = &errDetails
 	}
 	if parseErr == nil && notification.Status == sharedMessaging.NotificationStatusSuccess {
 		var generatedConfig map[string]interface{}
@@ -146,14 +173,14 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 			}
 			if pp, ok := generatedConfig["pp"].(map[string]interface{}); ok {
 				if thRaw, ok := pp["th"].([]interface{}); ok {
-					clientUpdate.Themes = castToStringSlice(thRaw) // Helper from consumer.go
+					clientUpdate.Themes = castToStringSlice(thRaw)
 				}
 				if wlRaw, ok := pp["wl"].([]interface{}); ok {
-					clientUpdate.WorldLore = castToStringSlice(wlRaw) // Helper from consumer.go
+					clientUpdate.WorldLore = castToStringSlice(wlRaw)
 				}
 			}
 		} else {
-			log.Printf("[processor][TaskID: %s] Ошибка повторного парсинга JSON Narrator для StoryConfig %s: %v", taskID, storyConfigID, err) // Keep old log for now
+			log.Printf("[processor][TaskID: %s] Ошибка повторного парсинга JSON Narrator для StoryConfig %s: %v", taskID, storyConfigID, err)
 		}
 	}
 	pubCtx, pubCancel := context.WithTimeout(context.Background(), 10*time.Second)

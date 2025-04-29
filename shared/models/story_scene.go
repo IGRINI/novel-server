@@ -18,7 +18,6 @@ type StoryScene struct {
 
 // SceneContent defines the expected structure of the JSON stored in StoryScene.Content.
 type SceneContent struct {
-	Type                   string            `json:"type"`
 	StorySummarySoFar      string            `json:"sssf,omitempty"`
 	FutureDirection        string            `json:"fd,omitempty"`
 	StoryVariableDefs      map[string]string `json:"svd,omitempty"`

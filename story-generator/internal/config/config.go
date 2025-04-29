@@ -16,6 +16,11 @@ type Config struct {
 	// Настройки HTTP API (если сервис его предоставляет)
 	HTTPServerPort string `envconfig:"HTTP_SERVER_PORT" default:"8083"`
 
+	// Настройки логгера
+	LogLevel    string `envconfig:"LOG_LEVEL" default:"info"`    // Уровень логирования
+	LogEncoding string `envconfig:"LOG_ENCODING" default:"json"` // Формат: json или console
+	LogOutput   string `envconfig:"LOG_OUTPUT" default:"stdout"` // Вывод: stdout или путь к файлу
+
 	// Настройки RabbitMQ
 	RabbitMQURL              string `envconfig:"RABBITMQ_URL" default:"amqp://guest:guest@localhost:5672/"`
 	InternalUpdatesQueueName string `envconfig:"INTERNAL_UPDATES_QUEUE_NAME" default:"internal_updates"`
@@ -131,6 +136,11 @@ func LoadConfig() (*Config, error) {
 	log.Printf("  DB Max Conns: %d", cfg.DBMaxConns)
 	log.Printf("  DB Idle Timeout: %v", cfg.DBIdleTimeout)
 	log.Printf("  Pushgateway URL: %s", cfg.PushgatewayURL)
+	// <<< ДОБАВЛЕНО: Логирование настроек логгера >>>
+	log.Printf("  Log Level: %s", cfg.LogLevel)
+	log.Printf("  Log Encoding: %s", cfg.LogEncoding)
+	log.Printf("  Log Output: %s", cfg.LogOutput)
+	// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
 	// Логируем AI ключ только если он был загружен
 	if cfg.AIAPIKey != "" {
 		log.Println("  AI API Key: [ЗАГРУЖЕН]")

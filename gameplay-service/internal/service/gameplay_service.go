@@ -47,61 +47,6 @@ var (
 	// ErrAdultContentCannotBePublic = errors.New("adult content cannot be made public") // Moved to publishing_service.go
 )
 
-// <<< Structs moved to game_loop_service.go >>>
-/*
-type userChoiceInfo struct {
-	Desc string `json:"d"` // Description of the choice block
-	Text string `json:"t"` // Text of the chosen option
-}
-
-// --- Структуры для парсинга SceneContent ---
-
-type sceneContentChoices struct {
-	Type    string        `json:"type"` // "choices"
-	Choices []sceneChoice `json:"ch"`
-	// svd (story_variable_definitions) пока игнорируем, они не влияют на текущий state
-}
-
-type sceneChoice struct {
-	Shuffleable int           `json:"sh"` // 0 или 1
-	Description string        `json:"desc"`
-	Options     []sceneOption `json:"opts"` // Должно быть ровно 2
-}
-
-type sceneOption struct {
-	Text         string                    `json:"txt"`
-	Consequences sharedModels.Consequences `json:"cons"` // Используем общую структуру
-}
-*/
-
-// <<< DTOs for browsing stories moved to story_browsing_service.go >>>
-/*
-type PublishedStoryDetailDTO struct {
-	ID                uuid.UUID
-	Title             string
-	ShortDescription  string
-	AuthorID          uuid.UUID
-	AuthorName        string
-	PublishedAt       time.Time
-	Genre             string
-	Language          string
-	IsAdultContent    bool
-	PlayerName        string
-	PlayerDescription string
-	WorldContext      string
-	StorySummary      string
-	CoreStats         map[string]CoreStatDetailDTO // Нужно определить CoreStatDetailDTO или использовать shared
-	LastPlayedAt      *time.Time
-	IsAuthor          bool
-}
-
-type CoreStatDetailDTO struct {
-	Description        string
-	InitialValue       int
-	GameOverConditions []sharedModels.StatDefinition // <<< Исправляем StatRule на StatDefinition
-}
-*/
-
 // GameplayService defines the interface for gameplay business logic.
 type GameplayService interface {
 	// Draft methods (delegated)
@@ -227,7 +172,9 @@ func NewGameplayService(
 		generationPublisher, configRepo,
 		imageReferenceRepo,
 		characterImageTaskBatchPub,
-		logger)
+		logger,
+		cfg,
+	)
 
 	return &gameplayServiceImpl{
 		configRepo:           configRepo,

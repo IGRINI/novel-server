@@ -17,8 +17,11 @@ import (
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
 
+	"novel-server/gameplay-service/internal/config" // <<< ИЗМЕНЕНО: Правильный путь к конфигу >>>
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"go.uber.org/zap"
 )
 
@@ -26,7 +29,6 @@ import (
 
 // sceneContentChoices represents the expected structure for scene content of type "choices".
 type sceneContentChoices struct {
-	Type    string        `json:"type"` // Should be "choices"
 	Choices []sceneChoice `json:"ch"`
 }
 
@@ -73,6 +75,7 @@ type gameLoopServiceImpl struct {
 	imageReferenceRepo         interfaces.ImageReferenceRepository
 	characterImageTaskBatchPub messaging.CharacterImageTaskBatchPublisher
 	logger                     *zap.Logger
+	cfg                        *config.Config // <<< ДОБАВЛЕНО: Поле для конфига (тип теперь правильный) >>>
 }
 
 // NewGameLoopService creates a new instance of GameLoopService.
@@ -86,7 +89,12 @@ func NewGameLoopService(
 	imageReferenceRepo interfaces.ImageReferenceRepository,
 	characterImageTaskBatchPub messaging.CharacterImageTaskBatchPublisher,
 	logger *zap.Logger,
+	cfg *config.Config, // <<< ДОБАВЛЕНО: Принимаем конфиг (тип теперь правильный) >>>
 ) GameLoopService {
+	if cfg == nil {
+		// Можно установить значения по умолчанию или запаниковать
+		panic("cfg cannot be nil for NewGameLoopService") // Паникуем, т.к. суффиксы важны
+	}
 	return &gameLoopServiceImpl{
 		publishedRepo:              publishedRepo,
 		sceneRepo:                  sceneRepo,
@@ -97,6 +105,7 @@ func NewGameLoopService(
 		imageReferenceRepo:         imageReferenceRepo,
 		characterImageTaskBatchPub: characterImageTaskBatchPub,
 		logger:                     logger.Named("GameLoopService"),
+		cfg:                        cfg,
 	}
 }
 
@@ -225,7 +234,7 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, playerID uuid.UUID
 
 	// 7. Parse scene content and validate choice
 	var sceneData sceneContentChoices
-	if err := json.Unmarshal(currentScene.Content, &sceneData); err != nil || sceneData.Type != "choices" || len(sceneData.Choices) == 0 {
+	if err := json.Unmarshal(currentScene.Content, &sceneData); err != nil || len(sceneData.Choices) == 0 {
 		s.logger.Error("Failed to unmarshal current scene content or invalid type/choices array", append(logFields, zap.Error(err))...)
 		return sharedModels.ErrInternalServer
 	}
@@ -375,36 +384,73 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, playerID uuid.UUID
 	logFields = append(logFields, zap.String("newStateHash", newStateHash))
 	s.logger.Debug("New state hash calculated", logFields...)
 
-	// 13. Find or Save the next PlayerProgress node
-	var nextNodeProgressID uuid.UUID
-	var nextNodeProgress *sharedModels.PlayerProgress
-	existingNode, errFind := s.playerProgressRepo.GetByStoryIDAndHash(ctx, publishedStoryID, newStateHash)
+	// 13. Update the *existing* PlayerProgress node for this user/story
+	//    This enforces the default behavior of one active progress per story.
+	//    The DB allows multiple nodes (for future premium feature), but the app logic updates the current one.
 
-	if errFind == nil {
-		nextNodeProgressID = existingNode.ID
-		nextNodeProgress = existingNode
-		s.logger.Info("Next PlayerProgress node already exists", append(logFields, zap.String("progressID", nextNodeProgressID.String()))...)
-	} else if errors.Is(errFind, sharedModels.ErrNotFound) || errors.Is(errFind, pgx.ErrNoRows) {
-		nextProgress.StoryVariables = make(map[string]interface{})
-		nextProgress.GlobalFlags = clearTransientFlags(nextProgress.GlobalFlags)
-		nextProgress.CurrentStateHash = newStateHash
+	// Получаем ID *текущего* узла прогресса из gameState (уже есть currentProgressID)
+	nextProgress.ID = currentProgressID              // <<< УСТАНАВЛИВАЕМ ID ДЛЯ ОБНОВЛЕНИЯ >>>
+	nextProgress.UserID = playerID                   // Убедимся, что UserID установлен
+	nextProgress.PublishedStoryID = publishedStoryID // Убедимся, что StoryID установлен
+	nextProgress.CurrentStateHash = newStateHash     // Устанавливаем новый хэш
+	// nextProgress.SceneIndex уже увеличен ранее
+	// nextProgress.CoreStats, StoryVariables, GlobalFlags уже обновлены в applyConsequences
 
-		savedID, errSave := s.playerProgressRepo.Save(ctx, nextProgress)
-		if errSave != nil {
-			s.logger.Error("Failed to save new PlayerProgress node", append(logFields, zap.Error(errSave))...)
+	// Очищаем временные переменные и флаги ПЕРЕД обновлением
+	// (Важно: Делаем это *после* расчета хэша, если они на него влияют)
+	nextProgress.StoryVariables = make(map[string]interface{})               // Очищаем временные StoryVariables
+	nextProgress.GlobalFlags = clearTransientFlags(nextProgress.GlobalFlags) // Очищаем временные GlobalFlags
+
+	// --- Логика Обновления ---
+	// Мы знаем, что у пользователя ЕСТЬ узел прогресса (currentProgressID).
+	// Нам нужно обновить его новым состоянием (хэш, статы, индекс сцены и т.д.)
+
+	// ВЫЗЫВАЕМ Save, который теперь выполнит UPDATE, так как ID установлен
+	updatedID, errUpdate := s.playerProgressRepo.Save(ctx, nextProgress)
+	var nextNodeProgress *sharedModels.PlayerProgress = nextProgress // Variable to hold the node we'll use (updated or found)
+
+	if errUpdate != nil {
+		// Обработка ошибок обновления (если вдруг узел пропал или другая проблема)
+		s.logger.Error("Failed to update existing PlayerProgress node", append(logFields, zap.Error(errUpdate))...)
+		// Проверяем, не является ли ошибка нарушением УНИКАЛЬНОГО КОНСТРЕЙНТА НА ХЭШ (unique_story_state_hash)
+		// Это может случиться, если игрок как-то вернулся к состоянию, которое уже прошел
+		// В этом случае мы не должны падать, а должны найти существующий узел с этим хэшем
+		var pgErr *pgconn.PgError
+		if errors.As(errUpdate, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "unique_story_state_hash" {
+			s.logger.Warn("Attempted to update progress resulting in a duplicate state hash. Finding existing node.", append(logFields, zap.String("constraint", pgErr.ConstraintName))...)
+			// Ищем существующий узел с этим хэшем
+			existingNodeByHash, errFindByHash := s.playerProgressRepo.GetByStoryIDAndHash(ctx, publishedStoryID, newStateHash)
+			if errFindByHash != nil {
+				s.logger.Error("Failed to find existing progress node after unique_story_state_hash violation", append(logFields, zap.Error(errFindByHash))...)
+				return sharedModels.ErrInternalServer
+			}
+			// Используем ID и данные найденного узла
+			nextNodeProgress = existingNodeByHash // Use the existing node found by hash
+			updatedID = existingNodeByHash.ID
+			s.logger.Info("Found existing PlayerProgress node matching the state hash", append(logFields, zap.String("progressID", updatedID.String()))...)
+		} else {
+			// Другая ошибка обновления
 			return sharedModels.ErrInternalServer
 		}
-		nextNodeProgressID = savedID
-		nextNodeProgress = nextProgress
-		s.logger.Info("Saved new PlayerProgress node", append(logFields, zap.String("progressID", nextNodeProgressID.String()))...)
 	} else {
-		s.logger.Error("Error finding/saving next PlayerProgress node", append(logFields, zap.Error(errFind))...)
+		s.logger.Info("Updated existing PlayerProgress node", append(logFields, zap.String("progressID", updatedID.String()))...)
+	}
+
+	// Санити чек - ID должен быть корректным
+	if updatedID == uuid.Nil {
+		s.logger.Error("CRITICAL: PlayerProgress ID is nil after update/find attempt", logFields...)
 		return sharedModels.ErrInternalServer
 	}
 
+	// Теперь у нас есть актуальный узел прогресса (nextNodeProgress) с ID = updatedID
+	nextNodeProgressID := updatedID
+
 	// 14. Find the next Scene associated with the new state hash
+	//    (Эта часть остается почти без изменений, но теперь мы используем nextNodeProgressID,
+	//     который является ID обновленного или найденного узла)
 	var nextSceneID *uuid.UUID
-	nextScene, errScene := s.sceneRepo.FindByStoryAndHash(ctx, publishedStoryID, newStateHash)
+	nextScene, errScene := s.sceneRepo.FindByStoryAndHash(ctx, publishedStoryID, newStateHash) // Ищем сцену по новому хэшу
+
 	if errScene == nil {
 		// Scene already exists
 		nextSceneID = &nextScene.ID
@@ -443,7 +489,7 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, playerID uuid.UUID
 		generationPayload, errGenPayload := createGenerationPayload(
 			playerID,
 			publishedStory,
-			nextNodeProgress,
+			nextNodeProgress, // <<< ИСПОЛЬЗУЕМ nextNodeProgress >>>
 			madeChoicesInfo,
 			newStateHash,
 		)
@@ -537,7 +583,7 @@ func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID,
 		setupPayload := sharedMessaging.GenerationTaskPayload{
 			TaskID:           taskID,
 			UserID:           story.UserID.String(), // Use UserID from the story
-			PromptType:       sharedMessaging.PromptTypeNovelSetup,
+			PromptType:       sharedModels.PromptTypeNovelSetup,
 			UserInput:        configJSONString,
 			PublishedStoryID: storyID.String(),
 		}
@@ -615,7 +661,7 @@ func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID,
 			}
 			return sharedModels.ErrInternalServer
 		}
-		generationPayload.PromptType = sharedMessaging.PromptTypeNovelCreator // Ensure correct type
+		generationPayload.PromptType = sharedModels.PromptTypeNovelCreator // Ensure correct type
 
 		if err := s.publisher.PublishGenerationTask(ctx, generationPayload); err != nil {
 			log.Error("Error publishing retry scene generation task. Rolling back status...", zap.Error(err))
@@ -678,7 +724,7 @@ func (s *gameLoopServiceImpl) RetryStoryGeneration(ctx context.Context, storyID,
 		setupPayload := sharedMessaging.GenerationTaskPayload{
 			TaskID:           taskID,
 			UserID:           story.UserID.String(), // Use UserID from the story
-			PromptType:       sharedMessaging.PromptTypeNovelSetup,
+			PromptType:       sharedModels.PromptTypeNovelSetup,
 			UserInput:        configJSONString,
 			PublishedStoryID: storyID.String(),
 		}
@@ -756,7 +802,7 @@ func (s *gameLoopServiceImpl) RetryStoryGeneration(ctx context.Context, storyID,
 			}
 			return sharedModels.ErrInternalServer
 		}
-		generationPayload.PromptType = sharedMessaging.PromptTypeNovelCreator // Ensure correct type
+		generationPayload.PromptType = sharedModels.PromptTypeNovelCreator // Ensure correct type
 
 		if err := s.publisher.PublishGenerationTask(ctx, generationPayload); err != nil {
 			log.Error("Error publishing retry scene generation task. Rolling back status...", zap.Error(err))
@@ -1250,7 +1296,7 @@ func createGenerationPayload(
 		TaskID:           uuid.New().String(),
 		UserID:           userID.String(),   // Use string UUID
 		PublishedStoryID: story.ID.String(), // Use string UUID
-		PromptType:       sharedMessaging.PromptTypeNovelCreator,
+		PromptType:       sharedModels.PromptTypeNovelCreator,
 		UserInput:        userInputJSON, // Use the marshaled JSON string
 		StateHash:        currentStateHash,
 		// GameStateID is added later before publishing
@@ -1328,9 +1374,9 @@ func createInitialSceneGenerationPayload(
 
 	payload := sharedMessaging.GenerationTaskPayload{
 		TaskID:           uuid.New().String(),
-		UserID:           userID.String(),                        // Use string UUID
-		PublishedStoryID: story.ID.String(),                      // Use string UUID
-		PromptType:       sharedMessaging.PromptTypeNovelCreator, // First scene uses NovelCreator prompt type now
+		UserID:           userID.String(),                     // Use string UUID
+		PublishedStoryID: story.ID.String(),                   // Use string UUID
+		PromptType:       sharedModels.PromptTypeNovelCreator, // First scene uses NovelCreator prompt type now
 		UserInput:        userInputJSON,
 		StateHash:        sharedModels.InitialStateHash, // Use the constant for initial state hash
 		// GameStateID is added later before publishing
@@ -1386,7 +1432,7 @@ func (s *gameLoopServiceImpl) checkAndGenerateSetupImages(ctx context.Context, u
 			log.Debug("Character image needs generation", zap.String("image_ref", imageRef))
 			needsCharacterImages = true
 			characterIDForTask := uuid.New()
-			fullCharacterPrompt := charData.Prompt + characterVisualStyle
+			fullCharacterPrompt := charData.Prompt + characterVisualStyle + s.cfg.CharacterPromptStyleSuffix
 			imageTask := sharedMessaging.CharacterImageTaskPayload{
 				TaskID:           characterIDForTask.String(),
 				UserID:           userID, // <<< ДОБАВЛЕНО: Передаем userID
@@ -1458,7 +1504,7 @@ func (s *gameLoopServiceImpl) checkAndGenerateSetupImages(ctx context.Context, u
 		if needsPreviewImage {
 			previewImageRef := fmt.Sprintf("history_preview_%s", story.ID.String())
 			basePreviewPrompt := setupContent.StoryPreviewImagePrompt
-			fullPreviewPromptWithStyles := basePreviewPrompt + storyStyle + characterVisualStyle
+			fullPreviewPromptWithStyles := basePreviewPrompt + storyStyle + characterVisualStyle + s.cfg.StoryPreviewPromptStyleSuffix
 			previewTask := sharedMessaging.CharacterImageTaskPayload{
 				TaskID:           uuid.New().String(),
 				UserID:           userID,   // <<< ДОБАВЛЕНО: Передаем userID

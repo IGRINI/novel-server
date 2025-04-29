@@ -7,34 +7,18 @@ import (
 	"github.com/google/uuid"
 )
 
-// PromptType определяет тип запроса к AI генератору
-type PromptType string
-
-// Константы для типов промптов
-const (
-	PromptTypeNarrator               PromptType = "narrator_unc"                  // Генерация базовых параметров мира по запросу пользователя
-	PromptTypeNovelSetup             PromptType = "novel_setup_unc"               // Генерация стартового состояния мира (статы, персонажи)
-	PromptTypeNovelFirstSceneCreator PromptType = "novel_first_scene_creator_unc" // Генерация первой сцены (DEPRECATED? Use NovelCreator)
-	PromptTypeNovelCreator           PromptType = "novel_creator_unc"             // Генерация следующей сцены (или первой)
-	PromptTypeNovelGameOverCreator   PromptType = "novel_game_over_creator_unc"   // Генерация финальной сцены (конец игры)
-	// <<< ДОБАВЛЕНО: Типы для генерации изображений >>>
-	PromptTypeCharacterImage    PromptType = "character_image"     // Генерация изображения персонажа
-	PromptTypeStoryPreviewImage PromptType = "story_preview_image" // Генерация превью-изображения истории
-	// Добавить другие типы по необходимости
-)
-
 // GenerationTaskPayload defines the structure for AI generation tasks.
 // This is sent TO the story-generator service.
 // It contains all necessary context marshalled into UserInput.
 type GenerationTaskPayload struct {
-	TaskID           string     `json:"task_id"`
-	UserID           string     `json:"user_id"`                      // User ID as string
-	PublishedStoryID string     `json:"published_story_id,omitempty"` // Story ID as string (for scene/game over)
-	StoryConfigID    string     `json:"story_config_id,omitempty"`    // Draft ID as string (for narrator/setup)
-	PromptType       PromptType `json:"prompt_type"`
-	UserInput        string     `json:"user_input"`            // JSON string containing cfg, stp, cs, uc, pss, pfd, pvis, sv, gf
-	StateHash        string     `json:"state_hash,omitempty"`  // Required for PromptTypeNovelCreator
-	GameStateID      string     `json:"gameStateId,omitempty"` // Required for subsequent scene/game over results processing
+	TaskID           string            `json:"task_id"`
+	UserID           string            `json:"user_id"`                      // User ID as string
+	PublishedStoryID string            `json:"published_story_id,omitempty"` // Story ID as string (for scene/game over)
+	StoryConfigID    string            `json:"story_config_id,omitempty"`    // Draft ID as string (for narrator/setup)
+	PromptType       models.PromptType `json:"prompt_type"`
+	UserInput        string            `json:"user_input"`            // JSON string containing cfg, stp, cs, uc, pss, pfd, pvis, sv, gf
+	StateHash        string            `json:"state_hash,omitempty"`  // Required for PromptTypeNovelCreator
+	GameStateID      string            `json:"gameStateId,omitempty"` // Required for subsequent scene/game over results processing
 }
 
 // GameOverReason details why the game ended.
@@ -103,12 +87,11 @@ const (
 
 // NotificationPayload is the structure for notifications sent FROM generation services back TO gameplay-service.
 type NotificationPayload struct {
-	TaskID           string             `json:"task_id"`                  // ID of the original task
-	Status           NotificationStatus `json:"status"`                   // success or error
-	PromptType       PromptType         `json:"prompt_type"`              // Type of prompt that was processed
-	GeneratedText    string             `json:"generated_text,omitempty"` // Result text (for text generation)
-	ErrorDetails     string             `json:"error_details,omitempty"`  // Details if status is error
-	UserID           string             `json:"user_id,omitempty"`        // Added UserID
+	TaskID           string             `json:"task_id"`                 // ID of the original task
+	Status           NotificationStatus `json:"status"`                  // success or error
+	PromptType       models.PromptType  `json:"prompt_type"`             // <<< Используем models.PromptType
+	ErrorDetails     string             `json:"error_details,omitempty"` // Details if status is error
+	UserID           string             `json:"user_id,omitempty"`       // Added UserID
 	StoryConfigID    string             `json:"story_config_id,omitempty"`
 	PublishedStoryID string             `json:"published_story_id,omitempty"`
 	StateHash        string             `json:"state_hash,omitempty"`
@@ -131,14 +114,4 @@ type Publisher interface {
 	Publish(ctx context.Context, payload interface{}, correlationID string) error
 	// Close закрывает соединение/канал паблишера.
 	Close() error
-}
-
-// IsValidPromptType проверяет, является ли строка допустимым PromptType.
-func IsValidPromptType(pt PromptType) bool {
-	switch pt {
-	case PromptTypeNarrator, PromptTypeNovelSetup, PromptTypeNovelFirstSceneCreator, PromptTypeNovelCreator, PromptTypeNovelGameOverCreator, PromptTypeCharacterImage, PromptTypeStoryPreviewImage:
-		return true
-	default:
-		return false
-	}
 }

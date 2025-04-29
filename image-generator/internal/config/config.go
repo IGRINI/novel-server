@@ -18,7 +18,6 @@ type Config struct {
 	RabbitMQ           RabbitMQConfig
 	SanaServer         SanaServerConfig
 	PushGatewayURL     string `envconfig:"PUSHGATEWAY_URL" required:"true"`
-	PromptStyleSuffix  string `envconfig:"IMAGE_PROMPT_STYLE_SUFFIX" default:", a stylized portrait of a story character in moody, atmospheric lighting, with neon glow accents, soft shadows, minimal background, cohesive color grading, dark color palette, and subtle mystical or technological elements depending on the setting"`
 	ImageSavePath      string `envconfig:"IMAGE_SAVE_PATH" required:"true"`
 	ImagePublicBaseURL string `envconfig:"IMAGE_PUBLIC_BASE_URL" required:"true"`
 }

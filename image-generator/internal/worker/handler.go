@@ -15,6 +15,7 @@ import (
 
 	"novel-server/image-generator/internal/service"
 	"novel-server/shared/messaging"
+	models "novel-server/shared/models"
 )
 
 // Определяем метрики Prometheus
@@ -172,12 +173,12 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 					TaskID:           t.TaskID,
 					PublishedStoryID: t.PublishedStoryID.String(),
 					UserID:           t.UserID,
-					PromptType:       determinePromptTypeFromResult(resultPayload), // Определяем тип
-					ImageReference:   resultPayload.ImageReference,                 // <<< ДОБАВЛЕНО
+					PromptType:       determinePromptTypeFromResult(resultPayload),
+					ImageReference:   resultPayload.ImageReference,
 				}
 				if resultPayload.Success {
 					notificationPayload.Status = messaging.NotificationStatusSuccess
-					notificationPayload.ImageURL = resultPayload.ImageURL // <<< ДОБАВЛЕНО (только при успехе)
+					notificationPayload.ImageURL = resultPayload.ImageURL
 				} else {
 					notificationPayload.Status = messaging.NotificationStatusError
 					if resultPayload.ErrorMessage != nil {
@@ -275,8 +276,8 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 			TaskID:           taskPayload.TaskID,
 			PublishedStoryID: taskPayload.PublishedStoryID.String(),
 			UserID:           taskPayload.UserID,
-			PromptType:       determinePromptTypeFromResult(resultPayload), // Определяем тип
-			ImageReference:   resultPayload.ImageReference,                 // <<< ДОБАВЛЕНО
+			PromptType:       determinePromptTypeFromResult(resultPayload),
+			ImageReference:   resultPayload.ImageReference,
 		}
 		notificationPayload.Status = messaging.NotificationStatusError
 		notificationPayload.ErrorDetails = *resultPayload.ErrorMessage
@@ -305,11 +306,11 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 			TaskID:           taskPayload.TaskID,
 			PublishedStoryID: taskPayload.PublishedStoryID.String(),
 			UserID:           taskPayload.UserID,
-			PromptType:       determinePromptTypeFromResult(resultPayload), // Определяем тип
-			ImageReference:   resultPayload.ImageReference,                 // <<< ДОБАВЛЕНО
+			PromptType:       determinePromptTypeFromResult(resultPayload),
+			ImageReference:   resultPayload.ImageReference,
 		}
 		notificationPayload.Status = messaging.NotificationStatusSuccess
-		notificationPayload.ImageURL = resultPayload.ImageURL // <<< ДОБАВЛЕНО (только при успехе)
+		notificationPayload.ImageURL = resultPayload.ImageURL
 
 		// Публикуем результат NotificationPayload
 		if pubErr := h.resultPublisher.Publish(ctx, notificationPayload, msg.CorrelationId); pubErr != nil {
@@ -326,14 +327,23 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 }
 
 // determinePromptTypeFromResult определяет PromptType на основе ImageReference.
-func determinePromptTypeFromResult(result messaging.CharacterImageResultPayload) messaging.PromptType {
+func determinePromptTypeFromResult(result messaging.CharacterImageResultPayload) models.PromptType {
 	// Простое правило: если reference начинается с "ch_", то это персонаж,
 	// если с "history_preview_", то это превью. Иначе - неизвестно.
 	if len(result.ImageReference) > 3 && result.ImageReference[:3] == "ch_" {
-		return messaging.PromptTypeCharacterImage
+		return models.PromptTypeCharacterImage
 	} else if len(result.ImageReference) > 16 && result.ImageReference[:16] == "history_preview_" {
-		return messaging.PromptTypeStoryPreviewImage
+		return models.PromptTypeStoryPreviewImage
 	}
 	// По умолчанию или если не распознано
-	return "unknown_image_type" // Возвращаем это, чтобы увидеть проблему в логах gameplay
+	return models.PromptType("unknown_image_type") // Возвращаем кастомный тип, чтобы не падало при валидации
 }
+
+// buildFullPrompt создает полный промпт, комбинируя базовый и суффикс стиля.
+// <<< ИЗМЕНЕНО: Больше не добавляет суффикс из конфига >>>
+func buildFullPrompt(basePrompt string) string {
+	// Просто возвращаем базовый промпт
+	return basePrompt
+}
+
+// handleGenerateImage обрабатывает одну задачу генерации изображения.

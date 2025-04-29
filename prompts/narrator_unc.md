@@ -43,9 +43,11 @@ Based on `UserInput`, you either **generate** a new game config OR **revise** an
 10. **Revision Logic:** When revising:
     *   Preserve unchanged fields from the base JSON.
     *   Apply changes from the `"ur"` text instructions.
+    *   **CRITICAL: Adhere strictly to the instructions in `"ur"`. Treat these instructions as absolute requirements that MUST be fulfilled precisely as described.**
     *   If changing `pn`, make it specific unless `"ur"` explicitly asks for generic.
     *   Keep original `ln` unless revision explicitly requests change (update all narrative fields if `ln` changes).
     *   Ensure `pp.st` and `pp.cvs` remain English.
+    *   **Language Adherence:** If the revision involves a language change (`ur` requests a new `ln` or confirms the existing non-English `ln`), **ensure ALL** of the following fields in the final output are strictly in the language specified by the **final `ln`**: `t`, `sd`, `p_desc`, `wc`, `ss`, `sssf`, `fd`, all `d` fields within `cs`, `pp.th`, `pp.tn`, `pp.p_desc` (if present), `pp.wl`, `pp.dl`, `pp.dc`. Fields `pp.st` and `pp.cvs` MUST remain in English regardless of `ln`.
     *   **Exclude the `"ur"` key from the final output JSON.**
 11. **Generation Logic:** When generating from scratch:
     *   Determine `ln` strictly from `UserInput` description.

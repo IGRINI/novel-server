@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	sharedDatabase "novel-server/shared/database"
+	sharedLogger "novel-server/shared/logger"
 	"novel-server/shared/messaging"
 	"novel-server/story-generator/internal/api"
 	"novel-server/story-generator/internal/config"
-	"novel-server/story-generator/internal/repository"
 	"novel-server/story-generator/internal/service"
 	"novel-server/story-generator/internal/worker"
 	"os"
@@ -172,9 +173,24 @@ func main() {
 	}
 	log.Println("QoS (prefetch count=1) установлен")
 
+	// <<< ДОБАВЛЕНО: Инициализация логгера >>>
+	// Создаем конфиг для логгера
+	loggerConfig := sharedLogger.Config{
+		Level:      cfg.LogLevel,    // Берем из конфига приложения
+		Encoding:   cfg.LogEncoding, // Берем из конфига приложения
+		OutputPath: cfg.LogOutput,   // Берем из конфига приложения
+	}
+	logger, err := sharedLogger.New(loggerConfig) // <<< ИЗМЕНЕНО: Используем New с конфигом >>>
+	if err != nil {
+		log.Fatalf("Ошибка инициализации логгера: %v", err)
+	}
+	defer logger.Sync() // Не забываем синхронизировать логгер при выходе
+	log.Println("Логгер успешно инициализирован")
+	// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
+
 	// Инициализация зависимостей для воркера
 	log.Println("Инициализация репозитория и нотификатора...")
-	resultRepo := repository.NewPostgresResultRepository(dbPool)
+	resultRepo := sharedDatabase.NewPgGenerationResultRepository(dbPool, logger)
 	notifier, err := service.NewRabbitMQNotifier(ch, cfg)
 	if err != nil {
 		log.Fatalf("Не удалось создать notifier: %v", err)

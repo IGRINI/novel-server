@@ -1,5 +1,7 @@
 ENV=development
 LOG_LEVEL=debug
+LOG_ENCODING=json
+LOG_OUTPUT=stdout
 
 # Настройки сервера (Пример для Auth Service)
 # SERVER_PORT=8080 - Заменено на AUTH_SERVER_PORT
@@ -22,9 +24,10 @@ REDIS_PASSWORD=
 REDIS_DB=0
 
 # Настройки API для нейросети
-AI_CLIENT_TYPE=openai # Устанавливаем тип клиента на ollama
-AI_MODEL=deepseek/deepseek-chat-v3-0324:free#nemo-q5-clean#deepseek/deepseek-chat-v3-0324:free
-AI_BASE_URL=https://openrouter.ai/api/v1#http://host.docker.internal:11434/v1 # Добавлено /v1 для OpenAI-совместимого API Ollamahttps://openrouter.ai/api/v1
+AI_CLIENT_TYPE=openai
+AI_MODEL=DiscoResearch/Llama3-DiscoLeo-Instruct-8B-32k-v0.1
+AI_BASE_URL=http://host.docker.internal:8001/v1 
+# Добавлено /v1 для OpenAI-совместимого API Ollamahttps://openrouter.ai/api/v1
 AI_TIMEOUT=500s # Таймаут из конфига
 AI_MAX_ATTEMPTS=1 # Макс. попытки из конфига
 AI_BASE_RETRY_DELAY=1s # Базовая задержка ретраев из конфига
@@ -106,8 +109,8 @@ IMAGE_PUBLIC_BASE_URL=https://crion.space/generated-images # <<< Публичн�
 
 PUSHGATEWAY_URL=http://localhost:9091 # <<< URL для Pushgateway при локальном запуске (если не в Docker)
 
-# <<< ДОБАВЛЕНО: Строка, добавляемая к каждому промпту для генерации изображений >>>
-IMAGE_PROMPT_STYLE_SUFFIX=", a stylized portrait of a story character in moody, atmospheric lighting, with neon glow accents, soft shadows, minimal background, cohesive color grading, dark color palette, and subtle mystical or technological elements depending on the setting"
+# <<< ИЗМЕНЕНО: Переменная для суффикса промпта персонажей >>>
+CHARACTER_PROMPT_STYLE_SUFFIX=", a stylized portrait of a story character in moody, atmospheric lighting, with neon glow accents, soft shadows, minimal background, cohesive color grading, dark color palette, and subtle mystical or technological elements depending on the setting"
 
 # <<< ДОБАВЛЕНО: Строка, добавляемая к промпту для превью истории >>>
 STORY_PREVIEW_PROMPT_STYLE_SUFFIX=", a cinematic key art illustration for an interactive story, moody and atmospheric lighting, strong silhouette or central figure, minimal background detail, glowing accents, dark color palette with story-themed elements, dramatic composition, highly detailed digital painting"

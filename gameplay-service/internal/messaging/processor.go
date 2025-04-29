@@ -36,13 +36,14 @@ type NotificationProcessor struct {
 	sceneRepo                  interfaces.StorySceneRepository      // !!! ДОБАВЛЕНО: Для StoryScene
 	playerGameStateRepo        interfaces.PlayerGameStateRepository // <<< ДОБАВЛЕНО: Для PlayerGameState
 	imageReferenceRepo         interfaces.ImageReferenceRepository  // <<< ИСПОЛЬЗУЕМ ИНТЕРФЕЙС
-	clientPub                  ClientUpdatePublisher                // Для отправки обновлений клиенту
-	taskPub                    TaskPublisher                        // !!! ДОБАВЛЕНО: Для отправки новых задач генерации
-	pushPub                    PushNotificationPublisher            // <<< Добавляем издателя push-уведомлений
-	characterImageTaskPub      CharacterImageTaskPublisher          // <<< ДОБАВЛЕНО: Для отправки задач генерации изображений
-	characterImageTaskBatchPub CharacterImageTaskBatchPublisher     // <<< ДОБАВЛЕНО: Для отправки батчей задач генерации изображений
-	logger                     *zap.Logger                          // <<< ДОБАВЛЕНО
-	cfg                        *config.Config                       // <<< ДОБАВЛЕНО: Доступ к конфигурации
+	genResultRepo              interfaces.GenerationResultRepository
+	clientPub                  ClientUpdatePublisher            // Для отправки обновлений клиенту
+	taskPub                    TaskPublisher                    // !!! ДОБАВЛЕНО: Для отправки новых задач генерации
+	pushPub                    PushNotificationPublisher        // <<< Добавляем издателя push-уведомлений
+	characterImageTaskPub      CharacterImageTaskPublisher      // <<< ДОБАВЛЕНО: Для отправки задач генерации изображений
+	characterImageTaskBatchPub CharacterImageTaskBatchPublisher // <<< ДОБАВЛЕНО: Для отправки батчей задач генерации изображений
+	logger                     *zap.Logger                      // <<< ДОБАВЛЕНО
+	cfg                        *config.Config                   // <<< ДОБАВЛЕНО: Доступ к конфигурации
 }
 
 // NewNotificationProcessor создает новый экземпляр NotificationProcessor.
@@ -52,6 +53,7 @@ func NewNotificationProcessor(
 	sceneRepo interfaces.StorySceneRepository, // !!! Добавлено sceneRepo
 	playerGameStateRepo interfaces.PlayerGameStateRepository, // <<< ДОБАВЛЕНО
 	imageReferenceRepo interfaces.ImageReferenceRepository, // <<< ИСПОЛЬЗУЕМ ИНТЕРФЕЙС
+	genResultRepo interfaces.GenerationResultRepository,
 	clientPub ClientUpdatePublisher,
 	taskPub TaskPublisher,
 	pushPub PushNotificationPublisher,
@@ -60,7 +62,9 @@ func NewNotificationProcessor(
 	logger *zap.Logger, // <<< ДОБАВЛЕНО
 	cfg *config.Config, // <<< ДОБАВЛЕНО: Принимаем конфиг
 ) *NotificationProcessor {
-	// <<< ДОБАВЛЕНО: Проверка на nil >>>
+	if genResultRepo == nil {
+		logger.Fatal("genResultRepo cannot be nil for NotificationProcessor")
+	}
 	if imageReferenceRepo == nil {
 		logger.Fatal("imageReferenceRepo cannot be nil for NotificationProcessor")
 	}
@@ -68,11 +72,10 @@ func NewNotificationProcessor(
 		logger.Fatal("characterImageTaskPub cannot be nil for NotificationProcessor")
 	}
 	if logger == nil {
-		// Provide a default logger if nil is passed, although ideally it should always be provided.
-		logger = zap.NewNop() // Or initialize a default production logger
+		logger = zap.NewNop()
 		logger.Warn("Nil logger passed to NewNotificationProcessor, using No-op logger.")
 	}
-	if cfg == nil { // <<< ДОБАВЛЕНО: Проверка cfg
+	if cfg == nil {
 		logger.Fatal("cfg cannot be nil for NotificationProcessor")
 	}
 	return &NotificationProcessor{
@@ -81,13 +84,14 @@ func NewNotificationProcessor(
 		sceneRepo:                  sceneRepo,
 		playerGameStateRepo:        playerGameStateRepo,
 		imageReferenceRepo:         imageReferenceRepo,
+		genResultRepo:              genResultRepo,
 		clientPub:                  clientPub,
 		taskPub:                    taskPub,
 		pushPub:                    pushPub,
 		characterImageTaskPub:      characterImageTaskPub,
 		characterImageTaskBatchPub: characterImageTaskBatchPub,
 		logger:                     logger,
-		cfg:                        cfg, // <<< ДОБАВЛЕНО
+		cfg:                        cfg,
 	}
 }
 
@@ -163,24 +167,23 @@ func (p *NotificationProcessor) processNotificationPayloadInternal(ctx context.C
 		return fmt.Errorf("invalid or missing ID in notification payload: %w", parseIDErr)
 	}
 
+	// <<< ИЗМЕНЕНО: Используем константы из sharedModels >>>
 	switch notification.PromptType {
-	case sharedMessaging.PromptTypeNarrator:
+	case sharedModels.PromptTypeNarrator:
 		if !isStoryConfigTask {
-			p.logger.Error("Narrator received without StoryConfigID", zap.String("task_id", taskID), zap.String("published_story_id", notification.PublishedStoryID)) // Используем строку из уведомления для лога
+			p.logger.Error("Narrator received without StoryConfigID", zap.String("task_id", taskID), zap.String("published_story_id", notification.PublishedStoryID))
 			return fmt.Errorf("invalid notification: Narrator without StoryConfigID")
 		}
-		// <<< ИЗМЕНЕНИЕ: Передаем распарсенный storyConfigID >>>
-		return p.handleNarratorNotification(ctx, notification, storyConfigID) // Вызов функции из handle_narrator.go
+		return p.handleNarratorNotification(ctx, notification, storyConfigID)
 
-	case sharedMessaging.PromptTypeNovelSetup:
+	case sharedModels.PromptTypeNovelSetup:
 		if isStoryConfigTask {
 			p.logger.Error("NovelSetup received with StoryConfigID", zap.String("task_id", taskID), zap.String("story_config_id", storyConfigID.String()))
 			return fmt.Errorf("invalid notification: Setup with StoryConfigID")
 		}
-		// <<< ИЗМЕНЕНИЕ: Передаем распарсенный publishedStoryID >>>
-		return p.handleNovelSetupNotification(ctx, notification, publishedStoryID) // Вызов функции из handle_setup.go
+		return p.handleNovelSetupNotification(ctx, notification, publishedStoryID)
 
-	case sharedMessaging.PromptTypeNovelFirstSceneCreator, sharedMessaging.PromptTypeNovelCreator, sharedMessaging.PromptTypeNovelGameOverCreator:
+	case sharedModels.PromptTypeNovelFirstSceneCreator, sharedModels.PromptTypeNovelCreator, sharedModels.PromptTypeNovelGameOverCreator:
 		if isStoryConfigTask {
 			p.logger.Error("Scene/GameOver received with StoryConfigID", zap.String("task_id", taskID), zap.String("prompt_type", string(notification.PromptType)), zap.String("story_config_id", storyConfigID.String()))
 			return fmt.Errorf("invalid notification: %s with StoryConfigID", notification.PromptType)
@@ -189,15 +192,13 @@ func (p *NotificationProcessor) processNotificationPayloadInternal(ctx context.C
 			p.logger.Error("Scene/GameOver received without StateHash", zap.String("task_id", taskID), zap.String("prompt_type", string(notification.PromptType)), zap.String("published_story_id", publishedStoryID.String()))
 			return fmt.Errorf("invalid notification: %s without StateHash", notification.PromptType)
 		}
-		// <<< ИЗМЕНЕНИЕ: Передаем распарсенный publishedStoryID >>>
-		return p.handleSceneGenerationNotification(ctx, notification, publishedStoryID) // Вызов функции из handle_scene.go
+		return p.handleSceneGenerationNotification(ctx, notification, publishedStoryID)
 
-	// <<< ДОБАВЛЕНО: Обработка новых типов >>>
-	case sharedMessaging.PromptTypeCharacterImage, sharedMessaging.PromptTypeStoryPreviewImage:
+	case sharedModels.PromptTypeCharacterImage, sharedModels.PromptTypeStoryPreviewImage:
 		p.logger.Info("Processing image generation result notification",
 			zap.String("task_id", taskID),
 			zap.String("prompt_type", string(notification.PromptType)),
-			zap.String("published_story_id_str", notification.PublishedStoryID), // Лог ID как строка
+			zap.String("published_story_id_str", notification.PublishedStoryID),
 			zap.String("image_reference", notification.ImageReference),
 			zap.String("status", string(notification.Status)),
 		)
