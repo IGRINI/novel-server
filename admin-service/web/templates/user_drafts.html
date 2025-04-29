@@ -32,9 +32,11 @@
         <tbody>
             {{ range .Drafts }}
                 <tr>
-                    <td>{{ .ID }}</td>
-                    <td>{{ .Title | default "-" }}</td>
-                    <td><span class="badge bg-{{ .Status | statusBadge }}">{{ .Status }}</span></td>
+                    <td><a href="/admin/users/{{ $.User.ID }}/drafts/{{ .ID }}">{{ .ID }}</a></td>
+                    <td>{{ if .Title }}{{ .Title }}{{ else }}-{{ end }}</td>
+                    <td>{{ if .Description }}{{ .Description }}{{ else }}-{{ end }}</td>
+                    <td><span class="status-badge status-{{ .Status }}">{{ .Status }}</span></td>
+                    <td>{{ if .Language }}{{ .Language }}{{ else }}-{{ end }}</td>
                     <td>{{ .CreatedAt | formatAsDateTime }}</td>
                     <td>{{ .UpdatedAt | formatAsDateTime }}</td>
                     <td>

@@ -8,7 +8,7 @@
         <div class="system-message system-message--success">{{ if eq (.URLQuery.Get "success") "updated" }}История успешно обновлена!{{ else }}Операция успешна!{{ end }}</div>
     {{ end }}
     {{ if .URLQuery.Get "error" }}
-        <div class="system-message system-message--error">{{ if eq (.URLQuery.Get "error") "update_failed" }}Ошибка обновления истории: {{ .URLQuery.Get "msg" | default "Неизвестная ошибка." }}{{ else }}Произошла ошибка.{{ end }}</div>
+        <div class="system-message system-message--error">{{ if eq (.URLQuery.Get "error") "update_failed" }}Ошибка обновления истории: {{ $msg := .URLQuery.Get "msg" }}{{ if $msg }}{{ $msg }}{{ else }}Неизвестная ошибка.{{ end }}{{ else }}Произошла ошибка.{{ end }}</div>
     {{ end }}
 
     {{ if .UserError }}
@@ -45,8 +45,8 @@
                 <div class="content-card-header">Детали опубликованной истории</div>
                 <div class="content-card-body">
                     <p><strong>ID Истории:</strong> {{ .Story.ID }}</p>
-                    <p><strong>Заголовок:</strong> {{ .Story.Title | derefString | default "-" }}</p>
-                    <p><strong>Описание:</strong> {{ .Story.Description | derefString | default "-" }}</p>
+                    <p><strong>Заголовок:</strong> {{ $title := .Story.Title | derefString }}{{ if $title }}{{ $title }}{{ else }}-{{ end }}</p>
+                    <p><strong>Описание:</strong> {{ $desc := .Story.Description | derefString }}{{ if $desc }}{{ $desc }}{{ else }}-{{ end }}</p>
                     <div class="mb-3">
                         <label for="status" class="form-label"><strong>Статус:</strong></label>
                         <select id="status" name="status">

@@ -14,7 +14,6 @@ type StoryStatus string
 const (
 	StatusDraft             StoryStatus = "draft"               // Черновик, доступен для редактирования
 	StatusSetupPending      StoryStatus = "setup_pending"       // Ожидает генерации Setup
-	StatusSetupGenerating   StoryStatus = "setup_generating"    // Идет генерация Setup
 	StatusFirstScenePending StoryStatus = "first_scene_pending" // Setup готов, ожидает генерации 1й сцены
 	// StatusGeneratingScene   StoryStatus = "generating_scene"    // УДАЛЕНО: Статус генерации сцены для игрока
 	StatusInitialGeneration StoryStatus = "initial_generation" // Идет первоначальная генерация (Setup и/или 1я сцена)

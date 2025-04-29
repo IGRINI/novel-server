@@ -15,7 +15,7 @@ const configUpdateTopic = "config.updated" // Имя топика/ключа р�
 type ConfigService interface {
 	GetAllConfigs(ctx context.Context) ([]*models.DynamicConfig, error)
 	GetConfigByKey(ctx context.Context, key string) (*models.DynamicConfig, error)
-	UpdateConfig(ctx context.Context, key, value, description string) error
+	UpdateConfig(ctx context.Context, key, value string) error
 }
 
 type configServiceImpl struct {
@@ -57,20 +57,13 @@ func (s *configServiceImpl) GetConfigByKey(ctx context.Context, key string) (*mo
 	return config, nil
 }
 
-func (s *configServiceImpl) UpdateConfig(ctx context.Context, key, value, description string) error {
+func (s *configServiceImpl) UpdateConfig(ctx context.Context, key, value string) error {
 	log := s.logger.With(zap.String("key", key))
 
 	// 1. Подготавливаем данные для Upsert
-	// Используем указатель для description, чтобы можно было передать nil, если строка пустая
-	var descPtr *string
-	if description != "" {
-		descPtr = &description
-	}
-
 	config := &models.DynamicConfig{
-		Key:         key,
-		Value:       value,
-		Description: descPtr,
+		Key:   key,
+		Value: value,
 		// UpdatedAt обновится автоматически триггером
 	}
 

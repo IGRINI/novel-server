@@ -31,7 +31,7 @@
         <div class="mb-3">
             <label for="description" class="form-label">Описание</label>
              <!-- Используем textarea -->
-            <textarea class="form-control" id="description" name="description" rows="3">{{ .config.Description | default "" }}</textarea>
+            <textarea class="form-control" id="description" name="description" rows="3">{{ if .config.Description }}{{ .config.Description }}{{ else }}{{/* Пусто, если нет описания */}}{{ end }}</textarea>
             <small class="form-text text-muted">Опциональное описание для отображения в админ-панели.</small>
         </div>
 

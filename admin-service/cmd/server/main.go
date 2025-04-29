@@ -17,7 +17,6 @@ import (
 	sharedLogger "novel-server/shared/logger"
 	sharedMessaging "novel-server/shared/messaging"
 	middleware "novel-server/shared/middleware"
-	"novel-server/shared/models"
 	"os"
 	"os/signal"
 	"syscall"
@@ -119,19 +118,57 @@ func (r *multiTemplateRenderer) Instance(name string, data interface{}) render.R
 
 // <<< Заканчиваем определение кастомного рендерера >>>
 
-// <<< Функция для конвертации в JSON для шаблонов >>>
+// --- Кастомные функции для шаблонов ---
+
+func add(a, b int) int {
+	return a + b
+}
+
+func sub(a, b int) int {
+	return a - b
+}
+
+func formatAsDateTime(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	// Возвращаем в формате, понятном пользователю (можно добавить локаль, если нужно)
+	return t.Format("02.01.2006 15:04:05") // Пример
+}
+
+func derefString(s *string) string {
+	if s != nil {
+		return *s
+	}
+	return ""
+}
+
+func bytesToString(b []byte) string {
+	return string(b)
+}
+
+// Функция для конвертации в JSON для шаблонов (УЖЕ БЫЛА)
 func toJson(v interface{}) template.JS {
 	b, err := json.Marshal(v)
 	if err != nil {
-		// В случае ошибки возвращаем пустой JS объект или null
-		// или можно логировать ошибку
 		log.Printf("[ERROR] Failed to marshal value to JSON in template function: %v", err)
-		return template.JS("null") // Или "{}" или "'Error marshalling JSON'"
+		return template.JS("null")
 	}
 	return template.JS(b)
 }
 
-// <<< Конец функции >>>
+// --- Создаем FuncMap ---
+var funcMap = template.FuncMap{
+	"add":              add,
+	"sub":              sub,
+	"formatAsDateTime": formatAsDateTime,
+	"derefString":      derefString,
+	"bytesToString":    bytesToString,
+	"toJson":           toJson,
+	// Добавь сюда другие кастомные функции, если они есть (например, statusBadge)
+}
+
+// --- Конец определения функций и FuncMap ---
 
 func main() {
 	log.Println("Запуск Admin Service...")
@@ -377,8 +414,8 @@ func main() {
 		gameplayClient,
 		pushPublisher, // Push Publisher здесь
 		promptSvc,     // <<< Передаем PromptService
-		// <<< НОВОЕ: Передаем PromptHandler >>>
-		promptHandler,
+		promptHandler, // <<< Передаем PromptHandler
+		configHandler, // <<< ДОБАВЛЕНО: Передаем ConfigHandler
 	)
 	sugar.Info("AdminHandler инициализирован")
 
@@ -409,14 +446,16 @@ func main() {
 	// --- Настройка рендерера шаблонов ---
 	templatesDir := "./web/templates"
 	funcMap := template.FuncMap{
-		"add":    func(a, b int) int { return a + b },
-		"toJson": toJson, // Добавляем функцию toJson
-		// <<< Добавляем функцию для форматирования времени >>>
+		// Математические функции
+		"add": func(a, b int) int { return a + b },
+		"sub": func(a, b int) int { return a - b },
+		// Функции форматирования и утилиты
+		"toJson": toJson,
 		"formatAsDateTime": func(t time.Time) string {
 			if t.IsZero() {
 				return "-"
 			}
-			return t.Format("2006-01-02 15:04:05") // Пример формата
+			return t.Format("02.01.2006 15:04:05") // Пример формата
 		},
 		"derefString": func(s *string) string {
 			if s == nil {
@@ -435,19 +474,15 @@ func main() {
 			}
 			return false
 		},
-		"statusBadge": func(status models.StoryStatus) string {
-			switch status {
-			case models.StatusDraft:
+		"statusBadge": func(status string) string { // Принимаем string, т.к. типы могут быть разные
+			switch strings.ToLower(status) { // Сравниваем в нижнем регистре для надежности
+			case "draft", "pending":
 				return "secondary"
-			case models.StatusGenerating:
+			case "generating", "revising", "initial_generation", "setup_pending", "image_generation_pending":
 				return "info"
-			case models.StatusError:
+			case "error":
 				return "danger"
-			case models.StatusSetupPending:
-				return "warning"
-			case models.StatusFirstScenePending:
-				return "warning"
-			case models.StatusReady:
+			case "ready":
 				return "success"
 			default:
 				return "light"
@@ -457,13 +492,11 @@ func main() {
 			if len(s) <= maxLen {
 				return s
 			}
-			// Обрезаем до maxLen символов и добавляем ...
-			// Осторожно с рунами!
 			runes := []rune(s)
 			if len(runes) > maxLen {
 				return string(runes[:maxLen]) + "..."
 			}
-			return s // На случай, если символов меньше, чем байт
+			return s
 		},
 	}
 	multiRenderer := NewMultiTemplateRenderer(templatesDir, funcMap, logger)
@@ -539,30 +572,6 @@ func main() {
 	// Используем стандартный обработчик promhttp
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 	sugar.Info("Маршрут /metrics для Prometheus настроен")
-
-	// Группа для защищенных роутов админки
-	adminGroup := router.Group("/admin")
-	adminGroup.Use(adminHandler.AuthMiddleware) // <<< Передаем сам метод как middleware
-	{
-		adminGroup.GET("/dashboard", adminHandler.GetDashboardData) // <<< Исправлено на большую букву
-
-		// Роуты для промптов (если PromptHandler инициализирован)
-		if promptHandler != nil {
-			promptHandler.RegisterPromptRoutes(adminGroup)
-		} else {
-			sugar.Warn("Маршруты для Prompts не зарегистрированы, т.к. PromptHandler не инициализирован")
-		}
-
-		// <<< Роуты для динамических настроек (если ConfigHandler инициализирован) >>>
-		if configHandler != nil {
-			configHandler.RegisterConfigRoutes(adminGroup)
-		} else {
-			sugar.Warn("Маршруты для Configs не зарегистрированы, т.к. ConfigHandler не инициализирован")
-		}
-
-		// Роуты для статистики и управления
-		// adminGroup.GET("/stats", adminHandler.ShowStats) // <<< Закомментировано, т.к. нет обработчика
-	}
 
 	// --- Запуск HTTP-сервера ---
 	srv := &http.Server{

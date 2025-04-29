@@ -27,7 +27,7 @@ func NewPgDynamicConfigRepository(pool *pgxpool.Pool, logger *zap.Logger) *pgDyn
 
 // GetByKey возвращает настройку по ее ключу.
 func (r *pgDynamicConfigRepository) GetByKey(ctx context.Context, key string) (*models.DynamicConfig, error) {
-	query := `SELECT key, value, description, updated_at FROM dynamic_configs WHERE key = $1`
+	query := `SELECT key, value, created_at, updated_at FROM dynamic_configs WHERE key = $1`
 	log := r.logger.With(zap.String("query_key", key))
 
 	var config models.DynamicConfig
@@ -45,7 +45,7 @@ func (r *pgDynamicConfigRepository) GetByKey(ctx context.Context, key string) (*
 
 // GetAll возвращает все динамические настройки.
 func (r *pgDynamicConfigRepository) GetAll(ctx context.Context) ([]*models.DynamicConfig, error) {
-	query := `SELECT key, value, description, updated_at FROM dynamic_configs ORDER BY key`
+	query := `SELECT key, value, created_at, updated_at FROM dynamic_configs ORDER BY key`
 	log := r.logger
 
 	var configs []*models.DynamicConfig
@@ -65,16 +65,15 @@ func (r *pgDynamicConfigRepository) GetAll(ctx context.Context) ([]*models.Dynam
 // Upsert создает или обновляет настройку.
 func (r *pgDynamicConfigRepository) Upsert(ctx context.Context, config *models.DynamicConfig) error {
 	query := `
-        INSERT INTO dynamic_configs (key, value, description) 
-        VALUES ($1, $2, $3)
+        INSERT INTO dynamic_configs (key, value) 
+        VALUES ($1, $2)
         ON CONFLICT (key) DO UPDATE SET
-            value = EXCLUDED.value,
-            description = EXCLUDED.description
+            value = EXCLUDED.value
             -- updated_at обновляется триггером
     `
 	log := r.logger.With(zap.String("key", config.Key))
 
-	_, err := r.pool.Exec(ctx, query, config.Key, config.Value, config.Description)
+	_, err := r.pool.Exec(ctx, query, config.Key, config.Value)
 	if err != nil {
 		log.Error("Error upserting dynamic config", zap.Error(err))
 		return fmt.Errorf("failed to upsert dynamic config with key %s: %w", config.Key, err)

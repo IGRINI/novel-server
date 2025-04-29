@@ -73,8 +73,8 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 	}
 
 	if notification.Status == sharedMessaging.NotificationStatusSuccess {
-		if publishedStory.Status != sharedModels.StatusSetupGenerating && publishedStory.Status != sharedModels.StatusSetupPending {
-			p.logger.Warn("PublishedStory not in SetupGenerating or SetupPending status, Setup Success update cancelled.",
+		if publishedStory.Status != sharedModels.StatusSetupPending {
+			p.logger.Warn("PublishedStory not in SetupPending status, Setup Success update cancelled.",
 				zap.String("task_id", taskID),
 				zap.String("published_story_id", publishedStoryID.String()),
 				zap.String("current_status", string(publishedStory.Status)),

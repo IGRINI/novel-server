@@ -102,10 +102,10 @@ func (h *ConfigHandler) UpdateConfig(c *gin.Context) {
 
 	// Получаем данные из формы
 	value := c.PostForm("value")
-	description := c.PostForm("description") // Может быть пустой
+	// description := c.PostForm("description") // Удалено, так как поле убрано из модели и сервиса
 
 	// Вызываем сервис для обновления
-	err = h.configService.UpdateConfig(c.Request.Context(), key, value, description)
+	err = h.configService.UpdateConfig(c.Request.Context(), key, value) // Удален description из вызова
 	if err != nil {
 		h.logger.Error("Failed to update config via service", zap.String("key", key), zap.Error(err))
 		_ = setFlashMsg(c, "error", fmt.Sprintf("Failed to update config '%s': %v", key, err), h.cfg)

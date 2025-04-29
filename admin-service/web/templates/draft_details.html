@@ -35,19 +35,19 @@
                 <div class="content-card-header">Детали черновика</div>
                 <div class="content-card-body">
                     <p><strong>ID Черновика:</strong> {{ .Draft.ID }}</p>
-                    <p><strong>Заголовок:</strong> {{ .Draft.Title | default "-" }}</p>
-                    <p><strong>Описание:</strong> {{ .Draft.Description | default "-" }}</p>
+                    <p><strong>Заголовок:</strong> {{ if .Draft.Title }}{{ .Draft.Title }}{{ else }}-{{ end }}</p>
+                    <p><strong>Описание:</strong> {{ if .Draft.Description }}{{ .Draft.Description }}{{ else }}-{{ end }}</p>
                     <div class="mb-3">
                         <label for="status" class="form-label"><strong>Статус:</strong></label>
                         <select id="status" name="status">
-                            {{ range .AvailableStatuses }} 
+                            {{ range .AvailableStatuses }}
                                 <option value="{{ . }}" {{ if eq . $.Draft.Status }}selected{{ end }}>{{ . }}</option>
                             {{ else }}
                                 <option value="{{ $.Draft.Status }}" selected>{{ $.Draft.Status }} (нет доступных)</option>
                             {{ end }}
                         </select>
                     </div>
-                    <p><strong>Язык:</strong> {{ .Draft.Language | default "-" }}</p>
+                    <p><strong>Язык:</strong> {{ if .Draft.Language }}{{ .Draft.Language }}{{ else }}-{{ end }}</p>
                     <p><strong>Создан:</strong> {{ .Draft.CreatedAt | formatAsDateTime }}</p>
                     <p><strong>Обновлен:</strong> {{ .Draft.UpdatedAt | formatAsDateTime }}</p>
 

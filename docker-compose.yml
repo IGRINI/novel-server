@@ -181,7 +181,6 @@ services:
       SERVER_PORT: ${GAMEPLAY_SERVER_PORT} # Внутренний порт сервиса
       SERVICE_ID: gameplay-service
       AUTH_SERVICE_URL: http://auth-service:8081 # Добавляем URL для auth-service
-      STORY_PREVIEW_PROMPT_STYLE_SUFFIX: ${STORY_PREVIEW_PROMPT_STYLE_SUFFIX} # <<< Добавлено
     secrets:
       - source: db_password
         target: /run/secrets/db_password
@@ -215,7 +214,6 @@ services:
       <<: *env-vars
       ADMIN_SERVER_PORT: 8084
       LOG_LEVEL: ${LOG_LEVEL:-debug}
-      DATABASE_URL: postgresql://${DB_USER}@postgres:${DB_PORT}/${DB_NAME}?sslmode=${DB_SSL_MODE}
       AUTH_SERVICE_URL: http://auth-service:8081
       STORY_GENERATOR_URL: http://story-generator:8083
       GAMEPLAY_SERVICE_URL: http://gameplay-service:8082
@@ -478,10 +476,9 @@ services:
       # <<< ДОБАВЛЕНО: Переменные для image-generator >>>
       IMAGE_SAVE_PATH: /app/generated_images # Путь сохранения внутри контейнера
       IMAGE_PUBLIC_BASE_URL: https://crion.space/generated-images # Базовый URL для формирования ссылки
-      IMAGE_PROMPT_STYLE_SUFFIX: ${IMAGE_PROMPT_STYLE_SUFFIX} # <<< Строка для добавления к промптам
       PUSHGATEWAY_URL: http://pushgateway:9091 # <<< URL для Pushgateway внутри Docker
       # <<< ИЗМЕНЕНО: Используем правильное имя переменной >>>
-      SANA_SERVER_BASE_URL: http://host.docker.internal:8000 
+      SANA_SERVER_BASE_URL: http://host.docker.internal:8000
       # Добавить другие нужные переменные (логгирование, очереди и т.д.)
       # Например, имя очереди для задач и результатов:
       RABBITMQ_CHARACTER_IMAGE_TASK_QUEUE_NAME: ${RABBITMQ_CHARACTER_IMAGE_TASK_QUEUE_NAME}

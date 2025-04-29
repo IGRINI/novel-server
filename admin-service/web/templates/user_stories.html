@@ -23,25 +23,33 @@
             <tr>
                 <th>ID Истории</th>
                 <th>Название</th>
-                <th>Дата создания</th>
+                <th>Описание</th>
                 <th>Статус</th>
+                <th>Публичная</th>
+                <th>Контент для взрослых</th>
+                <th>Лайки</th>
                 <th>Дата создания</th>
+                <th>Дата обновления</th>
                 <th>Действия</th>
             </tr>
         </thead>
         <tbody>
             {{ range .Stories }}
                 <tr>
-                    <td>{{ .ID }}</td>
-                    <td>{{ .Title | derefString | default "-" }}</td>
+                    <td><a href="/admin/users/{{ $.User.ID }}/stories/{{ .ID }}">{{ .ID }}</a></td>
+                    <td>{{ $title := .Title | derefString }}{{ if $title }}{{ $title }}{{ else }}-{{ end }}</td>
+                    <td>{{ $desc := .Description | derefString }}{{ if $desc }}{{ $desc }}{{ else }}-{{ end }}</td>
+                    <td><span class="status-badge status-{{ .Status }}">{{ .Status }}</span></td>
+                    <td>{{ if .IsPublic }}Да{{ else }}Нет{{ end }}</td>
+                    <td>{{ if .IsAdultContent }}Да{{ else }}Нет{{ end }}</td>
+                    <td>{{ .LikesCount }}</td>
                     <td>{{ .CreatedAt | formatAsDateTime }}</td>
-                    <td>{{ .Status }}</td>
-                    <td>{{ .CreatedAt | formatAsDateTime }}</td>
+                    <td>{{ .UpdatedAt | formatAsDateTime }}</td>
                     <td>
                         <a href="/admin/users/{{$.TargetUser.ID}}/stories/{{.ID}}" class="cta-button cta-button--secondary btn-sm" style="margin-right: 0.5rem;">Детали</a>
                         <button class="cta-button cta-button--danger btn-sm"
                                 hx-delete="/admin/users/{{$.TargetUser.ID}}/stories/{{.ID}}"
-                                hx-confirm="Вы уверены, что хотите удалить историю '{{ .Title | derefString | default .ID }}'? Это действие нельзя отменить."
+                                hx-confirm="Вы уверены, что хотите удалить историю '{{ $title := .Title | derefString }}{{ if $title }}{{ $title }}{{ else }}{{ .ID }}{{ end }}'? Это действие нельзя отменить."
                                 hx-target="closest tr"
                                 hx-swap="outerHTML">
                             Удалить
@@ -61,7 +69,11 @@
         <ul>
             <li>
                 {{/* Кнопка Назад */}}
-                {{ $prevOffset := max 0 (sub .Offset .Limit) }}
+                {{ $calculatedOffset := sub .Offset .Limit }}
+                {{ $prevOffset := 0 }} {{/* Значение по умолчанию 0 */}}
+                {{ if gt $calculatedOffset 0 }}
+                    {{ $prevOffset = $calculatedOffset }}
+                {{ end }}
                 {{ if gt .Offset 0 }}
                     <a href="/admin/users/{{ .TargetUser.ID }}/stories?limit={{ .Limit }}&offset={{ $prevOffset }}" role="button" class="cta-button">← Предыдущая страница</a>
                 {{ else }}

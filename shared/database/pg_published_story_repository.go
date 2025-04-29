@@ -1096,51 +1096,48 @@ SET status = $1, -- StatusError
 WHERE status = ANY($3::story_status[]) -- Массив зависших статусов
 `
 
-// FindAndMarkStaleGeneratingAsError находит опубликованные истории, которые 'зависли' в статусе генерации,
-// или все такие истории, если порог 0, и обновляет их статус на StatusError.
+// FindAndMarkStaleGeneratingAsError находит "зависшие" истории в процессе генерации и устанавливает им статус Error.
 func (r *pgPublishedStoryRepository) FindAndMarkStaleGeneratingAsError(ctx context.Context, staleThreshold time.Duration) (int64, error) {
+	// Статусы, которые считаются "зависшими"
+	// Используем строки, так как StoryStatus - это string alias
 	staleStatuses := []string{
-		string(models.StatusSetupPending),
-		string(models.StatusSetupGenerating),
-		string(models.StatusFirstScenePending),
-		string(models.StatusInitialGeneration),
+		string(models.StatusSetupPending), // Используем константу, где она есть
+		// string(models.StatusFirstScenePending), // <<< Убрано, т.к. этот статус устарел
+		string(models.StatusInitialGeneration), // Используем константу, где она есть
+		"image_generation_pending",             // <<< Используем строковый литерал, т.к. константы нет
 	}
-	errorMessage := "Generation process timed out or got stuck."
-	args := []interface{}{
-		models.StatusError, // $1
-		errorMessage,       // $2
-		staleStatuses,      // $3
-	}
-	query := findAndMarkStaleGeneratingQueryBase
-	thresholdTime := time.Now().UTC().Add(-staleThreshold)
 
 	logFields := []zap.Field{
-		zap.Strings("staleStatuses", staleStatuses),
 		zap.Duration("staleThreshold", staleThreshold),
+		zap.Strings("staleStatuses", staleStatuses), // Логируем используемые статусы
 	}
+	r.logger.Info("Finding and marking stale generating published stories as Error", logFields...)
 
-	// Добавляем условие времени только если staleThreshold > 0
+	// Базовый запрос
+	// Используем pq.Array для передачи среза строк в ANY($3)
+	query := `UPDATE published_stories SET status = $1, error_details = $2, updated_at = NOW() WHERE status::text = ANY($3)`
+	args := []interface{}{models.StatusError, "Generation timed out or failed (marked as stale)", pq.Array(staleStatuses)}
+
+	// Добавляем условие по времени, если staleThreshold > 0
 	if staleThreshold > 0 {
-		query += " AND updated_at < $4" // $4 будет thresholdTime
-		args = append(args, thresholdTime)
-		logFields = append(logFields, zap.Time("thresholdTime", thresholdTime))
+		query += " AND updated_at < $4"
+		args = append(args, time.Now().UTC().Add(-staleThreshold))
 	} else {
+		// Если threshold == 0, проверяем ВСЕ записи с указанными статусами независимо от времени
 		r.logger.Info("Stale threshold is zero, checking all specified stale statuses regardless of time.", logFields...)
 	}
 
-	r.logger.Info("Finding and marking stale generating published stories as Error", logFields...)
-
 	commandTag, err := r.db.Exec(ctx, query, args...)
-
 	if err != nil {
-		r.logger.Error("Failed to execute update query for stale published stories", append(logFields, zap.Error(err))...)
+		// Логируем ошибку
+		r.logger.Error("Failed to execute update query for stale published stories", append(logFields, zap.Error(err), zap.String("query", query))...)
 		return 0, fmt.Errorf("ошибка обновления статуса зависших опубликованных историй: %w", err)
 	}
 
-	affectedRows := commandTag.RowsAffected()
-	r.logger.Info("Finished marking stale published stories", append(logFields, zap.Int64("updatedCount", affectedRows))...)
+	updatedCount := commandTag.RowsAffected()
+	r.logger.Info("FindAndMarkStaleGeneratingAsError completed", append(logFields, zap.Int64("updated_count", updatedCount))...)
 
-	return affectedRows, nil
+	return updatedCount, nil
 }
 
 // CheckInitialGenerationStatus проверяет, готовы ли Setup и Первая сцена (проверяя статус).
