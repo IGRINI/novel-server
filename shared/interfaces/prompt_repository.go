@@ -11,9 +11,6 @@ type PromptRepository interface {
 	// ListKeys retrieves a list of unique prompt keys.
 	ListKeys(ctx context.Context) ([]string, error)
 
-	// FindByKey retrieves all language versions of a prompt by its key.
-	FindByKey(ctx context.Context, key string) ([]*models.Prompt, error)
-
 	// GetByKeyAndLanguage retrieves a specific language version of a prompt.
 	GetByKeyAndLanguage(ctx context.Context, key, language string) (*models.Prompt, error)
 
@@ -28,6 +25,9 @@ type PromptRepository interface {
 	// DeleteByKey removes all language versions of a prompt by its key.
 	DeleteByKey(ctx context.Context, key string) error
 
+	// DeleteByKeyAndLanguage removes a specific language version of a prompt.
+	DeleteByKeyAndLanguage(ctx context.Context, key, language string) error
+
 	// GetByID retrieves a prompt by its unique ID.
 	GetByID(ctx context.Context, id int64) (*models.Prompt, error)
 
@@ -36,4 +36,7 @@ type PromptRepository interface {
 
 	// GetAll retrieves all prompts without filtering. (Kept for potential internal use)
 	GetAll(ctx context.Context) ([]*models.Prompt, error)
+
+	// GetAllPromptsByKey retrieves all language versions of a prompt by its key.
+	GetAllPromptsByKey(ctx context.Context, key string) ([]*models.Prompt, error)
 }

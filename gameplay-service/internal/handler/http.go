@@ -78,6 +78,7 @@ type GameplayHandler struct {
 	storyConfigRepo           interfaces.StoryConfigRepository
 	publishedStoryRepo        interfaces.PublishedStoryRepository
 	config                    *config.Config
+	supportedLanguagesMap     map[string]struct{}
 }
 
 // NewGameplayHandler создает новый GameplayHandler.
@@ -92,6 +93,14 @@ func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret
 		logger.Fatal("Failed to create Inter-Service JWT Verifier", zap.Error(err))
 	}
 
+	// <<< ВОССТАНАВЛИВАЕМ: Создание карты поддерживаемых языков из конфига >>>
+	langMap := make(map[string]struct{}, len(cfg.SupportedLanguages))
+	for _, lang := range cfg.SupportedLanguages {
+		langMap[lang] = struct{}{}
+	}
+	logger.Debug("Initialized supported languages map from config", zap.Int("count", len(langMap)))
+	// <<< КОНЕЦ ВОССТАНОВЛЕНИЯ >>>
+
 	return &GameplayHandler{
 		service:                   s,
 		logger:                    logger.Named("GameplayHandler"),
@@ -100,6 +109,7 @@ func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret
 		storyConfigRepo:           storyConfigRepo,
 		publishedStoryRepo:        publishedStoryRepo,
 		config:                    cfg,
+		supportedLanguagesMap:     langMap, // <<< ВОССТАНАВЛИВАЕМ: Сохраняем карту
 	}
 }
 

@@ -51,7 +51,7 @@ func NewMultiTemplateRenderer(templatesDir string, funcMap template.FuncMap, log
 		logger:    logger.Named("MultiTemplateRenderer"),
 	}
 
-	// Сначала загружаем layout отдельно, он будет основой
+	// <<< ВОЗВРАЩАЕМ: Сначала загружаем layout отдельно >>>
 	layoutPath := fmt.Sprintf("%s/layout.html", templatesDir)
 	layoutTmpl, err := template.New("layout.html").Funcs(funcMap).ParseFiles(layoutPath)
 	if err != nil {
@@ -67,23 +67,22 @@ func NewMultiTemplateRenderer(templatesDir string, funcMap template.FuncMap, log
 	for _, file := range pageFiles {
 		fileName := file.Name()
 		// Пропускаем layout и не-html файлы
-		// Используем проверку расширения файла напрямую
 		isHTML := strings.HasSuffix(fileName, ".html") || strings.HasSuffix(fileName, ".tmpl") || strings.HasSuffix(fileName, ".gohtml")
 		if file.IsDir() || fileName == "layout.html" || !isHTML {
 			continue
 		}
 
-		// Для каждого файла страницы: клонируем layout и парсим файл страницы в него
+		// <<< ИЗМЕНЕНО: Клонируем layout, добавляем FuncMap к клону, парсим ТОЛЬКО страницу >>>
 		pagePath := fmt.Sprintf("%s/%s", templatesDir, fileName)
 		tmplClone, err := layoutTmpl.Clone()
 		if err != nil {
 			logger.Fatal("Не удалось клонировать layout для страницы", zap.String("page", fileName), zap.Error(err))
 		}
 
-		// Парсим файл страницы в склонированный шаблон
-		_, err = tmplClone.ParseFiles(pagePath)
+		// Явно добавляем FuncMap к клону и парсим ТОЛЬКО файл страницы
+		_, err = tmplClone.Funcs(funcMap).ParseFiles(pagePath)
 		if err != nil {
-			logger.Fatal("Не удалось загрузить шаблон страницы", zap.String("page", fileName), zap.String("path", pagePath), zap.Error(err))
+			logger.Fatal("Не удалось загрузить шаблон страницы в клон layout", zap.String("page", fileName), zap.String("path", pagePath), zap.Error(err))
 		}
 
 		// Сохраняем готовый шаблон под именем файла страницы
@@ -100,18 +99,14 @@ func (r *multiTemplateRenderer) Instance(name string, data interface{}) render.R
 	if !ok {
 		// Если шаблон не найден, логируем ошибку и возвращаем ошибку рендеринга
 		r.logger.Error("Шаблон не найден в рендерере", zap.String("name", name))
-		// Возвращаем пустой рендер или рендер ошибки
-		// Здесь можно вернуть, например, рендер текста с ошибкой
 		return render.Data{
 			ContentType: "text/plain; charset=utf-8",
 			Data:        []byte(fmt.Sprintf("Template '%s' not found", name)),
 		}
 	}
-	// Возвращаем HTML рендер, указывая конкретный экземпляр шаблона
-	// и имя основного шаблона для выполнения (обычно это layout).
 	return render.HTML{
 		Template: tmpl,
-		Name:     "layout.html", // <<< Мы исполняем layout, который внутри найдет правильный `define` блока
+		Name:     "layout.html",
 		Data:     data,
 	}
 }
@@ -157,18 +152,36 @@ func toJson(v interface{}) template.JS {
 	return template.JS(b)
 }
 
-// --- Создаем FuncMap ---
-var funcMap = template.FuncMap{
-	"add":              add,
-	"sub":              sub,
-	"formatAsDateTime": formatAsDateTime,
-	"derefString":      derefString,
-	"bytesToString":    bytesToString,
-	"toJson":           toJson,
-	// Добавь сюда другие кастомные функции, если они есть (например, statusBadge)
+// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
+
+// <<< ДОБАВЛЕНО: Функция defaultFunc >>>
+// defaultFunc возвращает значение по умолчанию, если v пустое (0, "", nil).
+func defaultFunc(defaultValue interface{}, v interface{}) interface{} {
+	switch val := v.(type) {
+	case string:
+		if val != "" {
+			return val
+		}
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+		if val != 0 {
+			return val
+		}
+	case bool:
+		// Для bool обычно default не используется в таком виде, но можно добавить логику
+		return val
+	case nil:
+		// Если nil, всегда возвращаем default
+	default:
+		// Для других типов (слайсы, мапы и т.д.) можно добавить проверки,
+		// но пока считаем, что если не nil и не базовый тип, то возвращаем его.
+		if v != nil {
+			return v
+		}
+	}
+	return defaultValue
 }
 
-// --- Конец определения функций и FuncMap ---
+// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
 
 func main() {
 	log.Println("Запуск Admin Service...")
@@ -212,23 +225,13 @@ func main() {
 	}
 
 	// --- Подключение к PostgreSQL ---
-	var dbPool *pgxpool.Pool
-	if cfg.PostgresDSN == "" {
-		sugar.Warn("Postgres DSN не указан (DATABASE_URL или POSTGRES_DSN). Функционал, требующий БД, будет недоступен.")
-	} else {
-		dbPool, err = pgxpool.New(context.Background(), cfg.PostgresDSN)
-		if err != nil {
-			sugar.Fatalf("Не удалось подключиться к PostgreSQL: %v", err)
-		}
-		defer dbPool.Close()
-		sugar.Info("Успешно подключено к PostgreSQL")
-
-		// Проверка соединения
-		if err = dbPool.Ping(context.Background()); err != nil {
-			sugar.Fatalf("Не удалось проверить соединение с PostgreSQL: %v", err)
-		}
-		sugar.Info("Проверка соединения с PostgreSQL прошла успешно")
+	dbPool, err := setupDatabase(cfg, logger) // Передаем логгер и конфиг
+	if err != nil {
+		logger.Fatal("Не удалось подключиться к БД", zap.Error(err)) // Используем Fatal для критической ошибки
 	}
+	defer dbPool.Close()
+	// Лог об успехе теперь будет внутри setupDatabase
+	// <<< КОНЕЦ ЗАМЕНЫ >>>
 
 	// --- Подключение к RabbitMQ ---
 	rabbitConn, err := connectRabbitMQ(cfg.RabbitMQ.URL, logger) // Передаем созданный логгер
@@ -243,6 +246,12 @@ func main() {
 	if dbPool != nil {
 		promptRepo = database.NewPgPromptRepository(dbPool)
 		sugar.Info("PromptRepository инициализирован")
+		// <<< DEBUG LOG >>>
+		if promptRepo == nil {
+			sugar.Error("ОШИБКА: promptRepo is nil ПОСЛЕ инициализации!")
+		} else {
+			sugar.Debug("DEBUG: promptRepo НЕ nil после инициализации.")
+		}
 	} else {
 		sugar.Warn("PromptRepository не инициализирован из-за отсутствия подключения к БД")
 	}
@@ -252,6 +261,12 @@ func main() {
 	if dbPool != nil {
 		dynamicConfigRepo = database.NewPgDynamicConfigRepository(dbPool, logger)
 		sugar.Info("DynamicConfigRepository инициализирован")
+		// <<< DEBUG LOG >>>
+		if dynamicConfigRepo == nil {
+			sugar.Error("ОШИБКА: dynamicConfigRepo is nil ПОСЛЕ инициализации!")
+		} else {
+			sugar.Debug("DEBUG: dynamicConfigRepo НЕ nil после инициализации.")
+		}
 	} else {
 		sugar.Warn("DynamicConfigRepository не инициализирован из-за отсутствия подключения к БД")
 	}
@@ -263,8 +278,14 @@ func main() {
 	if err != nil {
 		sugar.Fatalf("Не удалось создать ConfigUpdatePublisher: %v", err)
 	}
-	// TODO: Добавить defer configUpdatePublisher.Close()?
+	// TODO: Добавить defer configUpdatePublisher.Close()? // <<< Возможно, здесь нужен defer
 	sugar.Info("ConfigUpdatePublisher инициализирован")
+	// <<< DEBUG LOG >>>
+	if configUpdatePublisher == nil {
+		sugar.Error("ОШИБКА: configUpdatePublisher is nil ПОСЛЕ инициализации! (Хотя Fatalf должен был сработать при err != nil)")
+	} else {
+		sugar.Debug("DEBUG: configUpdatePublisher НЕ nil после инициализации.")
+	}
 
 	promptPublisher, err := sharedMessaging.NewRabbitMQPromptPublisher(rabbitConn)
 	if err != nil {
@@ -276,6 +297,12 @@ func main() {
 		}
 	}()
 	sugar.Info("PromptEventPublisher инициализирован")
+	// <<< DEBUG LOG >>>
+	if promptPublisher == nil {
+		sugar.Error("ОШИБКА: promptPublisher is nil ПОСЛЕ инициализации! (Хотя Fatalf должен был сработать при err != nil)")
+	} else {
+		sugar.Debug("DEBUG: promptPublisher НЕ nil после инициализации.")
+	}
 
 	// --- Создание Push Notification Publisher ---
 	pushPublisher, err := messaging.NewRabbitMQPushPublisher(rabbitConn, cfg.RabbitMQ.PushQueueName, logger)
@@ -289,7 +316,7 @@ func main() {
 	}()
 
 	// --- Инициализация сервисов ---
-	var promptSvc *service.PromptService
+	var promptSvc service.PromptService
 	if promptRepo != nil && promptPublisher != nil { // Проверяем и репо, и паблишер
 		promptSvc = service.NewPromptService(cfg, promptRepo, promptPublisher)
 		sugar.Info("PromptService инициализирован")
@@ -309,7 +336,7 @@ func main() {
 	// <<< НОВОЕ: Инициализация PromptHandler >>>
 	var promptHandler *handler.PromptHandler
 	if promptSvc != nil {
-		promptHandler = handler.NewPromptHandler(*promptSvc, cfg, logger) // Используем *promptSvc т.к. NewPromptHandler ожидает значение
+		promptHandler = handler.NewPromptHandler(promptSvc, configSvc, cfg, logger)
 		sugar.Info("PromptHandler инициализирован")
 	} else {
 		sugar.Warn("PromptHandler не инициализирован из-за отсутствия PromptService")
@@ -445,7 +472,7 @@ func main() {
 
 	// --- Настройка рендерера шаблонов ---
 	templatesDir := "./web/templates"
-	funcMap := template.FuncMap{
+	funcMap := template.FuncMap{ // <<< ОСТАВЛЯЕМ ЛОКАЛЬНОЕ ОБЪЯВЛЕНИЕ
 		// Математические функции
 		"add": func(a, b int) int { return a + b },
 		"sub": func(a, b int) int { return a - b },
@@ -498,6 +525,7 @@ func main() {
 			}
 			return s
 		},
+		"default": defaultFunc,
 	}
 	multiRenderer := NewMultiTemplateRenderer(templatesDir, funcMap, logger)
 	router.HTMLRender = multiRenderer
@@ -528,21 +556,9 @@ func main() {
 			sugar.Fatal("Auth client does not implement TokenVerifier interface")
 		}
 
-		// Применяем middleware межсервисной аутентификации
 		api.Use(middleware.InterServiceAuthMiddlewareGin(tokenVerifier, logger))
 		{
-			// <<< Маршруты для Prompts >>>
-			prompts := api.Group("/prompts")
-			{
-				prompts.POST("", apiHandler.UpsertPrompt)             // POST /api/prompts
-				prompts.GET("", apiHandler.ListPromptsByKey)          // GET /api/prompts?key=...
-				prompts.GET("/:key/:language", apiHandler.GetPrompt)  // GET /api/prompts/{key}/{language}
-				prompts.DELETE("/:key", apiHandler.DeletePromptByKey) // DELETE /api/prompts/{key}
-			}
-			// Здесь можно добавить другие API маршруты, если они есть и не обрабатываются adminHandler
-			// Например, если GetPublishedStories и другие - это тоже API:
-			// api.GET("/published-stories", apiHandler.GetPublishedStories) // (потребует добавить в ApiHandler)
-			// ... и так далее ...
+			apiHandler.RegisterRoutes(api)
 		}
 		sugar.Info("Маршруты ApiHandler зарегистрированы")
 	} else {
@@ -572,6 +588,13 @@ func main() {
 	// Используем стандартный обработчик promhttp
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 	sugar.Info("Маршрут /metrics для Prometheus настроен")
+
+	// <<< ДОБАВЛЯЕМ ОБРАБОТЧИК ДЛЯ 404 ОШИБОК >>>
+	router.NoRoute(func(c *gin.Context) {
+		// Возвращаем простой текст и статус 404
+		c.String(http.StatusNotFound, "404 page not found")
+	})
+	sugar.Info("Настроен кастомный обработчик 404 Not Found")
 
 	// --- Запуск HTTP-сервера ---
 	srv := &http.Server{
@@ -656,3 +679,70 @@ func getEnv(key, fallback string) string {
 	}
 	return fallback
 }
+
+// <<< ДОБАВЛЕНО: Функция setupDatabase (скопирована из gameplay-service/cmd/server/main.go) >>>
+// setupDatabase инициализирует и возвращает пул соединений с БД
+func setupDatabase(cfg *config.Config, logger *zap.Logger) (*pgxpool.Pool, error) {
+	var dbPool *pgxpool.Pool
+	var err error
+	maxRetries := 50 // Увеличим количество попыток
+	retryDelay := 3 * time.Second
+
+	dsn := cfg.GetDSN()
+	poolConfig, parseErr := pgxpool.ParseConfig(dsn)
+	if parseErr != nil {
+		// Если DSN некорректен, нет смысла пытаться подключаться
+		return nil, fmt.Errorf("ошибка парсинга DSN: %w", parseErr)
+	}
+	poolConfig.MaxConns = int32(cfg.DBMaxConns)
+	poolConfig.MaxConnIdleTime = cfg.DBIdleTimeout
+
+	for i := 0; i < maxRetries; i++ {
+		attempt := i + 1
+		logger.Debug("Попытка подключения к PostgreSQL...",
+			zap.Int("attempt", attempt),
+			zap.Int("max_attempts", maxRetries),
+		)
+
+		// Таймаут на одну попытку подключения и пинга
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+		dbPool, err = pgxpool.NewWithConfig(ctx, poolConfig)
+		if err != nil {
+			logger.Warn("Не удалось создать пул соединений",
+				zap.Int("attempt", attempt),
+				zap.Error(err),
+			)
+			cancel()
+			if i < maxRetries-1 {
+				time.Sleep(retryDelay)
+			}
+			continue // Переходим к следующей попытке
+		}
+
+		// Пытаемся пинговать
+		if err = dbPool.Ping(ctx); err != nil {
+			logger.Warn("Не удалось выполнить ping к PostgreSQL",
+				zap.Int("attempt", attempt),
+				zap.Error(err),
+			)
+			dbPool.Close() // Закрываем неудачный пул
+			cancel()
+			if i < maxRetries-1 {
+				time.Sleep(retryDelay)
+			}
+			continue // Переходим к следующей попытке
+		}
+
+		// Если дошли сюда, подключение и пинг успешны
+		cancel() // Отменяем таймаут текущей попытки
+		logger.Info("Успешное подключение и ping к PostgreSQL", zap.Int("attempt", attempt))
+		return dbPool, nil
+	}
+
+	// Если цикл завершился без успешного подключения
+	logger.Error("Не удалось подключиться к PostgreSQL после всех попыток", zap.Int("attempts", maxRetries))
+	return nil, fmt.Errorf("не удалось подключиться к БД после %d попыток: %w", maxRetries, err) // Возвращаем последнюю ошибку
+}
+
+// <<< КОНЕЦ ДОБАВЛЕНИЯ setupDatabase >>>

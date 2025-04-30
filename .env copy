@@ -8,7 +8,7 @@ LOG_OUTPUT=stdout
 AUTH_SERVER_PORT=8081 # Порт для Auth Service
 
 # Настройки базы данных PostgreSQL
-DB_HOST=localhost # Для локального запуска вне Docker. В Docker будет 'postgres'
+# DB_HOST=localhost # <<< ЗАКОММЕНТИРОВАНО: Значение будет браться из docker-compose.yml для Docker
 DB_PORT=5432
 DB_USER=postgres
 DB_PASSWORD=32283228
@@ -60,6 +60,9 @@ RABBITMQ_PASS=guest # Можно переопределить
 WEBSOCKET_SERVER_PORT=8083 # Порт для WebSocket сервиса
 INTERNAL_UPDATES_QUEUE_NAME=internal_updates # Очередь для полных уведомлений (story-generator -> gameplay-service)
 CLIENT_UPDATES_QUEUE_NAME=client_updates     # Очередь для отфильтрованных уведомлений (gameplay-service -> websocket-service)
+
+# <<< Добавляем переменную для языков >>>
+SUPPORTED_LANGUAGES="en,fr,de,es,it,pt,ru,zh,ja"
 
 GAMEPLAY_SERVER_PORT=8082
 

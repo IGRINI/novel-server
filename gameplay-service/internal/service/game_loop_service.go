@@ -74,6 +74,7 @@ type gameLoopServiceImpl struct {
 	storyConfigRepo            interfaces.StoryConfigRepository
 	imageReferenceRepo         interfaces.ImageReferenceRepository
 	characterImageTaskBatchPub messaging.CharacterImageTaskBatchPublisher
+	dynamicConfigRepo          interfaces.DynamicConfigRepository // <<< ДОБАВЛЕНО: Репозиторий динамических настроек >>>
 	logger                     *zap.Logger
 	cfg                        *config.Config // <<< ДОБАВЛЕНО: Поле для конфига (тип теперь правильный) >>>
 }
@@ -88,6 +89,7 @@ func NewGameLoopService(
 	storyConfigRepo interfaces.StoryConfigRepository,
 	imageReferenceRepo interfaces.ImageReferenceRepository,
 	characterImageTaskBatchPub messaging.CharacterImageTaskBatchPublisher,
+	dynamicConfigRepo interfaces.DynamicConfigRepository, // <<< ДОБАВЛЕНО >>>
 	logger *zap.Logger,
 	cfg *config.Config, // <<< ДОБАВЛЕНО: Принимаем конфиг (тип теперь правильный) >>>
 ) GameLoopService {
@@ -104,6 +106,7 @@ func NewGameLoopService(
 		storyConfigRepo:            storyConfigRepo,
 		imageReferenceRepo:         imageReferenceRepo,
 		characterImageTaskBatchPub: characterImageTaskBatchPub,
+		dynamicConfigRepo:          dynamicConfigRepo, // <<< ДОБАВЛЕНО >>>
 		logger:                     logger.Named("GameLoopService"),
 		cfg:                        cfg,
 	}
@@ -1411,6 +1414,38 @@ func (s *gameLoopServiceImpl) checkAndGenerateSetupImages(ctx context.Context, u
 	log := s.logger.With(zap.String("publishedStoryID", story.ID.String()), zap.String("userID", userID))
 	log.Info("Checking and generating setup images if needed")
 
+	// <<< НАЧАЛО ИЗМЕНЕНИЙ: Получаем суффиксы стилей из динамической конфигурации >>>
+	// Суффикс для персонажей
+	characterStyleSuffix := s.cfg.CharacterPromptStyleSuffix // Значение по умолчанию из статической конфигурации
+	charDynConfKey := "prompt.character_style_suffix"
+	dynamicConfigChar, errConfChar := s.dynamicConfigRepo.GetByKey(ctx, charDynConfKey)
+	if errConfChar != nil {
+		if !errors.Is(errConfChar, sharedModels.ErrNotFound) {
+			log.Error("Failed to get dynamic config for character style suffix, using default", zap.String("key", charDynConfKey), zap.Error(errConfChar))
+		} else {
+			log.Info("Dynamic config for character style suffix not found, using default", zap.String("key", charDynConfKey))
+		}
+	} else if dynamicConfigChar != nil && dynamicConfigChar.Value != "" {
+		characterStyleSuffix = dynamicConfigChar.Value
+		log.Info("Using dynamic config for character style suffix", zap.String("key", charDynConfKey))
+	}
+
+	// Суффикс для превью историй
+	previewStyleSuffix := s.cfg.StoryPreviewPromptStyleSuffix // Значение по умолчанию из статической конфигурации
+	previewDynConfKey := "prompt.story_preview_style_suffix"
+	dynamicConfigPreview, errConfPreview := s.dynamicConfigRepo.GetByKey(ctx, previewDynConfKey)
+	if errConfPreview != nil {
+		if !errors.Is(errConfPreview, sharedModels.ErrNotFound) {
+			log.Error("Failed to get dynamic config for story preview style suffix, using default", zap.String("key", previewDynConfKey), zap.Error(errConfPreview))
+		} else {
+			log.Info("Dynamic config for story preview style suffix not found, using default", zap.String("key", previewDynConfKey))
+		}
+	} else if dynamicConfigPreview != nil && dynamicConfigPreview.Value != "" {
+		previewStyleSuffix = dynamicConfigPreview.Value
+		log.Info("Using dynamic config for story preview style suffix", zap.String("key", previewDynConfKey))
+	}
+	// <<< КОНЕЦ ИЗМЕНЕНИЙ >>>
+
 	var ( // Initialize variables
 		needsCharacterImages bool
 		needsPreviewImage    bool
@@ -1452,10 +1487,11 @@ func (s *gameLoopServiceImpl) checkAndGenerateSetupImages(ctx context.Context, u
 			log.Debug("Character image needs generation", zap.String("image_ref", imageRef))
 			needsCharacterImages = true
 			characterIDForTask := uuid.New()
-			fullCharacterPrompt := charData.Prompt + characterVisualStyle + s.cfg.CharacterPromptStyleSuffix
+			// <<< ИЗМЕНЕНО: Используем полученный characterStyleSuffix >>>
+			fullCharacterPrompt := charData.Prompt + characterVisualStyle + characterStyleSuffix
 			imageTask := sharedMessaging.CharacterImageTaskPayload{
 				TaskID:           characterIDForTask.String(),
-				UserID:           userID, // <<< ДОБАВЛЕНО: Передаем userID
+				UserID:           userID,
 				CharacterID:      characterIDForTask,
 				Prompt:           fullCharacterPrompt,
 				NegativePrompt:   charData.NegPrompt,
@@ -1524,11 +1560,12 @@ func (s *gameLoopServiceImpl) checkAndGenerateSetupImages(ctx context.Context, u
 		if needsPreviewImage {
 			previewImageRef := fmt.Sprintf("history_preview_%s", story.ID.String())
 			basePreviewPrompt := setupContent.StoryPreviewImagePrompt
-			fullPreviewPromptWithStyles := basePreviewPrompt + storyStyle + characterVisualStyle + s.cfg.StoryPreviewPromptStyleSuffix
+			// <<< ИЗМЕНЕНО: Используем полученный previewStyleSuffix >>>
+			fullPreviewPromptWithStyles := basePreviewPrompt + storyStyle + characterVisualStyle + previewStyleSuffix
 			previewTask := sharedMessaging.CharacterImageTaskPayload{
 				TaskID:           uuid.New().String(),
-				UserID:           userID,   // <<< ДОБАВЛЕНО: Передаем userID
-				CharacterID:      story.ID, // Use story ID as character ID for preview
+				UserID:           userID,
+				CharacterID:      story.ID,
 				Prompt:           fullPreviewPromptWithStyles,
 				NegativePrompt:   "",
 				ImageReference:   previewImageRef,

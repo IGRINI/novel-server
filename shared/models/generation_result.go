@@ -15,6 +15,7 @@ type PromptType string
 // Константы для типов промптов
 const (
 	PromptTypeNarrator               PromptType = "narrator"                  // Генерация базовых параметров мира по запросу пользователя
+	PromptTypeNarratorReviser        PromptType = "narrator_reviser"          // Ревизия базовых параметров мира по запросу пользователя
 	PromptTypeNovelSetup             PromptType = "novel_setup"               // Генерация стартового состояния мира (статы, персонажи)
 	PromptTypeNovelFirstSceneCreator PromptType = "novel_first_scene_creator" // Генерация первой сцены
 	PromptTypeNovelCreator           PromptType = "novel_creator"             // Генерация следующей сцены (или первой)
@@ -47,7 +48,7 @@ type GenerationResult struct {
 // IsValidPromptType проверяет, является ли строка допустимым PromptType.
 func IsValidPromptType(pt PromptType) bool {
 	switch pt {
-	case PromptTypeNarrator, PromptTypeNovelSetup, PromptTypeNovelFirstSceneCreator, PromptTypeNovelCreator, PromptTypeNovelGameOverCreator, PromptTypeCharacterImage, PromptTypeStoryPreviewImage:
+	case PromptTypeNarrator, PromptTypeNarratorReviser, PromptTypeNovelSetup, PromptTypeNovelFirstSceneCreator, PromptTypeNovelCreator, PromptTypeNovelGameOverCreator, PromptTypeCharacterImage, PromptTypeStoryPreviewImage:
 		return true
 	default:
 		return false

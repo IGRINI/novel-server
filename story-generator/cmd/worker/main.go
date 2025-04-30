@@ -224,6 +224,7 @@ func main() {
 
 	// --- Создаем обработчик задач воркера ---
 	sugar.Info("Создание обработчика задач...")
+	// Передаем только PromptProvider
 	taskHandler := worker.NewTaskHandler(cfg, aiClient, resultRepo, notifier, promptProvider)
 	sugar.Info("Обработчик задач создан")
 

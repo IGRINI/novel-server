@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"novel-server/shared/entities"
+	"novel-server/shared/interfaces"
 	"time"
 
 	"github.com/google/uuid"
@@ -112,20 +112,20 @@ func (p *rabbitMQPushPublisher) PublishPushNotification(ctx context.Context, pay
 	return nil
 }
 
-// PublishUserPushEvent реализует интерфейс interfaces.PushEventPublisher.
+// PublishPushEvent реализует интерфейс interfaces.PushEventPublisher.
 // Он преобразует событие и вызывает существующий метод PublishPushNotification.
-func (p *rabbitMQPushPublisher) PublishUserPushEvent(ctx context.Context, event entities.UserPushEvent) error {
-	p.logger.Info("Received UserPushEvent, converting and publishing...",
+func (p *rabbitMQPushPublisher) PublishPushEvent(ctx context.Context, event interfaces.PushNotificationEvent) error {
+	p.logger.Info("Received PushNotificationEvent, converting and publishing...",
 		zap.String("userID", event.UserID),
 		zap.String("title", event.Title),
+		zap.String("body", event.Body),
+		zap.Any("data", event.Data),
 	)
 
 	// Преобразуем UserID string в uuid.UUID. Если не удается, логируем ошибку.
-	// Примечание: Мы используем user_id как строку в handleSendUserNotification.
-	// Нужно либо там парсить в UUID, либо здесь. Пока оставим попытку парсинга здесь.
 	userID, err := uuid.Parse(event.UserID)
 	if err != nil {
-		p.logger.Error("Failed to parse UserID string to UUID in PublishUserPushEvent",
+		p.logger.Error("Failed to parse UserID string to UUID in PublishPushEvent",
 			zap.String("rawUserID", event.UserID),
 			zap.Error(err),
 		)
@@ -138,9 +138,9 @@ func (p *rabbitMQPushPublisher) PublishUserPushEvent(ctx context.Context, event 
 		UserID: userID,
 		Notification: PushNotification{
 			Title: event.Title,
-			Body:  event.Message,
+			Body:  event.Body,
 		},
-		// Data пока оставляем пустым, т.к. в UserPushEvent его нет
+		Data: event.Data,
 	}
 
 	// Вызываем существующий метод публикации

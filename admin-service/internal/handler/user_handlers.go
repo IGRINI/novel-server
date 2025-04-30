@@ -9,7 +9,8 @@ import (
 	"strconv"
 
 	// Возвращаем импорт entities
-	"novel-server/shared/entities"
+
+	"novel-server/shared/interfaces"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -274,18 +275,18 @@ func (h *AdminHandler) handleSendUserNotification(c *gin.Context) {
 
 	h.logger.Info("Attempting to send notification", zap.String("userID", userIDStr), zap.String("message", message))
 
-	// Используем entities.UserPushEvent и переменную userID (uuid.UUID)
-	event := entities.UserPushEvent{
-		UserID:  userID.String(),              // Используем uuid.UUID
-		Title:   "Сообщение от администрации", // Используем правильное название поля Title
-		Message: message,
-		// Data:    map[string]string{"source": "admin"}, // Поле Data отсутствует в entities.UserPushEvent? Убираем.
+	// ИЗМЕНЕНО: Используем тип interfaces.PushNotificationEvent и поле Body
+	event := interfaces.PushNotificationEvent{
+		UserID: userID.String(),                      // Используем uuid.UUID
+		Title:  "Сообщение от администрации",         // Используем правильное название поля Title
+		Body:   message,                              // <<< ИЗМЕНЕНО с Message на Body
+		Data:   map[string]string{"source": "admin"}, // Можно добавить доп. данные
 	}
 
 	redirectURL := fmt.Sprintf("/admin/users/%s/edit", userIDStr)
 
-	// Используем правильное имя метода PublishUserPushEvent
-	if err := h.pushPublisher.PublishUserPushEvent(c.Request.Context(), event); err != nil {
+	// Используем правильное имя метода PublishPushEvent (из интерфейса)
+	if err := h.pushPublisher.PublishPushEvent(c.Request.Context(), event); err != nil {
 		h.logger.Error("Failed to publish user push event", zap.Error(err), zap.String("userID", userIDStr))
 		c.Redirect(http.StatusSeeOther, redirectURL+"?notification_status=error")
 		return

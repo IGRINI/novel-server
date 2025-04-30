@@ -83,7 +83,7 @@ func (r *PgPromptRepository) Update(ctx context.Context, prompt *models.Prompt) 
 	return nil
 }
 
-func (r *PgPromptRepository) Delete(ctx context.Context, key, language string) error {
+func (r *PgPromptRepository) DeleteByKeyAndLanguage(ctx context.Context, key, language string) error {
 	query := `DELETE FROM prompts WHERE key = $1 AND language = $2`
 	commandTag, err := r.db.Exec(ctx, query, key, language)
 	if err != nil {
@@ -182,13 +182,14 @@ func (r *PgPromptRepository) ListKeys(ctx context.Context) ([]string, error) {
 	return keys, nil
 }
 
-// FindByKey retrieves all language versions of a prompt by its key.
-func (r *PgPromptRepository) FindByKey(ctx context.Context, key string) ([]*models.Prompt, error) {
+// GetAllPromptsByKey retrieves all language versions of a prompt by its key.
+// This is functionally the same as FindByKey in this implementation.
+func (r *PgPromptRepository) GetAllPromptsByKey(ctx context.Context, key string) ([]*models.Prompt, error) {
 	query := fmt.Sprintf(`SELECT %s FROM prompts WHERE key = $1 ORDER BY language`, promptFields)
 	rows, err := r.db.Query(ctx, query, key)
 	if err != nil {
-		log.Error().Err(err).Str("key", key).Msg("Failed to find prompts by key")
-		return nil, fmt.Errorf("failed to find prompts by key %s: %w", key, err)
+		log.Error().Err(err).Str("key", key).Msg("Failed to get all prompts by key")
+		return nil, fmt.Errorf("failed to get all prompts by key %s: %w", key, err)
 	}
 	defer rows.Close()
 
@@ -199,19 +200,16 @@ func (r *PgPromptRepository) FindByKey(ctx context.Context, key string) ([]*mode
 			&prompt.ID, &prompt.Key, &prompt.Language, &prompt.Content, &prompt.CreatedAt, &prompt.UpdatedAt,
 		)
 		if err != nil {
-			log.Error().Err(err).Str("key", key).Msg("Failed to scan prompt row in FindByKey")
+			log.Error().Err(err).Str("key", key).Msg("Failed to scan prompt row in GetAllPromptsByKey")
 			return nil, fmt.Errorf("failed to scan prompt row for key %s: %w", key, err)
 		}
 		prompts = append(prompts, &prompt)
 	}
 
 	if err = rows.Err(); err != nil {
-		log.Error().Err(err).Str("key", key).Msg("Error during rows iteration for find prompts by key")
-		return nil, fmt.Errorf("error during rows iteration for find prompts by key %s: %w", key, err)
+		log.Error().Err(err).Str("key", key).Msg("Error during rows iteration for get all prompts by key")
+		return nil, fmt.Errorf("error during rows iteration for get all prompts by key %s: %w", key, err)
 	}
-
-	// Важно: если для ключа не найдено ни одной версии, это не ошибка "не найдено",
-	// а просто пустой список. Ошибку ErrPromptNotFound возвращает GetByKeyAndLanguage.
 	return prompts, nil
 }
 

@@ -166,6 +166,14 @@ func (s *authServiceImpl) Login(ctx context.Context, username, password string) 
 		return nil, fmt.Errorf("failed to save token details: %w", err) // Ошибка уже обернута репо
 	}
 
+	// <<< ДОБАВЛЕНО ЛОГИРОВАНИЕ >>>
+	s.logger.Debug("Returning tokens after login",
+		zap.String("userID", user.ID.String()),
+		zap.Int("accessTokenLen", len(td.AccessToken)),
+		zap.Int("refreshTokenLen", len(td.RefreshToken)),
+	)
+	// <<< КОНЕЦ ЛОГИРОВАНИЯ >>>
+
 	s.logger.Info("User logged in successfully", zap.String("userID", user.ID.String()))
 	return td, nil
 }
@@ -281,6 +289,13 @@ func (s *authServiceImpl) Refresh(ctx context.Context, refreshTokenString string
 			s.logger.Error("Failed to save new token details via repository during refresh", zap.Error(err), zap.String("userID", claims.UserID.String()))
 			return nil, fmt.Errorf("failed to save new token details: %w", err)
 		}
+
+		// <<< ДОБАВЛЕНО ЛОГИРОВАНИЕ >>>
+		s.logger.Debug("Returning new tokens after refresh",
+			zap.Int("newAccessTokenLen", len(newTd.AccessToken)),
+			zap.Int("newRefreshTokenLen", len(newTd.RefreshToken)),
+		)
+		// <<< КОНЕЦ ЛОГИРОВАНИЯ >>>
 
 		s.logger.Info("Token refreshed successfully", zap.String("userID", claims.UserID.String()))
 		return newTd, nil
@@ -799,6 +814,13 @@ func (s *authServiceImpl) RefreshAdminToken(ctx context.Context, refreshTokenStr
 		// Если не смогли сохранить новые токены, то это критично
 		return nil, nil, fmt.Errorf("failed to save new token details: %w", err)
 	}
+
+	// <<< ДОБАВЛЕНО ЛОГИРОВАНИЕ >>>
+	log.Debug("Returning new tokens after admin refresh",
+		zap.Int("newAccessTokenLen", len(newTd.AccessToken)),
+		zap.Int("newRefreshTokenLen", len(newTd.RefreshToken)),
+	)
+	// <<< КОНЕЦ ЛОГИРОВАНИЯ >>>
 
 	// 10. Создаем новые Claims на основе пользователя и нового Access Token UUID
 	newClaims := &models.Claims{

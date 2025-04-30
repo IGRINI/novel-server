@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"novel-server/shared/utils"
@@ -62,6 +63,9 @@ type Config struct {
 	// <<< ДОБАВЛЕНО: Стили для промптов >>>
 	StoryPreviewPromptStyleSuffix string `envconfig:"STORY_PREVIEW_PROMPT_STYLE_SUFFIX" default:", a cinematic key art illustration for an interactive story, moody and atmospheric lighting, strong silhouette or central figure, minimal background detail, glowing accents, dark color palette with story-themed elements, dramatic composition, highly detailed digital painting"`
 	CharacterPromptStyleSuffix    string `envconfig:"CHARACTER_PROMPT_STYLE_SUFFIX" default:", a stylized portrait of a story character in moody, atmospheric lighting, with neon glow accents, soft shadows, minimal background, cohesive color grading, dark color palette, and subtle mystical or technological elements depending on the setting"`
+
+	// <<< ДОБАВЛЕНО: Список поддерживаемых языков >>>
+	SupportedLanguages []string // Будет загружено вручную
 }
 
 // GetDSN возвращает строку подключения (DSN) для PostgreSQL
@@ -93,6 +97,25 @@ func LoadConfig() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ошибка загрузки конфигурации gameplay-service: %w", err)
 	}
+
+	// <<< ВРУЧНУЮ ЗАГРУЖАЕМ SUPPORTED_LANGUAGES >>>
+	supportedLangsStr := getEnv("SUPPORTED_LANGUAGES", "en,ru") // Используем значение по умолчанию, если переменная не установлена
+	cfg.SupportedLanguages = []string{}
+	if supportedLangsStr != "" {
+		splitLangs := strings.Split(supportedLangsStr, ",")
+		for _, lang := range splitLangs {
+			trimmedLang := strings.TrimSpace(lang)
+			if trimmedLang != "" {
+				cfg.SupportedLanguages = append(cfg.SupportedLanguages, trimmedLang)
+			}
+		}
+	}
+	if len(cfg.SupportedLanguages) == 0 {
+		log.Println("WARN: Supported languages list is empty after loading from SUPPORTED_LANGUAGES env.")
+		// Можно установить дефолтное значение, если пустой список недопустим
+		// cfg.SupportedLanguages = []string{"en", "ru"}
+	}
+	// <<< КОНЕЦ РУЧНОЙ ЗАГРУЗКИ >>>
 
 	// Загружаем ОБЯЗАТЕЛЬНЫЕ секреты
 	var loadErr error
@@ -126,11 +149,12 @@ func LoadConfig() (*Config, error) {
 	log.Printf("  Image Generator Task Queue: %s", cfg.ImageGeneratorTaskQueue)
 	log.Printf("  Image Generator Result Queue: %s", cfg.ImageGeneratorResultQueue)
 	log.Println("  JWT Secret: [ЗАГРУЖЕН]")
-	log.Println("  Inter-Service Secret: [ЗАГРУЖЕН]")                         // <<< Логируем загрузку
-	log.Printf("  Generation Limit Per User: %d", cfg.GenerationLimitPerUser) // <<< ДОБАВЛЕНО ЛОГИРОВАНИЕ >>>
-	log.Printf("  Auth Service URL: %s", cfg.AuthServiceURL)                  // <<< Логируем URL
-	log.Printf("  Allowed Origins: %v", cfg.AllowedOrigins)                   // <<< ДОБАВЛЕНО ЛОГИРОВАНИЕ >>>
-	log.Printf("  Consumer Concurrency: %d", cfg.ConsumerConcurrency)         // <<< ДОБАВЛЕНО ЛОГИРОВАНИЕ >>>
+	log.Println("  Inter-Service Secret: [ЗАГРУЖЕН]")
+	log.Printf("  Supported Languages: %v", cfg.SupportedLanguages) // <<< ЛОГИРУЕМ ЯЗЫКИ >>>
+	log.Printf("  Generation Limit Per User: %d", cfg.GenerationLimitPerUser)
+	log.Printf("  Auth Service URL: %s", cfg.AuthServiceURL)
+	log.Printf("  Allowed Origins: %v", cfg.AllowedOrigins)
+	log.Printf("  Consumer Concurrency: %d", cfg.ConsumerConcurrency)
 	// Логируем суффиксы, если они не пустые (чтобы не засорять лог)
 	if cfg.StoryPreviewPromptStyleSuffix != "" {
 		log.Printf("  Story Preview Prompt Suffix: [CONFIGURED]")

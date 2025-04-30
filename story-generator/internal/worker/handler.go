@@ -20,10 +20,10 @@ import (
 	// "novel-server/story-generator/internal/model" // <<< Удаляем импорт model
 )
 
-// <<< ДОБАВЛЕНО: Короткий системный промпт >>>
-const fixedShortSystemPrompt = `You are a strict JSON API responder.
-Always answer ONLY with a single valid JSON object.
-Do not include any text, comments, or explanations.`
+// Ключ для системного промпта
+const (
+	systemPromptKey = "system_prompt" // Ключ, по которому ищем системный промпт в базе
+)
 
 // TaskHandler обрабатывает задачи генерации
 type TaskHandler struct {
@@ -31,7 +31,8 @@ type TaskHandler struct {
 	aiClient   service.AIClient // <<< Используем интерфейс
 	resultRepo sharedInterfaces.GenerationResultRepository
 	notifier   service.Notifier
-	prompts    *service.PromptProvider // <<< Добавляем PromptProvider
+	prompts    *service.PromptProvider // <<< Провайдер для ВСЕХ промптов
+	// configProvider *service.ConfigProvider // <<< УДАЛЕНО
 }
 
 // NewTaskHandler создает новый экземпляр обработчика задач
@@ -41,6 +42,7 @@ func NewTaskHandler(
 	resultRepo sharedInterfaces.GenerationResultRepository,
 	notifier service.Notifier,
 	promptProvider *service.PromptProvider, // <<< Принимаем PromptProvider
+	// configProvider *service.ConfigProvider, // <<< УДАЛЕНО
 ) *TaskHandler {
 	return &TaskHandler{
 		cfg:        cfg,
@@ -48,6 +50,7 @@ func NewTaskHandler(
 		resultRepo: resultRepo,
 		notifier:   notifier,
 		prompts:    promptProvider, // <<< Сохраняем
+		// configProvider: configProvider, // <<< УДАЛЕНО
 	}
 }
 
@@ -55,13 +58,22 @@ func NewTaskHandler(
 func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error) {
 	MetricsIncrementTasksReceived() // Увеличиваем счетчик полученных задач
 	taskStartTime := time.Now()     // Замеряем время начала обработки задачи
-	log.Printf("[TaskID: %s] Обработка задачи: UserID=%s, PromptType=%s",
-		payload.TaskID, payload.UserID, payload.PromptType)
+	log.Printf("[TaskID: %s] Обработка задачи: UserID=%s, PromptType=%s, Language=%s",
+		payload.TaskID, payload.UserID, payload.PromptType, payload.Language)
 
-	// Метка для прометеуса
-	// promptTypeLabel := string(payload.PromptType) // <<< УДАЛЕНО
 	// Переменная для статуса задачи (для финальной метрики длительности)
 	taskStatus := "success" // По умолчанию успех
+
+	// Объявляем переменные для результатов и ошибок ЗАРАНЕЕ
+	var aiResponse string
+	var processingErr error
+	var completedAt time.Time
+	var finalUsageInfo service.UsageInfo
+	var systemPrompt string
+	var language string       // <<< Перенесено сюда
+	var promptKey string      // <<< Перенесено сюда
+	var promptText string     // <<< Перенесено сюда
+	var userInputForAI string // <<< Перенесено сюда
 
 	// Defer для записи общей длительности задачи и отправки метрик
 	defer func() {
@@ -79,23 +91,37 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 		log.Printf("[TaskID: %s] Завершение обработки задачи. Статус: %s. Общее время: %v.", payload.TaskID, taskStatus, duration)
 	}()
 
-	// Объявляем переменные для результатов и ошибок
-	var aiResponse string
-	var processingErr error
-	var completedAt time.Time
-	var finalUsageInfo service.UsageInfo
+	// --- Этап 1: Получение системного промпта (с учетом языка из payload) ---
+	systemPromptLang := payload.Language // Используем язык из payload
+	if systemPromptLang == "" {
+		systemPromptLang = "en" // Запасной язык, если в payload пусто (НУЖНО ЛИ?)
+		log.Printf("[TaskID: %s][WARN] Язык в payload пуст, используется запасной язык '%s' для системного промпта.", payload.TaskID, systemPromptLang)
+	}
+	systemPrompt, err = h.prompts.GetPrompt(context.Background(), systemPromptKey, systemPromptLang)
+	if err != nil {
+		log.Printf("[TaskID: %s] Критическая ошибка: не удалось получить системный промпт (%s/%s): %v",
+			payload.TaskID, systemPromptLang, systemPromptKey, err)
+		MetricsIncrementTaskFailed("system_prompt_missing")
+		processingErr = fmt.Errorf("failed to get system prompt '%s/%s': %w", systemPromptLang, systemPromptKey, err)
+		goto SaveAndNotify // Используем goto для перехода к сохранению ошибки
+	}
+	if systemPrompt == "" {
+		log.Printf("[TaskID: %s] Критическая ошибка: системный промпт (%s/%s) пуст.",
+			payload.TaskID, systemPromptLang, systemPromptKey)
+		MetricsIncrementTaskFailed("system_prompt_empty")
+		processingErr = fmt.Errorf("system prompt '%s/%s' is empty", systemPromptLang, systemPromptKey)
+		goto SaveAndNotify // Используем goto для перехода к сохранению ошибки
+	}
+	log.Printf("[TaskID: %s] Системный промпт '%s/%s' успешно получен.", payload.TaskID, systemPromptLang, systemPromptKey)
 
-	// <<< ВЫЧИСЛЯЕМ ВРЕМЯ ЗАВЕРШЕНИЯ ЗДЕСЬ >>>
-	completedAt = time.Now()
-
-	// <<< ВЫЧИСЛЯЕМ ДЛИТЕЛЬНОСТЬ ОБРАБОТКИ >>>
-	processingDuration := completedAt.Sub(taskStartTime)
-
-	// <<< Получаем промпт из PromptProvider >>>
-	language := "en"                        // TODO: Get language from payload or config
-	promptKey := string(payload.PromptType) // <<< Используем PromptType как ключ
-
-	promptText, err := h.prompts.GetPrompt(context.Background(), promptKey, language)
+	// --- Этап 2: Получение промпта задачи ---
+	language = payload.Language // <<< Используем язык из payload >>>
+	if language == "" {         // <<< Добавляем fallback и здесь >>>
+		language = "en"
+		log.Printf("[TaskID: %s][WARN] Язык в payload пуст, используется запасной язык '%s' для промпта задачи.", payload.TaskID, language)
+	}
+	promptKey = string(payload.PromptType) // <<< Используем PromptType как ключ
+	promptText, err = h.prompts.GetPrompt(context.Background(), promptKey, language)
 	if err != nil {
 		log.Printf("[TaskID: %s] Ошибка получения промпта из кэша: %v. key='%s', lang='%s'", payload.TaskID, err, promptKey, language)
 		MetricsIncrementTaskFailed("prompt_cache_miss")
@@ -105,7 +131,7 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 		// <<< Промпт получен, продолжаем обработку >>>
 
 		// <<< Заменяем плейсхолдер {{USER_INPUT}} >>>
-		userInputForAI := strings.Replace(promptText, "{{USER_INPUT}}", payload.UserInput, 1)
+		userInputForAI = strings.Replace(promptText, "{{USER_INPUT}}", payload.UserInput, 1)
 		if userInputForAI == promptText && strings.Contains(promptText, "{{USER_INPUT}}") {
 			// Если плейсхолдер был, но замена не произошла (например, UserInput пуст)
 			log.Printf("[TaskID: %s][WARN] Placeholder {{USER_INPUT}} не был заменен в промпте типа '%s'. Возможно, UserInput пуст.", payload.TaskID, payload.PromptType)
@@ -133,7 +159,7 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 				var attemptErr error
 				aiResponse, attemptUsageInfo, attemptErr = h.aiClient.GenerateText(ctx,
 					payload.UserID,
-					fixedShortSystemPrompt,
+					systemPrompt, // <<< ИСПОЛЬЗУЕМ ПОЛУЧЕННЫЙ СИСТЕМНЫЙ ПРОМПТ
 					userInputForAI,
 					service.GenerationParams{Temperature: float64Ptr(0.2)})
 				cancel()
@@ -183,12 +209,12 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 				aiResponse = aiResponse
 			}
 		}
-	} // <<< Конец блока else (обработка после успешного получения промпта) >>>
+	} // <<< Конец блока else (обработка после успешного получения промпта задачи) >>>
 
-	// SaveAndNotify:
-	// --- Этап 4: Сохранение результата и отправка уведомления --- //
+SaveAndNotify: // Метка для перехода при ошибке получения промптов
+	// --- Этап N: Сохранение результата и отправка уведомления --- //
 	completedAt = time.Now() // Обновляем время завершения перед сохранением
-	processingDuration = completedAt.Sub(taskStartTime)
+	processingDuration := completedAt.Sub(taskStartTime)
 	saveErr := h.saveAndNotifyResult(
 		payload.TaskID,
 		payload.UserID,

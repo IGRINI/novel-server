@@ -16,12 +16,11 @@
 
 **CRITICAL OUTPUT RULES:**
 1.  **Output Format:** Respond ONLY with valid, single-line, compressed JSON parsable by `JSON.parse()`/`json.loads()`. Strictly adhere to the MANDATORY structure below. Consequences (`cons`) MUST be valid nested JSON. No extra text/markdown outside specified fields.
-2.  **Language:** Generate ALL narrative text (`sssf`, `fd`, `npd`, `etp`, `char`, `desc`, `txt`, `cons.response_text`) STRICTLY in the language from input `cfg.ln`.
-3.  **Mandatory Fields:** MUST generate `sssf`, `fd`, `npd`, `csr`, `etp`, `ch`.
-4.  **New Choices (`ch`):** Generate choices relevant to the *new* character's start.
-5.  **Character Attribution (`char`):** Each choice block (`ch`) MUST include `char` field with a character name from `stp.chars[].n`. `desc` MUST involve this character.
-6.  **Text Formatting:** Markdown (`*italic*`, `**bold**`) allowed ONLY within `npd`, `etp`, `desc`, `txt`, and `response_text` inside `cons`.
-7.  **Internal Notes (`vis`, `svd`):** Usually omit `vis` and `svd` for the very first continuation scene.
+2.  **Mandatory Fields:** MUST generate `sssf`, `fd`, `npd`, `csr`, `etp`, `ch`.
+3.  **New Choices (`ch`):** Generate choices relevant to the *new* character's start.
+4.  **Character Attribution (`char`):** Each choice block (`ch`) MUST include `char` field with a character name from `stp.chars[].n`. `desc` MUST involve this character.
+5.  **Text Formatting:** Markdown (`*italic*`, `**bold**`) allowed ONLY within `npd`, `etp`, `desc`, `txt`, and `response_text` inside `cons`.
+6.  **Internal Notes (`vis`, `svd`):** Usually omit `vis` and `svd` for the very first continuation scene.
 
 **Output JSON Structure (MANDATORY, Compressed Keys):**
 ```json

@@ -4,9 +4,11 @@ import (
 	"novel-server/admin-service/internal/client"
 	"novel-server/admin-service/internal/config"
 	"novel-server/admin-service/internal/service"
+	"novel-server/shared/database"
 	"novel-server/shared/interfaces"
 	sharedModels "novel-server/shared/models"
 
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -23,7 +25,7 @@ type AdminHandler struct {
 	storyGenClient client.StoryGeneratorClient
 	gameplayClient client.GameplayServiceClient
 	pushPublisher  interfaces.PushEventPublisher
-	promptService  *service.PromptService
+	promptService  service.PromptService
 	promptHandler  *PromptHandler
 	configHandler  *ConfigHandler
 }
@@ -35,7 +37,7 @@ func NewAdminHandler(
 	storyGenClient client.StoryGeneratorClient,
 	gameplayClient client.GameplayServiceClient,
 	pushPublisher interfaces.PushEventPublisher,
-	promptService *service.PromptService,
+	promptService service.PromptService,
 	promptHandler *PromptHandler,
 	configHandler *ConfigHandler,
 ) *AdminHandler {
@@ -65,15 +67,32 @@ func NewAdminHandler(
 }
 
 func (h *AdminHandler) RegisterRoutes(router *gin.Engine) {
+	// Публичные роуты (без middleware)
 	router.GET("/login", h.showLoginPage)
 	router.POST("/login", h.handleLogin)
 
-	adminGroup := router.Group("/admin", h.AuthMiddleware)
+	// Группа для защищенных роутов админки (префикс /admin удаляется Traefik)
+	adminGroup := router.Group("/", h.AuthMiddleware) // <<< ВОЗВРАЩАЕМ: Базовый путь теперь "/"
 	{
 		adminGroup.GET("/dashboard", h.GetDashboardData)
 		adminGroup.GET("/users", h.listUsers)
 		adminGroup.GET("/logout", h.handleLogout)
 
+		// --- Frontend API Endpoints ---
+		// Эти эндпоинты вызываются JavaScript'ом из админки
+		frontendApiGroup := adminGroup.Group("/api")
+		{
+			// Промпты
+			frontendApiGroup.GET("/prompts/:key/:language", h.handleGetPromptAPI)           // Получение одного промпта (из JS)
+			frontendApiGroup.POST("/prompts", h.handleUpsertPromptAPI)                      // Создание/Обновление (из JS)
+			frontendApiGroup.DELETE("/prompts/:key/:language", h.handleDeletePromptLangAPI) // Удаление языка (из JS)
+			// Конфиги (если нужно будет редактировать через JS)
+			// frontendApiGroup.POST("/configs", h.handleUpsertConfigAPI)
+			// frontendApiGroup.DELETE("/configs/:key", h.handleDeleteConfigAPI)
+		}
+		h.logger.Info("Зарегистрированы Frontend API эндпоинты в группе /api")
+
+		// Подгруппа для пользователей -> /users/:user_id
 		userGroup := adminGroup.Group("/users/:user_id")
 		{
 			userGroup.POST("/ban", h.handleBanUser)
@@ -97,24 +116,27 @@ func (h *AdminHandler) RegisterRoutes(router *gin.Engine) {
 			userGroup.POST("/send-notification", h.handleSendUserNotification)
 		}
 
+		// Подгруппа для AI Playground -> /ai-playground
 		aiGroup := adminGroup.Group("/ai-playground")
 		{
 			aiGroup.GET("", h.handleAIPlaygroundPage)
 			aiGroup.POST("/generate", h.handleAIPlaygroundGenerate)
 		}
 
+		// Регистрация роутов для PromptHandler (HTML страницы) -> /prompts
 		if h.promptHandler != nil {
 			h.promptHandler.RegisterPromptRoutes(adminGroup)
-			h.logger.Info("Зарегистрированы роуты для PromptHandler в группе /admin/prompts")
+			h.logger.Info("Зарегистрированы роуты для PromptHandler (HTML) в группе /prompts") // <<< Изменено сообщение
 		} else {
-			h.logger.Warn("PromptHandler не инициализирован, роуты для промптов не зарегистрированы.")
+			h.logger.Warn("PromptHandler не инициализирован, HTML роуты для промптов не зарегистрированы.")
 		}
 
+		// Регистрация роутов для ConfigHandler (HTML страницы) -> /configs
 		if h.configHandler != nil {
 			h.configHandler.RegisterConfigRoutes(adminGroup)
-			h.logger.Info("Зарегистрированы роуты для ConfigHandler в группе /admin/configs")
+			h.logger.Info("Зарегистрированы роуты для ConfigHandler (HTML) в группе /configs") // <<< Изменено сообщение
 		} else {
-			h.logger.Warn("ConfigHandler не инициализирован, роуты для конфигов не зарегистрированы.")
+			h.logger.Warn("ConfigHandler не инициализирован, HTML роуты для конфигов не зарегистрированы.")
 		}
 	}
 }
@@ -207,4 +229,105 @@ func (h *AdminHandler) GetDashboardData(c *gin.Context) {
 	}
 	// Используем c.HTML
 	c.HTML(http.StatusOK, "dashboard.html", data)
+}
+
+// --- Новые обработчики для Frontend API ---
+
+// handleUpsertPromptAPI обрабатывает POST запросы от JS для создания/обновления промпта.
+// POST /api/prompts (защищено AuthMiddleware)
+func (h *AdminHandler) handleUpsertPromptAPI(c *gin.Context) {
+	var req UpsertPromptRequest // Используем ту же структуру, что и в ApiHandler
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("Invalid request body for upsert prompt API", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body: " + err.Error()})
+		return
+	}
+
+	if h.promptService == nil {
+		h.logger.Error("PromptService is not initialized in AdminHandler", zap.String("key", req.Key), zap.String("language", req.Language))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: prompt service unavailable"})
+		return
+	}
+
+	prompt, err := h.promptService.UpsertPrompt(c.Request.Context(), req.Key, req.Language, req.Content)
+	if err != nil {
+		h.logger.Error("Failed to upsert prompt via API", zap.Error(err), zap.String("key", req.Key), zap.String("language", req.Language))
+		// Ошибку конфликта не ожидаем при Upsert, но на всякий случай
+		if errors.Is(err, database.ErrPromptAlreadyExists) { // Используем errors.Is и database.ErrPromptAlreadyExists
+			c.JSON(http.StatusConflict, gin.H{"error": "Conflict during upsert (unexpected)"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save prompt"})
+		}
+		return
+	}
+
+	status := http.StatusOK
+	// Проверяем, был ли промпт только что создан
+	if prompt.CreatedAt.Equal(prompt.UpdatedAt) {
+		status = http.StatusCreated
+	}
+
+	c.JSON(status, prompt) // Возвращаем созданный/обновленный промпт
+}
+
+// handleDeletePromptLangAPI обрабатывает DELETE запросы от JS для удаления языковой версии промпта.
+// DELETE /api/prompts/:key/:language (защищено AuthMiddleware)
+func (h *AdminHandler) handleDeletePromptLangAPI(c *gin.Context) {
+	key := c.Param("key")
+	language := c.Param("language")
+
+	if key == "" || language == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Key and language parameters are required"})
+		return
+	}
+
+	if h.promptService == nil {
+		h.logger.Error("PromptService is not initialized in AdminHandler", zap.String("key", key), zap.String("language", language))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: prompt service unavailable"})
+		return
+	}
+
+	err := h.promptService.DeletePromptByKeyAndLang(c.Request.Context(), key, language)
+	if err != nil {
+		// Ошибка "не найдено" обрабатывается в сервисе как успех (nil), поэтому здесь только 500
+		h.logger.Error("Failed to delete prompt by key and language via API", zap.Error(err), zap.String("key", key), zap.String("language", language))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete prompt language"})
+		return
+	}
+
+	c.Status(http.StatusNoContent) // Успешное удаление
+}
+
+// handleGetPromptAPI обрабатывает GET запросы от JS для получения одной языковой версии промпта.
+// GET /api/prompts/:key/:language (защищено AuthMiddleware)
+func (h *AdminHandler) handleGetPromptAPI(c *gin.Context) {
+	key := c.Param("key")
+	language := c.Param("language")
+
+	if key == "" || language == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Key and language parameters are required"})
+		return
+	}
+
+	if h.promptService == nil {
+		h.logger.Error("PromptService is not initialized in AdminHandler", zap.String("key", key), zap.String("language", language))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: prompt service unavailable"})
+		return
+	}
+
+	prompt, err := h.promptService.GetPrompt(c.Request.Context(), key, language)
+	if err != nil {
+		// Ошибка "не найдено" - это ожидаемый сценарий для JS, возвращаем 404
+		if errors.Is(err, database.ErrPromptNotFound) {
+			h.logger.Debug("Prompt not found for API get", zap.String("key", key), zap.String("language", language))
+			c.JSON(http.StatusNotFound, gin.H{"error": "Prompt not found"})
+		} else {
+			// Другие ошибки - это 500
+			h.logger.Error("Failed to get prompt via API", zap.Error(err), zap.String("key", key), zap.String("language", language))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get prompt"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, prompt) // Возвращаем найденный промпт
 }

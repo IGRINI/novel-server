@@ -131,6 +131,7 @@ func main() {
 		playerGameStateRepo,
 		likeRepo,
 		imageReferenceRepo,
+		dynamicConfigRepo,
 		taskPublisher,
 		characterImageTaskBatchPublisher,
 		dbPool,

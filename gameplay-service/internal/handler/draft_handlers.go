@@ -37,18 +37,16 @@ func (h *GameplayHandler) generateInitialStory(c *gin.Context) { // <<< *gin.Con
 		return
 	}
 
-	// <<< Добавляем валидацию языка >>>
-	allowedLanguages := map[string]struct{}{
-		"en": {}, "fr": {}, "de": {}, "es": {}, "it": {}, "pt": {}, "ru": {}, "zh": {}, "ja": {},
-	}
-	if _, ok := allowedLanguages[req.Language]; !ok {
+	// <<< ВОССТАНАВЛИВАЕМ ВАЛИДАЦИЮ ЯЗЫКА >>>
+	// Используем карту из GameplayHandler для быстрой проверки
+	if _, ok := h.supportedLanguagesMap[req.Language]; !ok {
 		// Язык не найден в списке разрешенных
 		h.logger.Warn("Unsupported language provided for generateInitialStory", zap.Stringer("userID", userID), zap.String("language", req.Language))
 		// Возвращаем ошибку Bad Request
 		handleServiceError(c, fmt.Errorf("%w: unsupported language '%s'", sharedModels.ErrBadRequest, req.Language), h.logger)
 		return
 	}
-	// <<< Конец валидации языка >>>
+	// <<< КОНЕЦ ВАЛИДАЦИИ ЯЗЫКА >>>
 
 	// Вызываем новый метод сервиса
 	config, err := h.service.GenerateInitialStory(c.Request.Context(), userID, req.Prompt, req.Language)

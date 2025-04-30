@@ -1,6 +1,6 @@
 {{ template "layout.html" . }}
 
-{{ define "title" }}Редактировать Настройку: {{ .config.Key }}{{ end }}
+{{ define "title" }}Создать новую настройку{{ end }}
 
 {{ define "content" }}
 <div class="app-container">
@@ -8,11 +8,11 @@
         <ul>
             <li><a href="/admin/dashboard">Дашборд</a></li>
             <li><a href="/admin/configs">Конфигурация</a></li>
-            <li>Редактировать: {{ .config.Key }}</li>
+            <li>Создать настройку</li>
         </ul>
     </nav>
 
-    <h1>Редактировать Настройку: <code>{{ .config.Key }}</code></h1>
+    <h1>Создать новую настройку</h1>
 
     <!-- Flash Message Display -->
     {{ if .flashMessage }}
@@ -22,25 +22,25 @@
     {{ end }}
     <!-- End Flash Message Display -->
 
-    <form action="{{ .form_action }}" method="post" class="data-form">
-         <div class="content-card">
-            <div class="content-card-header">Редактирование настройки</div>
+    <form action="/admin/configs/new" method="post" class="data-form">
+        <div class="content-card">
+            <div class="content-card-header">Новая настройка</div>
             <div class="content-card-body">
                 <div class="mb-3">
                     <label for="key" class="form-label">Ключ (Key)</label>
-                    <input type="text" class="form-control" id="key" name="key" value="{{ .config.Key }}" readonly disabled>
-                    <small class="text-muted">Ключ нельзя изменить после создания.</small>
+                    <input type="text" class="form-control" id="key" name="key" value="{{ .formData.Key }}" required placeholder="например, generation_cost_per_request">
+                    <small class="text-muted">Уникальный идентификатор настройки. Используйте латиницу, цифры, точки и подчеркивания.</small>
                 </div>
 
                 <div class="mb-3">
                     <label for="value" class="form-label">Значение (Value)</label>
-                    <textarea class="form-control" id="value" name="value" rows="5" required>{{ .config.Value }}</textarea>
-                    <small class="text-muted">Текущее значение настройки.</small>
+                    <textarea class="form-control" id="value" name="value" rows="5" required>{{ .formData.Value }}</textarea>
+                    <small class="text-muted">Значение настройки (может быть строкой, числом, JSON и т.д.).</small>
                 </div>
             </div>
 
             <div class="content-card-footer button-group">
-                <button type="submit" class="cta-button cta-button--primary">Сохранить</button>
+                <button type="submit" class="cta-button cta-button--primary">Создать</button>
                 <a href="/admin/configs" class="cta-button cta-button--secondary">Отмена</a>
             </div>
         </div>

@@ -62,10 +62,36 @@ func (r *pgDynamicConfigRepository) GetAll(ctx context.Context) ([]*models.Dynam
 	return configs, nil
 }
 
+// Create создает новую настройку. Если настройка с таким ключом уже существует, возвращает ошибку.
+func (r *pgDynamicConfigRepository) Create(ctx context.Context, config *models.DynamicConfig) error {
+	query := `
+        INSERT INTO dynamic_configs (key, value)
+        VALUES ($1, $2)
+        ON CONFLICT (key) DO NOTHING
+    `
+	log := r.logger.With(zap.String("key", config.Key))
+
+	commandTag, err := r.pool.Exec(ctx, query, config.Key, config.Value)
+	if err != nil {
+		log.Error("Error creating dynamic config", zap.Error(err))
+		return fmt.Errorf("failed to create dynamic config with key %s: %w", config.Key, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		log.Warn("Dynamic config with this key already exists", zap.String("key", config.Key))
+		// Возвращаем специфичную ошибку, если запись уже существует
+		// TODO: Определить и использовать стандартную ошибку для конфликта/дубликата
+		return fmt.Errorf("dynamic config with key '%s' already exists", config.Key) // Можно заменить на models.ErrAlreadyExists, если он есть
+	}
+
+	log.Info("Dynamic config created successfully")
+	return nil
+}
+
 // Upsert создает или обновляет настройку.
 func (r *pgDynamicConfigRepository) Upsert(ctx context.Context, config *models.DynamicConfig) error {
 	query := `
-        INSERT INTO dynamic_configs (key, value) 
+        INSERT INTO dynamic_configs (key, value)
         VALUES ($1, $2)
         ON CONFLICT (key) DO UPDATE SET
             value = EXCLUDED.value

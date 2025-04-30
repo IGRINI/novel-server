@@ -152,6 +152,7 @@ func NewGameplayService(
 	playerGameStateRepo interfaces.PlayerGameStateRepository,
 	likeRepo interfaces.LikeRepository,
 	imageRefRepo interfaces.ImageReferenceRepository,
+	dynamicConfigRepo interfaces.DynamicConfigRepository,
 	taskPublisher messaging.TaskPublisher,
 	imgBatchPublisher messaging.CharacterImageTaskBatchPublisher,
 	pool *pgxpool.Pool,
@@ -174,6 +175,7 @@ func NewGameplayService(
 		taskPublisher, configRepo,
 		imageRefRepo,
 		imgBatchPublisher,
+		dynamicConfigRepo,
 		logger,
 		cfg,
 	)

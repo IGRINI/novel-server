@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	interfaces "novel-server/shared/interfaces"
+	"novel-server/shared/models"
 	"strings"
 	"time"
 
@@ -126,6 +127,139 @@ func (c *HTTPAuthServiceClient) GetUsersInfo(ctx context.Context, userIDs []uuid
 
 	log.Debug("Successfully received and processed user info from auth service (POST)", zap.Int("user_count_received", len(userInfoMap)))
 	return userInfoMap, nil
+}
+
+// VerifyInterServiceToken implements interfaces.TokenVerifier by calling the auth service.
+func (c *HTTPAuthServiceClient) VerifyInterServiceToken(ctx context.Context, tokenString string) (*models.Claims, error) {
+	log := c.logger.With(zap.String("operation", "VerifyInterServiceToken"))
+	log.Debug("Verifying inter-service token via auth service")
+
+	if tokenString == "" {
+		return nil, fmt.Errorf("token string cannot be empty")
+	}
+
+	// Endpoint в auth-service для верификации межсервисных токенов
+	endpointURL := c.baseURL + "/internal/auth/token/verify"
+
+	// Тело запроса с токеном
+	requestBody := struct {
+		Token string `json:"token"`
+	}{
+		Token: tokenString,
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		log.Error("Failed to marshal token verification request body", zap.Error(err))
+		return nil, fmt.Errorf("failed to marshal token verification request: %w", err)
+	}
+
+	// Создаем HTTP POST запрос
+	req, err := http.NewRequestWithContext(ctx, "POST", endpointURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Error("Failed to create token verification request (POST)", zap.Error(err))
+		return nil, fmt.Errorf("failed to create POST request for token verification: %w", err)
+	}
+
+	// Устанавливаем заголовки
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	// Для запроса верификации токена НЕ нужен другой межсервисный токен в заголовке,
+	// так как auth-service сам является доверенным источником для этой операции.
+
+	// Выполняем запрос
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		log.Error("Failed to execute POST request for token verification", zap.Error(err))
+		return nil, fmt.Errorf("failed to execute POST request for token verification: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Проверяем статус ответа
+	if resp.StatusCode != http.StatusOK {
+		log.Error("Auth service returned non-OK status for token verification", zap.Int("status_code", resp.StatusCode))
+		bodyBytes, _ := io.ReadAll(resp.Body) // Читаем тело ошибки (ошибку чтения игнорируем)
+		log.Warn("Auth service token verification error response body", zap.ByteString("body", bodyBytes))
+		// Возвращаем ошибку, указывающую на невалидный токен (или другую проблему на стороне auth-service)
+		return nil, fmt.Errorf("token verification failed: auth service returned status %d", resp.StatusCode)
+	}
+
+	// Декодируем тело ответа (ожидаем models.Claims)
+	var claims models.Claims
+	if err := json.NewDecoder(resp.Body).Decode(&claims); err != nil {
+		log.Error("Failed to decode token claims from auth service response", zap.Error(err))
+		return nil, fmt.Errorf("failed to decode token claims from auth service: %w", err)
+	}
+
+	log.Debug("Successfully verified inter-service token via auth service")
+	return &claims, nil // Возвращаем полученные claims
+}
+
+// VerifyToken implements interfaces.TokenVerifier by calling the auth service.
+// ПРИМЕЧАНИЕ: Этот метод нужен для удовлетворения интерфейса TokenVerifier.
+// Реальная проверка ПОЛЬЗОВАТЕЛЬСКИХ токенов в admin-service обычно происходит
+// через middleware, которая может использовать этот метод или напрямую auth-service.
+// Здесь мы предполагаем, что есть эндпоинт `/internal/auth/token/verify-user`.
+func (c *HTTPAuthServiceClient) VerifyToken(ctx context.Context, tokenString string) (*models.Claims, error) {
+	log := c.logger.With(zap.String("operation", "VerifyToken"))
+	log.Debug("Verifying user token via auth service")
+
+	if tokenString == "" {
+		return nil, fmt.Errorf("token string cannot be empty")
+	}
+
+	// Предполагаемый Endpoint в auth-service для верификации ПОЛЬЗОВАТЕЛЬСКИХ токенов
+	endpointURL := c.baseURL + "/internal/auth/token/verify-user"
+
+	// Тело запроса с токеном
+	requestBody := struct {
+		Token string `json:"token"`
+	}{
+		Token: tokenString,
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		log.Error("Failed to marshal user token verification request body", zap.Error(err))
+		return nil, fmt.Errorf("failed to marshal user token verification request: %w", err)
+	}
+
+	// Создаем HTTP POST запрос
+	req, err := http.NewRequestWithContext(ctx, "POST", endpointURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Error("Failed to create user token verification request (POST)", zap.Error(err))
+		return nil, fmt.Errorf("failed to create POST request for user token verification: %w", err)
+	}
+
+	// Устанавливаем заголовки
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	// Выполняем запрос
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		log.Error("Failed to execute POST request for user token verification", zap.Error(err))
+		return nil, fmt.Errorf("failed to execute POST request for user token verification: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Проверяем статус ответа
+	if resp.StatusCode != http.StatusOK {
+		log.Error("Auth service returned non-OK status for user token verification", zap.Int("status_code", resp.StatusCode))
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Warn("Auth service user token verification error response body", zap.ByteString("body", bodyBytes))
+		return nil, fmt.Errorf("user token verification failed: auth service returned status %d", resp.StatusCode)
+	}
+
+	// Декодируем тело ответа (ожидаем models.Claims)
+	var claims models.Claims
+	if err := json.NewDecoder(resp.Body).Decode(&claims); err != nil {
+		log.Error("Failed to decode user token claims from auth service response", zap.Error(err))
+		return nil, fmt.Errorf("failed to decode user token claims from auth service: %w", err)
+	}
+
+	log.Debug("Successfully verified user token via auth service")
+	return &claims, nil // Возвращаем полученные claims
 }
 
 /*

@@ -228,7 +228,7 @@ func (s *draftServiceImpl) ReviseDraft(ctx context.Context, id uuid.UUID, userID
 	generationPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:        taskID,
 		UserID:        config.UserID.String(),
-		PromptType:    sharedModels.PromptTypeNarrator,
+		PromptType:    sharedModels.PromptTypeNarratorReviser,
 		UserInput:     userInputForTask,
 		StoryConfigID: config.ID.String(),
 		Language:      config.Language, // <<< ПЕРЕДАЕМ ЯЗЫК ОТДЕЛЬНО >>>
@@ -376,7 +376,7 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 					}
 				*/
 			} else {
-				promptType = sharedModels.PromptTypeNarrator
+				promptType = sharedModels.PromptTypeNarratorReviser
 				log.Info("Retry is for a revision generation", zap.String("revisionPrompt", lastUserInput))
 
 				if len(config.Config) == 0 {

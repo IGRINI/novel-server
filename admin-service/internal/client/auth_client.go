@@ -726,23 +726,22 @@ func (c *authClient) RefreshAdminToken(ctx context.Context, refreshToken string)
 
 // <<< Конец нового метода >>>
 
-// <<< ДОБАВЛЕНИЕ: Метод GetUserInfo >>>
-// GetUserInfo получает информацию о пользователе по его ID.
+// GetUserInfo - вызывает эндпоинт /internal/auth/users/{user_id} для получения данных одного пользователя
 func (c *authClient) GetUserInfo(ctx context.Context, userID uuid.UUID) (*models.User, error) {
-	getInfoURL := fmt.Sprintf("%s/internal/auth/users/%s", c.baseURL, userID.String())
-	log := c.logger.With(zap.String("url", getInfoURL), zap.String("userID", userID.String()))
+	userInfoURL := fmt.Sprintf("%s/internal/auth/users/%s", c.baseURL, userID.String())
+	log := c.logger.With(zap.String("url", userInfoURL), zap.String("userID", userID.String()))
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, getInfoURL, nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, userInfoURL, nil)
 	if err != nil {
-		log.Error("Failed to create get user info HTTP request", zap.Error(err))
+		log.Error("Failed to create user info HTTP request", zap.Error(err))
 		return nil, fmt.Errorf("internal error creating request: %w", err)
 	}
 	httpReq.Header.Set("Accept", "application/json")
 
-	log.Debug("Sending get user info request to auth-service")
+	// Используем универсальный метод для выполнения запроса
 	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
 	if err != nil {
-		log.Error("HTTP request for get user info failed", zap.Error(err))
+		log.Error("HTTP request for user info failed", zap.Error(err))
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, fmt.Errorf("request to auth service timed out: %w", err)
 		}
@@ -752,26 +751,145 @@ func (c *authClient) GetUserInfo(ctx context.Context, userID uuid.UUID) (*models
 
 	respBodyBytes, err := io.ReadAll(httpResp.Body)
 	if err != nil {
-		log.Error("Failed to read get user info response body", zap.Int("status", httpResp.StatusCode), zap.Error(err))
+		log.Error("Failed to read user info response body", zap.Int("status", httpResp.StatusCode), zap.Error(err))
 		return nil, fmt.Errorf("failed to read auth service response: %w", err)
 	}
 
+	if httpResp.StatusCode == http.StatusNotFound {
+		log.Warn("User not found in auth service", zap.Int("status", httpResp.StatusCode))
+		return nil, fmt.Errorf("%w: user %s", models.ErrUserNotFound, userID)
+	}
 	if httpResp.StatusCode != http.StatusOK {
-		log.Warn("Received non-OK status for get user info", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
-		if httpResp.StatusCode == http.StatusNotFound {
-			return nil, models.ErrUserNotFound // Используем стандартную ошибку
-		}
-		return nil, fmt.Errorf("received unexpected status %d from auth service for get user info", httpResp.StatusCode)
+		log.Warn("Received non-OK status for user info", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+		return nil, fmt.Errorf("received unexpected status %d from auth service for user info", httpResp.StatusCode)
 	}
 
 	var user models.User
 	if err := json.Unmarshal(respBodyBytes, &user); err != nil {
-		log.Error("Failed to unmarshal get user info response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes), zap.Error(err))
+		log.Error("Failed to unmarshal user info response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes), zap.Error(err))
 		return nil, fmt.Errorf("invalid user info response format from auth service: %w", err)
 	}
 
 	log.Info("User info retrieved successfully")
 	return &user, nil
+}
+
+// <<< ДОБАВЛЕНО: Методы для удовлетворения интерфейса TokenVerifier >>>
+
+// VerifyInterServiceToken implements interfaces.TokenVerifier by calling the auth service.
+func (c *authClient) VerifyInterServiceToken(ctx context.Context, tokenString string) (*models.Claims, error) {
+	log := c.logger.With(zap.String("operation", "VerifyInterServiceToken"))
+	log.Debug("Verifying inter-service token via auth service")
+
+	if tokenString == "" {
+		return nil, fmt.Errorf("token string cannot be empty")
+	}
+
+	// Endpoint в auth-service для верификации межсервисных токенов
+	endpointURL := c.baseURL + "/internal/auth/token/verify" // Предполагаем этот эндпоинт
+
+	requestBody := struct {
+		Token string `json:"token"`
+	}{
+		Token: tokenString,
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		log.Error("Failed to marshal token verification request body", zap.Error(err))
+		return nil, fmt.Errorf("failed to marshal token verification request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Error("Failed to create token verification request (POST)", zap.Error(err))
+		return nil, fmt.Errorf("failed to create POST request for token verification: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	// Используем базовый HTTP клиент, НЕ doRequestWithTokenRefresh, т.к. для верификации токен не нужен
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		log.Error("Failed to execute POST request for token verification", zap.Error(err))
+		return nil, fmt.Errorf("failed to execute POST request for token verification: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Error("Auth service returned non-OK status for token verification", zap.Int("status_code", resp.StatusCode))
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Warn("Auth service token verification error response body", zap.ByteString("body", bodyBytes))
+		return nil, fmt.Errorf("token verification failed: auth service returned status %d", resp.StatusCode)
+	}
+
+	var claims models.Claims
+	if err := json.NewDecoder(resp.Body).Decode(&claims); err != nil {
+		log.Error("Failed to decode token claims from auth service response", zap.Error(err))
+		return nil, fmt.Errorf("failed to decode token claims from auth service: %w", err)
+	}
+
+	log.Debug("Successfully verified inter-service token via auth service")
+	return &claims, nil
+}
+
+// VerifyToken implements interfaces.TokenVerifier by calling the auth service.
+func (c *authClient) VerifyToken(ctx context.Context, tokenString string) (*models.Claims, error) {
+	log := c.logger.With(zap.String("operation", "VerifyToken"))
+	log.Debug("Verifying user token via auth service")
+
+	if tokenString == "" {
+		return nil, fmt.Errorf("token string cannot be empty")
+	}
+
+	// Предполагаемый Endpoint в auth-service для верификации ПОЛЬЗОВАТЕЛЬСКИХ токенов
+	endpointURL := c.baseURL + "/internal/auth/token/verify-user" // Предполагаем этот эндпоинт
+
+	requestBody := struct {
+		Token string `json:"token"`
+	}{
+		Token: tokenString,
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		log.Error("Failed to marshal user token verification request body", zap.Error(err))
+		return nil, fmt.Errorf("failed to marshal user token verification request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		log.Error("Failed to create user token verification request (POST)", zap.Error(err))
+		return nil, fmt.Errorf("failed to create POST request for user token verification: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	// Используем базовый HTTP клиент
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		log.Error("Failed to execute POST request for user token verification", zap.Error(err))
+		return nil, fmt.Errorf("failed to execute POST request for user token verification: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Error("Auth service returned non-OK status for user token verification", zap.Int("status_code", resp.StatusCode))
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Warn("Auth service user token verification error response body", zap.ByteString("body", bodyBytes))
+		return nil, fmt.Errorf("user token verification failed: auth service returned status %d", resp.StatusCode)
+	}
+
+	var claims models.Claims
+	if err := json.NewDecoder(resp.Body).Decode(&claims); err != nil {
+		log.Error("Failed to decode user token claims from auth service response", zap.Error(err))
+		return nil, fmt.Errorf("failed to decode user token claims from auth service: %w", err)
+	}
+
+	log.Debug("Successfully verified user token via auth service")
+	return &claims, nil
 }
 
 // <<< КОНЕЦ ДОБАВЛЕНИЯ >>>

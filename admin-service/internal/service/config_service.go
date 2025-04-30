@@ -16,6 +16,7 @@ type ConfigService interface {
 	GetAllConfigs(ctx context.Context) ([]*models.DynamicConfig, error)
 	GetConfigByKey(ctx context.Context, key string) (*models.DynamicConfig, error)
 	UpdateConfig(ctx context.Context, key, value string) error
+	CreateConfig(ctx context.Context, key, value string) error
 }
 
 type configServiceImpl struct {
@@ -93,6 +94,44 @@ func (s *configServiceImpl) UpdateConfig(ctx context.Context, key, value string)
 		log.Warn("Publisher is nil, skipping config update notification")
 	}
 	// <<< КОНЕЦ НОВОГО БЛОКА >>>
+
+	return nil
+}
+
+// CreateConfig создает новую динамическую настройку.
+func (s *configServiceImpl) CreateConfig(ctx context.Context, key, value string) error {
+	log := s.logger.With(zap.String("key", key))
+
+	// 1. Подготавливаем данные для создания
+	newConfig := &models.DynamicConfig{
+		Key:   key,
+		Value: value,
+		// CreatedAt и UpdatedAt установятся БД
+	}
+
+	// 2. Выполняем Create в БД
+	err := s.repo.Create(ctx, newConfig)
+	if err != nil {
+		log.Error("Failed to create config in repository", zap.Error(err))
+		return err // Возвращаем ошибку репозитория
+	}
+
+	log.Info("Config created successfully")
+
+	// Оповещение об изменении конфигурации (опционально для создания, но может быть полезно)
+	if s.publisher != nil {
+		configPayload := messaging.ConfigUpdatePayload{
+			Key:   key,
+			Value: value,
+		}
+		if publishErr := s.publisher.Publish(ctx, configPayload, ""); publishErr != nil {
+			log.Error("Failed to publish config create notification after DB insert", zap.Error(publishErr))
+		} else {
+			log.Info("Config create notification published successfully")
+		}
+	} else {
+		log.Warn("Publisher is nil, skipping config create notification")
+	}
 
 	return nil
 }

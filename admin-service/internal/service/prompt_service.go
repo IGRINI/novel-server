@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog/log"
 
@@ -14,7 +15,26 @@ import (
 	"novel-server/shared/models"
 )
 
-type PromptService struct {
+// PromptDataForTemplate используется для передачи данных в шаблон prompt_edit.html
+// Содержит только необходимые для шаблона поля.
+type PromptDataForTemplate struct {
+	Content   string    `json:"content"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// PromptService определяет методы для бизнес-логики работы с промптами.
+type PromptService interface {
+	// ... (остальные методы интерфейса)
+	GetPrompt(ctx context.Context, key, language string) (*models.Prompt, error)
+	GetPromptsByKey(ctx context.Context, key string) (map[string]PromptDataForTemplate, error)
+	UpsertPrompt(ctx context.Context, key, language, content string) (*models.Prompt, error)
+	DeletePromptByKeyAndLang(ctx context.Context, key, language string) error
+	DeletePromptsByKey(ctx context.Context, key string) error
+	ListPromptKeys(ctx context.Context) ([]string, error)
+	CreatePromptKey(ctx context.Context, key string) error
+}
+
+type PromptServiceImpl struct {
 	repo               interfaces.PromptRepository
 	publisher          interfaces.PromptEventPublisher
 	supportedLanguages []string
@@ -24,7 +44,7 @@ func NewPromptService(
 	cfg *config.Config,
 	repo interfaces.PromptRepository,
 	publisher interfaces.PromptEventPublisher,
-) *PromptService {
+) *PromptServiceImpl {
 	if repo == nil {
 		log.Fatal().Msg("PromptRepository is nil for PromptService")
 	}
@@ -38,7 +58,7 @@ func NewPromptService(
 		log.Warn().Msg("SupportedLanguages list is empty in config for PromptService")
 		// Можно установить значение по умолчанию или оставить пустым, если это допустимо
 	}
-	return &PromptService{
+	return &PromptServiceImpl{
 		repo:               repo,
 		publisher:          publisher,
 		supportedLanguages: cfg.SupportedLanguages,
@@ -46,7 +66,7 @@ func NewPromptService(
 }
 
 // ListPromptKeys возвращает список уникальных ключей промптов.
-func (s *PromptService) ListPromptKeys(ctx context.Context) ([]string, error) {
+func (s *PromptServiceImpl) ListPromptKeys(ctx context.Context) ([]string, error) {
 	keys, err := s.repo.ListKeys(ctx)
 	if err != nil {
 		// Логирование ошибки происходит в репозитории
@@ -55,23 +75,32 @@ func (s *PromptService) ListPromptKeys(ctx context.Context) ([]string, error) {
 	return keys, nil
 }
 
-// GetPromptsByKey возвращает все языковые версии для ключа в виде map[language]*models.Prompt.
-func (s *PromptService) GetPromptsByKey(ctx context.Context, key string) (map[string]*models.Prompt, error) {
-	promptsList, err := s.repo.FindByKey(ctx, key)
+// GetPromptsByKey возвращает все языковые версии промпта для одного ключа.
+// <<< ИЗМЕНЕНО: Возвращает map[string]PromptDataForTemplate >>>
+func (s *PromptServiceImpl) GetPromptsByKey(ctx context.Context, key string) (map[string]PromptDataForTemplate, error) {
+	prompts, err := s.repo.GetAllPromptsByKey(ctx, key)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get prompts by key '%s' from repo: %w", key, err)
+		// Ошибка уже залогирована репозиторием
+		return nil, err // Возвращаем ошибку репозитория
 	}
 
-	promptsMap := make(map[string]*models.Prompt)
-	for _, p := range promptsList {
-		promptsMap[p.Language] = p
+	// Конвертируем в мапу для шаблона
+	promptsMap := make(map[string]PromptDataForTemplate, len(prompts))
+	for _, p := range prompts {
+		if p != nil {
+			promptsMap[p.Language] = PromptDataForTemplate{
+				Content:   p.Content,
+				UpdatedAt: p.UpdatedAt,
+			}
+		}
 	}
 
+	log.Debug().Str("key", key).Int("language_count", len(promptsMap)).Msg("Successfully retrieved prompts by key")
 	return promptsMap, nil
 }
 
 // GetPrompt получает конкретную языковую версию промпта.
-func (s *PromptService) GetPrompt(ctx context.Context, key, language string) (*models.Prompt, error) {
+func (s *PromptServiceImpl) GetPrompt(ctx context.Context, key, language string) (*models.Prompt, error) {
 	prompt, err := s.repo.GetByKeyAndLanguage(ctx, key, language)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get prompt from repo: %w", err)
@@ -80,7 +109,7 @@ func (s *PromptService) GetPrompt(ctx context.Context, key, language string) (*m
 }
 
 // GetPromptByID получает промпт по его уникальному ID.
-func (s *PromptService) GetPromptByID(ctx context.Context, id int64) (*models.Prompt, error) {
+func (s *PromptServiceImpl) GetPromptByID(ctx context.Context, id int64) (*models.Prompt, error) {
 	prompt, err := s.repo.GetByID(ctx, id) // Предполагаем, что репозиторий имеет этот метод
 	if err != nil {
 		// Обработка ошибки "не найдено" может быть в репозитории или здесь
@@ -95,7 +124,7 @@ func (s *PromptService) GetPromptByID(ctx context.Context, id int64) (*models.Pr
 }
 
 // GetAllPrompts возвращает список всех промптов из репозитория.
-func (s *PromptService) GetAllPrompts(ctx context.Context) ([]*models.Prompt, error) {
+func (s *PromptServiceImpl) GetAllPrompts(ctx context.Context) ([]*models.Prompt, error) {
 	prompts, err := s.repo.GetAll(ctx) // Используем существующий метод репозитория
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get all prompts from repo")
@@ -105,7 +134,7 @@ func (s *PromptService) GetAllPrompts(ctx context.Context) ([]*models.Prompt, er
 }
 
 // CreatePromptKey создает записи для нового ключа промпта для всех поддерживаемых языков.
-func (s *PromptService) CreatePromptKey(ctx context.Context, key string) error {
+func (s *PromptServiceImpl) CreatePromptKey(ctx context.Context, key string) error {
 	if len(s.supportedLanguages) == 0 {
 		log.Warn().Str("key", key).Msg("Cannot create prompt key, no supported languages configured")
 		return fmt.Errorf("no supported languages configured to create prompt key")
@@ -116,7 +145,7 @@ func (s *PromptService) CreatePromptKey(ctx context.Context, key string) error {
 		promptsToCreate = append(promptsToCreate, &models.Prompt{
 			Key:      key,
 			Language: lang,
-			Content:  "", // Начальное значение - пустая строка
+			Content:  "",
 		})
 	}
 
@@ -136,12 +165,17 @@ func (s *PromptService) CreatePromptKey(ctx context.Context, key string) error {
 	return nil
 }
 
-// UpsertPrompt создает или обновляет конкретную языковую версию промпта.
-func (s *PromptService) UpsertPrompt(ctx context.Context, key, language, content string) (*models.Prompt, error) {
+// UpsertPrompt создает или обновляет промпт.
+func (s *PromptServiceImpl) UpsertPrompt(ctx context.Context, key, language, content string) (*models.Prompt, error) {
+	// Создаем логгер с контекстом
+	ctxLog := log.With().Str("key", key).Str("language", language).Logger()
+	// TODO: Добавить валидацию языка по списку SupportedLanguages из конфига?
+
 	prompt := &models.Prompt{
 		Key:      key,
 		Language: language,
 		Content:  content,
+		// Comment, IsActive, Version - не управляются этим методом
 	}
 
 	// Перед вызовом Upsert проверяем, существует ли уже запись (для определения типа события)
@@ -163,17 +197,21 @@ func (s *PromptService) UpsertPrompt(ctx context.Context, key, language, content
 		Key:       prompt.Key,
 		Language:  prompt.Language,
 		Content:   prompt.Content,
-		ID:        prompt.ID, // ID и время обновляются в repo.Upsert
+		ID:        prompt.ID,
 	}
 	if pubErr := s.publisher.PublishPromptEvent(ctx, event); pubErr != nil {
-		log.Error().Err(pubErr).Interface("event", event).Msgf("Failed to publish prompt %s event", strings.ToLower(string(eventType)))
+		// Используем логгер с контекстом
+		ctxLog.Error().Err(pubErr).Interface("event", event).Msgf("Failed to publish prompt %s event", strings.ToLower(string(eventType)))
 	}
 
+	// Используем логгер с контекстом
+	ctxLog.Info().Msg("Prompt upserted successfully")
+	// Возвращаем обновленный промпт (с ID и UpdatedAt)
 	return prompt, nil
 }
 
 // DeletePromptsByKey удаляет все языковые версии для ключа.
-func (s *PromptService) DeletePromptsByKey(ctx context.Context, key string) error {
+func (s *PromptServiceImpl) DeletePromptsByKey(ctx context.Context, key string) error {
 	err := s.repo.DeleteByKey(ctx, key)
 	if err != nil {
 		return fmt.Errorf("failed to delete prompts by key '%s' from repo: %w", key, err)
@@ -187,33 +225,66 @@ func (s *PromptService) DeletePromptsByKey(ctx context.Context, key string) erro
 }
 
 // DeletePromptByID удаляет конкретную языковую версию промпта по ID.
-func (s *PromptService) DeletePromptByID(ctx context.Context, id int64) error {
-	// Возможно, стоит получить промпт перед удалением, чтобы опубликовать событие?
-	// prompt, err := s.repo.GetByID(ctx, id)
-	// if err != nil { ... }
+func (s *PromptServiceImpl) DeletePromptByID(ctx context.Context, id int64) error {
+	// TODO: Решить, нужно ли публиковать событие при удалении по ID.
+	// Если да, нужно получить данные промпта *перед* удалением.
+	log.Debug().Int64("id", id).Msg("Attempting to delete prompt by ID")
 
-	err := s.repo.DeleteByID(ctx, id) // Предполагаем, что репозиторий имеет этот метод
+	err := s.repo.DeleteByID(ctx, id)
 	if err != nil {
 		if errors.Is(err, database.ErrNotFound) { // Пример обработки ошибки NotFound
 			log.Warn().Int64("id", id).Msg("Prompt not found for deletion by ID")
-			// Можно вернуть nil, если "не найдено" не считается ошибкой при удалении
-			// return nil
 			return fmt.Errorf("prompt with ID %d not found for deletion: %w", id, err)
 		}
 		log.Error().Err(err).Int64("id", id).Msg("Failed to delete prompt by ID from repo")
 		return fmt.Errorf("failed to delete prompt by ID %d from repo: %w", id, err)
 	}
 
-	// TODO: Решить, нужно ли публиковать событие при удалении по ID.
-	// Если да, нужно получить данные промпта *перед* удалением.
-	// event := interfaces.PromptEvent{
-	// 	EventType: interfaces.PromptEventTypeDeleted,
-	// 	ID:        id,
-	//  Key:       prompt.Key, // Нужны данные удаленного промпта
-	//  Language:  prompt.Language,
-	// }
-	// if pubErr := s.publisher.PublishPromptEvent(ctx, event); pubErr != nil { ... }
-
 	log.Info().Int64("id", id).Msg("Prompt deleted by ID")
+	return nil
+}
+
+// DeletePromptByKeyAndLang удаляет конкретную языковую версию промпта по ключу и языку.
+func (s *PromptServiceImpl) DeletePromptByKeyAndLang(ctx context.Context, key, language string) error {
+	// Создаем логгер с контекстом
+	ctxLog := log.With().Str("key", key).Str("language", language).Logger()
+	ctxLog.Debug().Msg("Attempting to delete prompt by key and language")
+
+	// Получаем промпт перед удалением, чтобы иметь данные для события
+	prompt, getErr := s.repo.GetByKeyAndLanguage(ctx, key, language)
+	if getErr != nil {
+		if errors.Is(getErr, database.ErrNotFound) {
+			ctxLog.Warn().Msg("Prompt not found for deletion by key and language") // Контекст уже добавлен в ctxLog
+			// Если не найдено, считаем удаление успешным (или возвращаем ошибку, если это важно)
+			return nil // Или: return fmt.Errorf("prompt %s/%s not found: %w", key, language, getErr)
+		}
+		ctxLog.Error().Err(getErr).Msg("Failed to get prompt before deletion") // Контекст уже добавлен в ctxLog
+		// Продолжаем попытку удаления, даже если не смогли получить для события
+	}
+
+	err := s.repo.DeleteByKeyAndLanguage(ctx, key, language)
+	if err != nil {
+		// Ошибку ErrNotFound мы уже обработали выше при попытке получения
+		ctxLog.Error().Err(err).Msg("Failed to delete prompt by key and language from repo") // Контекст уже добавлен в ctxLog
+		return fmt.Errorf("failed to delete prompt %s/%s from repo: %w", key, language, err)
+	}
+
+	ctxLog.Info().Msg("Prompt deleted by key and language") // Контекст уже добавлен в ctxLog
+
+	// Публикуем событие, если удалось получить промпт ранее
+	if getErr == nil && prompt != nil {
+		event := interfaces.PromptEvent{
+			EventType: interfaces.PromptEventTypeDeleted,
+			ID:        prompt.ID, // Используем ID удаленного промпта
+			Key:       prompt.Key,
+			Language:  prompt.Language,
+			// Content можно не передавать при удалении (остается пустым)
+		}
+		if pubErr := s.publisher.PublishPromptEvent(ctx, event); pubErr != nil {
+			ctxLog.Error().Err(pubErr).Interface("event", event).Msg("Failed to publish prompt deleted event") // Контекст уже добавлен в ctxLog
+			// Не возвращаем ошибку публикации, т.к. основная операция (удаление) прошла успешно
+		}
+	}
+
 	return nil
 }

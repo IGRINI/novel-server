@@ -6,6 +6,8 @@ x-environment-defaults: &env-vars
   DB_USER: ${DB_USER}
   DB_NAME: ${DB_NAME}
   DB_SSL_MODE: ${DB_SSL_MODE}
+  DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-10}
+  DB_MAX_IDLE_MINUTES: ${DB_MAX_IDLE_MINUTES:-5m}
   REDIS_ADDR: ${REDIS_ADDR}
   REDIS_DB: ${REDIS_DB}
   JWT_ACCESS_TOKEN_TTL: ${JWT_ACCESS_TOKEN_TTL}
@@ -181,6 +183,7 @@ services:
       SERVER_PORT: ${GAMEPLAY_SERVER_PORT} # Внутренний порт сервиса
       SERVICE_ID: gameplay-service
       AUTH_SERVICE_URL: http://auth-service:8081 # Добавляем URL для auth-service
+      SUPPORTED_LANGUAGES: ${SUPPORTED_LANGUAGES} # <<< ДОБАВЛЕНО: Передаем языки >>>
     secrets:
       - source: db_password
         target: /run/secrets/db_password
@@ -212,6 +215,7 @@ services:
       - "8084:8084" # Порт admin-service
     environment:
       <<: *env-vars
+      DB_HOST: postgres # <<< ДОБАВЛЕНО: Явно указываем хост БД для Docker
       ADMIN_SERVER_PORT: 8084
       LOG_LEVEL: ${LOG_LEVEL:-debug}
       AUTH_SERVICE_URL: http://auth-service:8081
@@ -222,6 +226,7 @@ services:
       SERVICE_ID: admin-service
       RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/
       PUSH_QUEUE_NAME: ${PUSH_QUEUE_NAME:-push_notifications}
+      SUPPORTED_LANGUAGES: ${SUPPORTED_LANGUAGES} # <<< Обновлено имя переменной >>>
     secrets:
       - source: inter_service_secret
         target: /run/secrets/inter_service_secret

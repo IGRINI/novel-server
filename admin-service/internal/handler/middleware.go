@@ -12,17 +12,17 @@ import (
 
 // authMiddleware проверяет токен доступа, пытается обновить его при необходимости
 // и добавляет информацию о пользователе в контекст Gin.
+// Если аутентификация или авторизация не проходит, возвращает 404 Not Found.
 func (h *AdminHandler) authMiddleware(c *gin.Context) {
 	log := h.logger.With(zap.String("middleware", "authMiddleware"))
 	cookie, err := c.Cookie("admin_session")
 	if err != nil {
 		if errors.Is(err, http.ErrNoCookie) {
-			log.Debug("Auth cookie not found, redirecting to login")
+			log.Debug("Auth cookie not found, returning 404")
 		} else {
-			log.Error("Error reading auth cookie", zap.Error(err))
+			log.Error("Error reading auth cookie, returning 404", zap.Error(err))
 		}
-		h.clearAuthCookies(c)
-		c.Redirect(http.StatusSeeOther, "/login?error=session_required")
+		c.String(http.StatusNotFound, "404 page not found")
 		c.Abort()
 		return
 	}
@@ -39,45 +39,44 @@ func (h *AdminHandler) authMiddleware(c *gin.Context) {
 			log.Info("Access token expired, attempting refresh")
 			refreshCookie, refreshErr := c.Cookie("admin_refresh_session")
 			if refreshErr != nil {
-				log.Warn("Refresh token cookie not found after access token expired")
-				h.clearAuthCookies(c)
-				c.Redirect(http.StatusSeeOther, "/login?error=session_expired")
+				log.Warn("Refresh token cookie not found after access token expired, returning 404")
+				c.String(http.StatusNotFound, "404 page not found")
 				c.Abort()
 				return
 			}
 			newTokens, newClaims, refreshCallErr := h.authClient.RefreshAdminToken(c.Request.Context(), refreshCookie)
 			if refreshCallErr != nil {
-				log.Warn("Failed to refresh admin token via auth-service", zap.Error(refreshCallErr))
-				h.clearAuthCookies(c)
-				c.Redirect(http.StatusSeeOther, "/login?error=refresh_failed")
+				log.Warn("Failed to refresh admin token via auth-service, returning 404", zap.Error(refreshCallErr))
+				c.String(http.StatusNotFound, "404 page not found")
 				c.Abort()
 				return
 			}
 			log.Info("Admin token refreshed successfully")
 
+			// Устанавливаем новые куки
 			accessTokenTTL := int(15 * time.Minute.Seconds())
 			c.SetCookie("admin_session", newTokens.AccessToken, accessTokenTTL, "/", "", true, true)
 			refreshTokenTTL := int(7 * 24 * time.Hour.Seconds())
 			c.SetCookie("admin_refresh_session", newTokens.RefreshToken, refreshTokenTTL, "/", "", true, true)
 
-			claims = newClaims
+			claims = newClaims // Используем новые клеймы
 		} else {
-			log.Warn("Token validation failed via auth-service (not expired)", zap.Error(err))
-			h.clearAuthCookies(c)
-			c.Redirect(http.StatusSeeOther, "/login?error=invalid_token")
+			log.Warn("Token validation failed via auth-service (not expired), returning 404", zap.Error(err))
+			c.String(http.StatusNotFound, "404 page not found")
 			c.Abort()
 			return
 		}
 	}
 
+	// Проверяем роль ПОСЛЕ валидации или обновления токена
 	if !sharedModels.HasRole(claims.Roles, sharedModels.RoleAdmin) {
-		log.Warn("User without admin role tried to access admin area", zap.String("userID", claims.UserID.String()), zap.Strings("roles", claims.Roles))
-		h.clearAuthCookies(c)
-		c.Redirect(http.StatusSeeOther, "/login?error=access_denied")
+		log.Warn("User without admin role tried to access admin area, returning 404", zap.String("userID", claims.UserID.String()), zap.Strings("roles", claims.Roles))
+		c.String(http.StatusNotFound, "404 page not found")
 		c.Abort()
 		return
 	}
 
+	// Все проверки пройдены, устанавливаем данные в контекст
 	c.Set(string(sharedModels.UserContextKey), claims.UserID)
 	c.Set(string(sharedModels.RolesContextKey), claims.Roles)
 

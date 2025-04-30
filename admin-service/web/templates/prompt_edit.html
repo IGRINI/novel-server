@@ -1,52 +1,349 @@
 {{ template "layout.html" . }}
 
-{{ define "title" }}{{ .PageTitle }}{{ end }}
+{{ define "title" }}Редактировать Промпт: {{ .PromptKey }}{{ end }}
 
 {{ define "content" }}
-<div class="container mt-4">
-    <h2>{{ .title }}</h2>
+<div class="app-container">
+    <nav class="breadcrumbs">
+        <ul>
+            <li><a href="/admin/dashboard">Дашборд</a></li>
+            <li><a href="/admin/prompts">Промпты</a></li>
+            <li>Редактировать ключ: {{ .PromptKey }}</li>
+        </ul>
+    </nav>
+
+    <h1>Редактировать Промпт: <code>{{ .PromptKey }}</code></h1>
 
     <!-- Flash Message Display -->
-    {{ if .flashMessage }}
-        <div class="alert alert-{{ if eq .flashType "success" }}success{{ else }}danger{{ end }} alert-dismissible fade show" role="alert">
-            {{ .flashMessage }}
-            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    {{ if .FlashMessage }}
+        <div class="system-message {{ if eq .FlashType "success" }}system-message--success{{ else }}system-message--error{{ end }} mb-3">
+            {{ .FlashMessage }}
         </div>
+    {{ else }}
+        <div id="flash-message" class="system-message mb-3" style="display: none;"></div>
     {{ end }}
     <!-- End Flash Message Display -->
 
-    <form action="{{ .form_action }}" method="POST">
-        {{/* Если это редактирование, используем метод PUT (скрытое поле) */}}
-        {{if .prompt.ID}}
-        <input type="hidden" name="_method" value="PUT"> {{/* Gin не поддерживает это из коробки, может потребоваться middleware или адаптация роутинга */}}
-        {{end}}
+    <div class="content-card data-form">
+        <div class="content-card-header">Редактирование версий промпта по языкам</div>
+        <div class="content-card-body">
+            <div class="mb-3">
+                <label for="key" class="form-label">Ключ (Key)</label>
+                <input type="text" class="form-control" id="key" name="key" value="{{ .PromptKey }}" readonly disabled>
+            </div>
 
-        <div class="mb-3">
-            <label for="key" class="form-label">Prompt Key</label>
-            <input type="text" class="form-control" id="key" name="Key" value="{{ .prompt.Key }}" {{if .prompt.ID}}readonly{{end}} required>
-            {{if .prompt.ID}}<small class="form-text text-muted">Key cannot be changed after creation.</small>{{end}}
+            <hr class="my-4">
+
+            <div class="mb-3 row align-items-center">
+                 <label for="language-select" class="col-sm-2 col-form-label fw-bold">Язык:</label>
+                 <div class="col-sm-5">
+                     <select class="form-select" id="language-select" name="Language">
+                         <option value="" selected>-- Выберите язык --</option>
+                         {{ range .SupportedLanguages }}
+                            <option value="{{ . }}">{{ . }}</option>
+                         {{ end }}
+                     </select>
+                 </div>
+                 <div class="col-sm-5">
+                      <span id="language-status" class="text-muted"></span>
+                 </div>
+            </div>
+
+            <div class="mb-3">
+                <label for="content" class="form-label fw-bold">Шаблон Промпта (Content)</label>
+                <textarea class="form-control" id="content" name="content" rows="20" disabled placeholder="Выберите язык для редактирования..."></textarea>
+                <small class="text-muted">Содержимое промпта для выбранного языка. Используйте <code class="text-info">{{ "{{.VarName}}" }}</code> для подстановки переменных.</small>
+                <div id="token-info" class="mt-2 text-muted" style="min-height: 40px;">
+                    <span id="token-count">Токенов (приблиз.): 0</span>
+                    <span id="prompt-cost" class="ms-3"> | Расчетная стоимость: $0.0000</span>
+                    <br><small><i>(Используется токенизатор <a href="https://github.com/openai/gpt-tokenizer" target="_blank">gpt-tokenizer</a> для cl100k_base.)</i></small>
+                </div>
+            </div>
+
         </div>
 
-        <div class="mb-3">
-            <label for="language" class="form-label">Language</label>
-            <select class="form-select" id="language" name="Language" {{if .prompt.ID}}disabled{{end}} required>
-                <option value="" {{if not .prompt.Language}}selected{{end}}>Select Language</option>
-                {{range .languages}}
-                <option value="{{ . }}" {{if eq . $.prompt.Language}}selected{{end}}>{{ . }}</option>
-                {{end}}
-            </select>
-             {{if .prompt.ID}}<input type="hidden" name="Language" value="{{ .prompt.Language }}"> <small class="form-text text-muted">Language cannot be changed after creation.</small>{{end}}
+         <div class="content-card-footer button-group">
+            <button type="button" id="save-button" class="cta-button cta-button--primary" disabled>Сохранить для языка</button>
+            <button type="button" id="delete-language-button" class="cta-button cta-button--danger" disabled>Удалить перевод</button>
+            <a href="/admin/prompts" class="cta-button cta-button--secondary">Назад к списку</a>
         </div>
+    </div>
 
-        <div class="mb-3">
-            <label for="content" class="form-label">Prompt Content</label>
-            <textarea class="form-control" id="content" name="Content" rows="10" required>{{ .prompt.Content }}</textarea>
-        </div>
+    <script src="https://cdn.jsdelivr.net/npm/gpt-tokenizer@2.9.0/dist/cl100k_base.js"></script>
 
-        <button type="submit" class="btn btn-success">Save Prompt</button>
-        <a href="/admin/prompts" class="btn btn-secondary">Cancel</a>
-    </form>
+    <script>
+        // DOM Elements
+        const languageSelect = document.getElementById('language-select');
+        const promptContentTextarea = document.getElementById('content');
+        const saveButton = document.getElementById('save-button');
+        const deleteButton = document.getElementById('delete-language-button');
+        const languageStatusSpan = document.getElementById('language-status');
+        const flashDiv = document.getElementById('flash-message');
+        const promptKey = '{{ js .PromptKey }}';
+        const tokenCountSpan = document.getElementById('token-count');
+        const promptCostSpan = document.getElementById('prompt-cost');
+
+        // Data
+        let currentLanguage = '';
+        let originalContent = '';
+        let currentPromptId = null;
+        let isLoading = false;
+        let hasUnsavedTemplateChanges = false;
+        // Получаем значение из Go шаблона. Ожидаем число или пустую строку/null, если не передано.
+        const rawTokenCost = '{{ .TokenInputCost }}'; // Получаем как строку
+        let inputTokenCost = parseFloat(rawTokenCost);
+        if (isNaN(inputTokenCost)) {
+            console.warn("Could not parse TokenInputCost from template, or it was not provided. Using -1. Value:", rawTokenCost);
+            inputTokenCost = -1.0; // Устанавливаем -1 если парсинг не удался или значение не передано
+        }
+
+        // Functions
+        function showFlashMessage(message, type) {
+            flashDiv.textContent = message;
+            flashDiv.className = `system-message system-message--${type} mb-3`;
+            flashDiv.style.display = 'block';
+            setTimeout(() => { flashDiv.style.display = 'none'; }, 5000);
+        }
+
+        function countTokens(text) {
+            if (!text) return 0;
+            if (typeof window.GPTTokenizer_cl100k_base === 'undefined' || !window.GPTTokenizer_cl100k_base) {
+                console.warn("gpt-tokenizer (window.GPTTokenizer_cl100k_base) is not available yet.");
+                return 0;
+            }
+            try {
+                const tokens = window.GPTTokenizer_cl100k_base.encode(text);
+                return tokens.length;
+            } catch (e) {
+                console.error("Token counting error:", e);
+                return 0;
+            }
+        }
+
+        function updateTokenCountAndCost() {
+            const text = promptContentTextarea.value;
+            const tokenCount = countTokens(text);
+            console.log(`Updating token count: ${tokenCount}, Input Cost (per Million): ${inputTokenCost}`);
+
+            tokenCountSpan.textContent = `Токенов (приблиз.): ${tokenCount}`;
+
+            if (inputTokenCost !== null && inputTokenCost >= 0) {
+                const cost = (tokenCount / 1000000) * inputTokenCost;
+                promptCostSpan.textContent = ` | Расчетная стоимость: $${cost.toFixed(6)}`;
+                promptCostSpan.style.display = 'inline';
+            } else {
+                promptCostSpan.textContent = ' | Цена токена не загружена';
+                promptCostSpan.style.display = inputTokenCost === null ? 'inline' : 'none';
+            }
+        }
+
+        function setLoadingState(loading) {
+            isLoading = loading;
+            promptContentTextarea.disabled = loading;
+            languageSelect.disabled = loading;
+            saveButton.disabled = loading || saveButton.disabled;
+            deleteButton.disabled = loading || deleteButton.disabled;
+            if (loading) {
+                languageStatusSpan.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Загрузка...';
+            } else {
+                updateTokenCountAndCost();
+            }
+        }
+
+        async function fetchAndDisplayPrompt(selectedLanguage) {
+            currentLanguage = selectedLanguage;
+            promptContentTextarea.value = '';
+            originalContent = '';
+            currentPromptId = null;
+            hasUnsavedTemplateChanges = false;
+            saveButton.disabled = true;
+            deleteButton.disabled = true;
+            languageStatusSpan.textContent = '';
+            updateTokenCountAndCost();
+
+            if (!currentLanguage) {
+                promptContentTextarea.disabled = true;
+                languageStatusSpan.textContent = 'Выберите язык';
+                return;
+            }
+
+            setLoadingState(true);
+
+            try {
+                const response = await fetch(`/admin/api/prompts/${encodeURIComponent(promptKey)}/${encodeURIComponent(currentLanguage)}`);
+
+                if (response.ok) {
+                    const promptData = await response.json();
+                    promptContentTextarea.value = promptData.content;
+                    originalContent = promptData.content;
+                    currentPromptId = promptData.id;
+                    languageStatusSpan.textContent = 'Загружено. Изменено: ' + (promptData.updated_at ? new Date(promptData.updated_at).toLocaleString() : 'неизвестно');
+                    deleteButton.disabled = false;
+                    saveButton.disabled = true;
+                    promptContentTextarea.disabled = false;
+                } else if (response.status === 404) {
+                    promptContentTextarea.value = '';
+                    originalContent = '';
+                    currentPromptId = null;
+                    languageStatusSpan.textContent = 'Новый перевод.';
+                    deleteButton.disabled = true;
+                    saveButton.disabled = false;
+                    promptContentTextarea.disabled = false;
+                } else {
+                    const errorData = await response.json().catch(() => ({ message: response.statusText }));
+                    console.error('Fetch error:', errorData);
+                    showFlashMessage(`Ошибка загрузки промпта: ${errorData.message || errorData.error || 'Неизвестная ошибка'}`, 'error');
+                    promptContentTextarea.disabled = true;
+                }
+            } catch (error) {
+                console.error('Network error:', error);
+                showFlashMessage('Сетевая ошибка при загрузке промпта.', 'error');
+                promptContentTextarea.disabled = true;
+            } finally {
+                setLoadingState(false);
+                updateTokenCountAndCost();
+            }
+        }
+
+        languageSelect.addEventListener('change', (event) => {
+            if (isLoading) return;
+
+            if (hasUnsavedTemplateChanges) {
+                if (!confirm('Есть несохраненные изменения в шаблоне промпта. Вы уверены, что хотите переключить язык? Изменения будут потеряны.')) {
+                    languageSelect.value = currentLanguage;
+                    return;
+                }
+            }
+            fetchAndDisplayPrompt(event.target.value);
+        });
+
+        promptContentTextarea.addEventListener('input', () => {
+            if (!currentLanguage || isLoading) return;
+            hasUnsavedTemplateChanges = promptContentTextarea.value !== originalContent;
+            saveButton.disabled = !hasUnsavedTemplateChanges;
+            updateTokenCountAndCost();
+        });
+
+        saveButton.addEventListener('click', async () => {
+            if (!currentLanguage || !hasUnsavedTemplateChanges || isLoading) return;
+
+            const content = promptContentTextarea.value;
+            setLoadingState(true);
+            saveButton.textContent = 'Сохранение...';
+
+            try {
+                const response = await fetch(`/admin/api/prompts`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        key: promptKey,
+                        language: currentLanguage,
+                        content: content,
+                    })
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    originalContent = result.content;
+                    currentPromptId = result.id;
+                    hasUnsavedTemplateChanges = false;
+                    saveButton.disabled = true;
+                    languageStatusSpan.textContent = 'Сохранено: ' + new Date(result.updated_at).toLocaleString();
+                    deleteButton.disabled = false;
+                    showFlashMessage(`Промпт для языка '${currentLanguage}' успешно сохранен!`, 'success');
+                    updateTokenCountAndCost();
+                } else {
+                    const errorData = await response.json().catch(() => ({ message: response.statusText }));
+                    console.error('Save error:', errorData);
+                    showFlashMessage(`Ошибка сохранения: ${errorData.message || errorData.error || 'Неизвестная ошибка'}`, 'error');
+                    saveButton.disabled = false;
+                }
+            } catch (error) {
+                console.error('Network error:', error);
+                showFlashMessage('Сетевая ошибка при сохранении.', 'error');
+                 saveButton.disabled = false;
+            } finally {
+                setLoadingState(false);
+                saveButton.textContent = 'Сохранить для языка';
+            }
+        });
+
+        deleteButton.addEventListener('click', async () => {
+            if (!currentLanguage || !currentPromptId || isLoading) return;
+
+            if (!confirm(`Вы уверены, что хотите удалить перевод для языка '${currentLanguage}'? Это действие необратимо.`)) {
+                return;
+            }
+
+            setLoadingState(true);
+            deleteButton.textContent = 'Удаление...';
+
+            try {
+                const response = await fetch(`/admin/api/prompts/${encodeURIComponent(promptKey)}/${encodeURIComponent(currentLanguage)}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok || response.status === 204) {
+                    originalContent = '';
+                    currentPromptId = null;
+                    hasUnsavedTemplateChanges = false;
+                    promptContentTextarea.value = '';
+                    languageStatusSpan.textContent = 'Перевод удален. Создайте новый.';
+                    deleteButton.disabled = true;
+                    saveButton.disabled = false;
+                    showFlashMessage(`Перевод для языка '${currentLanguage}' успешно удален!`, 'success');
+                    updateTokenCountAndCost();
+                } else {
+                     const errorData = await response.json().catch(() => ({ message: response.statusText }));
+                     console.error('Delete error:', errorData);
+                    showFlashMessage(`Ошибка удаления: ${errorData.message || errorData.error || 'Неизвестная ошибка'}`, 'error');
+                    deleteButton.disabled = false;
+                }
+            } catch (error) {
+                console.error('Network error:', error);
+                showFlashMessage('Сетевая ошибка при удалении.', 'error');
+                deleteButton.disabled = false;
+            } finally {
+                setLoadingState(false);
+                deleteButton.textContent = 'Удалить перевод';
+                deleteButton.disabled = !currentPromptId;
+            }
+        });
+
+        function initializeUI() {
+             currentLanguage = languageSelect.value;
+
+             if (!currentLanguage) {
+                 promptContentTextarea.disabled = true;
+                 saveButton.disabled = true;
+                 deleteButton.disabled = true;
+                 languageStatusSpan.textContent = 'Выберите язык';
+             } else {
+                 fetchAndDisplayPrompt(currentLanguage);
+             }
+
+             const tokenizerCheckInterval = setInterval(() => {
+                if (typeof window.GPTTokenizer_cl100k_base !== 'undefined' && window.GPTTokenizer_cl100k_base) {
+                    console.log("gpt-tokenizer (window.GPTTokenizer_cl100k_base) loaded.", window.GPTTokenizer_cl100k_base);
+                    clearInterval(tokenizerCheckInterval);
+                    updateTokenCountAndCost();
+                } else {
+                    // console.log("Waiting for gpt-tokenizer...");
+                }
+            }, 100);
+
+            setTimeout(() => {
+                if (typeof window.GPTTokenizer_cl100k_base === 'undefined') {
+                    console.error("gpt-tokenizer failed to load after timeout.");
+                    clearInterval(tokenizerCheckInterval);
+                    tokenCountSpan.textContent = "Ошибка загрузки токенизатора";
+                    promptCostSpan.style.display = 'none';
+                }
+            }, 10000);
+        }
+        initializeUI();
+
+    </script>
 
 </div>
-
-{{end}} 
+{{ end }} 

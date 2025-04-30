@@ -78,14 +78,6 @@ type CharacterImageResultPayload struct {
 	ImageURL         *string   `json:"image_url,omitempty"` // URL to the generated image (e.g., S3/MinIO URL) if success is true
 }
 
-// NotificationStatus defines the status of a notification.
-type NotificationStatus string
-
-const (
-	NotificationStatusSuccess NotificationStatus = "success"
-	NotificationStatusError   NotificationStatus = "error"
-)
-
 // NotificationPayload is the structure for notifications sent FROM generation services back TO gameplay-service.
 type NotificationPayload struct {
 	TaskID           string             `json:"task_id"`                 // ID of the original task

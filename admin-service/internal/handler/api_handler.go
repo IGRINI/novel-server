@@ -6,7 +6,6 @@ import (
 
 	"novel-server/admin-service/internal/service"
 	"novel-server/shared/database"
-	"novel-server/shared/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
@@ -15,12 +14,12 @@ import (
 
 // ApiHandler обрабатывает запросы к внутреннему API v1.
 type ApiHandler struct {
-	promptService *service.PromptService
+	promptService service.PromptService
 	logger        *zap.Logger
 }
 
 // NewApiHandler создает новый экземпляр ApiHandler.
-func NewApiHandler(promptService *service.PromptService, logger *zap.Logger) *ApiHandler {
+func NewApiHandler(promptService service.PromptService, logger *zap.Logger) *ApiHandler {
 	if promptService == nil {
 		log.Fatal().Msg("PromptService is nil for ApiHandler")
 	}
@@ -28,6 +27,17 @@ func NewApiHandler(promptService *service.PromptService, logger *zap.Logger) *Ap
 		promptService: promptService,
 		logger:        logger.Named("ApiHandler"),
 	}
+}
+
+// RegisterRoutes регистрирует API маршруты для ApiHandler.
+func (h *ApiHandler) RegisterRoutes(group *gin.RouterGroup) {
+	h.logger.Info("Регистрация API маршрутов для промптов...")
+	prompts := group.Group("/prompts")
+	{
+		prompts.GET("", h.ListPromptsByKey)
+		prompts.DELETE("/:key", h.DeletePromptByKey)
+	}
+	h.logger.Info("API маршруты для промптов зарегистрированы.")
 }
 
 // --- Prompt Handlers ---
@@ -86,12 +96,7 @@ func (h *ApiHandler) ListPromptsByKey(c *gin.Context) {
 		return
 	}
 
-	promptsSlice := make([]*models.Prompt, 0, len(promptsMap))
-	for _, p := range promptsMap {
-		promptsSlice = append(promptsSlice, p)
-	}
-
-	c.JSON(http.StatusOK, promptsSlice)
+	c.JSON(http.StatusOK, promptsMap)
 }
 
 // GetPrompt возвращает промпт по ключу и языку.
@@ -133,6 +138,28 @@ func (h *ApiHandler) DeletePromptByKey(c *gin.Context) {
 	if err != nil {
 		h.logger.Error("Failed to delete prompts by key", zap.Error(err), zap.String("key", key))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete prompt key"})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+}
+
+// DeletePromptByLang удаляет конкретную языковую версию промпта.
+// DELETE /api/v1/prompts/:key/:language
+func (h *ApiHandler) DeletePromptByLang(c *gin.Context) {
+	key := c.Param("key")
+	language := c.Param("language")
+
+	if key == "" || language == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Key and language parameters are required"})
+		return
+	}
+
+	err := h.promptService.DeletePromptByKeyAndLang(c.Request.Context(), key, language)
+	if err != nil {
+		// Ошибка "не найдено" обрабатывается в сервисе как успех (nil), поэтому здесь только 500
+		h.logger.Error("Failed to delete prompt by key and language", zap.Error(err), zap.String("key", key), zap.String("language", language))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete prompt language"})
 		return
 	}
 

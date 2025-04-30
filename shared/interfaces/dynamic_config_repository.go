@@ -14,4 +14,6 @@ type DynamicConfigRepository interface {
 	// Upsert создает или обновляет настройку.
 	// Обновляет только поля Value и Description. Key и UpdatedAt не трогает (UpdatedAt обновляется триггером).
 	Upsert(ctx context.Context, config *models.DynamicConfig) error
+	// Create создает новую настройку. Если настройка с таким ключом уже существует, возвращает ошибку.
+	Create(ctx context.Context, config *models.DynamicConfig) error
 }
