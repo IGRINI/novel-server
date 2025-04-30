@@ -48,6 +48,5 @@
 7.  Ensure `pp.st` and `pp.cvs` are in English.
 8.  **Output Requirement:** Respond **ONLY** with the final generated JSON object string. Ensure it's single-line, unformatted, strictly valid JSON, parsable by `JSON.parse()`/`json.loads()`. No extra text or explanation.
 
-**Apply the rules above to the following User Input:**
-
+**Apply the rules above to the following Input:**
 {{USER_INPUT}}
