@@ -13,10 +13,10 @@
 **CRITICAL OUTPUT RULES:**
 1.  **Output Format:** Respond ONLY with valid, single-line, compressed JSON parsable by `JSON.parse()`/`json.loads()`. Strictly adhere to the MANDATORY structure below. Consequences (`opts.cons`) MUST be valid nested JSON. No extra text/markdown outside specified fields.
 2.  **Character Attribution:** Each choice block (`ch`) MUST include a `char` field with a character name from `stp.chars[].n`. The `desc` text MUST involve or be presented by this character.
-3.  **Text Formatting:** Markdown (`*italic*`, `**bold**`) allowed ONLY within `desc` and `txt` string values.
+3.  **Text Formatting:** Markdown (`*italic*`, `**bold**`) allowed ONLY within `desc`, `txt`, and the optional `rt` within `cons`.
 4.  **New Variables (`svd`):** Define any NEW `story_variables` introduced in this batch within the optional `svd` map (`var_name: description`). Omit `svd` if no new vars.
 5.  **Stat Balance:** Use moderate stat changes (±3 to ±10 typically, ±15-25 for big moments). Respect 0-100 limits and initial values (`iv`) from setup. Avoid instant game over unless dramatically intended.
-6.  **No-Consequence/Info Events:** `cons` can be empty (`{}`) or just contain `response_text`. For info events, both `txt` values can be identical (e.g., "Continue.").
+6.  **Optional Response Text:** Use `rt` inside `cons` sparingly, mainly for info events where `cons` might otherwise be empty (`{}`). Avoid including `rt` when significant state changes (`cs`, `sv`, `gf`) occur, unless necessary for feedback. For simple info events, both `opts.txt` can be identical (e.g., "Continue.").
 
 **Output JSON Structure (MANDATORY, Compressed Keys):**
 ```json
@@ -34,11 +34,11 @@
       "opts": [         // options (Exactly 2)
         {
           "txt": "string", // Choice 1 text (Markdown OK)
-          "cons": {}       // Nested JSON consequences (effects, response_text)
+          "cons": {}       // Nested JSON consequences (e.g. cs, sv, gf; rt optional)
         },
         {
           "txt": "string", // Choice 2 text (Markdown OK)
-          "cons": {}
+          "cons": {}       // Nested JSON consequences (e.g. cs, sv, gf; rt optional)
         }
       ]
     }

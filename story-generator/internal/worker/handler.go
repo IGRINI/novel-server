@@ -9,9 +9,9 @@ import (
 	"math/rand"
 	sharedInterfaces "novel-server/shared/interfaces" // <<< Используем этот импорт
 	"novel-server/shared/messaging"
-	sharedModels "novel-server/shared/models"      // <<< Добавляем импорт models
-	"novel-server/story-generator/internal/config" // Импортируем конфиг для AIMaxAttempts
+	sharedModels "novel-server/shared/models" // <<< Добавляем импорт models
 
+	// Импортируем конфиг для AIMaxAttempts
 	// Добавляем модель
 	// "novel-server/story-generator/internal/repository" // <<< Удаляем старый импорт
 	"novel-server/story-generator/internal/service" // Для шаблонизации промтов
@@ -27,29 +27,38 @@ const (
 
 // TaskHandler обрабатывает задачи генерации
 type TaskHandler struct {
-	cfg        *config.Config
-	aiClient   service.AIClient // <<< Используем интерфейс
-	resultRepo sharedInterfaces.GenerationResultRepository
-	notifier   service.Notifier
-	prompts    *service.PromptProvider // <<< Провайдер для ВСЕХ промптов
+	// <<< УДАЛЕНО: cfg *config.Config >>>
+	maxAttempts    int           // <<< ДОБАВЛЕНО
+	baseRetryDelay time.Duration // <<< ДОБАВЛЕНО
+	aiTimeout      time.Duration // <<< ДОБАВЛЕНО
+	aiClient       service.AIClient
+	resultRepo     sharedInterfaces.GenerationResultRepository
+	notifier       service.Notifier
+	prompts        *service.PromptProvider
 	// configProvider *service.ConfigProvider // <<< УДАЛЕНО
 }
 
 // NewTaskHandler создает новый экземпляр обработчика задач
 func NewTaskHandler(
-	cfg *config.Config,
-	aiClient service.AIClient, // <<< Принимаем интерфейс
+	// <<< ПРИНИМАЕМ ПАРАМЕТРЫ ВМЕСТО КОНФИГА >>>
+	maxAttempts int,
+	baseRetryDelay time.Duration,
+	aiTimeout time.Duration,
+	aiClient service.AIClient,
 	resultRepo sharedInterfaces.GenerationResultRepository,
 	notifier service.Notifier,
-	promptProvider *service.PromptProvider, // <<< Принимаем PromptProvider
+	promptProvider *service.PromptProvider,
 	// configProvider *service.ConfigProvider, // <<< УДАЛЕНО
 ) *TaskHandler {
 	return &TaskHandler{
-		cfg:        cfg,
-		aiClient:   aiClient,
-		resultRepo: resultRepo,
-		notifier:   notifier,
-		prompts:    promptProvider, // <<< Сохраняем
+		// <<< СОХРАНЯЕМ ПАРАМЕТРЫ >>>
+		maxAttempts:    maxAttempts,
+		baseRetryDelay: baseRetryDelay,
+		aiTimeout:      aiTimeout,
+		aiClient:       aiClient,
+		resultRepo:     resultRepo,
+		notifier:       notifier,
+		prompts:        promptProvider,
 		// configProvider: configProvider, // <<< УДАЛЕНО
 	}
 }
@@ -148,12 +157,12 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 			err = fmt.Errorf("ошибка валидации: %w", processingErr)
 			// <<< УДАЛЕНО: return err >>>
 		} else {
-			baseDelay := h.cfg.AIBaseRetryDelay
+			baseDelay := h.baseRetryDelay
 
-			for attempt := 1; attempt <= h.cfg.AIMaxAttempts; attempt++ {
+			for attempt := 1; attempt <= h.maxAttempts; attempt++ {
 				aiCallStartTime := time.Now()
-				log.Printf("[TaskID: %s] Вызов AI API (Попытка %d/%d)...", payload.TaskID, attempt, h.cfg.AIMaxAttempts)
-				ctx, cancel := context.WithTimeout(context.Background(), h.cfg.AITimeout)
+				log.Printf("[TaskID: %s] Вызов AI API (Попытка %d/%d)...", payload.TaskID, attempt, h.maxAttempts)
+				ctx, cancel := context.WithTimeout(context.Background(), h.aiTimeout)
 
 				var attemptUsageInfo service.UsageInfo
 				var attemptErr error
@@ -170,10 +179,10 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 				if attemptErr == nil {
 					log.Printf("[TaskID: %s] AI API успешно ответил (Попытка %d). Время ответа: %v", payload.TaskID, attempt, aiCallDuration)
 					log.Printf("[TaskID: %s] Raw AI Response (length: %d): %s", payload.TaskID, len(aiResponse), aiResponse)
-					MetricsRecordAIRequest(h.cfg.AIModel, aiStatusLabel, aiCallDuration)
+					MetricsRecordAIRequest("unknown", aiStatusLabel, aiCallDuration)
 					if attemptUsageInfo.TotalTokens > 0 || attemptUsageInfo.EstimatedCostUSD > 0 {
-						MetricsRecordAITokens(h.cfg.AIModel, float64(attemptUsageInfo.PromptTokens), float64(attemptUsageInfo.CompletionTokens))
-						MetricsAddAICost(h.cfg.AIModel, attemptUsageInfo.EstimatedCostUSD)
+						MetricsRecordAITokens("unknown", float64(attemptUsageInfo.PromptTokens), float64(attemptUsageInfo.CompletionTokens))
+						MetricsAddAICost("unknown", attemptUsageInfo.EstimatedCostUSD)
 						log.Printf("[TaskID: %s][Attempt %d Metrics] Tokens: P=%d, C=%d. Cost: %.6f USD",
 							payload.TaskID, attempt, attemptUsageInfo.PromptTokens, attemptUsageInfo.CompletionTokens, attemptUsageInfo.EstimatedCostUSD)
 					}
@@ -184,11 +193,11 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 
 				aiStatusLabel = "error"
 				processingErr = attemptErr
-				log.Printf("[TaskID: %s] Ошибка вызова AI API (Попытка %d/%d, время: %v): %v", payload.TaskID, attempt, h.cfg.AIMaxAttempts, aiCallDuration, processingErr)
-				MetricsRecordAIRequest(h.cfg.AIModel, aiStatusLabel, aiCallDuration)
+				log.Printf("[TaskID: %s] Ошибка вызова AI API (Попытка %d/%d, время: %v): %v", payload.TaskID, attempt, h.maxAttempts, aiCallDuration, processingErr)
+				MetricsRecordAIRequest("unknown", aiStatusLabel, aiCallDuration)
 
-				if attempt == h.cfg.AIMaxAttempts {
-					log.Printf("[TaskID: %s] Достигнуто максимальное количество попыток (%d) вызова AI.", payload.TaskID, h.cfg.AIMaxAttempts)
+				if attempt == h.maxAttempts {
+					log.Printf("[TaskID: %s] Достигнуто максимальное количество попыток (%d) вызова AI.", payload.TaskID, h.maxAttempts)
 					MetricsIncrementTaskFailed("ai_error")
 					// Не устанавливаем err здесь, processingErr уже содержит ошибку
 					break // Выходим из цикла ретраев после последней неудачной попытки
@@ -215,19 +224,13 @@ SaveAndNotify: // Метка для перехода при ошибке пол�
 	// --- Этап N: Сохранение результата и отправка уведомления --- //
 	completedAt = time.Now() // Обновляем время завершения перед сохранением
 	processingDuration := completedAt.Sub(taskStartTime)
-	saveErr := h.saveAndNotifyResult(
-		payload.TaskID,
-		payload.UserID,
-		payload.PromptType,
-		payload.StoryConfigID,
-		payload.PublishedStoryID,
-		payload.StateHash,
-		aiResponse,    // Будет пустой строкой, если была ошибка до вызова AI
-		processingErr, // Передаем ошибку этапа обработки (prompt/AI)
-		taskStartTime,
-		completedAt,
+	saveErr := h.saveResultAndNotify(
+		context.Background(),
+		payload,    // Передаем весь payload
+		aiResponse, // Результат AI (может быть пустой при ошибке)
 		processingDuration,
-		finalUsageInfo, // Будет нулевой, если AI не вызывался или все попытки неудачны
+		processingErr, // Ошибка обработки (может быть nil)
+		finalUsageInfo,
 	)
 
 	if saveErr != nil {
@@ -267,115 +270,96 @@ func (h *TaskHandler) preparePrompt(taskID string, promptType sharedModels.Promp
 }
 */
 
-// saveAndNotifyResult сохраняет результат (или ошибку) в БД и отправляет уведомление
-func (h *TaskHandler) saveAndNotifyResult(
-	taskID string,
-	userID string,
-	promptType sharedModels.PromptType,
-	storyConfigID string,
-	publishedStoryID string,
-	stateHash string,
-	aiResponse string,
-	processingErr error,
-	createdAt time.Time,
-	completedAt time.Time,
-	processingTime time.Duration,
-	usageInfo service.UsageInfo, // <<< ДОБАВЛЕНО: Принимаем UsageInfo >>>
+// saveResultAndNotify сохраняет результат генерации и отправляет уведомление
+func (h *TaskHandler) saveResultAndNotify(
+	ctx context.Context,
+	payload messaging.GenerationTaskPayload,
+	generatedText string,
+	duration time.Duration,
+	execErr error,
+	usage service.UsageInfo,
 ) error {
-	ctx := context.Background() // Используем фоновый контекст для сохранения/уведомления
-
-	// --- Подготовка данных для сохранения --- //
-	errorDetails := ""
-	if processingErr != nil {
-		errorDetails = processingErr.Error()
-	}
 
 	result := &sharedModels.GenerationResult{
-		ID:               taskID,
-		PromptType:       promptType,
-		UserID:           userID,
-		GeneratedText:    aiResponse,   // Будет пустым при ошибке
-		Error:            errorDetails, // Ошибка изначальной обработки AI
-		CreatedAt:        createdAt,
-		CompletedAt:      completedAt,
-		ProcessingTimeMs: processingTime.Milliseconds(), // Используем milliseconds и правильное имя поля
-		PromptTokens:     usageInfo.PromptTokens,        // <<< Используем данные из usageInfo >>>
-		CompletionTokens: usageInfo.CompletionTokens,    // <<< Используем данные из usageInfo >>>
-		EstimatedCostUSD: usageInfo.EstimatedCostUSD,    // <<< Используем данные из usageInfo >>>
+		ID:               payload.TaskID,
+		UserID:           payload.UserID,
+		PromptType:       payload.PromptType,
+		GeneratedText:    generatedText,
+		ProcessingTimeMs: duration.Milliseconds(),
+		CreatedAt:        time.Now().UTC().Add(-duration),
+		CompletedAt:      time.Now().UTC(),
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		EstimatedCostUSD: usage.EstimatedCostUSD,
+	}
+	if execErr != nil {
+		result.Error = execErr.Error()
+	}
+	errorDetails := ""
+	if execErr != nil {
+		errorDetails = execErr.Error()
 	}
 
-	// --- Сохранение в БД --- //
+	// Сохранение в БД
 	saveDbErr := h.resultRepo.Save(ctx, result)
 	if saveDbErr != nil {
-		log.Printf("[TaskID: %s] Ошибка сохранения результата в БД: %v", taskID, saveDbErr)
-		MetricsIncrementTaskFailed("save_error")
-		// Дополняем детали ошибки для уведомления
+		log.Printf("[TaskID: %s] КРИТИЧЕСКАЯ ОШИБКА: Не удалось сохранить результат генерации: %v; Result: %+v", payload.TaskID, saveDbErr, result)
 		if errorDetails == "" {
 			errorDetails = fmt.Sprintf("ошибка сохранения результата: %v", saveDbErr)
 		} else {
 			errorDetails = fmt.Sprintf("ошибка обработки: %s; ошибка сохранения: %v", errorDetails, saveDbErr)
 		}
-	} else {
-		log.Printf("[TaskID: %s] Результат успешно сохранен в БД.", taskID)
-	}
-
-	// --- Отправка уведомления --- //
-	// Статус зависит И от ошибки обработки, И от ошибки сохранения
-	notificationStatus := messaging.NotificationStatusSuccess
-	finalErrorForNotification := "" // Ошибка, которая пойдет в уведомление
-
-	if processingErr != nil || saveDbErr != nil { // Если была ЛЮБАЯ ошибка (обработка или сохранение)
-		notificationStatus = messaging.NotificationStatusError
-		finalErrorForNotification = errorDetails // Используем собранные детали ошибки
-	}
-
-	// Определяем ID для уведомления (Config или Published)
-	var storyConfIDToSend, pubStoryIDToSend *string
-	if storyConfigID != "" {
-		storyConfIDToSend = &storyConfigID
-	} else if publishedStoryID != "" {
-		pubStoryIDToSend = &publishedStoryID
-	}
-
-	payload := messaging.NotificationPayload{
-		TaskID:           taskID,
-		UserID:           userID,
-		PromptType:       promptType,
-		Status:           notificationStatus,        // Используем вычисленный статус
-		ErrorDetails:     finalErrorForNotification, // Используем собранные ошибки
-		StateHash:        stateHash,
-		StoryConfigID:    safeDerefString(storyConfIDToSend),
-		PublishedStoryID: safeDerefString(pubStoryIDToSend),
-	}
-
-	log.Printf("[TaskID: %s] Отправка уведомления (статус: %s)...", taskID, notificationStatus)
-	notifyErr := h.notifier.Notify(ctx, payload)
-	if notifyErr != nil {
-		log.Printf("[TaskID: %s] Ошибка отправки уведомления: %v", taskID, notifyErr)
-		MetricsIncrementTaskFailed("notify_error")
-		// Если была ошибка сохранения И ошибка уведомления - возвращаем обе
-		if saveDbErr != nil {
-			return fmt.Errorf("ошибка сохранения (%w) и отправки уведомления (%w)", saveDbErr, notifyErr)
+		notifyErr := h.notify(ctx, payload, messaging.NotificationStatusError, errorDetails)
+		if notifyErr != nil {
+			return fmt.Errorf("ошибка сохранения (%w) и ошибка уведомления (%w)", saveDbErr, notifyErr)
 		}
-		// Если была только ошибка уведомления
-		return fmt.Errorf("ошибка отправки уведомления: %w", notifyErr)
+		return fmt.Errorf("ошибка сохранения результата: %w", saveDbErr)
 	}
 
-	log.Printf("[TaskID: %s] Уведомление успешно отправлено.", taskID)
+	log.Printf("[TaskID: %s] Результат генерации сохранен в БД.", payload.TaskID)
 
-	// Если была ошибка сохранения, но уведомление ушло, возвращаем ошибку сохранения
-	if saveDbErr != nil {
-		return fmt.Errorf("ошибка сохранения результата в БД: %w", saveDbErr)
+	// Отправка уведомления
+	notifyStatus := messaging.NotificationStatusSuccess
+	if execErr != nil {
+		notifyStatus = messaging.NotificationStatusError
 	}
 
-	// Если не было ни ошибки обработки, ни ошибки сохранения, записываем успех задачи
-	if processingErr == nil && saveDbErr == nil {
+	notifyErr := h.notify(ctx, payload, notifyStatus, errorDetails)
+	if notifyErr != nil {
+		return fmt.Errorf("ошибка отправки уведомления после сохранения: %w", notifyErr)
+	}
+
+	if execErr == nil && saveDbErr == nil {
 		MetricsIncrementTaskSucceeded()
 	}
 
-	// Если все прошло успешно (сохранение и уведомление), возвращаем nil
-	// Если была ошибка обработки (processingErr != nil), но сохранение и уведомление прошли успешно,
-	// эта ошибка уже будет возвращена из главной функции Handle. Здесь возвращаем nil.
+	return nil
+}
+
+// notify отправляет уведомление
+func (h *TaskHandler) notify(ctx context.Context, payload messaging.GenerationTaskPayload, status messaging.NotificationStatus, errorDetails string) error {
+	notification := messaging.NotificationPayload{
+		TaskID:           payload.TaskID,
+		UserID:           payload.UserID,
+		PromptType:       payload.PromptType,
+		Status:           status,
+		ErrorDetails:     errorDetails,
+		StateHash:        payload.StateHash,
+		StoryConfigID:    payload.StoryConfigID,
+		PublishedStoryID: payload.PublishedStoryID,
+	}
+
+	if err := h.notifier.Notify(ctx, notification); err != nil {
+		log.Printf("[TaskID: %s] Не удалось отправить уведомление (Status: %s, Error: '%s'): %v",
+			payload.TaskID, status, errorDetails, err)
+		return err
+	}
+
+	if status == messaging.NotificationStatusSuccess {
+		log.Printf("[TaskID: %s] Уведомление об успехе отправлено.", payload.TaskID)
+	} else {
+		log.Printf("[TaskID: %s] Уведомление об ошибке отправлено (%s).", payload.TaskID, errorDetails)
+	}
 	return nil
 }
 

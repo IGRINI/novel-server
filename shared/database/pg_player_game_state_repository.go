@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"novel-server/shared/interfaces"
 	"novel-server/shared/models"
@@ -29,63 +30,97 @@ func NewPgPlayerGameStateRepository(db interfaces.DBTX, logger *zap.Logger) inte
 	}
 }
 
-// Save creates a new player game state if state.ID is zero UUID,
-// or updates an existing one based on state.ID.
-// Use this to update status, current scene, progress link, etc.
-// Returns the ID of the created/updated record.
-// ПРИМЕЧАНИЕ: Переименовано из CreateOrUpdate для соответствия интерфейсу.
+// Save создает новую запись состояния игры или обновляет существующую по ID.
+// Ответственность за проверку лимитов слотов лежит на сервисном слое.
 func (r *pgPlayerGameStateRepository) Save(ctx context.Context, state *models.PlayerGameState) (uuid.UUID, error) {
-	// Generate UUID if ID is nil
-	if state.ID == uuid.Nil {
-		state.ID = uuid.New()
-	}
 	now := time.Now().UTC()
 	state.LastActivityAt = now // Always update last activity time
 
-	query := `
-        INSERT INTO player_game_states
-            (id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at)
-        VALUES
-            ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        ON CONFLICT (player_id, published_story_id) -- Используем уникальный индекс (player_id, published_story_id)
-        DO UPDATE SET
-            current_scene_id = EXCLUDED.current_scene_id,
-            player_progress_id = EXCLUDED.player_progress_id,
-            player_status = EXCLUDED.player_status,
-            ending_text = EXCLUDED.ending_text,
-            error_details = EXCLUDED.error_details,
-            last_activity_at = EXCLUDED.last_activity_at,
-            completed_at = EXCLUDED.completed_at
-        RETURNING id -- Возвращаем ID созданной/обновленной записи
-    `
 	logFields := []zap.Field{
-		zap.String("gameStateID", state.ID.String()), // Может быть новым или существующим
 		zap.String("playerID", state.PlayerID.String()),
 		zap.String("publishedStoryID", state.PublishedStoryID.String()),
 		zap.String("playerStatus", string(state.PlayerStatus)),
 	}
-	r.logger.Debug("Saving (Upserting) player game state", logFields...)
+	if state.ID != uuid.Nil {
+		logFields = append(logFields, zap.String("gameStateID", state.ID.String()))
+	}
 
 	var returnedID uuid.UUID
-	err := r.db.QueryRow(ctx, query,
-		state.ID,
-		state.PlayerID,
-		state.PublishedStoryID,
-		state.CurrentSceneID,
-		state.PlayerProgressID,
-		state.PlayerStatus,
-		state.EndingText,
-		state.ErrorDetails,
-		state.StartedAt, // Может быть перезаписано при UPDATE, если нужно сохранить исходное - усложнить запрос
-		state.LastActivityAt,
-		state.CompletedAt,
-	).Scan(&returnedID) // Сканируем возвращенный ID
+	var err error
+
+	if state.ID == uuid.Nil {
+		// --- INSERT ---
+		state.ID = uuid.New() // Generate new ID for insert
+		state.StartedAt = now // Set started time only on insert
+		logFields = append(logFields, zap.String("newGameStateID", state.ID.String()))
+		r.logger.Debug("Inserting new player game state", logFields...)
+
+		query := `
+            INSERT INTO player_game_states
+                (id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at)
+            VALUES
+                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            RETURNING id
+        `
+		err = r.db.QueryRow(ctx, query,
+			state.ID,
+			state.PlayerID,
+			state.PublishedStoryID,
+			state.CurrentSceneID,
+			state.PlayerProgressID,
+			state.PlayerStatus,
+			state.EndingText,
+			state.ErrorDetails,
+			state.StartedAt,
+			state.LastActivityAt,
+			state.CompletedAt,
+		).Scan(&returnedID)
+
+	} else {
+		// --- UPDATE ---
+		r.logger.Debug("Updating existing player game state", logFields...)
+		query := `
+            UPDATE player_game_states SET
+                current_scene_id = $2,
+                player_progress_id = $3,
+                player_status = $4,
+                ending_text = $5,
+                error_details = $6,
+                last_activity_at = $7,
+                completed_at = $8
+                -- player_id and published_story_id should not change
+                -- started_at should not change on update
+            WHERE id = $1
+            RETURNING id
+        `
+		err = r.db.QueryRow(ctx, query,
+			state.ID,               // $1
+			state.CurrentSceneID,   // $2
+			state.PlayerProgressID, // $3
+			state.PlayerStatus,     // $4
+			state.EndingText,       // $5
+			state.ErrorDetails,     // $6
+			state.LastActivityAt,   // $7
+			state.CompletedAt,      // $8
+		).Scan(&returnedID)
+
+		// Handle potential ErrNoRows on update, although it shouldn't happen if ID is correct
+		if errors.Is(err, pgx.ErrNoRows) {
+			r.logger.Error("Failed to update player game state: record not found", append(logFields, zap.Error(err))...)
+			return uuid.Nil, models.ErrNotFound // Return specific error if ID not found for update
+		}
+	}
 
 	if err != nil {
-		r.logger.Error("Failed to save (upsert) player game state", append(logFields, zap.Error(err))...)
-		return uuid.Nil, fmt.Errorf("ошибка при сохранении состояния игры: %w", err)
+		logAction := "inserting"
+		if state.ID != uuid.Nil {
+			logAction = "updating"
+		}
+		r.logger.Error(fmt.Sprintf("Failed during %s player game state", logAction), append(logFields, zap.Error(err))...)
+		return uuid.Nil, fmt.Errorf("ошибка при сохранении состояния игры (%s): %w", logAction, err)
 	}
-	r.logger.Info("Player game state saved (upserted) successfully", append(logFields, zap.String("returnedID", returnedID.String()))...)
+
+	r.logger.Info("Player game state saved successfully", append(logFields, zap.String("returnedID", returnedID.String()))...)
 	return returnedID, nil
 }
 

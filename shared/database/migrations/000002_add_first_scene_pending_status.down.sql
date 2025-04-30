@@ -1,0 +1,5 @@
+-- +migrate Down
+-- Removing ENUM values can be complex and potentially destructive.
+-- The addition of 'first_scene_pending' is considered irreversible via this migration.
+-- Manual cleanup might be required if absolutely necessary.
+-- +migrate StatementEnd 

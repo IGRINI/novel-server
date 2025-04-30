@@ -76,13 +76,6 @@ func main() {
 	}
 	// -----------------------------------------
 
-	// --- Инициализация AI клиента ---
-	sugar.Info("Инициализация AI клиента...")
-	aiClient, err := service.NewAIClient(cfg)
-	if err != nil {
-		sugar.Fatalf("Ошибка инициализации AI клиента: %v", err)
-	}
-
 	// --- Подключение к PostgreSQL ---
 	sugar.Info("Подключение к PostgreSQL...")
 	dbPool, err := setupDatabase(cfg)
@@ -96,7 +89,15 @@ func main() {
 	sugar.Info("Инициализация репозиториев...")
 	resultRepo := sharedDatabase.NewPgGenerationResultRepository(dbPool, logger)
 	promptRepo := sharedDatabase.NewPgPromptRepository(dbPool)
+	dynamicConfigRepo := sharedDatabase.NewPgDynamicConfigRepository(dbPool, logger)
 	sugar.Info("Репозитории инициализированы")
+
+	// --- Инициализация AI клиента ---
+	sugar.Info("Инициализация AI клиента...")
+	aiClient, err := service.NewAIClient(cfg, dynamicConfigRepo)
+	if err != nil {
+		sugar.Fatalf("Ошибка инициализации AI клиента: %v", err)
+	}
 
 	// --- Инициализация Prompt Provider ---
 	sugar.Info("Инициализация Prompt Provider...")
@@ -224,8 +225,20 @@ func main() {
 
 	// --- Создаем обработчик задач воркера ---
 	sugar.Info("Создание обработчика задач...")
-	// Передаем только PromptProvider
-	taskHandler := worker.NewTaskHandler(cfg, aiClient, resultRepo, notifier, promptProvider)
+	mainCtx := context.Background()
+	aiMaxAttempts := service.GetConfigValueInt(mainCtx, dynamicConfigRepo, service.ConfigKeyAIMaxAttempts, service.DefaultAIMaxAttempts)
+	aiBaseRetryDelay := service.GetConfigValueDuration(mainCtx, dynamicConfigRepo, service.ConfigKeyAIBaseRetryDelay, service.DefaultAIBaseRetryDelay)
+	aiTimeout := service.GetConfigValueDuration(mainCtx, dynamicConfigRepo, service.ConfigKeyAITimeout, service.DefaultAITimeout)
+
+	taskHandler := worker.NewTaskHandler(
+		aiMaxAttempts,
+		aiBaseRetryDelay,
+		aiTimeout,
+		aiClient,
+		resultRepo,
+		notifier,
+		promptProvider,
+	)
 	sugar.Info("Обработчик задач создан")
 
 	// --- Инициализация и запуск HTTP API сервера ---

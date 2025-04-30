@@ -396,7 +396,7 @@
         *   `500 Internal Server Error`: Ошибка при создании `PublishedStory`, сцены или обновлении статуса черновика.
 
 *   **`POST /api/stories/drafts/:draft_id/retry`**
-    *   Описание: Повторный запуск задачи генерации для черновика, который завершился с ошибкой (`status: \"error\"`).
+    *   Описание: Повторный запуск задачи генерации для черновика, который завершился с ошибкой (`status: "error"`).
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:draft_id` - UUID черновика (`StoryConfig`).
     *   Тело запроса: Нет.
@@ -406,13 +406,13 @@
         *   `401 Unauthorized`: Невалидный токен.
         *   `403 Forbidden`: Попытка доступа к чужому черновику.
         *   `404 Not Found`: Черновик не найден.
-        *   `409 Conflict` (`{\"message\": \"Story config is not in error state\" | \"User already has an active generation task\"}`): Черновик не в статусе ошибки или у пользователя уже есть задача.
+        *   `409 Conflict` (`{"message": "Story config is not in error state" | "User already has an active generation task"}`): Черновик не в статусе ошибки или у пользователя уже есть задача.
         *   `500 Internal Server Error`: Ошибка при обновлении БД или постановке задачи.
 
-*   **`DELETE /api/stories/drafts/:draft_id`**
+*   **`DELETE /api/stories/:id`**
     *   Описание: Удаление **своего** черновика истории.
     *   Аутентификация: **Требуется.**
-    *   Параметр пути: `:draft_id` - UUID черновика (`StoryConfig`).
+    *   Параметр пути: `:id` - UUID черновика (`StoryConfig`).
     *   Тело запроса: Нет.
     *   Ответ при успехе (`204 No Content`): Черновик успешно удален.
     *   Ответ при ошибке:
@@ -683,7 +683,7 @@
         *   `500 Internal Server Error`: Внутренняя ошибка сервера при удалении.
 
 *   **`POST /api/published-stories/:id/retry`**
-    *   Описание: Повторный запуск задачи генерации (Setup или Scene) для опубликованной истории, которая завершилась с ошибкой (`status: \"error\"`).
+    *   Описание: Повторный запуск задачи генерации (Setup или Scene) для опубликованной истории, которая завершилась с ошибкой (`status: "error"`).
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
     *   Тело запроса: Нет.
@@ -692,7 +692,7 @@
         *   `400 Bad Request`: Невалидный UUID.
         *   `401 Unauthorized`: Невалидный токен.
         *   `404 Not Found`: История не найдена.
-        *   `409 Conflict` (`{\"message\": \"Story is not in error state\"}`): История не в статусе ошибки.
+        *   `409 Conflict` (`{\"message\": "Story is not in error state"}`): История не в статусе ошибки.
         *   `500 Internal Server Error`: Ошибка при обновлении статуса или постановке задачи.
 
 *   **`PATCH /api/published-stories/:id/visibility`**
