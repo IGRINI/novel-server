@@ -122,6 +122,10 @@ type GameplayService interface {
 
 	// <<< ДОБАВЛЕНО: Явное добавление метода для подсчета активных историй >>>
 	GetActiveStoryCount(ctx context.Context) (int, error)
+
+	// <<< ДОБАВЛЕНО: Методы для управления состояниями игры >>>
+	ListGameStates(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) ([]*sharedModels.PlayerGameState, error)
+	CreateNewGameState(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) (*sharedModels.PlayerGameState, error)
 }
 
 type gameplayServiceImpl struct {
@@ -168,7 +172,16 @@ func NewGameplayService(
 	// <<< СОЗДАЕМ LikeService >>>
 	likeSvc := NewLikeService(likeRepo, publishedRepo, playerGameStateRepo, authClient, logger)
 	// <<< СОЗДАЕМ StoryBrowsingService >>>
-	storyBrowsingSvc := NewStoryBrowsingService(publishedRepo, sceneRepo, playerProgressRepo, playerGameStateRepo, likeRepo, authClient, logger)
+	storyBrowsingSvc := NewStoryBrowsingService(
+		publishedRepo,
+		sceneRepo,
+		playerProgressRepo,
+		playerGameStateRepo,
+		likeRepo,
+		imageRefRepo,
+		authClient,
+		logger,
+	)
 	// <<< СОЗДАЕМ GameLoopService >>>
 	gameLoopSvc := NewGameLoopService(
 		publishedRepo, sceneRepo, playerProgressRepo, playerGameStateRepo,
@@ -300,17 +313,17 @@ func (s *gameplayServiceImpl) GetParsedSetup(ctx context.Context, storyID uuid.U
 
 // === Методы, делегированные GameLoopService ===
 
-// GetStoryScene gets the current scene for the player.
+// GetStoryScene delegates to GameLoopService.
 func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error) {
 	return s.gameLoopService.GetStoryScene(ctx, userID, publishedStoryID)
 }
 
-// MakeChoice handles player choice.
+// MakeChoice delegates to GameLoopService.
 func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID, selectedOptionIndices []int) error {
 	return s.gameLoopService.MakeChoice(ctx, userID, publishedStoryID, selectedOptionIndices)
 }
 
-// DeletePlayerGameState deletes player game state for the specified story.
+// DeletePlayerGameState delegates to GameLoopService.
 func (s *gameplayServiceImpl) DeletePlayerGameState(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error {
 	return s.gameLoopService.DeletePlayerGameState(ctx, userID, publishedStoryID)
 }
@@ -463,15 +476,27 @@ func (s *gameplayServiceImpl) UpdatePlayerProgressInternal(ctx context.Context, 
 	return s.gameLoopService.UpdatePlayerProgressInternal(ctx, progressID, progressData)
 }
 
-// <<< ДОБАВЛЕНО: Реализация GetActiveStoryCount для gameplayServiceImpl >>>
 // GetActiveStoryCount делегирует вызов встроенному storyBrowsingService.
 func (s *gameplayServiceImpl) GetActiveStoryCount(ctx context.Context) (int, error) {
+	// <<< ИСПРАВЛЕНО: Возвращаем делегирование storyBrowsingService >>>
 	// Проверяем, инициализирован ли storyBrowsingService
 	if s.storyBrowsingService == nil {
 		s.logger.Error("storyBrowsingService is not initialized in gameplayServiceImpl")
 		return 0, fmt.Errorf("internal error: story browsing service not available")
 	}
 	return s.storyBrowsingService.GetActiveStoryCount(ctx)
+}
+
+// === Методы для управления состояниями игры (делегация GameLoopService) ===
+
+// ListGameStates delegates to GameLoopService.
+func (s *gameplayServiceImpl) ListGameStates(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) ([]*sharedModels.PlayerGameState, error) {
+	return s.gameLoopService.ListGameStates(ctx, playerID, publishedStoryID)
+}
+
+// CreateNewGameState delegates to GameLoopService.
+func (s *gameplayServiceImpl) CreateNewGameState(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) (*sharedModels.PlayerGameState, error) {
+	return s.gameLoopService.CreateNewGameState(ctx, playerID, publishedStoryID)
 }
 
 // --- Helper Functions moved to game_loop_service.go ---

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	interfaces "novel-server/shared/interfaces"
@@ -80,53 +81,55 @@ type ParsedCharacterDTO struct {
 	ImageReference string `json:"imageReference,omitempty"` // NEW: Unique reference for the character image
 }
 
+// GameStateSummaryDTO represents a summary of a game state (save).
+type GameStateSummaryDTO struct {
+	ID             uuid.UUID `json:"id"`             // ID of the game state (gameStateID)
+	LastActivityAt time.Time `json:"lastActivityAt"` // Time of the last activity in this save
+}
+
+// CoreStatDTO represents parsed data for a single stat.
+type CoreStatDTO struct {
+	Description  string `json:"description"`
+	InitialValue int    `json:"initialValue"`
+	GameOverMin  bool   `json:"gameOverMin"` // Game Over when Min is reached?
+	GameOverMax  bool   `json:"gameOverMax"` // Game Over when Max is reached?
+	Icon         string `json:"icon,omitempty"`
+}
+
+// CharacterDTO represents parsed data for a single character.
+type CharacterDTO struct {
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	Personality    string `json:"personality,omitempty"`
+	ImageReference string `json:"imageReference,omitempty"`
+}
+
 // PublishedStoryParsedDetailDTO represents detailed information about a published story
 // with parsed config and setup fields, suitable for client response.
 type PublishedStoryParsedDetailDTO struct {
-	// Core Story Info
-	ID             uuid.UUID `json:"id"`
-	AuthorID       uuid.UUID `json:"authorId"`
-	AuthorName     string    `json:"authorName"`
-	PublishedAt    time.Time `json:"publishedAt"`
-	LikesCount     int       `json:"likesCount"`
-	IsLiked        bool      `json:"isLiked"`
-	IsAuthor       bool      `json:"isAuthor"`
-	IsPublic       bool      `json:"isPublic"`
-	IsAdultContent bool      `json:"isAdultContent"` // From config
-	Status         string    `json:"status"`
+	ID             uuid.UUID `json:"id"`             // ID of the story
+	AuthorID       uuid.UUID `json:"authorId"`       // ID of the author
+	AuthorName     string    `json:"authorName"`     // Author's name
+	PublishedAt    time.Time `json:"publishedAt"`    // Publication time (actual creation time)
+	LikesCount     int       `json:"likesCount"`     // Number of likes
+	IsLiked        bool      `json:"isLiked"`        // Did the current user like the story
+	IsAuthor       bool      `json:"isAuthor"`       // Is the current user the author of the story
+	IsPublic       bool      `json:"isPublic"`       // Is the story public
+	IsAdultContent bool      `json:"isAdultContent"` // 18+ flag (from config)
+	Status         string    `json:"status"`         // Current story status (from PublishedStory)
 
-	// Parsed Config/Setup Fields
-	Title            string `json:"title"`
-	ShortDescription string `json:"shortDescription"`
-	// Franchise         string                         `json:"franchise,omitempty"` // Откуда брать Franchise?
-	Genre      string `json:"genre"`
-	Language   string `json:"language"`
-	PlayerName string `json:"playerName"`
-	// PlayerDescription string                         `json:"playerDescription"` // Откуда брать PlayerDescription?
-	// WorldContext      string                         `json:"worldContext"`      // Откуда брать WorldContext?
-	// StorySummary      string                         `json:"storySummary"`      // Откуда брать StorySummary?
-	CoreStats  map[string]ParsedCoreStatDTO `json:"coreStats"`            // Parsed stats from setup
-	Characters []ParsedCharacterDTO         `json:"characters,omitempty"` // Parsed characters from setup (NEW)
+	// Parsed fields from Config/Setup:
+	Title            string                 `json:"title"`                     // Title (from Config)
+	ShortDescription string                 `json:"shortDescription"`          // Short description (from Config)
+	Genre            string                 `json:"genre"`                     // Genre (from Config)
+	Language         string                 `json:"language"`                  // Language (from Config)
+	PlayerName       string                 `json:"playerName"`                // Player name (from Config)
+	CoreStats        map[string]CoreStatDTO `json:"coreStats"`                 // Stats (from Setup)
+	Characters       []CharacterDTO         `json:"characters"`                // Characters (from Setup)
+	PreviewImageURL  *string                `json:"previewImageUrl,omitempty"` // Preview image URL
 
-	// Player Progress Info
-	HasPlayerProgress   bool           `json:"hasPlayerProgress"`
-	LastPlayedAt        *time.Time     `json:"lastPlayedAt,omitempty"`
-	CurrentSceneIndex   *int           `json:"currentSceneIndex,omitempty"`
-	CurrentPlayerStats  map[string]int `json:"currentPlayerStats,omitempty"`
-	CurrentSceneSummary *string        `json:"currentSceneSummary,omitempty"`
-}
-
-// ParsedCoreStatDTO represents core stat details extracted for the API response.
-// Includes the potentially enhanced description from the Setup.
-type ParsedCoreStatDTO struct {
-	Name          string `json:"name"`
-	Description   string `json:"description"`
-	InitialValue  int    `json:"initialValue"`
-	Min           int    `json:"min"`           // Game over condition boundary (usually 0)
-	Max           int    `json:"max"`           // Game over condition boundary (usually 100)
-	GameOverOnMin bool   `json:"gameOverOnMin"` // True if game over happens at min boundary
-	GameOverOnMax bool   `json:"gameOverOnMax"` // True if game over happens at max boundary
-	Icon          string `json:"icon,omitempty"`
+	// Progress information (SAVE LIST):
+	GameStates []GameStateSummaryDTO `json:"gameStates,omitempty"` // <<< NEW FIELD: List of user saves (TYPE FROM HANDLER)
 }
 
 // StoryBrowsingService defines methods for browsing and retrieving story details.
@@ -150,6 +153,7 @@ type storyBrowsingServiceImpl struct {
 	playerProgressRepo  interfaces.PlayerProgressRepository
 	playerGameStateRepo interfaces.PlayerGameStateRepository
 	likeRepo            interfaces.LikeRepository
+	imageReferenceRepo  interfaces.ImageReferenceRepository
 	authClient          interfaces.AuthServiceClient
 	logger              *zap.Logger
 }
@@ -161,6 +165,7 @@ func NewStoryBrowsingService(
 	playerProgressRepo interfaces.PlayerProgressRepository,
 	playerGameStateRepo interfaces.PlayerGameStateRepository,
 	likeRepo interfaces.LikeRepository,
+	imageReferenceRepo interfaces.ImageReferenceRepository,
 	authClient interfaces.AuthServiceClient,
 	logger *zap.Logger,
 ) StoryBrowsingService {
@@ -170,6 +175,7 @@ func NewStoryBrowsingService(
 		playerProgressRepo:  playerProgressRepo,
 		playerGameStateRepo: playerGameStateRepo,
 		likeRepo:            likeRepo,
+		imageReferenceRepo:  imageReferenceRepo,
 		authClient:          authClient,
 		logger:              logger.Named("StoryBrowsingService"),
 	}
@@ -356,182 +362,150 @@ func (s *storyBrowsingServiceImpl) fetchProgressExists(ctx context.Context, user
 
 // GetPublishedStoryDetails retrieves the details of a published story with parsed config/setup.
 func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context, storyID, userID uuid.UUID) (*PublishedStoryParsedDetailDTO, error) {
-	log := s.logger.With(zap.String("storyID", storyID.String()), zap.String("requestingUserID", userID.String()))
+	log := s.logger.With(zap.String("storyID", storyID.String()), zap.String("userID", userID.String()))
 	log.Info("GetPublishedStoryDetails called")
 
-	// 1. Get the core PublishedStory data
+	// 1. Получаем опубликованную историю
 	story, err := s.publishedRepo.GetByID(ctx, storyID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, sharedModels.ErrNotFound) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			log.Warn("Published story not found")
-			return nil, sharedModels.ErrNotFound
+			return nil, sharedModels.ErrNotFound // Используем стандартную ошибку
 		}
-		log.Error("Failed to get published story by ID", zap.Error(err))
-		return nil, sharedModels.ErrInternalServer
+		log.Error("Failed to get published story from repository", zap.Error(err))
+		return nil, sharedModels.ErrInternalServer // Используем стандартную ошибку
 	}
 
-	// 2. Check visibility
+	// 2. Проверяем доступ (если история не публичная и пользователь не автор)
 	isAuthor := story.UserID == userID
 	if !story.IsPublic && !isAuthor {
-		log.Warn("User does not have permission to view story details (private and not author)")
+		log.Warn("User forbidden to access private story")
 		return nil, sharedModels.ErrForbidden
 	}
 
-	// 3. Parse Config JSON
-	var novelConfig sharedModels.Config
-	if story.Config != nil {
-		if err := json.Unmarshal(story.Config, &novelConfig); err != nil {
-			log.Error("Failed to unmarshal story Config JSON", zap.Error(err))
-			return nil, sharedModels.ErrInternalServer
-		}
-	} else {
-		log.Error("Published story has nil Config JSON", zap.String("storyID", storyID.String()))
-		return nil, sharedModels.ErrInternalServer
-	}
-
-	// 4. Parse Setup JSON
-	var novelSetup sharedModels.NovelSetupContent
-	if story.Setup != nil {
-		if err := json.Unmarshal(story.Setup, &novelSetup); err != nil {
-			log.Error("Failed to unmarshal story Setup JSON", zap.Error(err))
-			// Может быть не критично? Зависит от того, что нужно клиенту.
-			// Пока считаем ошибкой сервера, если Setup есть, но не парсится.
-			return nil, sharedModels.ErrInternalServer
-		}
-	} else {
-		log.Warn("Published story has nil Setup JSON", zap.String("storyID", storyID.String()))
-		// Инициализируем пустой структурой, чтобы избежать nil pointer dereference ниже
-		novelSetup.CoreStatsDefinition = make(map[string]sharedModels.StatDefinition)
-	}
-
-	// 5. Fetch Author Name
-	authorName := "[unknown]"
-	if authorInfos, err := s.authClient.GetUsersInfo(ctx, []uuid.UUID{story.UserID}); err == nil {
+	// 3. Получаем имя автора
+	authorName := "Unknown Author"
+	authorInfos, errAuth := s.authClient.GetUsersInfo(ctx, []uuid.UUID{story.UserID})
+	if errAuth == nil {
 		if info, ok := authorInfos[story.UserID]; ok {
 			authorName = info.DisplayName
 		}
-	} else if err != nil {
-		s.logger.Warn("Failed to fetch author name for story detail", zap.Error(err))
+	} else {
+		log.Warn("Failed to get author info from auth service", zap.Error(errAuth))
+		// Продолжаем без имени автора
 	}
 
-	// 6. Check Player Progress
-	hasProgress := false
-	var lastPlayedAt *time.Time
-	var currentSceneIndex *int
-	var currentPlayerStats map[string]int
-	var currentSceneSummary *string
-	if userID != uuid.Nil {
-		progress, errProgress := s.playerProgressRepo.GetByUserIDAndStoryID(ctx, userID, storyID)
-		if errProgress == nil {
-			hasProgress = true
-			lastPlayedAt = &progress.UpdatedAt
-			currentPlayerStats = progress.CoreStats
-			currentSceneIndex = &progress.SceneIndex
-
-			// Логика получения currentSceneSummary остается прежней
-			if progress.CurrentStateHash != "" && progress.CurrentStateHash != sharedModels.InitialStateHash {
-				log.Debug("Player has progress, attempting to fetch current scene for summary", zap.String("stateHash", progress.CurrentStateHash))
-				currentScene, errScene := s.sceneRepo.FindByStoryAndHash(ctx, storyID, progress.CurrentStateHash)
-				if errScene == nil {
-					// <<< Парсим Content сцены и извлекаем sssf >>>
-					var sceneContent map[string]interface{}
-					if errUnmarshal := json.Unmarshal(currentScene.Content, &sceneContent); errUnmarshal == nil {
-						if sssfVal, ok := sceneContent["sssf"]; ok {
-							if sssfStr, okStr := sssfVal.(string); okStr {
-								currentSceneSummary = &sssfStr
-								log.Debug("Found sssf in current scene content")
-							} else {
-								log.Warn("'sssf' field found in scene content, but it's not a string", zap.Any("sssfValue", sssfVal))
-							}
-						} else {
-							log.Debug("'sssf' key not found in current scene content")
-						}
-					} else {
-						log.Warn("Failed to unmarshal current scene content to extract sssf", zap.String("sceneID", currentScene.ID.String()), zap.Error(errUnmarshal))
-					}
-				} else if !errors.Is(errScene, sharedModels.ErrNotFound) {
-					// Логгируем ошибку только если это не ErrNotFound (ожидаемая ситуация, если сцена еще не сгенерирована)
-					log.Error("Error fetching current scene by hash for summary", zap.Error(errScene))
-				}
-			}
-		} else if !errors.Is(errProgress, sharedModels.ErrNotFound) {
-			log.Error("Failed to get player progress for story detail", zap.Error(errProgress))
-		}
-	}
-
-	// 7. Check if Liked by user
+	// 4. Проверяем, лайкнул ли пользователь историю
 	isLiked := false
 	if userID != uuid.Nil {
 		liked, errLike := s.likeRepo.CheckLike(ctx, userID, storyID)
 		if errLike != nil {
-			// Логируем ошибку, но продолжаем, считая, что лайка нет
-			log.Error("Failed to check if user liked story for detail", zap.Error(errLike))
+			log.Error("Failed to check if user liked the story", zap.Error(errLike))
+			// Не фатально, продолжаем
 		} else {
 			isLiked = liked
 		}
 	}
 
-	// 8. Map Core Stats from Setup
-	parsedStats := make(map[string]ParsedCoreStatDTO)
-	if novelSetup.CoreStatsDefinition != nil {
-		for statName, definition := range novelSetup.CoreStatsDefinition {
-			parsedStats[statName] = ParsedCoreStatDTO{
-				Name:          statName,
-				Description:   definition.Description,
-				InitialValue:  definition.Initial,
-				Min:           0,
-				Max:           100,
-				GameOverOnMin: definition.GameOverConditions.Min,
-				GameOverOnMax: definition.GameOverConditions.Max,
-				Icon:          definition.Icon,
-			}
+	// 5. Парсим Config и Setup
+	var config sharedModels.Config
+	var setup sharedModels.NovelSetupContent
+	var coreStatsDTO map[string]CoreStatDTO
+	var charactersDTO []CharacterDTO
+
+	if story.Config != nil {
+		if err := json.Unmarshal(story.Config, &config); err != nil {
+			log.Error("Failed to unmarshal story Config JSON", zap.Error(err))
 		}
 	}
-
-	// 9. Map Characters from Setup
-	parsedCharacters := make([]ParsedCharacterDTO, 0)
-	if novelSetup.Characters != nil { // Check if Characters field exists in parsed setup
-		parsedCharacters = make([]ParsedCharacterDTO, 0, len(novelSetup.Characters))
-		for _, charSetup := range novelSetup.Characters {
-			parsedCharacters = append(parsedCharacters, ParsedCharacterDTO{
-				Name:           charSetup.Name,
-				Description:    charSetup.Description,
-				Personality:    charSetup.Personality,
-				ImageReference: charSetup.ImageRef,
+	parsedSetup, errSetup := s.GetParsedSetup(ctx, storyID)
+	if errSetup != nil {
+		log.Error("Failed to get/parse story Setup JSON", zap.Error(errSetup))
+	} else {
+		setup = *parsedSetup
+		coreStatsDTO = make(map[string]CoreStatDTO)
+		for key, statDef := range setup.CoreStatsDefinition {
+			coreStatsDTO[key] = CoreStatDTO{
+				Description:  statDef.Description,
+				InitialValue: statDef.Initial,
+				GameOverMin:  statDef.GameOverConditions.Min,
+				GameOverMax:  statDef.GameOverConditions.Max,
+				Icon:         statDef.Icon,
+			}
+		}
+		charactersDTO = make([]CharacterDTO, 0, len(setup.Characters))
+		for _, char := range setup.Characters {
+			charactersDTO = append(charactersDTO, CharacterDTO{
+				Name:           char.Name,
+				Description:    char.Description,
+				Personality:    char.Personality,
+				ImageReference: char.ImageRef,
 			})
 		}
 	}
 
-	// 10. Construct the result DTO
-	likesCount := int(story.LikesCount)
-
-	resultDTO := &PublishedStoryParsedDetailDTO{
-		ID:                  story.ID,
-		AuthorID:            story.UserID,
-		AuthorName:          authorName,
-		PublishedAt:         story.CreatedAt, // Using CreatedAt as PublishedAt
-		LikesCount:          likesCount,
-		IsLiked:             isLiked,
-		IsAuthor:            isAuthor,
-		IsPublic:            story.IsPublic,
-		IsAdultContent:      novelConfig.IsAdultContent, // From Config
-		Status:              string(story.Status),
-		Title:               novelConfig.Title,            // From Config
-		ShortDescription:    novelConfig.ShortDescription, // From Config
-		Genre:               novelConfig.Genre,            // From Config
-		Language:            novelConfig.Language,         // From Config
-		PlayerName:          novelConfig.PlayerName,       // From Config
-		CoreStats:           parsedStats,                  // From Setup
-		Characters:          parsedCharacters,             // Assign parsed characters
-		HasPlayerProgress:   hasProgress,
-		LastPlayedAt:        lastPlayedAt,
-		CurrentSceneIndex:   currentSceneIndex,
-		CurrentPlayerStats:  currentPlayerStats,
-		CurrentSceneSummary: currentSceneSummary,
+	// 6. Получаем URL превью-картинки
+	previewRef := fmt.Sprintf("history_preview_%s", story.ID.String())
+	var previewURL *string
+	if s.imageReferenceRepo != nil {
+		url, errPreview := s.imageReferenceRepo.GetImageURLByReference(ctx, previewRef)
+		if errPreview != nil && !errors.Is(errPreview, sharedModels.ErrNotFound) {
+			log.Error("Failed to get preview image URL", zap.String("ref", previewRef), zap.Error(errPreview))
+		} else if errors.Is(errPreview, sharedModels.ErrNotFound) {
+			log.Debug("Preview image not found for story", zap.String("ref", previewRef))
+		} else {
+			previewURL = &url
+		}
+	} else {
+		log.Warn("imageReferenceRepo is nil in storyBrowsingServiceImpl, cannot fetch preview URL")
 	}
 
-	log.Info("Successfully retrieved published story details with parsed config/setup")
-	return resultDTO, nil
+	// 7. Получаем список состояний игры (сохранений) для пользователя
+	gameStates := make([]GameStateSummaryDTO, 0)
+	if userID != uuid.Nil {
+		playerStates, errStates := s.playerGameStateRepo.ListByPlayerAndStory(ctx, userID, storyID)
+		if errStates != nil {
+			log.Error("Failed to get player game states for story details", zap.Error(errStates))
+		} else {
+			for _, gs := range playerStates {
+				if gs != nil {
+					gameStates = append(gameStates, GameStateSummaryDTO{
+						ID:             gs.ID,
+						LastActivityAt: gs.LastActivityAt,
+					})
+				}
+			}
+			sort.Slice(gameStates, func(i, j int) bool {
+				return gameStates[i].LastActivityAt.After(gameStates[j].LastActivityAt)
+			})
+		}
+	}
+
+	// 8. Формируем финальный DTO
+	dto := &PublishedStoryParsedDetailDTO{
+		ID:               story.ID,
+		AuthorID:         story.UserID,
+		AuthorName:       authorName,
+		PublishedAt:      story.CreatedAt,
+		LikesCount:       int(story.LikesCount),
+		IsLiked:          isLiked,
+		IsAuthor:         isAuthor,
+		IsPublic:         story.IsPublic,
+		IsAdultContent:   config.IsAdultContent,
+		Status:           string(story.Status),
+		Title:            config.Title,
+		ShortDescription: config.ShortDescription,
+		Genre:            config.Genre,
+		Language:         config.Language,
+		PlayerName:       config.PlayerName,
+		CoreStats:        coreStatsDTO,
+		Characters:       charactersDTO,
+		PreviewImageURL:  previewURL,
+		GameStates:       gameStates,
+	}
+
+	log.Info("Published story details retrieved successfully")
+	return dto, nil
 }
 
 // ListUserPublishedStories retrieves a paginated list of PublishedStory for a specific user ID.
@@ -692,7 +666,7 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetailsWithProgress(ctx cont
 	// 5. Check if Liked by user
 	isLiked := false
 	if userID != uuid.Nil {
-		liked, errLike := s.likeRepo.CheckLike(ctx, userID, publishedStoryID) // Исправленный вызов
+		liked, errLike := s.likeRepo.CheckLike(ctx, userID, publishedStoryID)
 		if errLike != nil {
 			s.logger.Error("Failed to check like for story summary", zap.Error(errLike))
 		} else {
@@ -709,17 +683,17 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetailsWithProgress(ctx cont
 	if story.Description != nil {
 		description = *story.Description
 	}
-	likesCount = int(story.LikesCount) // Convert int64 to int
+	likesCount = int(story.LikesCount)
 
 	resultDTO := &PublishedStorySummaryDTO{
 		ID:                story.ID,
-		Title:             title,       // Use dereferenced value
-		ShortDescription:  description, // Use dereferenced value
+		Title:             title,
+		ShortDescription:  description,
 		AuthorID:          story.UserID,
 		AuthorName:        authorName,
-		PublishedAt:       story.CreatedAt, // Use CreatedAt as PublishedAt for now
+		PublishedAt:       story.CreatedAt,
 		IsAdultContent:    story.IsAdultContent,
-		LikesCount:        likesCount, // Use converted value
+		LikesCount:        likesCount,
 		IsLiked:           isLiked,
 		HasPlayerProgress: hasProgress,
 		IsPublic:          story.IsPublic,

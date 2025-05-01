@@ -12,9 +12,9 @@ import (
 //
 //go:generate mockery --name PlayerGameStateRepository --output ./mocks --outpkg mocks --case=underscore
 type PlayerGameStateRepository interface {
-	// GetByPlayerAndStory retrieves the current game state for a specific player and story.
-	// Returns models.ErrNotFound if no active game state exists.
-	GetByPlayerAndStory(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) (*models.PlayerGameState, error)
+	// ListByPlayerAndStory retrieves all game states for a specific player and story.
+	// Returns an empty slice if no game states exist.
+	ListByPlayerAndStory(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) ([]*models.PlayerGameState, error)
 
 	// GetByID retrieves a player game state by its unique ID.
 	// Returns models.ErrNotFound if no game state with the given ID exists.
@@ -27,16 +27,19 @@ type PlayerGameStateRepository interface {
 	Save(ctx context.Context, state *models.PlayerGameState) (uuid.UUID, error)
 
 	// DeleteByPlayerAndStory removes the game state record for a specific player and story.
-	// This is typically used when a player explicitly "resets" their progress for a story.
-	// Returns nil if the record was deleted or did not exist.
+	// DEPRECATED: Prefer DeleteByID for specific save slots.
+	// This might still be useful for admin cleanup or specific scenarios.
 	DeleteByPlayerAndStory(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) error
 
-	// CheckGameStateExistsForStories checks if active player game states exist for a given player and a list of story IDs.
+	// DeleteByID removes a specific game state record by its ID.
+	DeleteByID(ctx context.Context, gameStateID uuid.UUID) error
+
+	// CheckGameStateExistsForStories checks if *any* player game states exist for a given player and a list of story IDs.
 	// Returns a map where keys are story IDs and values are booleans indicating game state existence.
-	// Useful for UI indications (e.g., "Continue Playing").
+	// Useful for UI indications (e.g., "Continue Playing" button visibility).
 	CheckGameStateExistsForStories(ctx context.Context, playerID uuid.UUID, storyIDs []uuid.UUID) (map[uuid.UUID]bool, error)
 
-	// ListByStoryID получает все состояния игры для указанной истории.
+	// ListByStoryID получает все состояния игры для указанной истории (для админ целей?).
 	ListByStoryID(ctx context.Context, publishedStoryID uuid.UUID) ([]models.PlayerGameState, error)
 
 	// FindAndMarkStaleGeneratingAsError находит состояния игры игрока, которые 'зависли'

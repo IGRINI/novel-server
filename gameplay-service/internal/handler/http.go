@@ -139,9 +139,10 @@ func (h *GameplayHandler) RegisterRoutes(router gin.IRouter) {
 		publishedGroup.GET("/me", h.listMyPublishedStories)
 		publishedGroup.GET("/public", h.listPublicPublishedStories)
 		publishedGroup.GET("/:id", h.getPublishedStoryDetails)
-		publishedGroup.GET("/:id/scene", h.getPublishedStoryScene)
-		publishedGroup.POST("/:id/choice", h.makeChoice)
-		publishedGroup.DELETE("/:id/progress", h.deletePlayerProgress)
+		publishedGroup.GET("/:story_id/gamestates", h.listPlayerGameStates)
+		publishedGroup.GET("/gamestates/:game_state_id/scene", h.getPublishedStoryScene)
+		publishedGroup.POST("/gamestates/:game_state_id/choice", h.makeChoice)
+		publishedGroup.DELETE("/:story_id/gamestates/:game_state_id", h.deletePlayerGameStateHandler)
 		publishedGroup.POST("/:id/like", h.likeStory)
 		publishedGroup.DELETE("/:id/like", h.unlikeStory)
 		publishedGroup.GET("/me/likes", h.listLikedStories)
@@ -470,4 +471,79 @@ func (h *GameplayHandler) getActiveStoryCountInternal(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"count": count,
 	})
+}
+
+// <<< ИЗМЕНЕНО: Обработчик для получения списка состояний игры (сохранений) >>>
+func (h *GameplayHandler) listPlayerGameStates(c *gin.Context) {
+	storyIDStr := c.Param("story_id")
+	storyID, err := uuid.Parse(storyIDStr)
+	if err != nil {
+		h.logger.Warn("Invalid story ID format for list game states", zap.String("storyID", storyIDStr), zap.Error(err))
+		c.JSON(http.StatusBadRequest, APIError{Message: "Invalid story ID format"})
+		return
+	}
+
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		handleServiceError(c, sharedModels.ErrUnauthorized, h.logger)
+		return
+	}
+
+	h.logger.Info("listPlayerGameStates called", zap.String("storyID", storyID.String()), zap.String("userID", userID.String()))
+
+	// Вызываем метод сервиса
+	gameStates, err := h.service.ListGameStates(c.Request.Context(), userID, storyID)
+	if err != nil {
+		// Обрабатываем ошибки от сервиса
+		handleServiceError(c, err, h.logger)
+		return
+	}
+
+	// Возвращаем результат напрямую от сервиса
+	if gameStates == nil { // Гарантируем пустой массив, а не null
+		gameStates = make([]*sharedModels.PlayerGameState, 0)
+	}
+
+	c.JSON(http.StatusOK, gameStates) // Возвращаем []*sharedModels.PlayerGameState
+}
+
+// <<< ИЗМЕНЕНО: Обработчик для удаления конкретного состояния игры (save slot) >>>
+func (h *GameplayHandler) deletePlayerGameStateHandler(c *gin.Context) {
+	storyIDStr := c.Param("story_id")
+	gameStateIDStr := c.Param("game_state_id")
+
+	// Проверяем story_id, хотя он напрямую не используется в методе сервиса DeletePlayerGameState,
+	// но он важен для структуры URL
+	_, err := uuid.Parse(storyIDStr)
+	if err != nil {
+		h.logger.Warn("Invalid story ID format in delete game state URL", zap.String("storyID", storyIDStr), zap.Error(err))
+		c.JSON(http.StatusBadRequest, APIError{Message: "Invalid story ID format in URL"})
+		return
+	}
+
+	gameStateID, err := uuid.Parse(gameStateIDStr)
+	if err != nil {
+		h.logger.Warn("Invalid game state ID format for delete game state", zap.String("gameStateID", gameStateIDStr), zap.Error(err))
+		c.JSON(http.StatusBadRequest, APIError{Message: "Invalid game state ID format"})
+		return
+	}
+
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		handleServiceError(c, sharedModels.ErrUnauthorized, h.logger)
+		return
+	}
+
+	h.logger.Info("deletePlayerGameStateHandler called", zap.String("storyID", storyIDStr), zap.String("gameStateID", gameStateID.String()), zap.String("userID", userID.String()))
+
+	// Вызываем метод сервиса для удаления КОНКРЕТНОГО game state
+	err = h.service.DeletePlayerGameState(c.Request.Context(), userID, gameStateID)
+	if err != nil {
+		// Обрабатываем ошибки от сервиса
+		handleServiceError(c, err, h.logger)
+		return
+	}
+
+	// Отправляем успешный ответ
+	c.Status(http.StatusNoContent) // 204 No Content
 }

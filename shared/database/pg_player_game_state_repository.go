@@ -275,7 +275,6 @@ func (r *pgPlayerGameStateRepository) Delete(ctx context.Context, playerID, publ
 // This is typically used when a player explicitly "resets" their progress for a story.
 // Returns nil if the record was deleted or did not exist.
 func (r *pgPlayerGameStateRepository) DeleteByPlayerAndStory(ctx context.Context, playerID, publishedStoryID uuid.UUID) error {
-	// Используем ту же логику, что и в Delete, но с правильной сигнатурой.
 	query := `DELETE FROM player_game_states WHERE player_id = $1 AND published_story_id = $2`
 	logFields := []zap.Field{
 		zap.String("playerID", playerID.String()),
@@ -450,4 +449,80 @@ func (r *pgPlayerGameStateRepository) CheckGameStateExistsForStories(ctx context
 
 	r.logger.Debug("Game state existence check completed", logFields...)
 	return existenceMap, nil
+}
+
+// ListByPlayerAndStory retrieves all game states for a specific player and story.
+// Returns an empty slice if no game states exist.
+func (r *pgPlayerGameStateRepository) ListByPlayerAndStory(ctx context.Context, playerID, publishedStoryID uuid.UUID) ([]*models.PlayerGameState, error) {
+	query := `
+        SELECT id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at
+        FROM player_game_states
+        WHERE player_id = $1 AND published_story_id = $2
+        ORDER BY last_activity_at DESC -- Сортируем по последней активности (или started_at?)
+    `
+	states := make([]*models.PlayerGameState, 0)
+	logFields := []zap.Field{
+		zap.String("playerID", playerID.String()),
+		zap.String("publishedStoryID", publishedStoryID.String()),
+	}
+	r.logger.Debug("Listing player game states by player and story", logFields...)
+
+	rows, err := r.db.Query(ctx, query, playerID, publishedStoryID)
+	if err != nil {
+		r.logger.Error("Failed to query player game states", append(logFields, zap.Error(err))...)
+		return nil, fmt.Errorf("ошибка получения списка состояний игры: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		state := &models.PlayerGameState{}
+		err := rows.Scan(
+			&state.ID,
+			&state.PlayerID,
+			&state.PublishedStoryID,
+			&state.CurrentSceneID,
+			&state.PlayerProgressID,
+			&state.PlayerStatus,
+			&state.EndingText,
+			&state.ErrorDetails,
+			&state.StartedAt,
+			&state.LastActivityAt,
+			&state.CompletedAt,
+		)
+		if err != nil {
+			r.logger.Error("Failed to scan player game state row", append(logFields, zap.Error(err))...)
+			return nil, fmt.Errorf("ошибка сканирования данных состояния игры: %w", err)
+		}
+		states = append(states, state)
+	}
+
+	if err := rows.Err(); err != nil {
+		r.logger.Error("Error iterating over player game state rows", append(logFields, zap.Error(err))...)
+		return nil, fmt.Errorf("ошибка при итерации результатов состояний игры: %w", err)
+	}
+
+	r.logger.Debug("Player game states listed successfully", append(logFields, zap.Int("count", len(states)))...)
+	return states, nil
+}
+
+// DeleteByID removes a specific game state record by its ID.
+func (r *pgPlayerGameStateRepository) DeleteByID(ctx context.Context, gameStateID uuid.UUID) error {
+	query := `DELETE FROM player_game_states WHERE id = $1`
+	logFields := []zap.Field{zap.String("gameStateID", gameStateID.String())}
+	r.logger.Debug("Deleting player game state by ID", logFields...)
+
+	commandTag, err := r.db.Exec(ctx, query, gameStateID)
+	if err != nil {
+		r.logger.Error("Failed to delete player game state by ID", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка удаления состояния игры по ID: %w", err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("No player game state found to delete by ID", logFields...)
+		// Если запись не найдена по ID, это явная ошибка NotFound
+		return models.ErrNotFound
+	}
+
+	r.logger.Info("Player game state deleted successfully by ID", logFields...)
+	return nil
 }

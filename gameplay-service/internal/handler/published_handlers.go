@@ -184,27 +184,29 @@ func (h *GameplayHandler) listPublicPublishedStories(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// getPublishedStoryScene получает текущую игровую сцену для опубликованной истории
-// и возвращает ее в структурированном виде для клиента.
+// GetStoryScene получает текущую игровую сцену для ОПРЕДЕЛЕННОГО СОСТОЯНИЯ ИГРЫ.
+// Теперь принимает gameStateId вместо storyId.
 func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
-	userID, err := getUserIDFromContext(c) // Используем getUserIDFromContext из http.go
+	gameStateIdStr := c.Param("game_state_id") // <<< ИЗМЕНЕНО: Получаем game_state_id
+	gameStateID, err := uuid.Parse(gameStateIdStr)
 	if err != nil {
-		// Ошибка уже обработана и ответ отправлен в getUserIDFromContext
+		h.logger.Warn("Invalid game state ID format in getPublishedStoryScene", zap.String("gameStateId", gameStateIdStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid game state ID format", sharedModels.ErrBadRequest), h.logger)
 		return
 	}
 
-	idStr := c.Param("id")
-	storyID, err := uuid.Parse(idStr)
+	// <<< ДОБАВЛЕНО: Получаем userID для проверки прав (хотя сам сервис может это делать) >>>
+	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		h.logger.Warn("Invalid story ID format in getPublishedStoryScene", zap.String("id", idStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		// Ошибка уже обработана
 		return
 	}
 
-	log := h.logger.With(zap.String("storyID", storyID.String()), zap.String("userID", userID.String()))
+	log := h.logger.With(zap.String("gameStateID", gameStateID.String()), zap.Stringer("userID", userID)) // Логируем gameStateID и userID
 	log.Info("getPublishedStoryScene called")
 
-	scene, err := h.service.GetStoryScene(c.Request.Context(), userID, storyID)
+	// <<< ИЗМЕНЕНО: Вызываем GetStoryScene с userID и gameStateID >>>
+	scene, err := h.service.GetStoryScene(c.Request.Context(), userID, gameStateID)
 	if err != nil {
 		log.Error("Error calling GetStoryScene service", zap.Error(err))
 		handleServiceError(c, err, h.logger)
@@ -224,107 +226,45 @@ func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
 		return
 	}
 
-	// Получаем прогресс игрока. Теперь GetPlayerProgress создает его, если он не существует.
-	playerProgress, err := h.service.GetPlayerProgress(c.Request.Context(), userID, storyID)
+	// <<< ИЗМЕНЕНО: Получаем прогресс по userID и gameStateID >>>
+	playerProgress, err := h.service.GetPlayerProgress(c.Request.Context(), userID, gameStateID)
 	if err != nil {
-		// Ошибка здесь означает реальную проблему (не просто отсутствие прогресса)
-		h.logger.Error("Failed to get or create player progress", zap.String("storyID", storyID.String()), zap.String("userID", userID.String()), zap.Error(err))
+		// Ошибка здесь означает реальную проблему
+		h.logger.Error("Failed to get player progress for game state", zap.String("gameStateID", gameStateID.String()), zap.Error(err))
 		handleServiceError(c, fmt.Errorf("internal error: failed to get player progress data: %w", err), h.logger)
 		return
-	} // playerProgress теперь не должен быть nil, если нет ошибки
+	}
 
-	// Формируем DTO ответа
+	// Формируем DTO ответа (используем GameSceneResponseDTO из dto.go)
 	responseDTO := GameSceneResponseDTO{
 		ID:               scene.ID,
-		PublishedStoryID: scene.PublishedStoryID,
-		// Type:             sceneType, // <<< УБИРАЕМ ПОЛЕ Type
+		PublishedStoryID: scene.PublishedStoryID, // Оставляем PublishedStoryID для контекста на клиенте
+		GameStateID:      gameStateID,            // <<< ИЗМЕНЕНО/ДОБАВЛЕНО: Передаем ID состояния игры (убедитесь, что поле есть в DTO)
 		// CurrentStats будет заполнено ниже
 	}
 
-	// <<< НАЧАЛО: Заполнение CurrentStats >>>
+	// Заполнение CurrentStats
 	responseDTO.CurrentStats = make(map[string]int)
-	// Теперь playerProgress гарантированно не nil (если не было ошибки выше)
-	if playerProgress.CoreStats != nil { // Проверяем на всякий случай, что карта статов не nil
-		// Копируем статы из прогресса
-		for statName, statValue := range playerProgress.CoreStats { // Используем playerProgress.CoreStats
+	if playerProgress != nil && playerProgress.CoreStats != nil {
+		for statName, statValue := range playerProgress.CoreStats {
 			responseDTO.CurrentStats[statName] = statValue
 		}
-	} else {
-		// Эта ситуация не должна возникать, если GetPlayerProgress отработал корректно
-		h.logger.Error("Player progress CoreStats map is nil after GetPlayerProgress", zap.String("storyID", storyID.String()), zap.String("userID", userID.String()))
-		// Возвращаем пустую мапу или ошибку? Пока оставляем пустую.
-	}
-	// <<< КОНЕЦ: Заполнение CurrentStats >>>
-
-	// Определяем тип сцены по наличию ключей и парсим содержимое
-	if etJSON, ok := rawContent["et"]; ok {
-		// --- Тип: game_over ---
-		var endingText string
-		if err := json.Unmarshal(etJSON, &endingText); err == nil {
-			responseDTO.EndingText = &endingText
-		} else {
-			log.Error("Failed to unmarshal game_over 'et' field", zap.String("sceneID", scene.ID.String()), zap.Error(err))
-			handleServiceError(c, fmt.Errorf("internal error: failed to parse game over scene data"), h.logger)
-			return
-		}
-		log.Debug("Scene identified as: game_over")
-
-	} else if npdJSON, okNpd := rawContent["npd"]; okNpd {
-		// --- Тип: continuation ---
-		// Должны присутствовать npd, etp, csr. 'ch' тоже должен быть.
-		etpJSON, okEtp := rawContent["etp"]
-		csrJSON, okCsr := rawContent["csr"]
-		chJSON, okCh := rawContent["ch"]
-
-		if !okEtp || !okCsr || !okCh {
-			log.Error("Missing required fields for 'continuation' type scene (etp, csr, or ch)", zap.String("sceneID", scene.ID.String()), zap.Bool("okEtp", okEtp), zap.Bool("okCsr", okCsr), zap.Bool("okCh", okCh))
-			handleServiceError(c, fmt.Errorf("internal error: incomplete continuation scene data"), h.logger)
-			return
-		}
-
-		log.Debug("Scene identified as: continuation")
-
-		// Парсим блок 'ch' (обязателен для continuation)
-		parseChoicesBlock(chJSON, &responseDTO, scene.ID.String(), log) // Выносим парсинг 'ch' в helper
-
-		// Парсим данные для continuation
-		continuationData := ContinuationDTO{}
-		parseError := false
-		if err := json.Unmarshal(npdJSON, &continuationData.NewPlayerDescription); err != nil {
-			parseError = true
-			log.Error("Failed to parse 'npd' for continuation", zap.String("sceneID", scene.ID.String()), zap.Error(err))
-		}
-		if err := json.Unmarshal(etpJSON, &continuationData.EndingTextPrevious); err != nil {
-			parseError = true
-			log.Error("Failed to parse 'etp' for continuation", zap.String("sceneID", scene.ID.String()), zap.Error(err))
-		}
-		if err := json.Unmarshal(csrJSON, &continuationData.CoreStatsReset); err != nil {
-			parseError = true
-			log.Error("Failed to parse 'csr' for continuation", zap.String("sceneID", scene.ID.String()), zap.Error(err))
-		}
-
-		if !parseError {
-			responseDTO.Continuation = &continuationData
-		} else {
-			log.Error("Failed to parse one or more required fields for 'continuation' type scene", zap.String("sceneID", scene.ID.String()))
-			handleServiceError(c, fmt.Errorf("internal error: failed to parse continuation scene data fields"), h.logger)
-			return
-		}
-
-	} else if chJSON, ok := rawContent["ch"]; ok {
-		// --- Тип: choices (по умолчанию, если есть 'ch' и не continuation/game_over) ---
-		log.Debug("Scene identified as: choices")
-		parseChoicesBlock(chJSON, &responseDTO, scene.ID.String(), log) // Используем helper
-
-	} else {
-		// --- Неизвестный тип или пустой контент ---
-		log.Error("Could not determine scene type from content keys", zap.String("sceneID", scene.ID.String()))
-		handleServiceError(c, fmt.Errorf("internal error: unknown or empty scene content structure"), h.logger)
-		return
 	}
 
-	log.Debug("Final response DTO before sending", zap.Any("responseDTO", responseDTO)) // <<< Добавляем лог DTO
-	log.Info("Successfully fetched and formatted story scene", zap.String("sceneID", scene.ID.String()))
+	// Парсим и добавляем блоки выборов ('ch') или данные продолжения/концовки
+	if chJSON, ok := rawContent["ch"]; ok {
+		parseChoicesBlock(chJSON, &responseDTO, scene.ID.String(), log)
+	} else if _, ok := rawContent["et"]; ok { // etJSON -> _
+		// parseEndingBlock(etJSON, &responseDTO, log) // <<< ЗАКОММЕНТИРОВАНО: Функция не определена
+		log.Warn("Ending block 'et' found but parseEndingBlock is commented out", zap.String("sceneID", scene.ID.String())) // Добавим лог
+	} else if _, ok := rawContent["npd"]; ok { // npdJSON -> _
+		// parseContinuationBlock(rawContent, &responseDTO, log) // <<< ЗАКОММЕНТИРОВАНО: Функция не определена
+		log.Warn("Continuation block 'npd' found but parseContinuationBlock is commented out", zap.String("sceneID", scene.ID.String())) // Добавим лог
+	} else {
+		log.Warn("Scene content does not match expected types (choices, ending, continuation)", zap.String("sceneID", scene.ID.String()))
+	}
+
+	log.Info("Successfully prepared scene response")
 	c.JSON(http.StatusOK, responseDTO)
 }
 
@@ -405,103 +345,42 @@ func parseChoicesBlock(chJSON json.RawMessage, responseDTO *GameSceneResponseDTO
 	}
 }
 
-// makeChoice обрабатывает выбор игрока в опубликованной истории.
+// makeChoice обрабатывает выбор игрока для ОПРЕДЕЛЕННОГО СОСТОЯНИЯ ИГРЫ.
 func (h *GameplayHandler) makeChoice(c *gin.Context) {
-	userID, err := getUserIDFromContext(c) // <<< Меняем 'ok' на 'err'
-	if err != nil {                        // <<< Проверяем 'err != nil'
-		// Ошибка уже обработана в getUserIDFromContext
-		return
-	}
-
-	idStr := c.Param("id")
-	id, err := uuid.Parse(idStr)
+	gameStateIdStr := c.Param("game_state_id") // <<< ИЗМЕНЕНО: Получаем game_state_id
+	gameStateID, err := uuid.Parse(gameStateIdStr)
 	if err != nil {
-		h.logger.Warn("Invalid story ID format in makeChoice", zap.String("id", idStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		h.logger.Warn("Invalid game state ID format in makeChoice", zap.String("gameStateId", gameStateIdStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid game state ID format", sharedModels.ErrBadRequest), h.logger)
 		return
 	}
 
 	var req MakeChoicesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		h.logger.Warn("Invalid request body for makeChoice", zap.Stringer("userID", userID), zap.String("storyID", id.String()), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid request body: %v", sharedModels.ErrBadRequest, err), h.logger)
+		h.logger.Warn("Invalid request body for makeChoice", zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid request body: %s", sharedModels.ErrBadRequest, err.Error()), h.logger)
 		return
 	}
 
-	log := h.logger.With(
-		zap.Stringer("userID", userID),
-		zap.String("storyID", id.String()),
-		zap.Any("selectedOptionIndices", req.SelectedOptionIndices),
-	)
-	log.Info("Player making choices (batch)")
-
-	err = h.service.MakeChoice(c.Request.Context(), userID, id, req.SelectedOptionIndices)
+	// <<< ДОБАВЛЕНО: Получаем userID для проверки прав >>>
+	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		// Логируем только если это НЕ стандартные ожидаемые ошибки
-		if !errors.Is(err, sharedModels.ErrNotFound) &&
-			!errors.Is(err, sharedModels.ErrBadRequest) && // BadRequest может быть при невалидном выборе
-			!errors.Is(err, service.ErrStoryNotFound) &&
-			!errors.Is(err, service.ErrSceneNotFound) &&
-			!errors.Is(err, service.ErrInvalidChoiceIndex) && // Добавим ошибку неверного индекса
-			!errors.Is(err, service.ErrNoChoicesAvailable) && // Добавим ошибку отсутствия выбора
-			!errors.Is(err, sharedModels.ErrSceneNeedsGeneration) { // Если сцена требует генерации
-			log.Error("Error making choice (unhandled)", zap.Error(err))
-		}
-		handleServiceError(c, err, h.logger) // Используем общий обработчик
 		return
 	}
 
-	log.Info("Player choice processed successfully")
+	log := h.logger.With(zap.String("gameStateID", gameStateID.String()), zap.Stringer("userID", userID), zap.Any("selectedIndices", req.SelectedOptionIndices))
+	log.Info("makeChoice called")
 
-	// После успешного выбора, новая сцена будет доступна через getPublishedStoryScene
-	// Возвращаем 204 No Content, т.к. результат нужно запрашивать отдельно
-	c.Status(http.StatusNoContent)
-}
-
-// deletePlayerProgress удаляет прогресс игрока для опубликованной истории.
-func (h *GameplayHandler) deletePlayerProgress(c *gin.Context) {
-	userID, err := getUserIDFromContext(c) // <<< Меняем 'ok' на 'err'
-	if err != nil {                        // <<< Проверяем 'err != nil'
-		// Ошибка уже обработана в getUserIDFromContext
-		return
-	}
-
-	idStr := c.Param("id")
-	id, err := uuid.Parse(idStr)
+	// <<< ИЗМЕНЕНО: Вызываем MakeChoice с userID и gameStateID >>>
+	err = h.service.MakeChoice(c.Request.Context(), userID, gameStateID, req.SelectedOptionIndices)
 	if err != nil {
-		h.logger.Warn("Invalid story ID format in deletePlayerProgress", zap.String("id", idStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
-		return
-	}
-
-	log := h.logger.With(zap.String("storyID", id.String()))
-	if userID != uuid.Nil {
-		log = log.With(zap.String("userID", userID.String()))
-	}
-	log.Info("Deleting player progress")
-
-	// Call the correct service method to delete the player game state
-	err = h.service.DeletePlayerGameState(c.Request.Context(), userID, id)
-	if err != nil {
-		// Логируем только если это не ErrNotFound (ожидаемая ошибка, если прогресса нет)
-		if !errors.Is(err, service.ErrPlayerProgressNotFound) && !errors.Is(err, sharedModels.ErrNotFound) {
-			log.Error("Error deleting player progress", zap.Error(err))
-		}
-		// Можно вернуть 204 даже при ErrNotFound, т.к. итоговое состояние - прогресса нет.
-		// Но если хотим четко сигнализировать, что прогресса и не было, используем handleServiceError
-		if errors.Is(err, service.ErrPlayerProgressNotFound) || errors.Is(err, sharedModels.ErrNotFound) {
-			// Если прогресса не найдено, можно просто вернуть 204, так как цель достигнута
-			log.Info("Player progress not found, deletion skipped (considered success)")
-			c.Status(http.StatusNoContent)
-			return
-		}
-		// Для других ошибок используем общий обработчик
+		log.Error("Error calling MakeChoice service", zap.Error(err))
 		handleServiceError(c, err, h.logger)
 		return
 	}
 
-	log.Info("Player progress deleted successfully")
-	c.Status(http.StatusNoContent)
+	log.Info("Choice processed successfully")
+	c.Status(http.StatusOK) // Успех, возвращаем 200 OK без тела
 }
 
 // likeStory обрабатывает запрос на постановку лайка опубликованной истории.
@@ -827,4 +706,46 @@ func (h *GameplayHandler) listStoriesWithProgress(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// --- Вспомогательные функции для опубликованных историй --- //
+// --- НОВЫЕ ОБРАБОТЧИКИ ДЛЯ УПРАВЛЕНИЯ СОСТОЯНИЯМИ ИГРЫ ---
+
+// listGameStates возвращает список состояний игры (слотов сохранений) для пользователя и истории.
+// GET /published-stories/{storyId}/gamestates
+func (h *GameplayHandler) listGameStates(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		return // Ошибка уже обработана
+	}
+
+	storyIdStr := c.Param("storyId") // Получаем ID истории из пути
+	storyID, err := uuid.Parse(storyIdStr)
+	if err != nil {
+		h.logger.Warn("Invalid story ID format in listGameStates", zap.String("storyId", storyIdStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		return
+	}
+
+	log := h.logger.With(zap.Stringer("userID", userID), zap.Stringer("storyID", storyID))
+	log.Info("listGameStates called")
+
+	// Вызываем метод сервиса
+	gameStates, err := h.service.ListGameStates(c.Request.Context(), userID, storyID)
+	if err != nil {
+		log.Error("Error calling ListGameStates service", zap.Error(err))
+		handleServiceError(c, err, h.logger) // Обрабатываем стандартные ошибки
+		return
+	}
+
+	// TODO: Возможно, нужно преобразовать []*sharedModels.PlayerGameState в DTO?
+	// Пока возвращаем как есть.
+	response := DataResponse{ // Используем DataResponse, если нет пагинации
+		Data: gameStates,
+	}
+
+	log.Info("Game states listed successfully", zap.Int("count", len(gameStates)))
+	c.JSON(http.StatusOK, response)
+}
+
+// <<< ДОБАВЛЕНО: Простое определение DataResponse >>>
+type DataResponse struct {
+	Data interface{} `json:"data"`
+}

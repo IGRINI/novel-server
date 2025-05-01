@@ -489,89 +489,81 @@
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 *   **`GET /api/published-stories/:id`**
-    *   Описание: Получение детальной информации об **одной** опубликованной истории с распарсенными полями конфига/сетапа.
+    *   Описание: Получение детальной информации об **одной** опубликованной истории с распарсенными полями конфига/сетапа и списком сохранений текущего пользователя.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
     *   Ответ при успехе (`200 OK`): Объект `PublishedStoryParsedDetailDTO`.
         ```json
         {
-          \"id\": \"uuid-string\", // ID истории
-          \"authorId\": \"uuid-string\", // ID Автора
-          \"authorName\": \"string\", // Имя автора
-          \"publishedAt\": \"timestamp-string\", // Дата публикации (фактически время создания)
-          \"likesCount\": number, // Количество лайков
-          \"isLiked\": boolean, // Лайкнул ли историю текущий пользователь
-          \"isAuthor\": boolean, // Является ли текущий пользователь автором истории
-          \"isPublic\": boolean, // Является ли история публичной
-          \"isAdultContent\": boolean, // Флаг 18+ (из конфига)
-          \"status\": \"ready | completed | error | setup_pending | generating_scene\", // Текущий статус истории
-          // Распарсенные поля из Config/Setup:
-          \"title\": \"string\", // Название (из Config)
-          \"shortDescription\": \"string\", // Краткое описание (из Config)
-          // \"franchise\": \"string | null\", // Поле пока не извлекается
-          \"genre\": \"string\", // Жанр (из Config)
-          \"language\": \"string\", // Язык (из Config)
-          \"playerName\": \"string\", // Имя игрока (из Config)
-          // \"playerDescription\": \"string\", // Поле пока не извлекается
-          // \"worldContext\": \"string\", // Поле пока не извлекается
-          // \"storySummary\": \"string\", // Поле пока не извлекается
-          \"coreStats\": { // Статы (из Setup)
-            \"statName1\": {
-              \"description\": \"string\",
-              \"initialValue\": number,
-              \"min\": number, // Минимальное значение (0 - нет)
-              \"max\": number, // Максимальное значение (0 - нет)
-              \"gameOverMin\": boolean, // Game Over при достижении Min?
-              \"gameOverMax\": boolean, // Game Over при достижении Max?
-              \"icon\": \"Sword\" // <<< ДОБАВЛЕНО: Иконка
-            },
-            \"statName2\": { 
-              \"description\": \"...\",
-              \"initialValue\": 0,
-              \"min\": 0,
-              \"max\": 0,
-              \"gameOverMin\": false,
-              \"gameOverMax\": false,
-              \"icon\": \"Crown\" // <<< ДОБАВЛЕНО: Иконка
-            }
-          },
-          \"characters\": [ // Персонажи (из Setup)
+          "id": "uuid-string",
+          "authorId": "uuid-string",
+          "authorName": "string",
+          "publishedAt": "timestamp-string",
+          "likesCount": number,
+          "isLiked": boolean,
+          "isAuthor": boolean,
+          "isPublic": boolean,
+          "isAdultContent": boolean,
+          "status": "ready | completed | error | setup_pending | generating_scene",
+          // Распарсенные поля:
+          "title": "string",
+          "shortDescription": "string",
+          "genre": "string",
+          "language": "string",
+          "playerName": "string",
+          "coreStats": { /* ... как было ... */ },
+          "characters": [ /* ... как было ... */ ],
+          "previewImageUrl": "string | null",
+          // Список сохранений:
+          "gameStates": [
             {
-              "name": "string", // Имя персонажа
-              "description": "string", // Описание
-              "personality": "string | null", // Личность (опционально)
-              "imageReference": "string | null" // <<< ДОБАВЛЕНО: Ссылка на изображение (если есть)
+              "id": "uuid-string", // ID состояния игры (gameStateID)
+              "lastActivityAt": "timestamp-string"
             }
-            // ... другие персонажи
-          ],
-          // Информация о прогрессе:authorName
-          \"hasPlayerProgress\": true,
-          \"lastPlayedAt\": \"2024-03-10T15:30:00Z\",
-          \"currentSceneIndex\": 3,
-          \"currentSceneSummary\": \"You stand before the ancient gates...\",
-          \"currentPlayerStats\": {
-            \"strength\": 12,
-            \"mana\": 5
-          }
+            // ... другие сохранения (отсортированы по lastActivityAt desc)
+          ]
         }
         ```
+        *   **Примечание:** Поля, относящиеся к *одному* прогрессу (`hasPlayerProgress`, `lastPlayedAt`, `currentSceneIndex`, `currentSceneSummary`, `currentPlayerStats`), больше не возвращаются. Используйте `gameStates`.
     *   Ответ при ошибке:
         *   `400 Bad Request`: Невалидный UUID.
         *   `401 Unauthorized`: Невалидный токен.
         *   `403 Forbidden`: Нет доступа к приватной истории.
         *   `404 Not Found`: История не найдена.
-        *   `500 Internal Server Error`: Внутренняя ошибка (например, ошибка парсинга JSON конфига/сетапа).
+        *   `500 Internal Server Error`: Внутренняя ошибка (например, ошибка парсинга JSON или получения данных).
 
-*   **`GET /api/published-stories/:id/scene`**
-    *   Описание: Получение текущей сцены для **своей** игровой сессии в опубликованной истории. Если прогресса нет, создается новый прогресс и возвращается начальная сцена. Если идет генерация следующей сцены, возвращается ошибка `409 Conflict`.
+*   **`GET /api/published-stories/:story_id/gamestates`**
+    *   Описание: Получение списка состояний игры (сохранений) для **текущего пользователя** в указанной опубликованной истории.
     *   Аутентификация: **Требуется.**
-    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
+    *   Параметр пути: `:story_id` - UUID опубликованной истории (`PublishedStory`).
+    *   Ответ при успехе (`200 OK`): Массив объектов `GameStateSummaryDTO`.
+        ```json
+        [
+          {
+            "id": "uuid-string", // ID состояния игры (использовать в /scene, /choice, /gamestates/:id)
+            "lastActivityAt": "timestamp-string" // Время последней активности
+          },
+          // ... другие сохранения
+        ]
+        ```
+        *   Примечание: Возвращается пустой массив `[]`, если сохранений нет.
+    *   Ответ при ошибке:
+        *   `400 Bad Request`: Невалидный UUID `story_id`.
+        *   `401 Unauthorized`: Невалидный токен.
+        *   `404 Not Found`: Опубликованная история не найдена.
+        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
+
+*   **`GET /api/published-stories/gamestates/:game_state_id/scene`**
+    *   Описание: Получение текущей сцены для **конкретного состояния игры (сохранения)**. Если идет генерация следующей сцены для этого состояния, возвращается ошибка `409 Conflict`.
+    *   Аутентификация: **Требуется.**
+    *   Параметр пути: `:game_state_id` - UUID состояния игры (`PlayerGameState`).
     *   Ответ при успехе (`200 OK`): Объект сцены (`GameSceneResponseDTO`).
         ```json
         {
           "id": "uuid-string", // ID текущей сцены
           "publishedStoryId": "uuid-string", // ID опубликованной истории
-          "currentStats": { // <<< НОВОЕ ПОЛЕ: Текущие статы игрока
+          "gameStateId": "uuid-string", // ID состояния игры (game_state_id из пути)
+          "currentStats": { // Текущие статы игрока в этом сохранении
             "stat_key_1": 50,
             "stat_key_2": 35
           },
@@ -607,41 +599,42 @@
           }
         }
         ```
-        *   **Примечание:** Ответ больше не содержит полные последствия (`cons`), `sssf`, `fd`, `vis` или `svd`.
     *   Ответ при ошибке:
-        *   `400 Bad Request`: Невалидный UUID.
+        *   `400 Bad Request`: Невалидный UUID `game_state_id`.
         *   `401 Unauthorized`: Невалидный токен.
-        *   `404 Not Found`: Опубликованная история не найдена.
-        *   `409 Conflict` (`{"code": 40901, "message": "Scene generation in progress"}`): Следующая сцена еще генерируется.
-        *   `500 Internal Server Error`: Внутренняя ошибка сервера (например, ошибка при получении/создании прогресса или сцены).
+        *   `404 Not Found`: Состояние игры (`PlayerGameState`) не найдено или не принадлежит пользователю.
+        *   `409 Conflict` (`{"code": ..., "message": "Scene generation in progress" | "Game over generation in progress" | "Game already completed"}`): Невозможно получить сцену из-за текущего статуса состояния игры.
+        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`POST /api/published-stories/:id/choice`**
-    *   Описание: Отправка выбора игрока для текущей сцены. Запускает процесс обновления состояния и генерации следующей сцены/концовки (асинхронно).
+*   **`POST /api/published-stories/gamestates/:game_state_id/choice`**
+    *   Описание: Отправка выбора игрока для текущей сцены в **конкретном состоянии игры (сохранении)**. Запускает процесс обновления состояния и генерации следующей сцены/концовки (асинхронно).
     *   Аутентификация: **Требуется.**
-    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
+    *   Параметр пути: `:game_state_id` - UUID состояния игры (`PlayerGameState`).
     *   Тело запроса (`application/json`):
         ```json
         {
-          "selected_option_indices": [ 0, 1 ] // Массив индексов выбранных опций (по одному индексу на каждый блок 'ch' в текущей сцене)
+          "selected_option_indices": [ 0, 1 ]
         }
         ```
-    *   Ответ при успехе (`202 Accepted`): **Пустое тело.** Сервер принял выбор и инициировал обработку. Клиенту нужно будет запросить новую сцену через `GET /api/published-stories/:id/scene` после получения уведомления (или через поллинг).
+    *   Ответ при успехе (`200 OK`): **Пустое тело.**
     *   Ответ при ошибке:
-        *   `400 Bad Request`: Невалидный UUID, невалидное тело запроса (ошибка формата `selected_option_indices`, неверные индексы или их количество).
+        *   `400 Bad Request`: Невалидный UUID `game_state_id`, невалидное тело запроса.
         *   `401 Unauthorized`: Невалидный токен.
-        *   `404 Not Found`: Опубликованная история не найдена.
-        *   `409 Conflict` (`{"code": 40902, "message": "Player not in 'Playing' status"}` | `{"code": 40901, "message": "Scene generation in progress"}`): Игрок не в состоянии 'Playing', или генерация уже идет.
-        *   `500 Internal Server Error`: Внутренняя ошибка сервера (например, при получении/сохранении данных или публикации задачи).
+        *   `404 Not Found`: Состояние игры (`PlayerGameState`) не найдено или не принадлежит пользователю.
+        *   `409 Conflict` (`{"code": ..., "message": "Player not in 'Playing' status" | "Scene generation in progress"}`): Невозможно сделать выбор из-за текущего статуса состояния игры.
+        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`DELETE /api/published-stories/:id/progress`**
-    *   Описание: Сброс прогресса прохождения для **своей** игровой сессии в опубликованной истории. Позволяет начать историю заново.
+*   **`DELETE /api/published-stories/:story_id/gamestates/:game_state_id`**
+    *   Описание: Удаление конкретного состояния игры (слота сохранения) для **своей** игровой сессии в опубликованной истории.
     *   Аутентификация: **Требуется.**
-    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
-    *   Ответ при успехе (`204 No Content`): Прогресс успешно удален.
+    *   Параметры пути:
+        *   `:story_id` - UUID опубликованной истории (`PublishedStory`).
+        *   `:game_state_id` - UUID удаляемого состояния игры (`PlayerGameState`).
+    *   Ответ при успехе (`204 No Content`): Состояние игры успешно удалено.
     *   Ответ при ошибке:
-        *   `400 Bad Request`: Невалидный UUID.
+        *   `400 Bad Request`: Невалидный UUID (для `story_id` или `game_state_id`).
         *   `401 Unauthorized`: Невалидный токен.
-        *   `404 Not Found`: Опубликованная история или прогресс для этой истории не найдены.
+        *   `404 Not Found`: Опубликованная история или указанное состояние игры не найдены (или состояние игры не принадлежит пользователю).
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 *   **`POST /api/published-stories/:id/like`**
@@ -842,8 +835,4 @@
 *   [ ] Добавить `notification-service` для отправки push-уведомлений.
 *   [ ] **Важно:** Пересмотреть формат `CoreStats` в `StoryConfigParsedDetail`, возможно, вернуть `Min` и `Max` для удобства фронтенда.
 *   [ ] **Важно:** Уточнить возвращаемое значение `POST /auth/register`.
-*   [ ] **Важно:** Проверить/дополнить обработку `409 Conflict` для `POST /api/published-stories/:id/choice`.
-*   [ ] **Важно:** Добавить поля `franchise`, `playerDescription`, `worldContext`, `storySummary` в DTO `PublishedStoryParsedDetailDTO`.
-*   [ ] **Важно:** Добавить поле `status` обратно в DTO `PublishedStorySummaryWithProgress`.
-*   [ ] **Важно:** Статус `completed` для опубликованной истории - когда и как устанавливается? (Вероятно, после сцены `game_over` или `continuation`?)
-*   [ ] **Важно:** Проверить необходимость и реализацию `RetryStoryGeneration` в `gameplay-service`. (Похоже, дублирует `RetrySceneGeneration`)
+*   [ ] **Важно:** Проверить/дополнить обработку `409 Conflict`

@@ -12,6 +12,7 @@ import (
 type GameSceneResponseDTO struct {
 	ID               uuid.UUID        `json:"id"`                     // ID текущей сцены
 	PublishedStoryID uuid.UUID        `json:"publishedStoryId"`       // ID истории
+	GameStateID      uuid.UUID        `json:"gameStateId"`            // ID состояния игры (слота сохранения)
 	Choices          []ChoiceBlockDTO `json:"choices,omitempty"`      // Блоки выбора
 	EndingText       *string          `json:"endingText,omitempty"`   // Текст концовки
 	Continuation     *ContinuationDTO `json:"continuation,omitempty"` // Данные для продолжения
@@ -47,3 +48,5 @@ type ContinuationDTO struct {
 	EndingTextPrevious   string         `json:"endingTextPrevious"`   // etp
 	CoreStatsReset       map[string]int `json:"coreStatsReset"`       // csr - начальные статы для нового персонажа
 }
+
+// --- DTO для ответа GET /api/published-stories/:story_id/gamestates ---
