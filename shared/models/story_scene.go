@@ -43,9 +43,9 @@ type SceneOption struct {
 
 // Consequences defines the effects of choosing a specific option.
 type Consequences struct {
-	CoreStatsChange   map[string]int         `json:"cs_chg,omitempty"`
+	CoreStatsChange   map[string]int         `json:"cs,omitempty"`
 	StoryVariables    map[string]interface{} `json:"sv,omitempty"`
 	GlobalFlags       []string               `json:"gf,omitempty"`
 	GlobalFlagsRemove []string               `json:"gf_rem,omitempty"`
-	ResponseText      string                 `json:"resp_txt,omitempty"`
+	ResponseText      string                 `json:"rt,omitempty"`
 }

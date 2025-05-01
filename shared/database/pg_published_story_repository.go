@@ -1101,8 +1101,8 @@ func (r *pgPublishedStoryRepository) FindAndMarkStaleGeneratingAsError(ctx conte
 	// Статусы, которые считаются "зависшими"
 	// Используем строки, так как StoryStatus - это string alias
 	staleStatuses := []string{
-		string(models.StatusSetupPending), // Используем константу, где она есть
-		// string(models.StatusFirstScenePending), // <<< Убрано, т.к. этот статус устарел
+		string(models.StatusSetupPending),      // Используем константу, где она есть
+		string(models.StatusFirstScenePending), // <<< ВОЗВРАЩАЕМ ПРОВЕРКУ ЭТОГО СТАТУСА
 		string(models.StatusInitialGeneration), // Используем константу, где она есть
 		"image_generation_pending",             // <<< Используем строковый литерал, т.к. константы нет
 	}

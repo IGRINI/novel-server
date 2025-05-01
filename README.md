@@ -583,15 +583,15 @@
               "description": "Описание блока/ситуации выбора", // Текст из 'desc'
               "options": [
                 {
-                  "text": "Текст опции 1", // Текст из 'txt'
-                  "consequences": { // Упрощенные последствия (только если есть 'resp_txt' или 'cs_chg' в оригинале)
-                    "responseText": "Текст-реакция на выбор (если есть)", // Текст из 'resp_txt'
-                    "statChanges": { "Wealth": -15, "Army": 5 } // Изменения статов (из 'cs_chg'), будет null если нет
+                  "text": "Текст опции 1", // Текст опции (Используется ключ 'text')
+                  "consequences": { // ПОСЛЕДСТВИЯ ОПЦИИ (может быть null)
+                    "responseText": "Текст-реакция на выбор (если есть)", // Текст из 'rt', КЛИЕНТУ ОТДАЕТСЯ КАК responseText
+                    "statChanges": { "Wealth": -15, "Army": 5 } // Изменения статов (из 'cs'), КЛИЕНТУ ОТДАЕТСЯ КАК statChanges, будет null если нет
                   }
                 },
                 {
-                  "text": "Текст опции 2",
-                  "consequences": null // Будет null, если нет ни 'resp_txt', ни 'cs_chg'
+                  "text": "Текст опции 2", // Текст опции (Используется ключ 'text')
+                  "consequences": null // БУДЕТ null, если нет ни 'responseText', ни 'statChanges'
                 }
               ]
             }

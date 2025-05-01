@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -170,9 +171,30 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 								continue
 							}
 							imageRef := charData.ImageRef
-							_, errCheck := p.imageReferenceRepo.GetImageURLByReference(dbCtx, imageRef)
+							correctedRef := imageRef
+
+							if !strings.HasPrefix(imageRef, "ch_") {
+								p.logger.Warn("Character ImageRef does not start with 'ch_'. Attempting correction.",
+									zap.String("original_ref", imageRef),
+									zap.String("char_name", charData.Name),
+									zap.String("published_story_id", publishedStoryID.String()),
+								)
+								if strings.HasPrefix(imageRef, "character_") {
+									correctedRef = strings.TrimPrefix(imageRef, "character_")
+								} else if strings.HasPrefix(imageRef, "char_") {
+									correctedRef = strings.TrimPrefix(imageRef, "char_")
+								} else {
+									correctedRef = imageRef
+								}
+
+								correctedRef = "ch_" + strings.TrimPrefix(correctedRef, "ch_")
+
+								p.logger.Info("Ensured ImageRef prefix is 'ch_'.", zap.String("original_ref", imageRef), zap.String("new_ref", correctedRef))
+							}
+
+							_, errCheck := p.imageReferenceRepo.GetImageURLByReference(dbCtx, correctedRef)
 							if errors.Is(errCheck, sharedModels.ErrNotFound) {
-								p.logger.Debug("Character image needs generation", zap.String("image_ref", imageRef))
+								p.logger.Debug("Character image needs generation", zap.String("image_ref", correctedRef))
 								needsCharacterImages = true
 								characterIDForTask := uuid.New()
 								fullCharacterPrompt := charData.Prompt + characterVisualStyle
@@ -181,15 +203,15 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 									CharacterID:      characterIDForTask,
 									Prompt:           fullCharacterPrompt,
 									NegativePrompt:   charData.NegPrompt,
-									ImageReference:   imageRef,
+									ImageReference:   correctedRef,
 									Ratio:            "2:3",
 									PublishedStoryID: publishedStoryID,
 								}
 								imageTasks = append(imageTasks, imageTask)
 							} else if errCheck != nil {
-								p.logger.Error("Error checking Character ImageRef in DB", zap.String("image_ref", imageRef), zap.Error(errCheck))
+								p.logger.Error("Error checking Character ImageRef in DB", zap.String("image_ref", correctedRef), zap.Error(errCheck))
 							} else {
-								p.logger.Debug("Character image already exists", zap.String("image_ref", imageRef))
+								p.logger.Debug("Character image already exists", zap.String("image_ref", correctedRef))
 							}
 						}
 
@@ -276,7 +298,10 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 								}
 								simplifiedChars = append(simplifiedChars, simplifiedChar)
 							}
-							simplifiedSetup = map[string]interface{}{"chars": simplifiedChars}
+							simplifiedSetup = map[string]interface{}{
+								"chars": simplifiedChars,
+								"csd":   setupContent.CoreStatsDefinition,
+							}
 
 							combinedInputMap := make(map[string]interface{})
 							minimalConfig := ToMinimalConfigForFirstScene(publishedStory.Config)

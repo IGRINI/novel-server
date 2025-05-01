@@ -46,7 +46,7 @@
     *   Respect 0-100 range and `go` conditions.
 4.  **Characters (`chars`):
     *   Generate ~10 relevant NPCs (NO player character).
-    *   Generate deterministic `ir` (image reference) based on `vt` (or well-known `n`): `ch_[gender]_[age]_[theme]_[desc1]_[desc2]` or `ch_snake_case(name)`. Use `male/female/other/andro/unknown`, `child/teen/adult/old`, genre tags, distinctive visual tags. Use snake_case. Identical `vt` -> identical `ir`.
+    *   Generate deterministic `ir` (image reference) based on `vt` (or well-known `n`): `[gender]_[age]_[theme]_[desc1]_[desc2]` or `snake_case(name)`. Use `male/female/other/andro/unknown`, `child/teen/adult/old`, genre tags, distinctive visual tags. Use snake_case. Identical `vt` -> identical `ir`.
 5.  **Story Preview (`spi`):** Generate a detailed English image prompt capturing story essence (`wc`, `ss`, `gn`, `fr`, `th`).
 
 

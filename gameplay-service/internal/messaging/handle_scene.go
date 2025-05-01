@@ -158,23 +158,22 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 						}
 
 						if finalStatusToSet != nil || setIsFirstScenePendingToFalse {
-							statusToUpdate := sharedModels.StatusReady
+							statusToUpdate := sharedModels.StatusReady // По умолчанию Ready, если finalStatusToSet установлен
 							if setIsFirstScenePendingToFalse && finalStatusToSet == nil {
-								if currentStoryState != nil {
-									statusToUpdate = currentStoryState.Status
-								} else {
-									p.logger.Warn("Could not determine current status, defaulting to Ready for flag update", zap.String("publishedStoryID", publishedStoryID.String()))
-								}
+								// Первая сцена сгенерирована, но картинки еще ожидаются.
+								// Всегда ставим FirstScenePending в этом случае
+								statusToUpdate = sharedModels.StatusFirstScenePending
+								p.logger.Info("First scene done, images pending. Setting status to FirstScenePending.", zap.String("publishedStoryID", publishedStoryID.String()))
 							} else if finalStatusToSet != nil {
 								statusToUpdate = *finalStatusToSet
 							}
 
-							currentAreImagesPending := false
-							if currentStoryState != nil {
-								currentAreImagesPending = currentStoryState.AreImagesPending
+							currentAreImagesPending := true // Знаем, что картинки еще ожидаются, если finalStatusToSet == nil
+							if finalStatusToSet != nil {    // Если finalStatusToSet != nil, значит картинки готовы
+								currentAreImagesPending = false
 							}
 
-							errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, statusToUpdate, false, currentAreImagesPending, nil)
+							errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, statusToUpdate, false, currentAreImagesPending, nil) // isFirstScenePending всегда false здесь
 							if errUpdate != nil {
 								p.logger.Error("CRITICAL ERROR (Data Inconsistency!): Scene upserted, but failed to update PublishedStory status/flags",
 									zap.String("task_id", taskID),

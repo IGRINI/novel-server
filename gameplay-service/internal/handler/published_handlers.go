@@ -15,49 +15,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// --- Структуры для ответов и запросов --- //
-
-// <<< НОВЫЕ СТРУКТУРЫ DTO ДЛЯ ОТВЕТА СЦЕНЫ КЛИЕНТУ >>>
-
-// GameSceneResponse - структура ответа для сцены, отправляемая клиенту
-type GameSceneResponse struct {
-	ID               string           `json:"id"`               // ID сцены
-	PublishedStoryID string           `json:"publishedStoryId"` // ID истории
-	Content          GameSceneContent `json:"content"`          // Содержимое сцены для клиента
-}
-
-// GameSceneContent - Содержимое сцены, отправляемое клиенту
-type GameSceneContent struct {
-	Choices                []GameChoiceBlock `json:"ch,omitempty"`  // Блоки выбора
-	EndingText             string            `json:"et,omitempty"`  // Текст стандартной концовки
-	NewPlayerDescription   string            `json:"npd,omitempty"` // Описание нового персонажа (для продолжения)
-	CoreStatsReset         map[string]int    `json:"csr,omitempty"` // Новые статы (для продолжения)
-	EndingTextPreviousChar string            `json:"etp,omitempty"` // Текст концовки пред. персонажа (для продолжения)
-}
-
-// GameChoiceBlock - Блок выбора для клиента
-type GameChoiceBlock struct {
-	Shuffleable int               `json:"sh"`   // Можно ли перемешивать
-	Char        string            `json:"char"` // <<< ДОБАВЛЕНО ПОЛЕ ДЛЯ ПАРСИНГА
-	Description string            `json:"desc"` // Описание ситуации
-	Options     []GameSceneOption `json:"opts"` // Опции выбора
-}
-
-// GameSceneOption - Опция выбора для клиента
-type GameSceneOption struct {
-	Text         string           `json:"txt"`  // Текст опции
-	Consequences GameConsequences `json:"cons"` // Последствия (только нужные клиенту)
-}
-
-// GameConsequences - Последствия выбора для клиента
-type GameConsequences struct {
-	CoreStatsChange map[string]int `json:"cs_chg,omitempty"`   // Изменения статов (показываем игроку)
-	ResponseText    string         `json:"resp_txt,omitempty"` // Текст-реакция на выбор (если есть)
-}
-
-// <<< КОНЕЦ НОВЫХ СТРУКТУР DTO >>>
-
-// <<< ДОБАВЛЕНО: Определение запроса для makeChoice
 type MakeChoicesRequest struct {
 	SelectedOptionIndices []int `json:"selected_option_indices" binding:"required,dive,min=0,max=1"`
 }
@@ -404,36 +361,39 @@ func parseChoicesBlock(chJSON json.RawMessage, responseDTO *GameSceneResponseDTO
 			optionDTO := ChoiceOptionDTO{
 				Text: rawOpt.Text,
 			}
-			// Парсим последствия ('cons') для извлечения 'resp_txt' и 'cs_chg'
+			// Парсим последствия ('cons') для извлечения 'rt' и 'cs'
 			if len(rawOpt.Consequences) > 2 { // Проверяем, что не пустое {}
-				var consMap map[string]json.RawMessage // Используем RawMessage для гибкости парсинга cs_chg
+				var consMap map[string]json.RawMessage // Используем RawMessage для гибкости парсинга
 				if err := json.Unmarshal(rawOpt.Consequences, &consMap); err == nil {
-					preview := ConsequencePreviewDTO{}
+					preview := ConsequencesDTO{}
 					hasData := false
 
-					// Извлекаем resp_txt
-					if respTxtJSON, ok := consMap["resp_txt"]; ok {
+					// Извлекаем rt (бывший resp_txt)
+					if respTxtJSON, ok := consMap["rt"]; ok { // <<< ИСПРАВЛЕНО: Ищем "rt"
 						var respTxtStr string
 						if errUnmarshal := json.Unmarshal(respTxtJSON, &respTxtStr); errUnmarshal == nil && respTxtStr != "" {
+							// Используем поле ResponseText из ConsequencesDTO
 							preview.ResponseText = &respTxtStr
 							hasData = true
 						}
 					}
 
-					// Извлекаем cs_chg
-					if csChgJSON, ok := consMap["cs_chg"]; ok {
+					// Извлекаем cs (бывший cs_chg)
+					if csChgJSON, ok := consMap["cs"]; ok { // <<< ИСПРАВЛЕНО: Ищем "cs"
 						var statChanges map[string]int
 						if errUnmarshal := json.Unmarshal(csChgJSON, &statChanges); errUnmarshal == nil && len(statChanges) > 0 {
+							// Используем поле StatChanges из ConsequencesDTO
 							preview.StatChanges = statChanges
 							hasData = true
 						} else if errUnmarshal != nil {
-							log.Warn("Failed to unmarshal cs_chg content", zap.String("sceneID", sceneID), zap.Error(errUnmarshal))
+							log.Warn("Failed to unmarshal cs content", zap.String("sceneID", sceneID), zap.Error(errUnmarshal))
 						}
 					}
 
 					// Присваиваем preview только если есть какие-то данные
 					if hasData {
-						optionDTO.Consequences = &preview
+						// Здесь тип должен быть *ConsequencesDTO, а не *ConsequencePreviewDTO
+						optionDTO.Consequences = &preview // Тип preview должен быть ConsequencesDTO
 					}
 				} else {
 					log.Warn("Failed to unmarshal consequences map", zap.String("sceneID", sceneID), zap.Error(err))

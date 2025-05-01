@@ -607,19 +607,39 @@ func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID,
 		// --- Error occurred during Scene generation (Setup exists and is not JSON null) ---
 		log.Info("Setup exists, retrying Scene generation")
 
-		// <<< ДОБАВЛЕНО: Проверка и генерация картинок Setup >>>
+		// <<< НАЧАЛО ИЗМЕНЕНИЯ: Проверка картинок и ОБНОВЛЕНИЕ ФЛАГА >>>
 		var setupContent sharedModels.NovelSetupContent
 		if errUnmarshal := json.Unmarshal(story.Setup, &setupContent); errUnmarshal != nil {
 			log.Error("Failed to unmarshal setup JSON during scene retry, cannot check images", zap.Error(errUnmarshal))
 			// Продолжаем без проверки картинок, но логируем ошибку.
 		} else {
 			// Вызываем хелпер для проверки/генерации картинок
-			if _, errImages := s.checkAndGenerateSetupImages(ctx, userID.String(), story, &setupContent); errImages != nil {
+			// Сохраняем результат (ожидаются ли картинки) и ошибку
+			areImagesStillPending, errImages := s.checkAndGenerateSetupImages(ctx, story, story.Setup, userID)
+			if errImages != nil {
 				// Логируем ошибку, но не прерываем Retry сцены
 				log.Error("Error during checkAndGenerateSetupImages in scene retry", zap.Error(errImages))
+			} else {
+				// Если ошибки не было, ОБНОВЛЯЕМ ФЛАГ в БД
+				log.Info("Updating AreImagesPending flag after check", zap.Bool("areImagesPending", areImagesStillPending))
+				if errUpdateFlag := s.publishedRepo.UpdateStatusFlagsAndDetails(
+					ctx,
+					story.ID,
+					story.Status, // Статус не меняем здесь
+					story.IsFirstScenePending,
+					areImagesStillPending, // Устанавливаем актуальное значение флага
+					nil,                   // Детали ошибки не меняем
+				); errUpdateFlag != nil {
+					// Логируем критическую ошибку, так как это может привести к неконсистентности
+					log.Error("CRITICAL: Failed to update AreImagesPending flag during scene retry", zap.Error(errUpdateFlag))
+					// Можно прервать Retry здесь, если считаем это критичным
+					// return sharedModels.ErrInternalServer
+				} else {
+					log.Info("Successfully updated AreImagesPending flag during scene retry")
+				}
 			}
 		}
-		// <<< КОНЕЦ: Проверка и генерация картинок Setup >>>
+		// <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
 
 		// Get player progress to determine which scene to retry
 		progress, err := s.playerProgressRepo.GetByUserIDAndStoryID(ctx, userID, storyID)
@@ -749,19 +769,39 @@ func (s *gameLoopServiceImpl) RetryStoryGeneration(ctx context.Context, storyID,
 		// --- Error occurred during Scene generation (Setup exists and is not JSON null) ---
 		log.Info("Setup exists, retrying Scene generation")
 
-		// <<< ДОБАВЛЕНО: Проверка и генерация картинок Setup >>>
+		// <<< НАЧАЛО ИЗМЕНЕНИЯ: Проверка картинок и ОБНОВЛЕНИЕ ФЛАГА >>>
 		var setupContent sharedModels.NovelSetupContent
 		if errUnmarshal := json.Unmarshal(story.Setup, &setupContent); errUnmarshal != nil {
 			log.Error("Failed to unmarshal setup JSON during scene retry, cannot check images", zap.Error(errUnmarshal))
 			// Продолжаем без проверки картинок, но логируем ошибку.
 		} else {
 			// Вызываем хелпер для проверки/генерации картинок
-			if _, errImages := s.checkAndGenerateSetupImages(ctx, userID.String(), story, &setupContent); errImages != nil {
+			// Сохраняем результат (ожидаются ли картинки) и ошибку
+			areImagesStillPending, errImages := s.checkAndGenerateSetupImages(ctx, story, story.Setup, userID)
+			if errImages != nil {
 				// Логируем ошибку, но не прерываем Retry сцены
 				log.Error("Error during checkAndGenerateSetupImages in scene retry", zap.Error(errImages))
+			} else {
+				// Если ошибки не было, ОБНОВЛЯЕМ ФЛАГ в БД
+				log.Info("Updating AreImagesPending flag after check", zap.Bool("areImagesPending", areImagesStillPending))
+				if errUpdateFlag := s.publishedRepo.UpdateStatusFlagsAndDetails(
+					ctx,
+					story.ID,
+					story.Status, // Статус не меняем здесь
+					story.IsFirstScenePending,
+					areImagesStillPending, // Устанавливаем актуальное значение флага
+					nil,                   // Детали ошибки не меняем
+				); errUpdateFlag != nil {
+					// Логируем критическую ошибку, так как это может привести к неконсистентности
+					log.Error("CRITICAL: Failed to update AreImagesPending flag during scene retry", zap.Error(errUpdateFlag))
+					// Можно прервать Retry здесь, если считаем это критичным
+					// return sharedModels.ErrInternalServer
+				} else {
+					log.Info("Successfully updated AreImagesPending flag during scene retry")
+				}
 			}
 		}
-		// <<< КОНЕЦ: Проверка и генерация картинок Setup >>>
+		// <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
 
 		// Get player progress to determine which scene to retry
 		progress, err := s.playerProgressRepo.GetByUserIDAndStoryID(ctx, userID, storyID)
@@ -1410,100 +1450,125 @@ func createInitialSceneGenerationPayload(
 
 // <<< НАЧАЛО: Перемещенная вспомогательная функция >>>
 // checkAndGenerateSetupImages parses the setup, checks image needs, updates flags, and publishes tasks.
-func (s *gameLoopServiceImpl) checkAndGenerateSetupImages(ctx context.Context, userID string, story *sharedModels.PublishedStory, setupContent *sharedModels.NovelSetupContent) (bool, error) {
-	log := s.logger.With(zap.String("publishedStoryID", story.ID.String()), zap.String("userID", userID))
-	log.Info("Checking and generating setup images if needed")
+func (s *gameLoopServiceImpl) checkAndGenerateSetupImages(ctx context.Context, story *sharedModels.PublishedStory, setupBytes []byte, userID uuid.UUID) (bool, error) {
+	log := s.logger.With(zap.String("publishedStoryID", story.ID.String()))
 
-	// <<< НАЧАЛО ИЗМЕНЕНИЙ: Получаем суффиксы стилей из динамической конфигурации >>>
-	// Суффикс для персонажей
-	characterStyleSuffix := s.cfg.CharacterPromptStyleSuffix // Значение по умолчанию из статической конфигурации
+	var setupContent sharedModels.NovelSetupContent
+	if err := json.Unmarshal(setupBytes, &setupContent); err != nil {
+		log.Error("Failed to unmarshal setup JSON in checkAndGenerateSetupImages", zap.Error(err))
+		return false, fmt.Errorf("failed to unmarshal setup JSON: %w", err)
+	}
+
+	var fullConfig sharedModels.Config
+	var characterVisualStyle string
+	var storyStyle string
+	// <<< ВОЗВРАЩАЕМ ПЕРЕМЕННЫЕ ДЛЯ СУФФИКСОВ >>>
+	var characterStyleSuffix string = "" // Инициализируем пустыми строками
+	var previewStyleSuffix string = ""   // Инициализируем пустыми строками
+
+	// <<< ВОЗВРАЩАЕМ ЛОГИКУ ПОЛУЧЕНИЯ СУФФИКСОВ ИЗ ДИНАМИЧЕСКОГО КОНФИГА >>>
 	charDynConfKey := "prompt.character_style_suffix"
 	dynamicConfigChar, errConfChar := s.dynamicConfigRepo.GetByKey(ctx, charDynConfKey)
 	if errConfChar != nil {
 		if !errors.Is(errConfChar, sharedModels.ErrNotFound) {
-			log.Error("Failed to get dynamic config for character style suffix, using default", zap.String("key", charDynConfKey), zap.Error(errConfChar))
+			log.Error("Failed to get dynamic config for character style suffix, using empty default", zap.String("key", charDynConfKey), zap.Error(errConfChar))
 		} else {
-			log.Info("Dynamic config for character style suffix not found, using default", zap.String("key", charDynConfKey))
+			log.Info("Dynamic config for character style suffix not found, using empty default", zap.String("key", charDynConfKey))
 		}
 	} else if dynamicConfigChar != nil && dynamicConfigChar.Value != "" {
 		characterStyleSuffix = dynamicConfigChar.Value
 		log.Info("Using dynamic config for character style suffix", zap.String("key", charDynConfKey))
 	}
 
-	// Суффикс для превью историй
-	previewStyleSuffix := s.cfg.StoryPreviewPromptStyleSuffix // Значение по умолчанию из статической конфигурации
 	previewDynConfKey := "prompt.story_preview_style_suffix"
 	dynamicConfigPreview, errConfPreview := s.dynamicConfigRepo.GetByKey(ctx, previewDynConfKey)
 	if errConfPreview != nil {
 		if !errors.Is(errConfPreview, sharedModels.ErrNotFound) {
-			log.Error("Failed to get dynamic config for story preview style suffix, using default", zap.String("key", previewDynConfKey), zap.Error(errConfPreview))
+			log.Error("Failed to get dynamic config for story preview style suffix, using empty default", zap.String("key", previewDynConfKey), zap.Error(errConfPreview))
 		} else {
-			log.Info("Dynamic config for story preview style suffix not found, using default", zap.String("key", previewDynConfKey))
+			log.Info("Dynamic config for story preview style suffix not found, using empty default", zap.String("key", previewDynConfKey))
 		}
 	} else if dynamicConfigPreview != nil && dynamicConfigPreview.Value != "" {
 		previewStyleSuffix = dynamicConfigPreview.Value
 		log.Info("Using dynamic config for story preview style suffix", zap.String("key", previewDynConfKey))
 	}
-	// <<< КОНЕЦ ИЗМЕНЕНИЙ >>>
+	// <<< КОНЕЦ ВОЗВРАЩЕННОЙ ЛОГИКИ >>>
 
-	var ( // Initialize variables
-		needsCharacterImages bool
-		needsPreviewImage    bool
-		imageTasks           = make([]sharedMessaging.CharacterImageTaskPayload, 0, len(setupContent.Characters))
-		characterVisualStyle string
-		storyStyle           string
-		fullConfig           sharedModels.Config
-	)
-
-	if story.Config != nil {
-		if errCfg := json.Unmarshal(story.Config, &fullConfig); errCfg != nil {
-			log.Warn("Failed to unmarshal config JSON to get CharacterVisualStyle/Style for image generation", zap.Error(errCfg))
-			// Continue without style information, prompts might be less specific
-		} else {
-			characterVisualStyle = fullConfig.PlayerPrefs.CharacterVisualStyle
-			storyStyle = fullConfig.PlayerPrefs.Style
-			if characterVisualStyle != "" {
-				characterVisualStyle = ", " + characterVisualStyle
-			}
-			if storyStyle != "" {
-				storyStyle = ", " + storyStyle
-			}
-		}
+	if errCfg := json.Unmarshal(story.Config, &fullConfig); errCfg != nil {
+		log.Warn("Failed to unmarshal config JSON to get styles in checkAndGenerateSetupImages", zap.Error(errCfg))
 	} else {
-		log.Warn("Story config is nil, cannot extract visual style for image generation")
+		characterVisualStyle = fullConfig.PlayerPrefs.CharacterVisualStyle
+		storyStyle = fullConfig.PlayerPrefs.Style
+		if characterVisualStyle != "" {
+			characterVisualStyle = ", " + characterVisualStyle
+		}
+		if storyStyle != "" {
+			storyStyle = ", " + storyStyle
+		}
 	}
 
-	log.Info("Checking which character images need generation")
+	needsCharacterImages := false
+	needsPreviewImage := false
+	imageTasks := make([]sharedMessaging.CharacterImageTaskPayload, 0, len(setupContent.Characters))
+
+	log.Info("Checking which images need generation (from checkAndGenerateSetupImages)")
 	for _, charData := range setupContent.Characters {
 		if charData.ImageRef == "" || charData.Prompt == "" {
 			log.Debug("Skipping character image check: missing ImageRef or Prompt", zap.String("char_name", charData.Name))
 			continue
 		}
 		imageRef := charData.ImageRef
-		_, errCheck := s.imageReferenceRepo.GetImageURLByReference(ctx, imageRef)
+		// <<< НАЧАЛО ИЗМЕНЕНИЯ: Гарантируем префикс ch_ >>>
+		correctedRef := imageRef // Новая переменная для исправленного референса
+
+		if !strings.HasPrefix(imageRef, "ch_") {
+			log.Warn("Character ImageRef does not start with 'ch_'. Attempting correction.",
+				zap.String("original_ref", imageRef),
+				zap.String("char_name", charData.Name),
+				zap.String("published_story_id", story.ID.String()),
+			)
+			// Сначала удаляем известные некорректные префиксы
+			if strings.HasPrefix(imageRef, "character_") {
+				correctedRef = strings.TrimPrefix(imageRef, "character_")
+			} else if strings.HasPrefix(imageRef, "char_") {
+				correctedRef = strings.TrimPrefix(imageRef, "char_")
+			} else {
+				// Если префикс неизвестен, используем исходную строку (без префикса)
+				correctedRef = imageRef
+			}
+
+			// Гарантированно добавляем префикс ch_
+			correctedRef = "ch_" + strings.TrimPrefix(correctedRef, "ch_")
+
+			// Исправляем опечатку в строке лога (убираем кавычку после ch_):
+			log.Info("Ensured ImageRef prefix is 'ch_'.", zap.String("original_ref", imageRef), zap.String("new_ref", correctedRef))
+		}
+		// <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
+
+		_, errCheck := s.imageReferenceRepo.GetImageURLByReference(ctx, correctedRef) // Используем correctedRef
 
 		// <<< ИСПРАВЛЕНО: Используем sharedModels.ErrNotFound и убираем проверку по строке >>>
 		if errors.Is(errCheck, sharedModels.ErrNotFound) || errors.Is(errCheck, pgx.ErrNoRows) {
-			log.Debug("Character image needs generation", zap.String("image_ref", imageRef))
+			log.Debug("Character image needs generation", zap.String("image_ref", correctedRef))
 			needsCharacterImages = true
 			characterIDForTask := uuid.New()
-			// <<< ИЗМЕНЕНО: Используем полученный characterStyleSuffix >>>
+			// <<< ВОЗВРАЩАЕМ ИСПОЛЬЗОВАНИЕ СУФФИКСА >>>
 			fullCharacterPrompt := charData.Prompt + characterVisualStyle + characterStyleSuffix
 			imageTask := sharedMessaging.CharacterImageTaskPayload{
 				TaskID:           characterIDForTask.String(),
-				UserID:           userID,
+				UserID:           userID.String(), // <<< ИСПРАВЛЕНО: Преобразуем в строку
 				CharacterID:      characterIDForTask,
 				Prompt:           fullCharacterPrompt,
 				NegativePrompt:   charData.NegPrompt,
-				ImageReference:   imageRef,
+				ImageReference:   correctedRef, // Используем correctedRef
 				Ratio:            "2:3",
 				PublishedStoryID: story.ID,
 			}
 			imageTasks = append(imageTasks, imageTask)
 		} else if errCheck != nil { // Ловим другие ошибки
-			log.Error("Error checking Character ImageRef in DB", zap.String("image_ref", imageRef), zap.Error(errCheck))
+			log.Error("Error checking Character ImageRef in DB", zap.String("image_ref", correctedRef), zap.Error(errCheck))
 		} else { // Ошибки нет
-			log.Debug("Character image already exists", zap.String("image_ref", imageRef))
+			log.Debug("Character image already exists", zap.String("image_ref", correctedRef))
 		}
 	}
 
@@ -1560,11 +1625,11 @@ func (s *gameLoopServiceImpl) checkAndGenerateSetupImages(ctx context.Context, u
 		if needsPreviewImage {
 			previewImageRef := fmt.Sprintf("history_preview_%s", story.ID.String())
 			basePreviewPrompt := setupContent.StoryPreviewImagePrompt
-			// <<< ИЗМЕНЕНО: Используем полученный previewStyleSuffix >>>
+			// <<< ВОЗВРАЩАЕМ ИСПОЛЬЗОВАНИЕ СУФФИКСА >>>
 			fullPreviewPromptWithStyles := basePreviewPrompt + storyStyle + characterVisualStyle + previewStyleSuffix
 			previewTask := sharedMessaging.CharacterImageTaskPayload{
 				TaskID:           uuid.New().String(),
-				UserID:           userID,
+				UserID:           userID.String(), // <<< ИСПРАВЛЕНО: Преобразуем в строку
 				CharacterID:      story.ID,
 				Prompt:           fullPreviewPromptWithStyles,
 				NegativePrompt:   "",

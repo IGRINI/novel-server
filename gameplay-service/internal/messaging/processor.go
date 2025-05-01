@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -305,14 +306,33 @@ func (p *NotificationProcessor) processNotificationPayloadInternal(ctx context.C
 				allImagesReady = true // Предполагаем, что готовы
 				p.logger.Debug("Checking URLs for required image references", append(logFields, zap.Strings("refs", requiredRefs))...)
 				for _, ref := range requiredRefs {
-					_, errCheck := p.imageReferenceRepo.GetImageURLByReference(dbCtx, ref)
+					// <<< НАЧАЛО ИЗМЕНЕНИЯ: Исправляем префикс перед проверкой >>>
+					correctedCheckRef := ref
+					// Применяем ту же логику, что и при отправке задач
+					if strings.HasPrefix(ref, "history_preview_") {
+						// Префикс превью не трогаем
+					} else if !strings.HasPrefix(ref, "ch_") {
+						p.logger.Warn("ImageRef in requiredRefs check does not start with 'ch_'. Attempting correction.", zap.String("original_ref", ref))
+						if strings.HasPrefix(ref, "character_") {
+							correctedCheckRef = strings.TrimPrefix(ref, "character_")
+						} else if strings.HasPrefix(ref, "char_") {
+							correctedCheckRef = strings.TrimPrefix(ref, "char_")
+						} else {
+							correctedCheckRef = ref
+						}
+						correctedCheckRef = "ch_" + strings.TrimPrefix(correctedCheckRef, "ch_")
+						p.logger.Info("Ensured ImageRef prefix is 'ch_' for check.", zap.String("original_ref", ref), zap.String("new_ref", correctedCheckRef))
+					}
+					// <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
+
+					_, errCheck := p.imageReferenceRepo.GetImageURLByReference(dbCtx, correctedCheckRef) // <<< Проверяем исправленный correctedCheckRef >>>
 					if errCheck != nil {
 						if errors.Is(errCheck, sharedModels.ErrNotFound) {
-							p.logger.Info("Required image reference still missing URL, not all images are ready yet.", append(logFields, zap.String("missing_ref", ref))...)
+							p.logger.Info("Required image reference still missing URL, not all images are ready yet.", append(logFields, zap.String("missing_ref", correctedCheckRef))...) // Логируем исправленный реф
 							allImagesReady = false
 							break // Нашли недостающий
 						} else {
-							p.logger.Error("Error checking image reference URL, assuming not all images are ready. Acking.", append(logFields, zap.String("checked_ref", ref), zap.Error(errCheck))...)
+							p.logger.Error("Error checking image reference URL, assuming not all images are ready. Acking.", append(logFields, zap.String("checked_ref", correctedCheckRef), zap.Error(errCheck))...)
 							// Техническая ошибка при проверке, лучше подтвердить сообщение, чтобы не зациклиться
 							return nil // Ack
 						}

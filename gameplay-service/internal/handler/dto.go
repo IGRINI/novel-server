@@ -28,17 +28,17 @@ type ChoiceBlockDTO struct {
 
 // ChoiceOptionDTO представляет одну опцию выбора.
 type ChoiceOptionDTO struct {
-	Text         string                 `json:"text"`                   // Текст опции (txt)
-	Consequences *ConsequencePreviewDTO `json:"consequences,omitempty"` // Упрощенное превью последствий (cons)
+	Text         string           `json:"text"`                   // Текст опции (txt)
+	Consequences *ConsequencesDTO `json:"consequences,omitempty"` // ПОЛНЫЕ последствия (cons)
 }
 
-// ConsequencePreviewDTO представляет упрощенные последствия для отображения клиенту.
-// На данный момент включает только текст-реакцию.
-type ConsequencePreviewDTO struct {
-	ResponseText *string        `json:"responseText,omitempty"` // Текст-реакция на выбор (resp_txt)
-	StatChanges  map[string]int `json:"statChanges,omitempty"`  // Изменения статов (cs_chg)
-	// Можно добавить сюда флаг HasStatChanges, если нужно просто показать, что они есть
-	// HasStatChanges bool `json:"hasStatChanges"`
+// ConsequencesDTO представляет ПОЛНЫЕ последствия для отображения клиенту.
+type ConsequencesDTO struct {
+	ResponseText *string        `json:"responseText,omitempty"` // Текст-реакция на выбор (rt)
+	StatChanges  map[string]int `json:"statChanges,omitempty"`  // Изменения статов (cs)
+	// TODO: Добавить поля для sv и gf, если они нужны клиенту
+	// StoryVariables map[string]interface{} `json:"sv,omitempty"`
+	// GlobalFlags    []string               `json:"gf,omitempty"`
 }
 
 // ContinuationDTO содержит данные для сцены типа "продолжение".

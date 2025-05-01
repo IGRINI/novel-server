@@ -19,8 +19,10 @@
 2.  **Mandatory Fields:** MUST generate `sssf`, `fd`, `npd`, `csr`, `etp`, `ch`.
 3.  **New Choices (`ch`):** Generate choices relevant to the *new* character's start.
 4.  **Character Attribution (`char`):** Each choice block (`ch`) MUST include `char` field with a character name from `stp.chars[].n`. `desc` MUST involve this character.
-5.  **Text Formatting:** Markdown (`*italic*`, `**bold**`) allowed ONLY within `npd`, `etp`, `desc`, `txt`, and the optional `rt` inside `cons`.
-6.  **Internal Notes (`vis`, `svd`):** Usually omit `vis` and `svd` for the very first continuation scene.
+5.  **Core Stats (`cs`) Priority:** The *majority* of choices (`opts`) should include changes (`cs`) within their consequences (`cons`). Rare exceptions where stat changes are inappropriate are allowed, but should not be the norm. Respect the values from `csr`.
+6.  **Text Formatting:** Markdown (`*italic*`, `**bold**`) allowed ONLY within `npd`, `etp`, `desc`, `txt`, and the optional `rt` inside `cons`.
+7.  **Optional Response Text (`rt`):** You can include `rt` inside `cons` to provide explicit textual feedback for a choice. This can be used alongside other consequences like `cs`, `sv`, or `gf`, or on its own for purely informational outcomes.
+8.  **Internal Notes (`vis`, `svd`):** Usually omit `vis` and `svd` for the very first continuation scene.
 
 **Output JSON Structure (MANDATORY, Compressed Keys):**
 ```json

@@ -16,7 +16,8 @@
 3.  **Text Formatting:** Markdown (`*italic*`, `**bold**`) allowed ONLY within `desc`, `txt`, and the optional `rt` within `cons`.
 4.  **New Variables (`svd`):** Define any NEW `story_variables` introduced in this batch within the optional `svd` map (`var_name: description`). Omit `svd` if no new vars.
 5.  **Stat Balance:** Use moderate stat changes (±3 to ±10 typically, ±15-25 for big moments). Respect 0-100 limits and initial values (`iv`) from setup. Avoid instant game over unless dramatically intended.
-6.  **Optional Response Text:** Use `rt` inside `cons` sparingly, mainly for info events where `cons` might otherwise be empty (`{}`). Avoid including `rt` when significant state changes (`cs`, `sv`, `gf`) occur, unless necessary for feedback. For simple info events, both `opts.txt` can be identical (e.g., "Continue.").
+6.  **Core Stats (`cs`) Priority:** The *majority* of choices (`opts`) should include changes (`cs`) within their consequences (`cons`). Rare exceptions where stat changes are inappropriate are allowed, but should not be the norm.
+7.  **Optional Response Text (`rt`):** Use `rt` inside `cons` *optionally* to provide explicit textual feedback. Avoid adding it if the outcome is obvious from the option text or other consequences (`cs`, `sv`, `gf`). Add `rt` to clarify non-obvious results or add important context.
 
 **Output JSON Structure (MANDATORY, Compressed Keys):**
 ```json
@@ -48,5 +49,4 @@
 ```
 
 **Apply the rules above to the following User Input:**
-
 {{USER_INPUT}}
