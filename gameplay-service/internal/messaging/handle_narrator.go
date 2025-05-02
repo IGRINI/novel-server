@@ -204,8 +204,9 @@ func (p *NotificationProcessor) publishPushNotificationForDraft(ctx context.Cont
 		"eventType":                    string(sharedModels.StatusDraft),
 		constants.PushLocKey:           constants.PushLocKeyDraftReady,
 		constants.PushLocArgStoryTitle: config.Title,
-		constants.PushFallbackTitleKey: "Черновик готов!",
-		constants.PushFallbackBodyKey:  fmt.Sprintf("Ваш черновик \"%s\" готов к настройке.", config.Title),
+		constants.PushFallbackTitleKey: "Draft Ready!",
+		constants.PushFallbackBodyKey:  fmt.Sprintf("Your draft \"%s\" is ready for setup.", config.Title),
+		"title":                        config.Title,
 	}
 
 	payload := PushNotificationPayload{

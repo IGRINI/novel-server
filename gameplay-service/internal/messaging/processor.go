@@ -43,6 +43,7 @@ type NotificationProcessor struct {
 	pushPub                    PushNotificationPublisher           // <<< Добавляем издателя push-уведомлений
 	characterImageTaskPub      CharacterImageTaskPublisher         // <<< ДОБАВЛЕНО: Для отправки задач генерации изображений
 	characterImageTaskBatchPub CharacterImageTaskBatchPublisher    // <<< ДОБАВЛЕНО: Для отправки батчей задач генерации изображений
+	authClient                 interfaces.AuthServiceClient        // <<< ДОБАВЛЕНО: Клиент для Auth Service >>>
 	logger                     *zap.Logger                         // <<< ДОБАВЛЕНО
 	cfg                        *config.Config                      // <<< ДОБАВЛЕНО: Доступ к конфигурации
 	playerProgressRepo         interfaces.PlayerProgressRepository // <<< ADDED: Dependency for progress updates
@@ -61,6 +62,7 @@ func NewNotificationProcessor(
 	pushPub PushNotificationPublisher,
 	characterImageTaskPub CharacterImageTaskPublisher, // <<< ДОБАВЛЕНО
 	characterImageTaskBatchPub CharacterImageTaskBatchPublisher, // <<< ДОБАВЛЕНО
+	authClient interfaces.AuthServiceClient, // <<< ДОБАВЛЕНО >>>
 	logger *zap.Logger, // <<< ДОБАВЛЕНО
 	cfg *config.Config, // <<< ДОБАВЛЕНО: Принимаем конфиг
 	playerProgressRepo interfaces.PlayerProgressRepository, // <<< ADDED
@@ -73,6 +75,9 @@ func NewNotificationProcessor(
 	}
 	if characterImageTaskPub == nil {
 		logger.Fatal("characterImageTaskPub cannot be nil for NotificationProcessor")
+	}
+	if authClient == nil {
+		logger.Fatal("authClient cannot be nil for NotificationProcessor")
 	}
 	if logger == nil {
 		logger = zap.NewNop()
@@ -93,6 +98,7 @@ func NewNotificationProcessor(
 		pushPub:                    pushPub,
 		characterImageTaskPub:      characterImageTaskPub,
 		characterImageTaskBatchPub: characterImageTaskBatchPub,
+		authClient:                 authClient,
 		logger:                     logger,
 		cfg:                        cfg,
 		playerProgressRepo:         playerProgressRepo,

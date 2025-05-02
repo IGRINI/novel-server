@@ -52,6 +52,7 @@ func NewNotificationConsumer(
 	pushPub PushNotificationPublisher,
 	characterImageTaskPub CharacterImageTaskPublisher,
 	characterImageTaskBatchPub CharacterImageTaskBatchPublisher,
+	authClient sharedInterfaces.AuthServiceClient,
 	logger *zap.Logger,
 	// Параметры самого консьюмера:
 	queueName string,
@@ -74,6 +75,7 @@ func NewNotificationConsumer(
 		pushPub,
 		characterImageTaskPub,
 		characterImageTaskBatchPub,
+		authClient,
 		logger,
 		cfg,
 		playerProgressRepo,

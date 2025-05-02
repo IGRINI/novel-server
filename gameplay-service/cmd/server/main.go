@@ -173,6 +173,7 @@ func main() {
 		pushPublisher,
 		characterImageTaskPublisher,
 		characterImageTaskBatchPublisher,
+		authServiceClient,
 		logger,
 		// Параметры самого консьюмера:
 		cfg.InternalUpdatesQueueName,
@@ -199,6 +200,7 @@ func main() {
 		genResultRepo,
 		clientUpdatePublisher, taskPublisher, pushPublisher, characterImageTaskPublisher,
 		characterImageTaskBatchPublisher,
+		authServiceClient,
 		logger,
 		// Но слушаем другую очередь:
 		cfg.ImageGeneratorResultQueue,

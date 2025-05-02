@@ -567,33 +567,35 @@ func (p *NotificationProcessor) publishPushNotificationForScene(ctx context.Cont
 	locArgs := map[string]string{
 		constants.PushLocArgStoryTitle: storyTitle,
 	}
-	fallbackBody := "Новая сцена готова!"
+	fallbackTitle := "New Scene"
+	fallbackBody := "New scene ready!"
 
 	if gameState.PlayerStatus == sharedModels.PlayerStatusCompleted {
 		locKey = constants.PushLocKeyGameOver
-		endingText := "Вы достигли финала истории."
+		endingText := "You have reached the end of the story."
 		if gameState.EndingText != nil && *gameState.EndingText != "" {
 			endingText = *gameState.EndingText
 		}
 		locArgs[constants.PushLocArgEndingText] = endingText
-		fallbackBody = fmt.Sprintf("История \"%s\" завершена.", storyTitle)
+		fallbackTitle = "Game Over!"
+		fallbackBody = fmt.Sprintf("The story \"%s\" has ended.", storyTitle)
 	}
 
 	// Собираем все данные в одну карту
 	data := map[string]string{
-		"publishedStoryId": publishedStoryID.String(),
+		"publishedStoryId": gameState.PublishedStoryID.String(),
 		"gameStateId":      gameState.ID.String(),
 		"sceneId":          scene.ID.String(),
 		"eventType":        "scene_ready",
 		// Локализация
 		constants.PushLocKey: locKey,
-		// Fallback текст
-		constants.PushFallbackTitleKey: storyTitle,
+		// Fallback текст (на английском)
+		constants.PushFallbackTitleKey: fallbackTitle,
 		constants.PushFallbackBodyKey:  fallbackBody,
 	}
 	// Добавляем аргументы локализации
 	for key, value := range locArgs {
-		data[key] = value // Ключи уже правильные (PushLocArgStoryTitle, PushLocArgEndingText)
+		data[key] = value
 	}
 
 	// Сначала парсим UserID из строки в UUID
@@ -649,16 +651,41 @@ func (p *NotificationProcessor) publishPushNotificationForStoryReady(ctx context
 		storyTitle = *story.Title
 	}
 
-	// <<< ИЗМЕНЕНИЕ: Заполняем Data, включая fallback >>>
+	// <<< ДОБАВЛЕНО: Получение имени автора >>>
+	authorName := "Unknown Author"
+	if p.authClient != nil {
+		authCtx, cancel := context.WithTimeout(ctx, 5*time.Second) // Таймаут для запроса к auth
+		userInfoMap, err := p.authClient.GetUsersInfo(authCtx, []uuid.UUID{story.UserID})
+		cancel()
+		if err != nil {
+			p.logger.Error("Failed to get author info map for push notification (story ready)", zap.Stringer("userID", story.UserID), zap.Error(err))
+		} else if userInfo, ok := userInfoMap[story.UserID]; ok { // <<< ИЗМЕНЕНО: Проверяем наличие в карте >>>
+			if userInfo.DisplayName != "" {
+				authorName = userInfo.DisplayName
+			} else {
+				authorName = userInfo.Username
+			}
+		} else {
+			p.logger.Warn("Author info not found in map from auth service for push notification (story ready)", zap.Stringer("userID", story.UserID))
+		}
+	} else {
+		p.logger.Warn("authClient is nil in NotificationProcessor, cannot fetch author name for push notification")
+	}
+	// <<< КОНЕЦ: Получение имени автора >>>
+
+	// Собираем все данные для payload
 	data := map[string]string{
 		"publishedStoryId": story.ID.String(),
 		"eventType":        string(sharedModels.StatusReady),
 		// Локализация
 		constants.PushLocKey:           constants.PushLocKeyStoryReady,
 		constants.PushLocArgStoryTitle: storyTitle,
-		// Fallback текст
-		constants.PushFallbackTitleKey: "История готова!",
-		constants.PushFallbackBodyKey:  fmt.Sprintf("Ваша история \"%s\" готова к игре!", storyTitle),
+		// Fallback текст (на английском)
+		constants.PushFallbackTitleKey: "Story Ready!",
+		constants.PushFallbackBodyKey:  fmt.Sprintf("Your story \"%s\" is ready to play!", storyTitle),
+		// Дополнительные данные
+		"title":      storyTitle,
+		"authorName": authorName,
 	}
 
 	payload := PushNotificationPayload{

@@ -20,7 +20,7 @@ import (
 	"novel-server/gameplay-service/internal/config" // <<< ИЗМЕНЕНО: Правильный путь к конфигу >>>
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5" // Needed for unique constraint error check
 	"go.uber.org/zap"
 )
 
@@ -64,19 +64,15 @@ type GameLoopService interface {
 	// DeletePlayerGameState deletes a specific game state (save slot) by its ID.
 	DeletePlayerGameState(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID) error
 
-	// RetrySceneGeneration handles retrying scene generation, potentially needs gameStateID?
-	// TODO: Re-evaluate how retries work with multiple game states.
-	RetrySceneGeneration(ctx context.Context, storyID, userID uuid.UUID) error // <<< ОСТАВЛЕНО ПОКА КАК ЕСТЬ
+	// RetryGenerationForGameState handles retrying generation for a specific game state.
+	// It determines if setup or scene generation failed and triggers the appropriate task.
+	RetryGenerationForGameState(ctx context.Context, userID, storyID, gameStateID uuid.UUID) error // <<< НОВЫЙ МЕТОД >>>
 
 	// UpdateSceneInternal updates the content of a specific scene (internal admin func).
 	UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error
 
 	// GetOrCreatePlayerGameState - DEPRECATED, use CreateNewGameState and ListGameStates.
 	// GetOrCreatePlayerGameState(ctx context.Context, playerID, storyID uuid.UUID) (*sharedModels.PlayerGameState, error)
-
-	// RetryStoryGeneration handles retrying story setup/scene generation.
-	// TODO: Re-evaluate how retries work with multiple game states.
-	RetryStoryGeneration(ctx context.Context, storyID, userID uuid.UUID) error // <<< ОСТАВЛЕНО ПОКА КАК ЕСТЬ
 
 	// GetPlayerProgress retrieves the progress node linked to a specific game state ID.
 	GetPlayerProgress(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID) (*sharedModels.PlayerProgress, error)
@@ -89,6 +85,9 @@ type GameLoopService interface {
 
 	// DeleteAllPlayerGameStatesForStory deletes all game states for a specific player and story.
 	// DeleteAllPlayerGameStatesForStory(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) error // <<< УЖЕ ЗАКОММЕНТИРОВАНО, УДАЛЯЕМ
+
+	// RetryInitialGeneration handles retrying generation for a published story's Setup or Initial Scene.
+	RetryInitialGeneration(ctx context.Context, userID, storyID uuid.UUID) error // <<< НОВЫЙ МЕТОД >>>
 }
 
 type gameLoopServiceImpl struct {
@@ -642,26 +641,230 @@ func (s *gameLoopServiceImpl) DeletePlayerGameState(ctx context.Context, userID 
 	return nil
 }
 
-// RetrySceneGeneration handles the logic for retrying generation for a published story.
-// TODO: Re-evaluate how retries work with multiple game states.
-func (s *gameLoopServiceImpl) RetrySceneGeneration(ctx context.Context, storyID, userID uuid.UUID) error {
-	log := s.logger.With(zap.String("publishedStoryID", storyID.String()), zap.String("userID", userID.String()))
-	log.Info("RetrySceneGeneration called")
+// RetryGenerationForGameState handles retrying generation for a specific game state.
+func (s *gameLoopServiceImpl) RetryGenerationForGameState(ctx context.Context, userID, storyID, gameStateID uuid.UUID) error {
+	log := s.logger.With(
+		zap.String("gameStateID", gameStateID.String()),
+		zap.String("publishedStoryID", storyID.String()),
+		zap.Stringer("userID", userID),
+	)
+	log.Info("RetryGenerationForGameState called")
 
-	// ... (Логика RetrySceneGeneration остается пока без изменений, требует пересмотра) ...
-	// ...
-	return fmt.Errorf("RetrySceneGeneration not yet adapted for multiple game states")
-}
+	// 1. Get the target game state
+	gameState, errState := s.playerGameStateRepo.GetByID(ctx, gameStateID)
+	if errState != nil {
+		if errors.Is(errState, sharedModels.ErrNotFound) || errors.Is(errState, pgx.ErrNoRows) {
+			log.Warn("Player game state not found for retry")
+			return sharedModels.ErrPlayerGameStateNotFound
+		}
+		log.Error("Failed to get player game state for retry", zap.Error(errState))
+		return sharedModels.ErrInternalServer
+	}
 
-// RetryStoryGeneration handles the logic for retrying generation for a published story.
-// TODO: Re-evaluate how retries work with multiple game states.
-func (s *gameLoopServiceImpl) RetryStoryGeneration(ctx context.Context, storyID, userID uuid.UUID) error {
-	log := s.logger.With(zap.String("publishedStoryID", storyID.String()), zap.String("userID", userID.String()))
-	log.Info("RetryStoryGeneration called")
+	// 2. Verify ownership
+	if gameState.PlayerID != userID {
+		log.Warn("User attempted to retry game state they do not own", zap.Stringer("ownerID", gameState.PlayerID))
+		return sharedModels.ErrForbidden
+	}
 
-	// ... (Логика RetryStoryGeneration остается пока без изменений, требует пересмотра) ...
-	// ...
-	return fmt.Errorf("RetryStoryGeneration not yet adapted for multiple game states")
+	// 3. Check current game state status (should be Error, maybe GeneratingScene if worker died)
+	if gameState.PlayerStatus != sharedModels.PlayerStatusError && gameState.PlayerStatus != sharedModels.PlayerStatusGeneratingScene {
+		log.Warn("Attempt to retry generation for game state not in Error or GeneratingScene status", zap.String("status", string(gameState.PlayerStatus)))
+		return sharedModels.ErrCannotRetry // Or a more specific error
+	}
+	if gameState.PlayerStatus == sharedModels.PlayerStatusGeneratingScene {
+		log.Warn("Retrying generation for game state still marked as GeneratingScene. Worker might have failed unexpectedly.")
+	}
+
+	// 4. Get the associated Published Story
+	// Use gameState.PublishedStoryID which should be the same as the input storyID
+	publishedStory, errStory := s.publishedRepo.GetByID(ctx, gameState.PublishedStoryID)
+	if errStory != nil {
+		if errors.Is(errStory, pgx.ErrNoRows) {
+			log.Error("Published story linked to game state not found", zap.String("storyID", gameState.PublishedStoryID.String()), zap.Error(errStory))
+			return sharedModels.ErrStoryNotFound // Data inconsistency
+		}
+		log.Error("Failed to get published story for retry", zap.Error(errStory))
+		return sharedModels.ErrInternalServer
+	}
+
+	// 5. Check if Setup exists (essential for scene generation)
+	setupExists := publishedStory.Setup != nil && string(publishedStory.Setup) != "null"
+
+	if !setupExists {
+		// --- Setup generation failed or was never completed ---
+		// This is unusual if a game state already exists, but handle it defensively.
+		log.Warn("Retrying generation, but published story setup is missing. Attempting setup retry.", zap.String("storyStatus", string(publishedStory.Status)))
+
+		if publishedStory.Config == nil {
+			log.Error("CRITICAL: Story Config is nil, cannot retry Setup generation.")
+			// Update game state to Error to prevent further retries?
+			gameState.PlayerStatus = sharedModels.PlayerStatusError
+			errMsg := "Cannot retry: Story Config is missing"
+			gameState.ErrorDetails = &errMsg
+			if _, saveErr := s.playerGameStateRepo.Save(ctx, gameState); saveErr != nil {
+				log.Error("Failed to update game state to Error after discovering missing config", zap.Error(saveErr))
+			}
+			return sharedModels.ErrInternalServer // Cannot proceed
+		}
+
+		// Update PublishedStory status back to SetupPending (if it was Error)
+		// We don't touch the game state status here yet.
+		if publishedStory.Status == sharedModels.StatusError {
+			if err := s.publishedRepo.UpdateStatusFlagsAndDetails(ctx, publishedStory.ID, sharedModels.StatusSetupPending, false, false, nil); err != nil {
+				log.Error("Failed to update story status to SetupPending before setup retry task publish", zap.Error(err))
+				// Don't necessarily fail the game state retry yet, maybe setup task publish will succeed.
+			} else {
+				log.Info("Updated PublishedStory status to SetupPending for setup retry")
+			}
+		}
+
+		// Create and publish Setup task payload
+		taskID := uuid.New().String()
+		configJSONString := string(publishedStory.Config)
+		setupPayload := sharedMessaging.GenerationTaskPayload{
+			TaskID:           taskID,
+			UserID:           publishedStory.UserID.String(), // Use UserID from the story
+			PromptType:       sharedModels.PromptTypeNovelSetup,
+			UserInput:        configJSONString,
+			PublishedStoryID: publishedStory.ID.String(),
+			Language:         publishedStory.Language,
+			// GameStateID is not relevant for setup task
+		}
+
+		if errPub := s.publisher.PublishGenerationTask(ctx, setupPayload); errPub != nil {
+			log.Error("Error publishing retry setup generation task", zap.Error(errPub))
+			// If publishing failed, maybe revert story status? Or just return error?
+			// Let's return an error, the caller might try again.
+			return sharedModels.ErrInternalServer
+		}
+
+		log.Info("Retry setup generation task published successfully", zap.String("taskID", taskID))
+		// Even though we retried setup, the game state remains (maybe in Error).
+		// The user needs to wait for setup and then potentially retry the game state again if the initial scene fails later.
+		return nil // Indicate setup retry was initiated.
+
+	} else {
+		// --- Setup exists, proceed with Scene generation retry ---
+		log.Info("Setup exists, proceeding with scene generation retry for the game state")
+
+		// Check/Generate setup images (async, doesn't block retry)
+		// TODO: Consider potential race conditions if multiple retries happen quickly.
+		go func(bgCtx context.Context) {
+			_, errImages := s.checkAndGenerateSetupImages(bgCtx, publishedStory, publishedStory.Setup, userID)
+			if errImages != nil {
+				s.logger.Error("Error during background checkAndGenerateSetupImages in scene retry",
+					zap.String("publishedStoryID", publishedStory.ID.String()),
+					zap.String("gameStateID", gameStateID.String()),
+					zap.Error(errImages))
+			}
+		}(context.WithoutCancel(ctx)) // Run in background with independent context
+
+		// 6. Determine if it's the initial scene or a subsequent scene
+		if gameState.PlayerProgressID == nil {
+			// This shouldn't happen if status is Error/GeneratingScene and setup exists, indicates inconsistency.
+			log.Error("CRITICAL: GameState is in Error/Generating but PlayerProgressID is nil. Cannot determine scene type.")
+			gameState.PlayerStatus = sharedModels.PlayerStatusError // Ensure it's Error
+			errMsg := "Cannot retry: Inconsistent state (missing PlayerProgressID)"
+			gameState.ErrorDetails = &errMsg
+			if _, saveErr := s.playerGameStateRepo.Save(ctx, gameState); saveErr != nil {
+				log.Error("Failed to update game state to Error after discovering missing progress ID", zap.Error(saveErr))
+			}
+			return sharedModels.ErrInternalServer
+		}
+
+		// Get the progress node associated with the game state
+		progress, errProgress := s.playerProgressRepo.GetByID(ctx, *gameState.PlayerProgressID)
+		if errProgress != nil {
+			log.Error("Failed to get PlayerProgress node linked to game state for retry", zap.String("progressID", gameState.PlayerProgressID.String()), zap.Error(errProgress))
+			// Update game state to Error?
+			return sharedModels.ErrInternalServer
+		}
+
+		// Update GameState status to GeneratingScene before publishing task
+		gameState.PlayerStatus = sharedModels.PlayerStatusGeneratingScene
+		gameState.ErrorDetails = nil                // Clear previous error
+		gameState.LastActivityAt = time.Now().UTC() // Update activity time
+		if _, errSave := s.playerGameStateRepo.Save(ctx, gameState); errSave != nil {
+			log.Error("Failed to update game state status to GeneratingScene before retry task publish", zap.Error(errSave))
+			return sharedModels.ErrInternalServer
+		}
+		log.Info("Updated game state status to GeneratingScene")
+
+		if progress.CurrentStateHash == sharedModels.InitialStateHash {
+			// --- Retrying Initial Scene ---
+			log.Info("Retrying initial scene generation for game state", zap.String("initialHash", sharedModels.InitialStateHash))
+
+			generationPayload, errPayload := createInitialSceneGenerationPayload(userID, publishedStory)
+			if errPayload != nil {
+				log.Error("Failed to create initial generation payload for scene retry", zap.Error(errPayload))
+				// Attempt to roll back game state status?
+				gameState.PlayerStatus = sharedModels.PlayerStatusError
+				errMsg := fmt.Sprintf("Failed to create initial generation payload: %v", errPayload)
+				gameState.ErrorDetails = &errMsg
+				if _, saveErr := s.playerGameStateRepo.Save(context.Background(), gameState); saveErr != nil { // Use background context for rollback attempt
+					log.Error("Failed to roll back game state status after initial payload creation error", zap.Error(saveErr))
+				}
+				return sharedModels.ErrInternalServer
+			}
+			generationPayload.GameStateID = gameStateID.String() // Add the specific game state ID
+
+			if errPub := s.publisher.PublishGenerationTask(ctx, generationPayload); errPub != nil {
+				log.Error("Error publishing initial scene retry generation task", zap.Error(errPub))
+				// Attempt to roll back game state status?
+				gameState.PlayerStatus = sharedModels.PlayerStatusError
+				errMsg := fmt.Sprintf("Failed to publish initial generation task: %v", errPub)
+				gameState.ErrorDetails = &errMsg
+				if _, saveErr := s.playerGameStateRepo.Save(context.Background(), gameState); saveErr != nil {
+					log.Error("Failed to roll back game state status after initial scene retry publish error", zap.Error(saveErr))
+				}
+				return sharedModels.ErrInternalServer
+			}
+			log.Info("Initial scene retry generation task published successfully", zap.String("taskID", generationPayload.TaskID))
+			return nil
+
+		} else {
+			// --- Retrying Subsequent Scene ---
+			log.Info("Retrying subsequent scene generation for game state", zap.String("stateHash", progress.CurrentStateHash))
+
+			madeChoicesInfo := []sharedModels.UserChoiceInfo{} // No choices info on retry
+			generationPayload, errGenPayload := createGenerationPayload(
+				userID,
+				publishedStory,
+				progress,
+				gameState, // Pass the actual game state object
+				madeChoicesInfo,
+				progress.CurrentStateHash, // Retry for the hash in the progress node
+			)
+			if errGenPayload != nil {
+				log.Error("Failed to create generation payload for scene retry", zap.Error(errGenPayload))
+				// Attempt to roll back game state status?
+				gameState.PlayerStatus = sharedModels.PlayerStatusError
+				errMsg := fmt.Sprintf("Failed to create generation payload: %v", errGenPayload)
+				gameState.ErrorDetails = &errMsg
+				if _, saveErr := s.playerGameStateRepo.Save(context.Background(), gameState); saveErr != nil {
+					log.Error("Failed to roll back game state status after payload creation error", zap.Error(saveErr))
+				}
+				return sharedModels.ErrInternalServer
+			}
+			generationPayload.GameStateID = gameStateID.String() // Add the specific game state ID
+
+			if errPub := s.publisher.PublishGenerationTask(ctx, generationPayload); errPub != nil {
+				log.Error("Error publishing retry scene generation task", zap.Error(errPub))
+				// Attempt to roll back game state status?
+				gameState.PlayerStatus = sharedModels.PlayerStatusError
+				errMsg := fmt.Sprintf("Failed to publish generation task: %v", errPub)
+				gameState.ErrorDetails = &errMsg
+				if _, saveErr := s.playerGameStateRepo.Save(context.Background(), gameState); saveErr != nil {
+					log.Error("Failed to roll back game state status after scene retry publish error", zap.Error(saveErr))
+				}
+				return sharedModels.ErrInternalServer
+			}
+
+			log.Info("Retry scene generation task published successfully", zap.String("taskID", generationPayload.TaskID))
+			return nil
+		}
+	}
 }
 
 // GetPlayerProgress retrieves the player's current progress node based on their game state ID.
@@ -1527,4 +1730,163 @@ func (s *gameLoopServiceImpl) UpdateSceneInternal(ctx context.Context, sceneID u
 
 	log.Info("Scene content updated successfully by internal request")
 	return nil
+}
+
+// RetryInitialGeneration handles retrying generation for a published story's Setup or Initial Scene.
+func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID, storyID uuid.UUID) error {
+	log := s.logger.With(
+		zap.String("publishedStoryID", storyID.String()),
+		zap.Stringer("userID", userID),
+	)
+	log.Info("RetryInitialGeneration called")
+
+	// 1. Get the Published Story
+	publishedStory, errStory := s.publishedRepo.GetByID(ctx, storyID)
+	if errStory != nil {
+		if errors.Is(errStory, pgx.ErrNoRows) || errors.Is(errStory, sharedModels.ErrNotFound) {
+			log.Warn("Published story not found for initial retry")
+			return sharedModels.ErrStoryNotFound
+		}
+		log.Error("Failed to get published story for initial retry", zap.Error(errStory))
+		return sharedModels.ErrInternalServer
+	}
+
+	// 2. Verify ownership (important!)
+	if publishedStory.UserID != userID {
+		// Allow admins to retry any story? Or strict ownership? Let's assume strict for now.
+		// TODO: Revisit admin retry permissions if needed.
+		log.Warn("User attempted to retry initial generation for a story they do not own", zap.Stringer("ownerID", publishedStory.UserID))
+		return sharedModels.ErrForbidden
+	}
+
+	// 3. Check if Setup exists
+	setupExists := publishedStory.Setup != nil && string(publishedStory.Setup) != "null"
+
+	if !setupExists {
+		// --- Case 1: Setup generation failed or never completed ---
+		log.Info("Setup is missing, attempting Setup retry.")
+
+		// Check if story status allows setup retry (e.g., was Error)
+		if publishedStory.Status != sharedModels.StatusError && publishedStory.Status != sharedModels.StatusSetupPending {
+			log.Warn("Attempting setup retry, but story status is not Error or SetupPending", zap.String("status", string(publishedStory.Status)))
+			// Allow retry even if status isn't Error, maybe it got stuck in SetupPending?
+			// return sharedModels.ErrCannotRetry
+		}
+
+		if publishedStory.Config == nil {
+			log.Error("CRITICAL: Story Config is nil, cannot retry Setup generation.")
+			// Update story status to Error?
+			if publishedStory.Status != sharedModels.StatusError {
+				errMsg := "Cannot retry Setup: Story Config is missing"
+				if err := s.publishedRepo.UpdateStatusFlagsAndDetails(ctx, publishedStory.ID, sharedModels.StatusError, false, false, &errMsg); err != nil {
+					log.Error("Failed to update story status to Error after discovering missing config", zap.Error(err))
+				}
+			}
+			return sharedModels.ErrInternalServer // Cannot proceed
+		}
+
+		// Update PublishedStory status to SetupPending
+		if err := s.publishedRepo.UpdateStatusFlagsAndDetails(ctx, publishedStory.ID, sharedModels.StatusSetupPending, false, false, nil); err != nil {
+			log.Error("Failed to update story status to SetupPending before setup retry task publish", zap.Error(err))
+			// Continue anyway, maybe publish will succeed
+		} else {
+			log.Info("Updated PublishedStory status to SetupPending for setup retry")
+		}
+
+		// Create and publish Setup task payload
+		taskID := uuid.New().String()
+		configJSONString := string(publishedStory.Config)
+		setupPayload := sharedMessaging.GenerationTaskPayload{
+			TaskID:           taskID,
+			UserID:           publishedStory.UserID.String(), // Use UserID from the story
+			PromptType:       sharedModels.PromptTypeNovelSetup,
+			UserInput:        configJSONString,
+			PublishedStoryID: publishedStory.ID.String(),
+			Language:         publishedStory.Language,
+		}
+
+		if errPub := s.publisher.PublishGenerationTask(ctx, setupPayload); errPub != nil {
+			log.Error("Error publishing retry setup generation task", zap.Error(errPub))
+			// Attempt to roll back status?
+			errMsg := fmt.Sprintf("Failed to publish setup generation task: %v", errPub)
+			if err := s.publishedRepo.UpdateStatusFlagsAndDetails(context.Background(), publishedStory.ID, sharedModels.StatusError, false, false, &errMsg); err != nil {
+				log.Error("Failed to roll back story status to Error after setup retry publish error", zap.Error(err))
+			}
+			return sharedModels.ErrInternalServer
+		}
+
+		log.Info("Retry setup generation task published successfully", zap.String("taskID", taskID))
+		return nil // Indicate setup retry was initiated.
+
+	} else {
+		// --- Case 2: Setup exists, check for Initial Scene failure ---
+		log.Info("Setup exists, checking for initial scene failure.")
+
+		// Find the player's game state(s) for this story
+		gameStates, errList := s.playerGameStateRepo.ListByPlayerAndStory(ctx, userID, storyID)
+		if errList != nil {
+			log.Error("Failed to list game states for initial scene retry check", zap.Error(errList))
+			return sharedModels.ErrInternalServer
+		}
+
+		if len(gameStates) == 0 {
+			// No game state exists yet. This implies the user hasn't started playing.
+			// If the story status IS Error, maybe the error happened *before* state creation? Unlikely.
+			// If the story status is Ready, maybe the user just hasn't played?
+			// Or maybe the initial CreateNewGameState failed?
+			log.Warn("Setup exists, but no game state found for user/story during initial retry check.")
+			// What should happen? Maybe create the initial game state now?
+			// For now, let's return an error indicating nothing specific to retry at the state level.
+			return fmt.Errorf("%w: no game state found to retry for initial scene", sharedModels.ErrNotFound)
+		}
+
+		// Based on current logic (1 slot per user/story), we expect exactly one state.
+		if len(gameStates) > 1 {
+			log.Warn("Found multiple game states for user/story during initial retry check. Using the first one found.", zap.Int("count", len(gameStates)))
+			// TODO: When multi-slot is implemented, need better logic to find the 'initial' or 'target' state.
+		}
+
+		targetGameState := gameStates[0] // Assume the first one is the one we need
+
+		// Check if this game state corresponds to the *initial* progress
+		if targetGameState.PlayerProgressID == nil {
+			log.Error("CRITICAL: Game state exists but PlayerProgressID is nil during initial retry check.", zap.String("gameStateID", targetGameState.ID.String()))
+			return sharedModels.ErrInternalServer // Inconsistent state
+		}
+
+		progress, errProgress := s.playerProgressRepo.GetByID(ctx, *targetGameState.PlayerProgressID)
+		if errProgress != nil {
+			log.Error("Failed to get PlayerProgress linked to game state for initial retry check", zap.String("progressID", targetGameState.PlayerProgressID.String()), zap.Error(errProgress))
+			return sharedModels.ErrInternalServer
+		}
+
+		if progress.CurrentStateHash != sharedModels.InitialStateHash {
+			log.Warn("Found game state is not linked to the initial progress hash during initial retry check.", zap.String("gameStateID", targetGameState.ID.String()), zap.String("progressHash", progress.CurrentStateHash))
+			// This means the player has already progressed past the initial scene.
+			// The story-level retry shouldn't attempt to retry the initial scene in this case.
+			// The user should use the game-state-specific retry endpoint if a later scene failed.
+			return fmt.Errorf("%w: game state is not at the initial scene, cannot perform initial retry", sharedModels.ErrCannotRetry)
+		}
+
+		// We found the initial game state. Check its status.
+		if targetGameState.PlayerStatus != sharedModels.PlayerStatusError && targetGameState.PlayerStatus != sharedModels.PlayerStatusGeneratingScene {
+			log.Warn("Initial game state found, but its status is not Error or GeneratingScene.", zap.String("gameStateID", targetGameState.ID.String()), zap.String("status", string(targetGameState.PlayerStatus)))
+			// Nothing to retry for this specific state.
+			return fmt.Errorf("%w: initial game state status is '%s', nothing to retry", sharedModels.ErrCannotRetry, targetGameState.PlayerStatus)
+		}
+
+		// --- All checks passed: Retry the initial scene for this game state ---
+		log.Info("Initial game state found in error/generating status. Initiating retry via RetryGenerationForGameState.", zap.String("gameStateID", targetGameState.ID.String()))
+
+		// Call the specific retry function for this game state
+		errRetry := s.RetryGenerationForGameState(ctx, userID, storyID, targetGameState.ID)
+		if errRetry != nil {
+			log.Error("Error occurred during call to RetryGenerationForGameState for initial scene", zap.Error(errRetry))
+			// Return the error from the specific retry function
+			return errRetry
+		}
+
+		log.Info("Initial scene retry initiated successfully via RetryGenerationForGameState.")
+		return nil
+	}
 }

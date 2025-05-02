@@ -76,7 +76,8 @@ type GameplayService interface {
 	GetStoryScene(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error)
 	MakeChoice(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID, selectedOptionIndices []int) error
 	DeletePlayerGameState(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
-	RetryStoryGeneration(ctx context.Context, storyID, userID uuid.UUID) error
+	RetryInitialGeneration(ctx context.Context, userID, storyID uuid.UUID) error
+	RetryGenerationForGameState(ctx context.Context, userID, storyID, gameStateID uuid.UUID) error
 
 	// ListMyDrafts (duplicated?) - Keep for now, handled by DraftService
 	// ListMyDrafts(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.StoryConfig, string, error)
@@ -328,14 +329,44 @@ func (s *gameplayServiceImpl) DeletePlayerGameState(ctx context.Context, userID 
 	return s.gameLoopService.DeletePlayerGameState(ctx, userID, publishedStoryID)
 }
 
-// RetryStoryGeneration delegates to GameLoopService.
-func (s *gameplayServiceImpl) RetryStoryGeneration(ctx context.Context, storyID, userID uuid.UUID) error {
-	return s.gameLoopService.RetryStoryGeneration(ctx, storyID, userID)
+// RetryInitialGeneration delegates to GameLoopService.
+func (s *gameplayServiceImpl) RetryInitialGeneration(ctx context.Context, userID, storyID uuid.UUID) error {
+	return s.gameLoopService.RetryInitialGeneration(ctx, userID, storyID)
+}
+
+// RetryGenerationForGameState delegates to GameLoopService.
+func (s *gameplayServiceImpl) RetryGenerationForGameState(ctx context.Context, userID, storyID, gameStateID uuid.UUID) error {
+	return s.gameLoopService.RetryGenerationForGameState(ctx, userID, storyID, gameStateID)
 }
 
 // GetPlayerProgress delegates to GameLoopService.
 func (s *gameplayServiceImpl) GetPlayerProgress(ctx context.Context, userID, storyID uuid.UUID) (*sharedModels.PlayerProgress, error) {
 	return s.gameLoopService.GetPlayerProgress(ctx, userID, storyID)
+}
+
+// UpdateSceneInternal delegates to GameLoopService.
+func (s *gameplayServiceImpl) UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error {
+	return s.gameLoopService.UpdateSceneInternal(ctx, sceneID, contentJSON)
+}
+
+// DeleteSceneInternal delegates to GameLoopService.
+func (s *gameplayServiceImpl) DeleteSceneInternal(ctx context.Context, sceneID uuid.UUID) error {
+	return s.gameLoopService.DeleteSceneInternal(ctx, sceneID)
+}
+
+// UpdatePlayerProgressInternal delegates to GameLoopService.
+func (s *gameplayServiceImpl) UpdatePlayerProgressInternal(ctx context.Context, progressID uuid.UUID, progressData map[string]interface{}) error {
+	return s.gameLoopService.UpdatePlayerProgressInternal(ctx, progressID, progressData)
+}
+
+// ListGameStates delegates to GameLoopService.
+func (s *gameplayServiceImpl) ListGameStates(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) ([]*sharedModels.PlayerGameState, error) {
+	return s.gameLoopService.ListGameStates(ctx, playerID, publishedStoryID)
+}
+
+// CreateNewGameState delegates to GameLoopService.
+func (s *gameplayServiceImpl) CreateNewGameState(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) (*sharedModels.PlayerGameState, error) {
+	return s.gameLoopService.CreateNewGameState(ctx, playerID, publishedStoryID)
 }
 
 // === Конец делегированных методов GameLoopService ===
@@ -368,18 +399,7 @@ func (s *gameplayServiceImpl) UpdateStoryInternal(ctx context.Context, storyID u
 	return s.storyBrowsingService.UpdateStoryInternal(ctx, storyID, configJSON, setupJSON, status)
 }
 
-// UpdateSceneInternal delegates to GameLoopService.
-func (s *gameplayServiceImpl) UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error {
-	return s.gameLoopService.UpdateSceneInternal(ctx, sceneID, contentJSON)
-}
-
-// <<< ДОБАВЛЕНО: Метод для удаления сцены админкой >>>
-func (s *gameplayServiceImpl) DeleteSceneInternal(ctx context.Context, sceneID uuid.UUID) error {
-	// Implementation of DeleteSceneInternal method
-	return s.gameLoopService.DeleteSceneInternal(ctx, sceneID)
-}
-
-// <<< Новый метод для удаления черновика >>>
+// <<< ДОБАВЛЕНО: Метод для удаления черновика >>>
 func (s *gameplayServiceImpl) DeleteDraft(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
 	// Implementation of DeleteDraft method
 	return s.draftService.DeleteDraft(ctx, id, userID)
@@ -438,13 +458,10 @@ func (s *gameplayServiceImpl) ListPublishedStoriesPublic(ctx context.Context, us
 	return results, nextCursor, nil
 }
 
-// GetStoriesWithProgress deleгирует вызов StoryBrowsingService
+// GetStoriesWithProgress делегирует вызов StoryBrowsingService
 func (s *gameplayServiceImpl) GetStoriesWithProgress(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]sharedModels.PublishedStorySummaryWithProgress, string, error) {
 	return s.storyBrowsingService.GetStoriesWithProgress(ctx, userID, limit, cursor)
 }
-
-// ListMyPublishedStories retrieves a list of stories published by the user.
-// ... existing code ...
 
 // <<< ДОБАВЛЕНО: Метод для получения списка состояний игроков админкой >>>
 func (s *gameplayServiceImpl) ListStoryPlayersInternal(ctx context.Context, storyID uuid.UUID) ([]sharedModels.PlayerGameState, error) {
@@ -470,12 +487,6 @@ func (s *gameplayServiceImpl) GetPlayerProgressInternal(ctx context.Context, pro
 	return progress, nil
 }
 
-// <<< ДОБАВЛЕНО: Реализация UpdatePlayerProgressInternal через делегирование >>>
-func (s *gameplayServiceImpl) UpdatePlayerProgressInternal(ctx context.Context, progressID uuid.UUID, progressData map[string]interface{}) error {
-	// Делегируем вызов gameLoopService
-	return s.gameLoopService.UpdatePlayerProgressInternal(ctx, progressID, progressData)
-}
-
 // GetActiveStoryCount делегирует вызов встроенному storyBrowsingService.
 func (s *gameplayServiceImpl) GetActiveStoryCount(ctx context.Context) (int, error) {
 	// <<< ИСПРАВЛЕНО: Возвращаем делегирование storyBrowsingService >>>
@@ -486,37 +497,3 @@ func (s *gameplayServiceImpl) GetActiveStoryCount(ctx context.Context) (int, err
 	}
 	return s.storyBrowsingService.GetActiveStoryCount(ctx)
 }
-
-// === Методы для управления состояниями игры (делегация GameLoopService) ===
-
-// ListGameStates delegates to GameLoopService.
-func (s *gameplayServiceImpl) ListGameStates(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) ([]*sharedModels.PlayerGameState, error) {
-	return s.gameLoopService.ListGameStates(ctx, playerID, publishedStoryID)
-}
-
-// CreateNewGameState delegates to GameLoopService.
-func (s *gameplayServiceImpl) CreateNewGameState(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) (*sharedModels.PlayerGameState, error) {
-	return s.gameLoopService.CreateNewGameState(ctx, playerID, publishedStoryID)
-}
-
-// --- Helper Functions moved to game_loop_service.go ---
-/*
-func calculateStateHash(previousHash string, coreStats map[string]int, storyVars map[string]interface{}, globalFlags []string) (string, error) {
-// ... (removed code) ...
-}
-
-func applyConsequences(progress *sharedModels.PlayerProgress, cons sharedModels.Consequences, setup *sharedModels.NovelSetupContent) (gameOverStat string, isGameOver bool) {
-// ... (removed code) ...
-}
-
-func createGenerationPayload(
-	userID uuid.UUID,
-	story *sharedModels.PublishedStory,
-	progress *sharedModels.PlayerProgress,
-	previousHash string,
-	nextStateHash string,
-	madeChoicesInfo []userChoiceInfo,
-) (sharedMessaging.GenerationTaskPayload, error) {
-// ... (removed code) ...
-}
-*/

@@ -163,6 +163,8 @@ func (h *GameplayHandler) RegisterRoutes(router gin.IRouter) {
 					gameStateSpecific.GET("/scene", h.getPublishedStoryScene)    // Получить текущую сцену
 					gameStateSpecific.POST("/choice", h.makeChoice)              // Сделать выбор
 					gameStateSpecific.DELETE("", h.deletePlayerGameStateHandler) // Удалить это сохранение
+					// <<< ДОБАВЛЕНО: Маршрут для ретрая конкретного состояния игры >>>
+					gameStateSpecific.POST("/retry", h.retrySpecificGameStateGeneration)
 				}
 			}
 		}

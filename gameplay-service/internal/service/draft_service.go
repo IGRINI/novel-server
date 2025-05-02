@@ -291,7 +291,7 @@ func (s *draftServiceImpl) ListUserDrafts(ctx context.Context, userID uuid.UUID,
 			return nil, "", err // Return the specific error
 		}
 		log.Error("Error listing user drafts from repository", zap.Error(err))
-		return nil, "", ErrInternal // Return a generic internal error
+		return nil, "", sharedModels.ErrInternalServer // Return a generic internal error
 	}
 
 	hasNextPage := len(configs) > limit
@@ -409,18 +409,18 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 			}
 		} else {
 			log.Error("Failed to unmarshal UserInput or UserInput is empty for retry", zap.Error(err))
-			return ErrInternal
+			return sharedModels.ErrInternalServer // Use shared error
 		}
 	} else {
 		log.Error("UserInput is nil for retry")
-		return ErrInternal
+		return sharedModels.ErrInternalServer // Use shared error
 	}
 
 	config.Status = sharedModels.StatusGenerating
 	config.UpdatedAt = time.Now().UTC()
 	if err := s.repo.Update(ctx, config); err != nil {
 		log.Error("Error updating draft status before retry task publish", zap.Error(err))
-		return ErrInternal
+		return sharedModels.ErrInternalServer // Use shared error
 	}
 
 	taskID := uuid.New().String()
@@ -440,7 +440,7 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 		if rollbackErr := s.repo.Update(context.Background(), config); rollbackErr != nil {
 			log.Error("CRITICAL: Failed to roll back status to Error after retry publish error", zap.Error(rollbackErr))
 		}
-		return ErrInternal
+		return sharedModels.ErrInternalServer // Use shared error
 	}
 
 	log.Info("Retry generation task published successfully", zap.String("taskID", taskID))

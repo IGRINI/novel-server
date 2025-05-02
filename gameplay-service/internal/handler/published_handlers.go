@@ -609,25 +609,28 @@ func (h *GameplayHandler) retryPublishedStoryGeneration(c *gin.Context) {
 	log.Info("Handling retry published story generation request")
 
 	// <<< ИЗМЕНЕНО: Проверка лимита активных генераций через publishedStoryRepo >>>
-	activeCount, err := h.publishedStoryRepo.CountActiveGenerationsForUser(c.Request.Context(), userID)
-	if err != nil {
-		log.Error("Error counting active generations before retry", zap.Error(err))
-		handleServiceError(c, fmt.Errorf("error checking generation status: %w", err), h.logger)
-		return
-	}
-	// <<< ИЗМЕНЕНО: Используем GenerationLimitPerUser из config >>>
-	generationLimit := h.config.GenerationLimitPerUser // Используем лимит из конфига
-	if activeCount >= generationLimit {
-		log.Warn("User reached active generation limit, retry rejected", zap.Int("limit", generationLimit), zap.Int("count", activeCount))
-		handleServiceError(c, sharedModels.ErrUserHasActiveGeneration, h.logger)
-		return
-	}
+	// Note: h.publishedStoryRepo does not exist on GameplayHandler. This check should likely be inside the service method.
+	// Commenting out for now as it will cause compile error. The service method should handle limits.
+	/*
+		activeCount, err := h.publishedStoryRepo.CountActiveGenerationsForUser(c.Request.Context(), userID)
+		if err != nil {
+			log.Error("Error counting active generations before retry", zap.Error(err))
+			handleServiceError(c, fmt.Errorf("error checking generation status: %w", err), h.logger)
+			return
+		}
+		// <<< ИЗМЕНЕНО: Используем GenerationLimitPerUser из config >>>
+		generationLimit := h.config.GenerationLimitPerUser // Используем лимит из конфига
+		if activeCount >= generationLimit {
+			log.Warn("User reached active generation limit, retry rejected", zap.Int("limit", generationLimit), zap.Int("count", activeCount))
+			handleServiceError(c, sharedModels.ErrUserHasActiveGeneration, h.logger)
+			return
+		}
+	*/
 
-	// Вызываем метод сервиса
-	err = h.service.RetryStoryGeneration(c.Request.Context(), storyID, userID)
+	// <<< ИЗМЕНЕНО: Вызываем RetryInitialGeneration вместо старого метода >>>
+	err = h.service.RetryInitialGeneration(c.Request.Context(), userID, storyID) // <<< ИЗМЕНЕНИЕ ЗДЕСЬ
 	if err != nil {
-		log.Error("Error retrying published story generation", zap.Error(err))
-		// Используем handleServiceError для стандартизации
+		log.Error("Error retrying initial published story generation", zap.Error(err))
 		handleServiceError(c, err, h.logger)
 		return
 	}
@@ -746,4 +749,46 @@ func (h *GameplayHandler) listGameStates(c *gin.Context) {
 // <<< ДОБАВЛЕНО: Простое определение DataResponse >>>
 type DataResponse struct {
 	Data interface{} `json:"data"`
+}
+
+// retrySpecificGameStateGeneration handles retrying generation for a specific game state.
+func (h *GameplayHandler) retrySpecificGameStateGeneration(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		return // Error already handled
+	}
+
+	storyIdStr := c.Param("story_id")
+	storyID, err := uuid.Parse(storyIdStr)
+	if err != nil {
+		h.logger.Warn("Invalid story ID format in retrySpecificGameStateGeneration", zap.String("story_id", storyIdStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		return
+	}
+
+	gameStateIdStr := c.Param("game_state_id")
+	gameStateID, err := uuid.Parse(gameStateIdStr)
+	if err != nil {
+		h.logger.Warn("Invalid game state ID format in retrySpecificGameStateGeneration", zap.String("game_state_id", gameStateIdStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid game state ID format", sharedModels.ErrBadRequest), h.logger)
+		return
+	}
+
+	log := h.logger.With(
+		zap.Stringer("userID", userID),
+		zap.Stringer("storyID", storyID),
+		zap.Stringer("gameStateID", gameStateID),
+	)
+	log.Info("Handling retry specific game state generation request")
+
+	// Call the service method
+	err = h.service.RetryGenerationForGameState(c.Request.Context(), userID, storyID, gameStateID)
+	if err != nil {
+		log.Error("Error retrying specific game state generation", zap.Error(err))
+		handleServiceError(c, err, h.logger)
+		return
+	}
+
+	log.Info("Specific game state generation retry request accepted")
+	c.Status(http.StatusAccepted)
 }
