@@ -165,6 +165,7 @@ func main() {
 		publishedRepo,
 		sceneRepo,
 		playerGameStateRepo,
+		playerProgressRepo,
 		imageReferenceRepo,
 		genResultRepo,
 		clientUpdatePublisher,
@@ -193,7 +194,8 @@ func main() {
 	imageResultConsumer, err := messaging.NewNotificationConsumer(
 		rabbitConn,
 		// Используем те же зависимости, что и для основного консьюмера
-		storyConfigRepo, publishedRepo, sceneRepo, playerGameStateRepo, imageReferenceRepo,
+		storyConfigRepo, publishedRepo, sceneRepo, playerGameStateRepo, playerProgressRepo,
+		imageReferenceRepo,
 		genResultRepo,
 		clientUpdatePublisher, taskPublisher, pushPublisher, characterImageTaskPublisher,
 		characterImageTaskBatchPublisher,

@@ -245,35 +245,29 @@ func (r *pgPlayerGameStateRepository) GetByID(ctx context.Context, id uuid.UUID)
 	return state, nil
 }
 
-// Delete removes the player's game state for a specific story.
-// ПРИМЕЧАНИЕ: Этот метод был переименован/заменен на DeleteByPlayerAndStory в интерфейсе,
-// но его логика может быть полезна или идентична.
-func (r *pgPlayerGameStateRepository) Delete(ctx context.Context, playerID, publishedStoryID uuid.UUID) error {
-	query := `DELETE FROM player_game_states WHERE player_id = $1 AND published_story_id = $2`
-	logFields := []zap.Field{
-		zap.String("playerID", playerID.String()),
-		zap.String("publishedStoryID", publishedStoryID.String()),
-	}
-	r.logger.Debug("Deleting player game state (using old Delete method name)", logFields...)
+// Delete removes a game state record by its unique ID.
+// Implements the interface method.
+func (r *pgPlayerGameStateRepository) Delete(ctx context.Context, gameStateID uuid.UUID) error {
+	logFields := []zap.Field{zap.String("gameStateID", gameStateID.String())}
+	query := `DELETE FROM player_game_states WHERE id = $1`
+	r.logger.Debug("Deleting player game state by ID", logFields...)
 
-	commandTag, err := r.db.Exec(ctx, query, playerID, publishedStoryID)
+	cmdTag, err := r.db.Exec(ctx, query, gameStateID)
 	if err != nil {
-		r.logger.Error("Failed to delete player game state", append(logFields, zap.Error(err))...)
-		return fmt.Errorf("ошибка удаления состояния игры: %w", err)
+		r.logger.Error("Failed to delete player game state by ID", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка удаления состояния игры по ID %s: %w", gameStateID, err)
 	}
 
-	if commandTag.RowsAffected() == 0 {
-		r.logger.Warn("Player game state not found for deletion", logFields...)
+	if cmdTag.RowsAffected() == 0 {
+		r.logger.Warn("Player game state not found for deletion by ID", logFields...)
 		return models.ErrNotFound
 	}
 
-	r.logger.Info("Player game state deleted successfully", logFields...)
+	r.logger.Info("Player game state deleted successfully by ID", logFields...)
 	return nil
 }
 
-// DeleteByPlayerAndStory removes the game state record for a specific player and story.
-// This is typically used when a player explicitly "resets" their progress for a story.
-// Returns nil if the record was deleted or did not exist.
+// Удаляем старый DeleteByPlayerAndStory, так как он больше не в интерфейсе - <<< ОШИБКА, МЕТОД НУЖЕН >>>
 func (r *pgPlayerGameStateRepository) DeleteByPlayerAndStory(ctx context.Context, playerID, publishedStoryID uuid.UUID) error {
 	query := `DELETE FROM player_game_states WHERE player_id = $1 AND published_story_id = $2`
 	logFields := []zap.Field{
@@ -290,15 +284,17 @@ func (r *pgPlayerGameStateRepository) DeleteByPlayerAndStory(ctx context.Context
 
 	if commandTag.RowsAffected() == 0 {
 		r.logger.Warn("Player game state not found for deletion by player and story", logFields...)
-		// Не возвращаем ошибку, если запись не найдена, как указано в комментарии интерфейса
-		return nil
+		// Не возвращаем ошибку, если запись не найдена, как указано в комментарии интерфейса (DEPRECATED)
+		// Вернем ErrNotFound для консистентности с Delete
+		return models.ErrNotFound
 	}
 
 	r.logger.Info("Player game state deleted successfully by player and story", logFields...)
 	return nil
 }
 
-// ListByStoryID retrieves all game states for a specific published story.
+// ListByStoryID retrieves all game states associated with a specific story ID.
+// Primarily for internal use (e.g., deleting related states when a story is deleted).
 func (r *pgPlayerGameStateRepository) ListByStoryID(ctx context.Context, publishedStoryID uuid.UUID) ([]models.PlayerGameState, error) {
 	query := `
         SELECT id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at
@@ -505,24 +501,70 @@ func (r *pgPlayerGameStateRepository) ListByPlayerAndStory(ctx context.Context, 
 	return states, nil
 }
 
-// DeleteByID removes a specific game state record by its ID.
-func (r *pgPlayerGameStateRepository) DeleteByID(ctx context.Context, gameStateID uuid.UUID) error {
-	query := `DELETE FROM player_game_states WHERE id = $1`
-	logFields := []zap.Field{zap.String("gameStateID", gameStateID.String())}
-	r.logger.Debug("Deleting player game state by ID", logFields...)
+// ListSummariesByPlayerAndStory retrieves a list of game state summaries (ID, LastActivityAt, SceneIndex)
+// for a specific player and story, joined with player_progress.
+// Returns an empty slice if no game states are found.
+func (r *pgPlayerGameStateRepository) ListSummariesByPlayerAndStory(ctx context.Context, userID, publishedStoryID uuid.UUID) ([]*models.GameStateSummaryDTO, error) {
+	logFields := []zap.Field{
+		zap.Stringer("userID", userID),
+		zap.Stringer("publishedStoryID", publishedStoryID),
+	}
+	r.logger.Debug("Listing game state summaries by player and story", logFields...)
 
-	commandTag, err := r.db.Exec(ctx, query, gameStateID)
+	query := `
+		SELECT
+		    pgs.id,              -- Game State ID
+		    pgs.last_activity_at,
+		    pp.scene_index,
+		    pp.current_scene_summary -- <<< ADDED: Select from player_progress
+		FROM
+		    player_game_states pgs
+		JOIN
+		    player_progress pp ON pgs.player_progress_id = pp.id
+		WHERE
+		    pgs.player_id = $1 AND pgs.published_story_id = $2
+		ORDER BY
+		    pgs.last_activity_at DESC -- Most recent first
+	`
+
+	rows, err := r.db.Query(ctx, query, userID, publishedStoryID)
 	if err != nil {
-		r.logger.Error("Failed to delete player game state by ID", append(logFields, zap.Error(err))...)
-		return fmt.Errorf("ошибка удаления состояния игры по ID: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			r.logger.Debug("No game state summaries found for player and story", logFields...)
+			return []*models.GameStateSummaryDTO{}, nil
+		}
+		r.logger.Error("Failed to query game state summaries", append(logFields, zap.Error(err))...)
+		return nil, fmt.Errorf("database error listing game state summaries: %w", err)
+	}
+	defer rows.Close()
+
+	summaries := make([]*models.GameStateSummaryDTO, 0)
+	for rows.Next() {
+		summary := &models.GameStateSummaryDTO{}
+		var sceneSummary *string // <<< ADDED: Variable to scan into
+		if err := rows.Scan(
+			&summary.ID,
+			&summary.LastActivityAt,
+			&summary.SceneIndex,
+			&sceneSummary, // <<< ADDED: Scan the summary
+		); err != nil {
+			r.logger.Error("Failed to scan game state summary row", append(logFields, zap.Error(err))...)
+			return nil, fmt.Errorf("error scanning game state summary: %w", err)
+		}
+		summary.CurrentSceneSummary = sceneSummary // <<< ADDED: Assign to DTO field
+		summaries = append(summaries, summary)
 	}
 
-	if commandTag.RowsAffected() == 0 {
-		r.logger.Warn("No player game state found to delete by ID", logFields...)
-		// Если запись не найдена по ID, это явная ошибка NotFound
-		return models.ErrNotFound
+	if err := rows.Err(); err != nil {
+		r.logger.Error("Error during iteration over game state summary rows", append(logFields, zap.Error(err))...)
+		return nil, fmt.Errorf("database error iterating game state summaries: %w", err)
 	}
 
-	r.logger.Info("Player game state deleted successfully by ID", logFields...)
-	return nil
+	r.logger.Debug("Successfully listed game state summaries", append(logFields, zap.Int("count", len(summaries)))...)
+	return summaries, nil
 }
+
+// --- Helper methods (internal) ---
+
+// scanPlayerGameState scans a single row into a PlayerGameState struct.
+// ... existing code ...

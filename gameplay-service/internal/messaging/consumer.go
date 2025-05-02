@@ -44,6 +44,7 @@ func NewNotificationConsumer(
 	publishedRepo sharedInterfaces.PublishedStoryRepository,
 	sceneRepo sharedInterfaces.StorySceneRepository,
 	gameStateRepo sharedInterfaces.PlayerGameStateRepository,
+	playerProgressRepo sharedInterfaces.PlayerProgressRepository,
 	imageReferenceRepo sharedInterfaces.ImageReferenceRepository,
 	genResultRepo sharedInterfaces.GenerationResultRepository,
 	clientUpdatePub ClientUpdatePublisher,
@@ -75,6 +76,7 @@ func NewNotificationConsumer(
 		characterImageTaskBatchPub,
 		logger,
 		cfg,
+		playerProgressRepo,
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -133,23 +133,39 @@ func (h *GameplayHandler) RegisterRoutes(router gin.IRouter) {
 	}
 
 	// --- Маршруты для опубликованных историй (API для пользователей) ---
-	publishedGroup := router.Group("/published-stories")
-	publishedGroup.Use(authMiddleware)
+	// Используем префикс /published-stories
+	pubGroup := router.Group("/published-stories")
+	pubGroup.Use(authMiddleware)
 	{
-		publishedGroup.GET("/me", h.listMyPublishedStories)
-		publishedGroup.GET("/public", h.listPublicPublishedStories)
-		publishedGroup.GET("/:id", h.getPublishedStoryDetails)
-		publishedGroup.GET("/:story_id/gamestates", h.listPlayerGameStates)
-		publishedGroup.GET("/gamestates/:game_state_id/scene", h.getPublishedStoryScene)
-		publishedGroup.POST("/gamestates/:game_state_id/choice", h.makeChoice)
-		publishedGroup.DELETE("/:story_id/gamestates/:game_state_id", h.deletePlayerGameStateHandler)
-		publishedGroup.POST("/:id/like", h.likeStory)
-		publishedGroup.DELETE("/:id/like", h.unlikeStory)
-		publishedGroup.GET("/me/likes", h.listLikedStories)
-		publishedGroup.GET("/me/progress", h.listStoriesWithProgress)
-		publishedGroup.PATCH("/:id/visibility", h.setStoryVisibility)
-		publishedGroup.POST("/:id/retry", h.retryPublishedStoryGeneration)
-		publishedGroup.DELETE("/:id", h.deletePublishedStory)
+		pubGroup.GET("/me", h.listMyPublishedStories)         // Список своих опубликованных
+		pubGroup.GET("/public", h.listPublicPublishedStories) // Список публичных
+
+		// Операции с конкретной историей (используем :story_id)
+		storySpecific := pubGroup.Group("/:story_id")
+		{
+			storySpecific.GET("", h.getPublishedStoryDetails)             // Детали истории
+			storySpecific.POST("/like", h.likeStory)                      // Лайкнуть историю
+			storySpecific.DELETE("/like", h.unlikeStory)                  // Убрать лайк
+			storySpecific.DELETE("", h.deletePublishedStory)              // Удалить свою историю
+			storySpecific.PATCH("/visibility", h.setStoryVisibility)      // Изменить видимость
+			storySpecific.POST("/retry", h.retryPublishedStoryGeneration) // Повторить генерацию (если ошибка)
+
+			// --- Операции с СОХРАНЕНИЯМИ (GameStates) для этой истории ---
+			gameStatesGroup := storySpecific.Group("/gamestates")
+			{
+				// Коллекция сохранений
+				gameStatesGroup.GET("", h.listPlayerGameStates)   // Получить список сохранений
+				gameStatesGroup.POST("", h.createPlayerGameState) // Создать новое сохранение (начать игру)
+
+				// Операции с КОНКРЕТНЫМ сохранением (используем :game_state_id)
+				gameStateSpecific := gameStatesGroup.Group("/:game_state_id")
+				{
+					gameStateSpecific.GET("/scene", h.getPublishedStoryScene)    // Получить текущую сцену
+					gameStateSpecific.POST("/choice", h.makeChoice)              // Сделать выбор
+					gameStateSpecific.DELETE("", h.deletePlayerGameStateHandler) // Удалить это сохранение
+				}
+			}
+		}
 	}
 
 	// --- Маршруты для внутреннего API (межсервисное взаимодействие) ---
@@ -297,8 +313,9 @@ type PaginatedResponse struct {
 // Их реализацию нужно будет обновить в соответствующих *_handlers.go файлах.
 
 // <<< ИЗМЕНЕНО: Обработчик getPublishedStoryDetails (ДЛЯ ПОЛЬЗОВАТЕЛЕЙ) >>>
+// GET /published-stories/:story_id
 func (h *GameplayHandler) getPublishedStoryDetails(c *gin.Context) {
-	storyIDStr := c.Param("id")
+	storyIDStr := c.Param("story_id") // Используем :story_id
 	storyID, err := uuid.Parse(storyIDStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, APIError{Message: "Invalid story ID format"})
@@ -474,8 +491,9 @@ func (h *GameplayHandler) getActiveStoryCountInternal(c *gin.Context) {
 }
 
 // <<< ИЗМЕНЕНО: Обработчик для получения списка состояний игры (сохранений) >>>
+// GET /published-stories/:story_id/gamestates
 func (h *GameplayHandler) listPlayerGameStates(c *gin.Context) {
-	storyIDStr := c.Param("story_id")
+	storyIDStr := c.Param("story_id") // Используем :story_id
 	storyID, err := uuid.Parse(storyIDStr)
 	if err != nil {
 		h.logger.Warn("Invalid story ID format for list game states", zap.String("storyID", storyIDStr), zap.Error(err))
@@ -508,35 +526,34 @@ func (h *GameplayHandler) listPlayerGameStates(c *gin.Context) {
 }
 
 // <<< ИЗМЕНЕНО: Обработчик для удаления конкретного состояния игры (save slot) >>>
+// DELETE /published-stories/:story_id/gamestates/:game_state_id
 func (h *GameplayHandler) deletePlayerGameStateHandler(c *gin.Context) {
-	storyIDStr := c.Param("story_id")
-	gameStateIDStr := c.Param("game_state_id")
-
-	// Проверяем story_id, хотя он напрямую не используется в методе сервиса DeletePlayerGameState,
-	// но он важен для структуры URL
-	_, err := uuid.Parse(storyIDStr)
+	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		h.logger.Warn("Invalid story ID format in delete game state URL", zap.String("storyID", storyIDStr), zap.Error(err))
-		c.JSON(http.StatusBadRequest, APIError{Message: "Invalid story ID format in URL"})
+		return // Ошибка уже обработана
+	}
+
+	// Получаем оба ID из пути
+	storyIDStr := c.Param("story_id")
+	storyID, errStory := uuid.Parse(storyIDStr)
+	if errStory != nil {
+		h.logger.Warn("Invalid story ID format in delete game state URL", zap.String("storyID", storyIDStr), zap.Error(errStory))
+		c.JSON(http.StatusBadRequest, APIError{Message: "Invalid story ID format"})
 		return
 	}
 
-	gameStateID, err := uuid.Parse(gameStateIDStr)
-	if err != nil {
-		h.logger.Warn("Invalid game state ID format for delete game state", zap.String("gameStateID", gameStateIDStr), zap.Error(err))
+	gameStateIDStr := c.Param("game_state_id") // Используем :game_state_id
+	gameStateID, errState := uuid.Parse(gameStateIDStr)
+	if errState != nil {
+		h.logger.Warn("Invalid game state ID format for delete game state", zap.String("gameStateID", gameStateIDStr), zap.Error(errState))
 		c.JSON(http.StatusBadRequest, APIError{Message: "Invalid game state ID format"})
 		return
 	}
 
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		handleServiceError(c, sharedModels.ErrUnauthorized, h.logger)
-		return
-	}
-
-	h.logger.Info("deletePlayerGameStateHandler called", zap.String("storyID", storyIDStr), zap.String("gameStateID", gameStateID.String()), zap.String("userID", userID.String()))
+	h.logger.Info("deletePlayerGameStateHandler called", zap.Stringer("userID", userID), zap.Stringer("storyID", storyID), zap.Stringer("gameStateID", gameStateID))
 
 	// Вызываем метод сервиса для удаления КОНКРЕТНОГО game state
+	// Передаем storyID тоже, хотя сервис может его не использовать, но это для полноты
 	err = h.service.DeletePlayerGameState(c.Request.Context(), userID, gameStateID)
 	if err != nil {
 		// Обрабатываем ошибки от сервиса
@@ -546,4 +563,36 @@ func (h *GameplayHandler) deletePlayerGameStateHandler(c *gin.Context) {
 
 	// Отправляем успешный ответ
 	c.Status(http.StatusNoContent) // 204 No Content
+}
+
+// <<< ДОБАВЛЕНО: Обработчик для создания первого (и единственного) состояния игры >>>
+// POST /published-stories/:story_id/gamestates
+func (h *GameplayHandler) createPlayerGameState(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		return // Ошибка уже обработана
+	}
+
+	storyIdStr := c.Param("story_id") // Получаем ID истории из пути (:story_id)
+	storyID, err := uuid.Parse(storyIdStr)
+	if err != nil {
+		h.logger.Warn("Invalid story ID format in createPlayerGameState", zap.String("story_id", storyIdStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+		return
+	}
+
+	log := h.logger.With(zap.Stringer("userID", userID), zap.Stringer("storyID", storyID))
+	log.Info("createPlayerGameState called (attempting to start game)")
+
+	// Вызываем метод сервиса CreateNewGameState, который теперь должен проверять лимит
+	newGameState, err := h.service.CreateNewGameState(c.Request.Context(), userID, storyID)
+	if err != nil {
+		log.Error("Error calling CreateNewGameState service", zap.Error(err))
+		handleServiceError(c, err, h.logger) // Обрабатываем стандартные ошибки (включая новую ErrSaveSlotExists)
+		return
+	}
+
+	// Возвращаем созданное состояние (клиент возьмет из него ID для запроса сцены)
+	log.Info("New game state created successfully", zap.Stringer("gameStateID", newGameState.ID))
+	c.JSON(http.StatusCreated, newGameState) // Возвращаем 201 Created и созданный объект
 }

@@ -154,6 +154,12 @@ func (s *gameLoopServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUI
 		return nil, sharedModels.ErrInternalServer // Default to internal error
 	}
 
+	// <<< ДОБАВЛЕНО: Проверка владельца gameState >>>
+	if gameState.PlayerID != userID {
+		log.Warn("User attempted to access game state they do not own", zap.Stringer("ownerID", gameState.PlayerID))
+		return nil, sharedModels.ErrForbidden // Запрещаем доступ к чужому состоянию
+	}
+
 	// 2. Check Player Status from Game State
 	switch gameState.PlayerStatus {
 	case sharedModels.PlayerStatusGeneratingScene:
@@ -265,13 +271,26 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 
 	// 7. Parse scene content and validate choice
 	var sceneData sceneContentChoices
-	if err := json.Unmarshal(currentScene.Content, &sceneData); err != nil || len(sceneData.Choices) == 0 {
-		s.logger.Error("Failed to unmarshal current scene content or invalid type/choices array", append(logFields, zap.Error(err))...)
+	if err := json.Unmarshal(currentScene.Content, &sceneData); err != nil {
+		s.logger.Error("Failed to unmarshal current scene content", append(logFields, zap.Error(err))...)
 		return sharedModels.ErrInternalServer
 	}
-	if len(sceneData.Choices) != len(selectedOptionIndices) {
-		s.logger.Warn("Mismatch between number of choices in scene and choices made", append(logFields, zap.Int("sceneChoices", len(sceneData.Choices)), zap.Int("playerChoices", len(selectedOptionIndices)))...)
-		return fmt.Errorf("%w: expected %d choice indices, got %d", sharedModels.ErrBadRequest, len(sceneData.Choices), len(selectedOptionIndices))
+	// <<< УДАЛЕНО: Проверка на точное совпадение количества выборов >>>
+	/*
+		if len(sceneData.Choices) != len(selectedOptionIndices) {
+			s.logger.Warn("Mismatch between number of choices in scene and choices made", append(logFields, zap.Int("sceneChoices", len(sceneData.Choices)), zap.Int("playerChoices", len(selectedOptionIndices)))...)
+			return fmt.Errorf("%w: expected %d choice indices, got %d", sharedModels.ErrBadRequest, len(sceneData.Choices), len(selectedOptionIndices))
+		}
+	*/
+
+	// <<< ДОБАВЛЕНО: Проверка, что выбор игрока не пустой и не превышает кол-во блоков >>>
+	if len(selectedOptionIndices) == 0 {
+		s.logger.Warn("Player sent empty choice array", logFields...)
+		return fmt.Errorf("%w: selected_option_indices cannot be empty", sharedModels.ErrBadRequest)
+	}
+	if len(selectedOptionIndices) > len(sceneData.Choices) {
+		s.logger.Warn("Player sent more choices than available in the scene", append(logFields, zap.Int("sceneChoices", len(sceneData.Choices)), zap.Int("playerChoices", len(selectedOptionIndices)))...)
+		return fmt.Errorf("%w: received %d choice indices, but scene only has %d choice blocks", sharedModels.ErrBadRequest, len(selectedOptionIndices), len(sceneData.Choices))
 	}
 
 	// 8. Load NovelSetup from PublishedStory
@@ -305,12 +324,24 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	// 10. Apply consequences
 	var isGameOver bool
 	var gameOverStat string
-	madeChoicesInfo := make([]sharedModels.UserChoiceInfo, 0, len(sceneData.Choices))
-	for i, choiceBlock := range sceneData.Choices {
-		selectedIndex := selectedOptionIndices[i]
+	madeChoicesInfo := make([]sharedModels.UserChoiceInfo, 0, len(selectedOptionIndices)) // Используем длину выбора игрока
+	// <<< ИЗМЕНЕНО: Итерируем по выбору игрока, а не по всем блокам сцены >>>
+	for i, selectedIndex := range selectedOptionIndices {
+		// Безопасный доступ к блоку выбора
+		if i >= len(sceneData.Choices) {
+			// Эта проверка уже сделана выше, но для надежности
+			s.logger.Error("Logic error: index out of bounds accessing sceneData.Choices", append(logFields, zap.Int("index", i), zap.Int("sceneChoicesLen", len(sceneData.Choices)))...)
+			return sharedModels.ErrInternalServer
+		}
+		choiceBlock := sceneData.Choices[i]
+
+		// <<< ИЗМЕНЕНО: selectedIndex уже есть из цикла range >>>
+		// selectedIndex := selectedOptionIndices[i] // УДАЛЕНО
+
+		// Валидация индекса опции внутри блока
 		if selectedIndex < 0 || selectedIndex >= len(choiceBlock.Options) {
-			s.logger.Warn("Invalid selected option index", append(logFields, zap.Int("choiceIndex", i), zap.Int("selectedIndex", selectedIndex))...)
-			return fmt.Errorf("%w: invalid index %d for choice block %d", sharedModels.ErrInvalidChoice, selectedIndex, i)
+			s.logger.Warn("Invalid selected option index for choice block", append(logFields, zap.Int("choiceBlockIndex", i), zap.Int("selectedIndex", selectedIndex), zap.Int("optionsAvailable", len(choiceBlock.Options)))...)
+			return fmt.Errorf("%w: invalid index %d for choice block %d (options: %d)", sharedModels.ErrInvalidChoice, selectedIndex, i, len(choiceBlock.Options))
 		}
 		selectedOption := choiceBlock.Options[selectedIndex]
 		madeChoicesInfo = append(madeChoicesInfo, sharedModels.UserChoiceInfo{Desc: choiceBlock.Description, Text: selectedOption.Text})
@@ -321,6 +352,14 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 			s.logger.Info("Game Over condition met", append(logFields, zap.String("gameOverStat", gameOverStat))...)
 			break
 		}
+	}
+
+	// <<< ДОБАВЛЕНО: Проверка, что все выборы сделаны, ЕСЛИ игра НЕ закончилась >>>
+	if !isGameOver && len(selectedOptionIndices) < len(sceneData.Choices) {
+		s.logger.Warn("Player did not provide choices for all available blocks, and game did not end",
+			append(logFields, zap.Int("choicesMade", len(selectedOptionIndices)), zap.Int("choicesAvailable", len(sceneData.Choices)))...)
+		return fmt.Errorf("%w: not all choices were made (made %d, available %d) and game over condition not met",
+			sharedModels.ErrBadRequest, len(selectedOptionIndices), len(sceneData.Choices))
 	}
 
 	// 11. Handle Game Over
@@ -395,6 +434,19 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		minimalGameOverConfig := sharedModels.ToMinimalConfigForGameOver(publishedStory.Config)
 		minimalGameOverSetup := sharedModels.ToMinimalSetupForGameOver(&setupContent)
 
+		// <<< НАЧАЛО ИЗМЕНЕНИЯ: Маршалим конфиг и сетап в JSON >>>
+		minimalConfigBytes, errMarshalConf := json.Marshal(minimalGameOverConfig)
+		if errMarshalConf != nil {
+			s.logger.Error("Failed to marshal minimal config for game over task", append(logFields, zap.Error(errMarshalConf))...)
+			return sharedModels.ErrInternalServer
+		}
+		minimalSetupBytes, errMarshalSetup := json.Marshal(minimalGameOverSetup)
+		if errMarshalSetup != nil {
+			s.logger.Error("Failed to marshal minimal setup for game over task", append(logFields, zap.Error(errMarshalSetup))...)
+			return sharedModels.ErrInternalServer
+		}
+		// <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
+
 		lastStateProgress := *nextProgress         // Create a copy
 		lastStateProgress.ID = finalProgressNodeID // Assign the correct ID
 
@@ -405,8 +457,10 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 			GameStateID:      gameState.ID.String(),               // Pass the specific game state ID
 			LastState:        lastStateProgress,
 			Reason:           reason,
-			NovelConfig:      minimalGameOverConfig,
-			NovelSetup:       minimalGameOverSetup,
+			NovelConfig:      minimalConfigBytes, // <<< Используем байты JSON
+			NovelSetup:       minimalSetupBytes,  // <<< Используем байты JSON
+			// <<< ДОБАВЛЕНО: Language >>>
+			Language: publishedStory.Language,
 		}
 		if err := s.publisher.PublishGameOverTask(ctx, gameOverPayload); err != nil {
 			s.logger.Error("Failed to publish game over generation task", append(logFields, zap.Error(err))...)
@@ -416,7 +470,7 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		return nil
 	}
 
-	// 12. Not Game Over: Calculate next state hash
+	// 12. Not Game Over (implies all choices were made): Calculate next state hash
 	newStateHash, errHash := calculateStateHash(currentProgress.CurrentStateHash, nextProgress.CoreStats, nextProgress.StoryVariables, nextProgress.GlobalFlags)
 	if errHash != nil {
 		s.logger.Error("Failed to calculate new state hash", append(logFields, zap.Error(errHash))...)
@@ -553,7 +607,7 @@ func (s *gameLoopServiceImpl) DeletePlayerGameState(ctx context.Context, userID 
 	}
 
 	// 3. Если все ок, удаляем
-	err := s.playerGameStateRepo.DeleteByID(ctx, gameStateID)
+	err := s.playerGameStateRepo.Delete(ctx, gameStateID) // <<< Use Delete instead of DeleteByID
 	if err != nil {
 		if errors.Is(err, sharedModels.ErrNotFound) {
 			// Эта ветка не должна сработать после GetByID, но оставляем для полноты
@@ -722,10 +776,17 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 	log := s.logger.With(zap.String("playerID", playerID.String()), zap.String("publishedStoryID", publishedStoryID.String()))
 	log.Info("CreateNewGameState called")
 
-	// TODO: Add check for maximum allowed save slots per player/story.
-	// existingStates, errList := s.ListGameStates(ctx, playerID, publishedStoryID)
-	// if errList != nil { ... handle error ... }
-	// if len(existingStates) >= MAX_SAVE_SLOTS { return nil, sharedModels.ErrSaveSlotLimitReached }
+	// <<< НАЧАЛО ИЗМЕНЕНИЯ: Проверка лимита сохранений (1 слот) >>>
+	existingStates, errList := s.playerGameStateRepo.ListByPlayerAndStory(ctx, playerID, publishedStoryID)
+	if errList != nil {
+		log.Error("Failed to list existing game states before creation", zap.Error(errList))
+		return nil, sharedModels.ErrInternalServer // Ошибка при проверке
+	}
+	if len(existingStates) > 0 {
+		log.Warn("Attempted to create new game state when one already exists", zap.Int("existingCount", len(existingStates)))
+		return nil, sharedModels.ErrSaveSlotExists // Возвращаем новую ошибку
+	}
+	// <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
 
 	// 1. Fetch the published story to ensure it's ready
 	publishedStory, storyErr := s.publishedRepo.GetByID(ctx, publishedStoryID)
@@ -791,7 +852,7 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 	if sceneErr == nil {
 		initialSceneID = &initialScene.ID
 		log.Debug("Found initial scene", zap.String("sceneID", initialSceneID.String()))
-	} else if !errors.Is(sceneErr, pgx.ErrNoRows) {
+	} else if !errors.Is(sceneErr, pgx.ErrNoRows) && !errors.Is(sceneErr, sharedModels.ErrNotFound) { // <<< ДОБАВЛЕНА ПРОВЕРКА ErrNotFound
 		log.Error("Error fetching initial scene by hash", zap.Error(sceneErr))
 		// Continue without initial scene ID, state will be GeneratingScene if scene is missing
 	}
@@ -829,8 +890,6 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 		generationPayload, errPayload := createInitialSceneGenerationPayload(playerID, publishedStory)
 		if errPayload != nil {
 			log.Error("Failed to create initial generation payload after creating game state", zap.Error(errPayload))
-			// Don't return error here? Game state is created, but generation failed to start.
-			// Maybe update game state to Error?
 			newGameState.PlayerStatus = sharedModels.PlayerStatusError
 			newGameState.ErrorDetails = sharedModels.StringPtr("Failed to create initial generation payload")
 			if _, updateErr := s.playerGameStateRepo.Save(ctx, newGameState); updateErr != nil {
@@ -842,8 +901,6 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 
 		if errPub := s.publisher.PublishGenerationTask(ctx, generationPayload); errPub != nil {
 			log.Error("Error publishing initial scene generation task after creating game state", zap.Error(errPub))
-			// Don't return error here? Game state is created, but generation failed to start.
-			// Maybe update game state to Error?
 			newGameState.PlayerStatus = sharedModels.PlayerStatusError
 			newGameState.ErrorDetails = sharedModels.StringPtr("Failed to publish initial generation task")
 			if _, updateErr := s.playerGameStateRepo.Save(ctx, newGameState); updateErr != nil {

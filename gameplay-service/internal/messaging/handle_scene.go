@@ -235,6 +235,37 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 											zap.String("game_state_id", notification.GameStateID),
 											zap.String("new_player_status", string(gameState.PlayerStatus)),
 										)
+
+										if gameState.PlayerProgressID != nil {
+											progressID := *gameState.PlayerProgressID
+
+											var sceneSummaryContent struct {
+												Summary *string `json:"ss"`
+											}
+											if errUnmarshal := json.Unmarshal(sceneContentJSON, &sceneSummaryContent); errUnmarshal != nil {
+												p.logger.Warn("Failed to unmarshal scene JSON to extract summary (ss field)",
+													zap.String("task_id", taskID),
+													zap.String("game_state_id", notification.GameStateID),
+													zap.Error(errUnmarshal),
+												)
+											} else if sceneSummaryContent.Summary != nil {
+												updates := map[string]interface{}{
+													"current_scene_summary": *sceneSummaryContent.Summary,
+												}
+												if errUpdateProgress := p.playerProgressRepo.UpdateFields(ctx, progressID, updates); errUpdateProgress != nil {
+													p.logger.Error("ERROR: Failed to update current_scene_summary in PlayerProgress",
+														zap.String("task_id", taskID),
+														zap.String("progress_id", progressID.String()),
+														zap.Error(errUpdateProgress),
+													)
+												} else {
+													p.logger.Info("PlayerProgress current_scene_summary updated successfully",
+														zap.String("task_id", taskID),
+														zap.String("progress_id", progressID.String()),
+													)
+												}
+											}
+										}
 									}
 								}
 							}

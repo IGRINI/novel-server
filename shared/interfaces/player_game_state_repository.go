@@ -31,9 +31,6 @@ type PlayerGameStateRepository interface {
 	// This might still be useful for admin cleanup or specific scenarios.
 	DeleteByPlayerAndStory(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) error
 
-	// DeleteByID removes a specific game state record by its ID.
-	DeleteByID(ctx context.Context, gameStateID uuid.UUID) error
-
 	// CheckGameStateExistsForStories checks if *any* player game states exist for a given player and a list of story IDs.
 	// Returns a map where keys are story IDs and values are booleans indicating game state existence.
 	// Useful for UI indications (e.g., "Continue Playing" button visibility).
@@ -47,6 +44,15 @@ type PlayerGameStateRepository interface {
 	// staleThreshold: длительность, после которой состояние считается зависшим.
 	// Возвращает количество обновленных записей и ошибку.
 	FindAndMarkStaleGeneratingAsError(ctx context.Context, staleThreshold time.Duration) (int64, error)
+
+	// Delete removes a game state record by its unique ID.
+	// Returns models.ErrNotFound if the record does not exist.
+	Delete(ctx context.Context, gameStateID uuid.UUID) error
+
+	// ListSummariesByPlayerAndStory retrieves a list of game state summaries (ID, LastActivityAt, SceneIndex)
+	// for a specific player and story, joined with player_progress.
+	// Returns an empty slice if no game states are found.
+	ListSummariesByPlayerAndStory(ctx context.Context, userID, publishedStoryID uuid.UUID) ([]*models.GameStateSummaryDTO, error)
 
 	// TODO: Potentially add methods like ListPlayerGameStates(ctx, playerID) if needed.
 }

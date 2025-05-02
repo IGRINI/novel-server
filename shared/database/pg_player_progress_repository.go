@@ -41,7 +41,8 @@ func NewPgPlayerProgressRepository(pool *pgxpool.Pool, logger *zap.Logger) inter
 const getPlayerProgressBaseFields = `
 	id, user_id, published_story_id, current_core_stats, current_story_variables, 
 	current_global_flags, current_state_hash, scene_index, created_at, updated_at, 
-	last_story_summary, last_future_direction, last_var_impact_summary
+	last_story_summary, last_future_direction, last_var_impact_summary,
+	current_scene_summary
 `
 
 const getPlayerProgressByIDQuery = `SELECT ` + getPlayerProgressBaseFields + ` FROM player_progress WHERE id = $1`
@@ -52,8 +53,8 @@ const getPlayerProgressByStoryAndHashQuery = `SELECT ` + getPlayerProgressBaseFi
 const getPlayerProgressByUserAndStoryQuery = `SELECT ` + getPlayerProgressBaseFields + ` FROM player_progress WHERE user_id = $1 AND published_story_id = $2`
 
 const insertPlayerProgressQuery = `
-INSERT INTO player_progress (user_id, published_story_id, current_core_stats, current_story_variables, current_global_flags, current_state_hash, scene_index, created_at, updated_at, last_story_summary, last_future_direction, last_var_impact_summary)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+INSERT INTO player_progress (user_id, published_story_id, current_core_stats, current_story_variables, current_global_flags, current_state_hash, scene_index, created_at, updated_at, last_story_summary, last_future_direction, last_var_impact_summary, current_scene_summary)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 RETURNING id, created_at` // Return ID and CreatedAt
 
 const updatePlayerProgressQuery = `
@@ -68,7 +69,8 @@ UPDATE player_progress SET
     updated_at = $9,
     last_story_summary = $10,
     last_future_direction = $11,
-    last_var_impact_summary = $12
+    last_var_impact_summary = $12,
+    current_scene_summary = $13
 WHERE id = $1
 RETURNING updated_at` // Return UpdatedAt
 
@@ -85,7 +87,7 @@ func scanPlayerProgress(row pgx.Row) (*models.PlayerProgress, error) {
 	var coreStatsJSON, storyVarsJSON []byte
 	var globalFlags []string
 	var userID, storyID *uuid.UUID // Nullable fields need pointers
-	var lastSummary, lastDirection, lastImpact *string
+	var lastSummary, lastDirection, lastImpact, currentSummary *string
 
 	err := row.Scan(
 		&progress.ID,
@@ -101,6 +103,7 @@ func scanPlayerProgress(row pgx.Row) (*models.PlayerProgress, error) {
 		&lastSummary,
 		&lastDirection,
 		&lastImpact,
+		&currentSummary,
 	)
 
 	if err != nil {
@@ -120,6 +123,7 @@ func scanPlayerProgress(row pgx.Row) (*models.PlayerProgress, error) {
 	progress.LastStorySummary = lastSummary
 	progress.LastFutureDirection = lastDirection
 	progress.LastVarImpactSummary = lastImpact
+	progress.CurrentSceneSummary = currentSummary
 
 	// Unmarshal JSONB fields
 	if err := utils.UnmarshalMap(coreStatsJSON, &progress.CoreStats); err != nil {
@@ -258,6 +262,7 @@ func (r *pgPlayerProgressRepository) Save(ctx context.Context, progress *models.
 			progress.LastStorySummary,     // $10
 			progress.LastFutureDirection,  // $11
 			progress.LastVarImpactSummary, // $12
+			progress.CurrentSceneSummary,  // $13
 		).Scan(&progress.ID, &progress.CreatedAt) // Scan the returned ID and CreatedAt
 
 		if err != nil {
@@ -285,6 +290,7 @@ func (r *pgPlayerProgressRepository) Save(ctx context.Context, progress *models.
 			progress.LastStorySummary,     // $10
 			progress.LastFutureDirection,  // $11
 			progress.LastVarImpactSummary, // $12
+			progress.CurrentSceneSummary,  // $13
 		).Scan(&progress.UpdatedAt) // Scan the returned UpdatedAt timestamp
 
 		if err != nil {
@@ -466,6 +472,7 @@ func isValidPlayerProgressField(field string) bool {
 		"last_story_summary",
 		"last_future_direction",
 		"last_var_impact_summary",
+		"current_scene_summary",
 		"progress_data_json": // Добавлено поле для примера в game_loop_service
 		return true
 	default:

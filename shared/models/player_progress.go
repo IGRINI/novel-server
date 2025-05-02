@@ -20,6 +20,7 @@ type PlayerProgress struct {
 	LastStorySummary     *string   `db:"last_story_summary" json:"last_story_summary,omitempty"`
 	LastFutureDirection  *string   `db:"last_future_direction" json:"last_future_direction,omitempty"`
 	LastVarImpactSummary *string   `db:"last_var_impact_summary" json:"last_var_impact_summary,omitempty"`
+	CurrentSceneSummary  *string   `db:"current_scene_summary" json:"current_scene_summary,omitempty"`
 	CreatedAt            time.Time `db:"created_at" json:"createdAt"`
 	UpdatedAt            time.Time `db:"updated_at" json:"updatedAt"`
 }

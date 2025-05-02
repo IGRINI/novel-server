@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"time"
 
 	interfaces "novel-server/shared/interfaces"
@@ -82,27 +81,34 @@ type ParsedCharacterDTO struct {
 }
 
 // GameStateSummaryDTO represents a summary of a game state (save).
+// MOVED to shared/models/dto.go
+/*
 type GameStateSummaryDTO struct {
 	ID             uuid.UUID `json:"id"`             // ID of the game state (gameStateID)
 	LastActivityAt time.Time `json:"lastActivityAt"` // Time of the last activity in this save
-}
+	SceneIndex     int       `json:"sceneIndex"`     // <<< ДОБАВЛЕНО: Index of the current scene for this save
+}*/
 
 // CoreStatDTO represents parsed data for a single stat.
+// MOVED to shared/models/dto.go
+/*
 type CoreStatDTO struct {
 	Description  string `json:"description"`
 	InitialValue int    `json:"initialValue"`
 	GameOverMin  bool   `json:"gameOverMin"` // Game Over when Min is reached?
 	GameOverMax  bool   `json:"gameOverMax"` // Game Over when Max is reached?
 	Icon         string `json:"icon,omitempty"`
-}
+}*/
 
 // CharacterDTO represents parsed data for a single character.
+// MOVED to shared/models/dto.go
+/*
 type CharacterDTO struct {
 	Name           string `json:"name"`
 	Description    string `json:"description"`
 	Personality    string `json:"personality,omitempty"`
 	ImageReference string `json:"imageReference,omitempty"`
-}
+}*/
 
 // PublishedStoryParsedDetailDTO represents detailed information about a published story
 // with parsed config and setup fields, suitable for client response.
@@ -119,17 +125,17 @@ type PublishedStoryParsedDetailDTO struct {
 	Status         string    `json:"status"`         // Current story status (from PublishedStory)
 
 	// Parsed fields from Config/Setup:
-	Title            string                 `json:"title"`                     // Title (from Config)
-	ShortDescription string                 `json:"shortDescription"`          // Short description (from Config)
-	Genre            string                 `json:"genre"`                     // Genre (from Config)
-	Language         string                 `json:"language"`                  // Language (from Config)
-	PlayerName       string                 `json:"playerName"`                // Player name (from Config)
-	CoreStats        map[string]CoreStatDTO `json:"coreStats"`                 // Stats (from Setup)
-	Characters       []CharacterDTO         `json:"characters"`                // Characters (from Setup)
-	PreviewImageURL  *string                `json:"previewImageUrl,omitempty"` // Preview image URL
+	Title            string                              `json:"title"`                     // Title (from Config)
+	ShortDescription string                              `json:"shortDescription"`          // Short description (from Config)
+	Genre            string                              `json:"genre"`                     // Genre (from Config)
+	Language         string                              `json:"language"`                  // Language (from Config)
+	PlayerName       string                              `json:"playerName"`                // Player name (from Config)
+	CoreStats        map[string]sharedModels.CoreStatDTO `json:"coreStats"`                 // Stats (from Setup) - Use sharedModels
+	Characters       []sharedModels.CharacterDTO         `json:"characters"`                // Characters (from Setup) - Use sharedModels
+	PreviewImageURL  *string                             `json:"previewImageUrl,omitempty"` // Preview image URL
 
 	// Progress information (SAVE LIST):
-	GameStates []GameStateSummaryDTO `json:"gameStates,omitempty"` // <<< NEW FIELD: List of user saves (TYPE FROM HANDLER)
+	GameStates []*sharedModels.GameStateSummaryDTO `json:"gameStates,omitempty"` // List of user saves - Use sharedModels
 }
 
 // StoryBrowsingService defines methods for browsing and retrieving story details.
@@ -410,8 +416,8 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 	// 5. Парсим Config и Setup
 	var config sharedModels.Config
 	var setup sharedModels.NovelSetupContent
-	var coreStatsDTO map[string]CoreStatDTO
-	var charactersDTO []CharacterDTO
+	var coreStatsDTO map[string]sharedModels.CoreStatDTO
+	var charactersDTO []sharedModels.CharacterDTO
 
 	if story.Config != nil {
 		if err := json.Unmarshal(story.Config, &config); err != nil {
@@ -423,9 +429,9 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 		log.Error("Failed to get/parse story Setup JSON", zap.Error(errSetup))
 	} else {
 		setup = *parsedSetup
-		coreStatsDTO = make(map[string]CoreStatDTO)
-		for key, statDef := range setup.CoreStatsDefinition {
-			coreStatsDTO[key] = CoreStatDTO{
+		coreStatsDTO = make(map[string]sharedModels.CoreStatDTO)
+		for statID, statDef := range setup.CoreStatsDefinition {
+			coreStatsDTO[statID] = sharedModels.CoreStatDTO{
 				Description:  statDef.Description,
 				InitialValue: statDef.Initial,
 				GameOverMin:  statDef.GameOverConditions.Min,
@@ -433,13 +439,13 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 				Icon:         statDef.Icon,
 			}
 		}
-		charactersDTO = make([]CharacterDTO, 0, len(setup.Characters))
-		for _, char := range setup.Characters {
-			charactersDTO = append(charactersDTO, CharacterDTO{
-				Name:           char.Name,
-				Description:    char.Description,
-				Personality:    char.Personality,
-				ImageReference: char.ImageRef,
+		charactersDTO = make([]sharedModels.CharacterDTO, 0, len(setup.Characters))
+		for _, charDef := range setup.Characters {
+			charactersDTO = append(charactersDTO, sharedModels.CharacterDTO{
+				Name:           charDef.Name,
+				Description:    charDef.Description,
+				Personality:    charDef.Personality,
+				ImageReference: charDef.ImageRef,
 			})
 		}
 	}
@@ -460,51 +466,51 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 		log.Warn("imageReferenceRepo is nil in storyBrowsingServiceImpl, cannot fetch preview URL")
 	}
 
-	// 7. Получаем список состояний игры (сохранений) для пользователя
-	gameStates := make([]GameStateSummaryDTO, 0)
-	if userID != uuid.Nil {
-		playerStates, errStates := s.playerGameStateRepo.ListByPlayerAndStory(ctx, userID, storyID)
-		if errStates != nil {
-			log.Error("Failed to get player game states for story details", zap.Error(errStates))
-		} else {
-			for _, gs := range playerStates {
-				if gs != nil {
-					gameStates = append(gameStates, GameStateSummaryDTO{
-						ID:             gs.ID,
-						LastActivityAt: gs.LastActivityAt,
-					})
-				}
-			}
-			sort.Slice(gameStates, func(i, j int) bool {
-				return gameStates[i].LastActivityAt.After(gameStates[j].LastActivityAt)
-			})
-		}
+	// Безопасно разыменовываем указатели
+	var title string
+	if story.Title != nil {
+		title = *story.Title
+	}
+	var shortDesc string
+	if story.Description != nil {
+		shortDesc = *story.Description
 	}
 
-	// 8. Формируем финальный DTO
+	// Prepare the response DTO
 	dto := &PublishedStoryParsedDetailDTO{
-		ID:               story.ID,
-		AuthorID:         story.UserID,
-		AuthorName:       authorName,
-		PublishedAt:      story.CreatedAt,
-		LikesCount:       int(story.LikesCount),
-		IsLiked:          isLiked,
-		IsAuthor:         isAuthor,
-		IsPublic:         story.IsPublic,
-		IsAdultContent:   config.IsAdultContent,
-		Status:           string(story.Status),
-		Title:            config.Title,
-		ShortDescription: config.ShortDescription,
+		ID:             story.ID,
+		AuthorID:       story.UserID,
+		AuthorName:     authorName,
+		PublishedAt:    story.CreatedAt,
+		LikesCount:     int(story.LikesCount),
+		IsLiked:        isLiked,
+		IsAuthor:       isAuthor,
+		IsPublic:       story.IsPublic,
+		IsAdultContent: story.IsAdultContent,
+		Status:         string(story.Status),
+
+		// Parsed fields:
+		Title:            title,
+		ShortDescription: shortDesc,
 		Genre:            config.Genre,
 		Language:         config.Language,
 		PlayerName:       config.PlayerName,
 		CoreStats:        coreStatsDTO,
 		Characters:       charactersDTO,
 		PreviewImageURL:  previewURL,
-		GameStates:       gameStates,
+		GameStates:       make([]*sharedModels.GameStateSummaryDTO, 0),
 	}
 
-	log.Info("Published story details retrieved successfully")
+	// Получаем summaries всех состояний игры пользователя для этой истории одним запросом
+	gameStates, err := s.playerGameStateRepo.ListSummariesByPlayerAndStory(ctx, userID, storyID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		s.logger.Error("Failed to list game states for story details", zap.String("storyID", storyID.String()), zap.Stringer("userID", userID), zap.Error(err))
+		return nil, fmt.Errorf("%w: failed to list game states: %v", sharedModels.ErrInternalServer, err)
+	}
+
+	dto.GameStates = gameStates
+
+	log.Info("Successfully retrieved published story details with parsed data", zap.String("title", dto.Title))
 	return dto, nil
 }
 

@@ -38,13 +38,14 @@ type NotificationProcessor struct {
 	playerGameStateRepo        interfaces.PlayerGameStateRepository // <<< ДОБАВЛЕНО: Для PlayerGameState
 	imageReferenceRepo         interfaces.ImageReferenceRepository  // <<< ИСПОЛЬЗУЕМ ИНТЕРФЕЙС
 	genResultRepo              interfaces.GenerationResultRepository
-	clientPub                  ClientUpdatePublisher            // Для отправки обновлений клиенту
-	taskPub                    TaskPublisher                    // !!! ДОБАВЛЕНО: Для отправки новых задач генерации
-	pushPub                    PushNotificationPublisher        // <<< Добавляем издателя push-уведомлений
-	characterImageTaskPub      CharacterImageTaskPublisher      // <<< ДОБАВЛЕНО: Для отправки задач генерации изображений
-	characterImageTaskBatchPub CharacterImageTaskBatchPublisher // <<< ДОБАВЛЕНО: Для отправки батчей задач генерации изображений
-	logger                     *zap.Logger                      // <<< ДОБАВЛЕНО
-	cfg                        *config.Config                   // <<< ДОБАВЛЕНО: Доступ к конфигурации
+	clientPub                  ClientUpdatePublisher               // Для отправки обновлений клиенту
+	taskPub                    TaskPublisher                       // !!! ДОБАВЛЕНО: Для отправки новых задач генерации
+	pushPub                    PushNotificationPublisher           // <<< Добавляем издателя push-уведомлений
+	characterImageTaskPub      CharacterImageTaskPublisher         // <<< ДОБАВЛЕНО: Для отправки задач генерации изображений
+	characterImageTaskBatchPub CharacterImageTaskBatchPublisher    // <<< ДОБАВЛЕНО: Для отправки батчей задач генерации изображений
+	logger                     *zap.Logger                         // <<< ДОБАВЛЕНО
+	cfg                        *config.Config                      // <<< ДОБАВЛЕНО: Доступ к конфигурации
+	playerProgressRepo         interfaces.PlayerProgressRepository // <<< ADDED: Dependency for progress updates
 }
 
 // NewNotificationProcessor создает новый экземпляр NotificationProcessor.
@@ -62,6 +63,7 @@ func NewNotificationProcessor(
 	characterImageTaskBatchPub CharacterImageTaskBatchPublisher, // <<< ДОБАВЛЕНО
 	logger *zap.Logger, // <<< ДОБАВЛЕНО
 	cfg *config.Config, // <<< ДОБАВЛЕНО: Принимаем конфиг
+	playerProgressRepo interfaces.PlayerProgressRepository, // <<< ADDED
 ) *NotificationProcessor {
 	if genResultRepo == nil {
 		logger.Fatal("genResultRepo cannot be nil for NotificationProcessor")
@@ -93,6 +95,7 @@ func NewNotificationProcessor(
 		characterImageTaskBatchPub: characterImageTaskBatchPub,
 		logger:                     logger,
 		cfg:                        cfg,
+		playerProgressRepo:         playerProgressRepo,
 	}
 }
 

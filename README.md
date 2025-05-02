@@ -488,10 +488,10 @@
         *   `401 Unauthorized`: Невалидный токен.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`GET /api/published-stories/:id`**
+*   **`GET /api/published-stories/:story_id`**
     *   Описание: Получение детальной информации об **одной** опубликованной истории с распарсенными полями конфига/сетапа и списком сохранений текущего пользователя.
     *   Аутентификация: **Требуется.**
-    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
+    *   Параметр пути: `:story_id` - UUID опубликованной истории (`PublishedStory`).
     *   Ответ при успехе (`200 OK`): Объект `PublishedStoryParsedDetailDTO`.
         ```json
         {
@@ -499,32 +499,42 @@
           "authorId": "uuid-string",
           "authorName": "string",
           "publishedAt": "timestamp-string",
-          "likesCount": number,
-          "isLiked": boolean,
-          "isAuthor": boolean,
-          "isPublic": boolean,
-          "isAdultContent": boolean,
-          "status": "ready | completed | error | setup_pending | generating_scene",
-          // Распарсенные поля:
-          "title": "string",
-          "shortDescription": "string",
-          "genre": "string",
-          "language": "string",
-          "playerName": "string",
-          "coreStats": { /* ... как было ... */ },
-          "characters": [ /* ... как было ... */ ],
-          "previewImageUrl": "string | null",
-          // Список сохранений:
+          "likesCount": 15,
+          "isLiked": true,
+          "isAuthor": false,
+          "isPublic": true,
+          "isAdultContent": false,
+          "status": "published",
+          "title": "Загадочный Особняк",
+          "shortDescription": "Исследуйте тайны старого поместья...",
+          "genre": "детектив",
+          "language": "ru",
+          "playerName": "Сыщик",
+          "coreStats": {
+            "sanity": { "description": "Рассудок", "initialValue": 10, "gameOverMin": true, "gameOverMax": false, "icon": "brain" },
+            "clues": { "description": "Улики", "initialValue": 0, "gameOverMin": false, "gameOverMax": false, "icon": "magnifying-glass" }
+          },
+          "characters": [
+            { "name": "Дворецкий", "description": "Верный слуга... или нет?", "personality": "Загадочный", "imageReference": "butler_ref" }
+          ],
+          "previewImageUrl": "/images/published/story-uuid/preview.webp",
           "gameStates": [
             {
-              "id": "uuid-string", // ID состояния игры (gameStateID)
-              "lastActivityAt": "timestamp-string"
+              "id": "game-state-uuid-1",
+              "lastActivityAt": "2024-04-20T10:30:00Z",
+              "sceneIndex": 5,
+              "currentSceneSummary": "Вы стоите перед туманными воротами..."
+            },
+            {
+              "id": "game-state-uuid-2",
+              "lastActivityAt": "2024-04-19T15:00:00Z",
+              "sceneIndex": 2,
+              "currentSceneSummary": "Внутри таверны пахнет элем и..."
             }
-            // ... другие сохранения (отсортированы по lastActivityAt desc)
           ]
         }
         ```
-        *   **Примечание:** Поля, относящиеся к *одному* прогрессу (`hasPlayerProgress`, `lastPlayedAt`, `currentSceneIndex`, `currentSceneSummary`, `currentPlayerStats`), больше не возвращаются. Используйте `gameStates`.
+        *   **Примечание:** Поля, относящиеся к *одному* прогрессу (`hasPlayerProgress`, `lastPlayedAt`, `currentPlayerStats`), больше не возвращаются. Используйте `gameStates`.
     *   Ответ при ошибке:
         *   `400 Bad Request`: Невалидный UUID.
         *   `401 Unauthorized`: Невалидный токен.
@@ -540,10 +550,17 @@
         ```json
         [
           {
-            "id": "uuid-string", // ID состояния игры (использовать в /scene, /choice, /gamestates/:id)
-            "lastActivityAt": "timestamp-string" // Время последней активности
+            "id": "game-state-uuid-1",
+            "lastActivityAt": "2024-04-20T10:30:00Z",
+            "sceneIndex": 5,
+            "currentSceneSummary": "Краткое описание сцены 10..."
           },
-          // ... другие сохранения
+          {
+            "id": "game-state-uuid-2",
+            "lastActivityAt": "2024-04-19T15:00:00Z",
+            "sceneIndex": 2,
+            "currentSceneSummary": "Внутри таверны пахнет элем и..."
+          }
         ]
         ```
         *   Примечание: Возвращается пустой массив `[]`, если сохранений нет.
@@ -553,10 +570,12 @@
         *   `404 Not Found`: Опубликованная история не найдена.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`GET /api/published-stories/gamestates/:game_state_id/scene`**
+*   **`GET /api/published-stories/:story_id/gamestates/:game_state_id/scene`**
     *   Описание: Получение текущей сцены для **конкретного состояния игры (сохранения)**. Если идет генерация следующей сцены для этого состояния, возвращается ошибка `409 Conflict`.
     *   Аутентификация: **Требуется.**
-    *   Параметр пути: `:game_state_id` - UUID состояния игры (`PlayerGameState`).
+    *   Параметры пути:
+        *   `:story_id` - UUID опубликованной истории (`PublishedStory`).
+        *   `:game_state_id` - UUID состояния игры (`PlayerGameState`).
     *   Ответ при успехе (`200 OK`): Объект сцены (`GameSceneResponseDTO`).
         ```json
         {
@@ -606,10 +625,12 @@
         *   `409 Conflict` (`{"code": ..., "message": "Scene generation in progress" | "Game over generation in progress" | "Game already completed"}`): Невозможно получить сцену из-за текущего статуса состояния игры.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`POST /api/published-stories/gamestates/:game_state_id/choice`**
+*   **`POST /api/published-stories/:story_id/gamestates/:game_state_id/choice`**
     *   Описание: Отправка выбора игрока для текущей сцены в **конкретном состоянии игры (сохранении)**. Запускает процесс обновления состояния и генерации следующей сцены/концовки (асинхронно).
     *   Аутентификация: **Требуется.**
-    *   Параметр пути: `:game_state_id` - UUID состояния игры (`PlayerGameState`).
+    *   Параметры пути:
+        *   `:story_id` - UUID опубликованной истории (`PublishedStory`).
+        *   `:game_state_id` - UUID состояния игры (`PlayerGameState`).
     *   Тело запроса (`application/json`):
         ```json
         {
@@ -637,10 +658,10 @@
         *   `404 Not Found`: Опубликованная история или указанное состояние игры не найдены (или состояние игры не принадлежит пользователю).
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`POST /api/published-stories/:id/like`**
+*   **`POST /api/published-stories/:story_id/like`**
     *   Описание: Поставить лайк опубликованной истории.
     *   Аутентификация: **Требуется.**
-    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
+    *   Параметр пути: `:story_id` - UUID опубликованной истории (`PublishedStory`).
     *   Тело запроса: Нет.
     *   Ответ при успехе (`204 No Content`): Лайк успешно поставлен.
     *   Ответ при ошибке:
@@ -650,10 +671,10 @@
         *   `409 Conflict` (`{\"message\": \"story already liked by this user\"}`): Пользователь уже лайкнул эту историю.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`DELETE /api/published-stories/:id/like`**
+*   **`DELETE /api/published-stories/:story_id/like`**
     *   Описание: Убрать лайк с опубликованной истории.
     *   Аутентификация: **Требуется.**
-    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
+    *   Параметр пути: `:story_id` - UUID опубликованной истории (`PublishedStory`).
     *   Тело запроса: Нет.
     *   Ответ при успехе (`204 No Content`): Лайк успешно убран.
     *   Ответ при ошибке:
@@ -662,10 +683,10 @@
         *   `404 Not Found` (`{\"message\": \"story not liked by this user yet\"}`): Пользователь не лайкал эту историю.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`DELETE /api/published-stories/:id`**
+*   **`DELETE /api/published-stories/:story_id`**
     *   Описание: Удаление **своей** опубликованной истории.
     *   Аутентификация: **Требуется.**
-    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
+    *   Параметр пути: `:story_id` - UUID опубликованной истории (`PublishedStory`).
     *   Тело запроса: Нет.
     *   Ответ при успехе (`204 No Content`): История успешно удалена.
     *   Ответ при ошибке:
@@ -675,10 +696,10 @@
         *   `404 Not Found`: История не найдена.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера при удалении.
 
-*   **`POST /api/published-stories/:id/retry`**
+*   **`POST /api/published-stories/:story_id/retry`**
     *   Описание: Повторный запуск задачи генерации (Setup или Scene) для опубликованной истории, которая завершилась с ошибкой (`status: "error"`).
     *   Аутентификация: **Требуется.**
-    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
+    *   Параметр пути: `:story_id` - UUID опубликованной истории (`PublishedStory`).
     *   Тело запроса: Нет.
     *   Ответ при успехе (`202 Accepted`): **Пустое тело.** Статус истории изменится на `setup_pending` или `generating_scene` (в зависимости от того, что упало).
     *   Ответ при ошибке:
@@ -688,10 +709,10 @@
         *   `409 Conflict` (`{\"message\": "Story is not in error state"}`): История не в статусе ошибки.
         *   `500 Internal Server Error`: Ошибка при обновлении статуса или постановке задачи.
 
-*   **`PATCH /api/published-stories/:id/visibility`**
+*   **`PATCH /api/published-stories/:story_id/visibility`**
     *   Описание: Изменение видимости **своей** опубликованной истории (сделать публичной или приватной).
     *   Аутентификация: **Требуется.**
-    *   Параметр пути: `:id` - UUID опубликованной истории (`PublishedStory`).
+    *   Параметр пути: `:story_id` - UUID опубликованной истории (`PublishedStory`).
     *   Тело запроса (`application/json`):
         ```json
         {
@@ -705,6 +726,32 @@
         *   `403 Forbidden`: Попытка изменить видимость чужой истории.
         *   `404 Not Found`: История не найдена.
         *   `409 Conflict` (`{"message": "Story is not ready for publishing" | "Adult content cannot be made public"}`): История не готова к публикации или контент 18+ не может быть сделан публичным.
+        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
+
+*   **`POST /api/published-stories/:story_id/gamestates`**
+    *   Описание: Создание нового (и единственного) состояния игры (сохранения) для **текущего пользователя** в указанной опубликованной истории. Вызывается, когда игрок нажимает "Начать игру".
+    *   Аутентификация: **Требуется.**
+    *   Параметр пути: `:story_id` - UUID опубликованной истории (`PublishedStory`).
+    *   Тело запроса: Нет.
+    *   Ответ при успехе (`201 Created`): Объект `PlayerGameState` созданного сохранения.
+        ```json
+        {
+          "id": "uuid-string", // ID созданного состояния игры (gameStateID)
+          "playerId": "uuid-string",
+          "publishedStoryId": "uuid-string",
+          "playerProgressId": "uuid-string", // ID начального узла прогресса
+          "currentSceneId": "uuid-string | null", // ID начальной сцены (или null, если она еще генерируется)
+          "playerStatus": "generating_scene | playing", // Статус
+          "startedAt": "timestamp-string",
+          "lastActivityAt": "timestamp-string",
+          "errorDetails": null
+        }
+        ```
+    *   Ответ при ошибке:
+        *   `400 Bad Request`: Невалидный UUID `story_id`.
+        *   `401 Unauthorized`: Невалидный токен.
+        *   `404 Not Found`: Опубликованная история не найдена.
+        *   `409 Conflict` (`{"code": "SAVE_SLOT_EXISTS", ...}` | `{"code": "STORY_NOT_READY", ...}`): Слот сохранения уже существует, или история не готова к игре.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 ---

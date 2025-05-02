@@ -2,6 +2,7 @@ package messaging
 
 import (
 	"context"
+	"encoding/json"
 	"novel-server/shared/models"
 
 	"github.com/google/uuid"
@@ -36,14 +37,13 @@ type GameOverTaskPayload struct {
 	TaskID           string                `json:"task_id"`
 	UserID           string                `json:"user_id"`
 	PublishedStoryID string                `json:"published_story_id"`
-	GameStateID      string                `json:"gameStateId"`
-	LastState        models.PlayerProgress `json:"lst"` // The final PlayerProgress node
-	Reason           GameOverReason        `json:"rsn"` // Reason for game over
-	// --- MODIFIED FIELDS --- Use minimal structs for context needed by AI ---
-	NovelConfig models.MinimalConfigForGameOver `json:"cfg"` // Minimal Config (language, genre, player prefs)
-	NovelSetup  models.MinimalSetupForGameOver  `json:"stp"` // Minimal Setup (character names)
-	// CanContinue field might be needed if continuation logic exists
-	// CanContinue      bool                            `json:"can_continue,omitempty"`
+	GameStateID      string                `json:"game_state_id"`          // ID of the specific game state ending
+	PromptType       models.PromptType     `json:"prompt_type,omitempty"`  // <<< ADDED: To identify the task type
+	LastState        models.PlayerProgress `json:"last_state"`             // The final player progress state before game over
+	Reason           GameOverReason        `json:"reason"`                 // Reason for game over
+	NovelConfig      json.RawMessage       `json:"novel_config,omitempty"` // Minimal config (potentially useful for endings)
+	NovelSetup       json.RawMessage       `json:"novel_setup,omitempty"`  // Minimal setup (potentially useful for endings)
+	Language         string                `json:"language,omitempty"`     // <<< ДОБАВЛЕНО: Язык из PublishedStory >>>
 }
 
 // CharacterImageTaskPayload defines the structure for a single image generation task.

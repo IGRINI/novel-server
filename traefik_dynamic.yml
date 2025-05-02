@@ -49,8 +49,8 @@ http:
     gameplay-http-router:
       entryPoints:
         - "web"
-      # Matches either path prefix
-      rule: "(PathPrefix(`/api/stories`) || PathPrefix(`/api/published-stories`))"
+      # Matches any of the gameplay service API prefixes
+      rule: "(PathPrefix(`/api/stories`) || PathPrefix(`/api/published-stories`) || PathPrefix(`/api/gamestates`))"
       service: "gameplay-service"
       middlewares:
        - "gameplay-stripprefix"
