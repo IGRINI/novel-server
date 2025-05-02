@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"novel-server/notification-service/internal/config"
 	"novel-server/notification-service/internal/messaging"
+	interfaces "novel-server/shared/interfaces"
+
+	"sync"
 
 	firebase "firebase.google.com/go/v4"
 	fcm "firebase.google.com/go/v4/messaging"
@@ -40,17 +43,25 @@ func (s *stubFCMSender) Platform() string {
 // --- Реальный FCM Sender ---
 
 type fcmSender struct {
-	client *fcm.Client
-	logger *zap.Logger
+	client                 *fcm.Client
+	logger                 *zap.Logger
+	tokenDeletionPublisher interfaces.TokenDeletionPublisher
 }
 
 // NewFCMSender создает реальный отправитель FCM.
 // Требует путь к файлу ключа сервис-аккаунта Firebase в cfg.CredentialsPath.
-func NewFCMSender(cfg config.FCMConfig, logger *zap.Logger) (PlatformSender, error) {
+// Добавлен аргумент tokenDeletionPublisher.
+func NewFCMSender(cfg config.FCMConfig, logger *zap.Logger, tokenDeletionPublisher interfaces.TokenDeletionPublisher) (PlatformSender, error) {
 	// Проверяем, что путь к ключу указан. ServerKey нам больше не нужен.
 	if cfg.CredentialsPath == "" {
 		logger.Warn("Путь к файлу ключа Firebase (FCM_CREDENTIALS_PATH) не указан, FCM sender не будет создан.")
 		return nil, nil // Возвращаем nil, nil если FCM не настроен
+	}
+	// <<< ПРОВЕРКА НА NIL PUBLISHER >>>
+	if tokenDeletionPublisher == nil {
+		// Возможно, стоит вернуть ошибку или использовать заглушку, если publisher обязателен.
+		// Пока просто логируем предупреждение.
+		logger.Warn("TokenDeletionPublisher не предоставлен для FCM Sender. Невалидные токены не будут отправляться на удаление.")
 	}
 
 	opts := option.WithCredentialsFile(cfg.CredentialsPath)
@@ -68,92 +79,120 @@ func NewFCMSender(cfg config.FCMConfig, logger *zap.Logger) (PlatformSender, err
 
 	logger.Info("FCM Sender успешно инициализирован", zap.String("credentials_path", cfg.CredentialsPath))
 	return &fcmSender{
-		client: messagingClient,
-		logger: logger.Named("fcm_sender"),
+		client:                 messagingClient,
+		logger:                 logger.Named("fcm_sender"),
+		tokenDeletionPublisher: tokenDeletionPublisher,
 	}, nil
 }
 
 func (s *fcmSender) Send(ctx context.Context, tokens []string, notification messaging.PushNotification, data map[string]string) error {
-	// Firebase Admin SDK рекомендует отправлять не более 500 токенов за раз
-	// В реальном приложении нужно разбивать tokens на батчи
-	// TODO: Реализовать батчинг для > 500 токенов
-	if len(tokens) > 500 {
-		s.logger.Warn("Количество токенов FCM превышает 500, отправка может завершиться ошибкой или занять много времени. Реализуйте батчинг.", zap.Int("token_count", len(tokens)))
-	}
+	log := s.logger
+	log.Info("Начало отправки FCM уведомлений (по одному)", zap.Int("count", len(tokens)))
 
-	message := &fcm.MulticastMessage{
-		Tokens: tokens,
-		Notification: &fcm.Notification{
-			Title: notification.Title,
-			Body:  notification.Body,
-		},
-		Data: data,
-		Android: &fcm.AndroidConfig{ // Можно добавить специфичные для Android настройки
-			Priority: "high",
-			// Notification: &fcm.AndroidNotification{
-			// 	Sound: "default",
-			// },
-		},
-		// APNS: &fcm.APNSConfig{ // Если отправлять через FCM на iOS
-		// 	Headers: map[string]string{"apns-priority": "10"},
-		// 	Payload: &fcm.APNSPayload{
-		// 		Aps: &fcm.Aps{Alert: &fcm.ApsAlert{...}, Sound: "default"},
-		// 	},
-		// },
-	}
+	successCount := 0
+	failureCount := 0
+	var firstError error
+	invalidTokens := make([]string, 0)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
 
-	br, err := s.client.SendMulticast(ctx, message)
-	if err != nil {
-		s.logger.Error("Ошибка вызова SendMulticast FCM", zap.Error(err))
-		// Эта ошибка обычно означает проблему с запросом или соединением, а не с токенами
-		return fmt.Errorf("ошибка отправки FCM: %w", err)
-	}
+	// Отправляем каждое сообщение отдельно
+	for _, token := range tokens {
+		wg.Add(1)
+		go func(currentToken string) {
+			defer wg.Done()
 
-	s.logger.Info("Результат отправки FCM",
-		zap.Int("success_count", br.SuccessCount),
-		zap.Int("failure_count", br.FailureCount),
-	)
+			msg := &fcm.Message{
+				Token: currentToken,
+				Notification: &fcm.Notification{
+					Title: notification.Title,
+					Body:  notification.Body,
+				},
+				Data: data,
+				Android: &fcm.AndroidConfig{
+					Priority: "high",
+				},
+			}
 
-	if br.FailureCount > 0 {
-		// Логируем ошибки для конкретных токенов и собираем невалидные
-		invalidTokens := make([]string, 0)
-		for idx, resp := range br.Responses {
-			if !resp.Success {
-				token := "unknown"
-				if idx < len(tokens) {
-					token = tokens[idx]
+			_, err := s.client.Send(ctx, msg)
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if err != nil {
+				failureCount++
+				if firstError == nil {
+					firstError = err // Сохраняем первую ошибку
 				}
-				// Проверяем стандартные ошибки FCM из пакета fcm
-				if fcm.IsInvalidArgument(resp.Error) ||
-					// fcm.IsNotFound(resp.Error) || // Not Found часто означает, что токен устарел - ОШИБКА: такой функции нет
-					// Вместо IsNotFound / IsUnregistered используем строки из документации или common errors
-					// https://firebase.google.com/docs/cloud-messaging/manage-tokens#detect-invalid-token-responses-from-the-fcm-backend
-					// https://firebase.google.com/docs/reference/admin/go/firebase.google.com/go/v4/messaging#pkg-variables
-					(fcm.IsUnregistered(resp.Error) || fcm.IsSenderIDMismatch(resp.Error)) { // Unregistered или Mismatch
-					invalidTokens = append(invalidTokens, token)
-					s.logger.Warn("Обнаружен невалидный/незарегистрированный FCM токен",
-						zap.String("token", token),
-						zap.Error(resp.Error),
+
+				// Логируем и проверяем на невалидный токен
+				if fcm.IsUnregistered(err) {
+					invalidTokens = append(invalidTokens, currentToken)
+					log.Warn("Обнаружен незарегистрированный FCM токен (при Send), будет отправлен на удаление",
+						zap.String("token", currentToken),
+						zap.Error(err),
+					)
+				} else if fcm.IsInvalidArgument(err) || fcm.IsSenderIDMismatch(err) {
+					invalidTokens = append(invalidTokens, currentToken)
+					log.Warn("Обнаружен невалидный FCM токен (аргумент/senderID) (при Send), будет отправлен на удаление",
+						zap.String("token", currentToken),
+						zap.Error(err),
 					)
 				} else {
-					// Другая ошибка доставки
-					s.logger.Error("Ошибка доставки FCM для токена",
-						zap.String("token", token),
-						zap.Error(resp.Error),
+					log.Error("Ошибка отправки FCM для токена (при Send)",
+						zap.String("token", currentToken),
+						zap.Error(err),
 					)
 				}
+			} else {
+				successCount++
+				log.Debug("FCM уведомление успешно отправлено (Send)", zap.String("token", currentToken))
 			}
-		}
-		// TODO: Отправить событие или вызвать метод для удаления невалидных токенов из базы данных
-		if len(invalidTokens) > 0 {
-			s.logger.Info("Невалидные токены для удаления", zap.Strings("tokens", invalidTokens))
-			// Например: eventBus.Publish("invalid_fcm_tokens", invalidTokens)
-		}
-		// Возвращаем общую ошибку, если были неудачные отправки
-		return fmt.Errorf("ошибка доставки %d из %d FCM сообщений", br.FailureCount, len(tokens))
+		}(token)
 	}
 
-	return nil
+	wg.Wait() // Ожидаем завершения всех горутин
+
+	log.Info("Результат отправки FCM (по одному)",
+		zap.Int("success_count", successCount),
+		zap.Int("failure_count", failureCount),
+		zap.Int("total_tokens", len(tokens)),
+	)
+
+	if len(invalidTokens) > 0 {
+		log.Info("Обнаружены невалидные/незарегистрированные токены для удаления", zap.Strings("tokens", invalidTokens))
+		// Отправляем событие или вызываем метод для удаления невалидных токенов из базы данных
+		if s.tokenDeletionPublisher != nil {
+			for _, token := range invalidTokens {
+				// Используем новый контекст, чтобы не зависеть от контекста запроса Send
+				// Можно добавить таймаут
+				go func(t string) {
+					// TODO: Рассмотреть использование отдельного контекста с таймаутом
+					err := s.tokenDeletionPublisher.PublishTokenDeletion(context.Background(), t)
+					if err != nil {
+						log.Error("Не удалось отправить токен на удаление в очередь", zap.String("token", t), zap.Error(err))
+					} else {
+						log.Info("Токен успешно отправлен в очередь на удаление", zap.String("token", t))
+					}
+				}(token)
+			}
+		} else {
+			log.Warn("TokenDeletionPublisher не настроен, удаление токенов через очередь не будет выполнено.")
+		}
+	}
+
+	if firstError != nil {
+		// <<< ИЗМЕНЕНО: Не возвращаем ошибку, если все ошибки были только из-за невалидных токенов >>>
+		allFailuresAreInvalidTokens := failureCount == len(invalidTokens)
+		if !allFailuresAreInvalidTokens {
+			// Возвращаем первую ошибку, только если были *другие* неудачные отправки
+			return fmt.Errorf("ошибка доставки %d из %d FCM сообщений (первая ошибка: %w)", failureCount-len(invalidTokens), len(tokens), firstError)
+		}
+		// Если все ошибки были из-за невалидных токенов, считаем операцию условно успешной (остальные доставлены или их не было)
+		log.Info("Все ошибки отправки были связаны с невалидными/незарегистрированными токенами, которые отправлены на удаление.")
+	}
+
+	return nil // Возвращаем nil, если все ошибки были 'unregistered' или ошибок не было
 }
 
 func (s *fcmSender) Platform() string {

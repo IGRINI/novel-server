@@ -55,18 +55,25 @@ func main() {
 	// Передаем interServiceSecret в конструктор
 	tokenProvider := service.NewHTTPTokenProvider(httpClient, cfg.TokenService.URL, logger, cfg.InterServiceSecret)
 
+	// Инициализируем Token Deletion Publisher
+	tokenDeletionPublisher, err := messaging.NewRabbitTokenDeletionPublisher(rabbitConn, logger)
+	if err != nil {
+		sugar.Fatalf("Ошибка инициализации Token Deletion Publisher: %v", err)
+	}
+
 	// Инициализируем отправителей
 	var fcmSender service.PlatformSender
 	var apnsSender service.PlatformSender
 	var errSender error // Для ошибок инициализации
 
-	// Инициализируем FCM Sender
-	fcmSender, errSender = service.NewFCMSender(cfg.FCM, logger)
+	// Инициализируем FCM Sender, передавая publisher
+	fcmSender, errSender = service.NewFCMSender(cfg.FCM, logger, tokenDeletionPublisher)
 	if errSender != nil {
 		sugar.Fatalf("Ошибка инициализации FCM Sender: %v", errSender)
 	}
 	if fcmSender == nil {
-		// Если NewFCMSender вернул nil, nil (т.к. не настроен), используем заглушку
+		// Если NewFCMSender вернул nil, nil (т.к. не настроен), используем заглушку.
+		// В этом случае publisher не будет использоваться, но мы все равно его создали.
 		sugar.Warn("FCM Sender не инициализирован (конфигурация отсутствует?), используется заглушка.")
 		fcmSender = service.NewStubFCMSender(logger)
 	}

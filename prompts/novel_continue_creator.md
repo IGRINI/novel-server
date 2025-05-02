@@ -21,7 +21,7 @@
 4.  **Character Attribution (`char`):** Each choice block (`ch`) MUST include `char` field with a character name from `stp.chars[].n`. `desc` MUST involve this character.
 5.  **Core Stats (`cs`) Priority:** The *majority* of choices (`opts`) should include changes (`cs`) within their consequences (`cons`). Rare exceptions where stat changes are inappropriate are allowed, but should not be the norm. Respect the values from `csr`.
 6.  **Text Formatting:** Markdown (`*italic*`, `**bold**`) allowed ONLY within `npd`, `etp`, `desc`, `txt`, and the optional `rt` inside `cons`.
-7.  **Optional Response Text (`rt`):** You can include `rt` inside `cons` to provide explicit textual feedback for a choice. This can be used alongside other consequences like `cs`, `sv`, or `gf`, or on its own for purely informational outcomes.
+7.  **Optional Response Text (`rt`):** You should use `rt` frequently inside `cons` to provide explicit textual feedback for a choice, complementing other consequences like `cs`, `sv`, or `gf`, or for purely informational outcomes.
 8.  **Internal Notes (`vis`, `svd`):** Usually omit `vis` and `svd` for the very first continuation scene.
 
 **Output JSON Structure (MANDATORY, Compressed Keys):**
@@ -32,9 +32,8 @@
   "npd": "string",  // New player description (Visible, Markdown OK)
   "csr": {},        // Core stats reset (e.g., {"Stat1":30, "Stat2": 50, ...})
   "etp": "string",  // Previous character ending (Visible, Markdown OK)
-  "ch": [           // choices (~20 blocks for NEW character)
+  "ch": [           // choices ({{CHOICE_COUNT}} blocks for NEW character)
     {
-      "sh": number,     // shuffleable (1 or 0)
       "char": "string", // Character name from stp.chars[].n
       "desc": "string", // Situation text involving 'char' (Markdown OK)
       "opts": [         // options (Exactly 2)
@@ -42,12 +41,14 @@
         {"txt": "string", "cons": {}}  // Choice 2 text (Markdown OK) & Nested JSON consequences
       ]
     }
-    // ... approx 20 choice blocks ...
+    // ... {{CHOICE_COUNT}} choice blocks ...
   ]
   // "vis": "string", // Usually omit
   // "svd": {},       // Usually omit
 }
-``` 
+```
+
+**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, compressed JSON object described in the 'Output JSON Structure'. Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
 
 **Apply the rules above to the following User Input:**
 

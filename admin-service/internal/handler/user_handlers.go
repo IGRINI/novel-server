@@ -266,10 +266,29 @@ func (h *AdminHandler) handleSendUserNotification(c *gin.Context) {
 		return
 	}
 
-	message := c.PostForm("notification_message")
+	// Читаем сообщение из JSON тела запроса
+	var requestBody struct {
+		Message string `json:"message"`
+	}
+	if err := c.ShouldBindJSON(&requestBody); err != nil {
+		h.logger.Warn("Failed to bind notification JSON body", zap.String("userID", userIDStr), zap.Error(err))
+		// Возвращаем JSON ошибку, если тело невалидно
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+			"status":  "error",
+			"message": "Неверный формат запроса: " + err.Error(),
+		})
+		return
+	}
+
+	message := requestBody.Message
+
 	if message == "" {
 		h.logger.Warn("Notification message is empty", zap.String("userID", userIDStr))
-		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/admin/users/%s/edit?error=empty_message", userIDStr))
+		// Теперь возвращаем JSON ошибку и для пустого сообщения
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+			"status":  "error",
+			"message": "Текст уведомления не может быть пустым.",
+		})
 		return
 	}
 
@@ -283,16 +302,20 @@ func (h *AdminHandler) handleSendUserNotification(c *gin.Context) {
 		Data:   map[string]string{"source": "admin"}, // Можно добавить доп. данные
 	}
 
-	redirectURL := fmt.Sprintf("/admin/users/%s/edit", userIDStr)
-
 	// Используем правильное имя метода PublishPushEvent (из интерфейса)
 	if err := h.pushPublisher.PublishPushEvent(c.Request.Context(), event); err != nil {
 		h.logger.Error("Failed to publish user push event", zap.Error(err), zap.String("userID", userIDStr))
-		c.Redirect(http.StatusSeeOther, redirectURL+"?notification_status=error")
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+			"status":  "error",
+			"message": "Не удалось опубликовать уведомление в очередь.",
+		})
 		return
 	}
 
-	h.logger.Info("Notification sent successfully", zap.String("userID", userIDStr))
+	h.logger.Info("Notification published to queue successfully", zap.String("userID", userIDStr))
 
-	c.Redirect(http.StatusSeeOther, redirectURL+"?notification_status=success")
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Уведомление успешно отправлено в очередь.",
+	})
 }

@@ -84,6 +84,7 @@ func (h *AuthHandler) RegisterRoutes(router *gin.Engine) {
 		internalAuthGroup.PUT("/users/:user_id", h.updateUser)
 		internalAuthGroup.PUT("/users/:user_id/password", h.updatePassword)
 		internalAuthGroup.POST("/token/refresh/admin", h.refreshAdminToken)
+		internalAuthGroup.GET("/users/:user_id/device-tokens", h.getDeviceTokensForUser)
 	}
 }
 
@@ -153,4 +154,26 @@ func getUserIDFromContext(c *gin.Context) (uuid.UUID, error) {
 type SuccessResponse struct {
 	Message string      `json:"message"`
 	Data    interface{} `json:"data,omitempty"`
+}
+
+func (h *AuthHandler) getDeviceTokensForUser(c *gin.Context) {
+	userIDStr := c.Param("user_id")
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		zap.L().Warn("Invalid user ID (UUID) format for get device tokens request", zap.String("userID", userIDStr), zap.Error(err))
+		c.AbortWithStatusJSON(http.StatusBadRequest, models.ErrorResponse{Code: models.ErrCodeBadRequest, Message: "Invalid user ID format"})
+		return
+	}
+
+	zap.L().Debug("Request received for getting device tokens", zap.String("userID", userIDStr))
+
+	tokens, err := h.deviceTokenService.GetDeviceTokensForUser(c.Request.Context(), userID)
+	if err != nil {
+		// Ошибку логирует сам сервис
+		handleServiceError(c, err) // Используем общий обработчик ошибок сервиса
+		return
+	}
+
+	// Возвращаем токены (даже если список пустой) со статусом 200 OK
+	c.JSON(http.StatusOK, tokens)
 }

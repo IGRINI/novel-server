@@ -138,11 +138,10 @@ services:
       <<: *env-vars
       DB_HOST: postgres
       REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASS}@rabbitmq:5672/
       SERVER_PORT: ${AUTH_SERVER_PORT}
       SERVICE_ID: auth-service
       INTER_SERVICE_TOKEN_TTL: ${INTER_SERVICE_TOKEN_TTL}
-      DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS}
-      DB_MAX_IDLE_MINUTES: ${DB_MAX_IDLE_MINUTES}
     secrets:
       - source: db_password
         target: /run/secrets/db_password

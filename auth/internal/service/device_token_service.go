@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"novel-server/auth/internal/domain/dto"
 	interfaces "novel-server/shared/interfaces"
+	"novel-server/shared/models"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -75,4 +76,18 @@ func (s *deviceTokenService) UnregisterDeviceToken(ctx context.Context, data int
 		zap.String("token", input.Token),
 	)
 	return nil
+}
+
+// GetDeviceTokensForUser возвращает все активные токены для пользователя.
+func (s *deviceTokenService) GetDeviceTokensForUser(ctx context.Context, userID uuid.UUID) ([]models.DeviceTokenInfo, error) {
+	s.logger.Debug("Fetching device tokens for user", zap.String("userID", userID.String()))
+	tokens, err := s.deviceTokenRepo.GetDeviceTokensForUser(ctx, userID)
+	if err != nil {
+		// Логирование уже внутри репозитория, если была ошибка DB.
+		// Репозиторий возвращает nil error, если токенов просто нет.
+		s.logger.Error("Failed to get device tokens from repository", zap.String("userID", userID.String()), zap.Error(err))
+		return nil, fmt.Errorf("failed to get device tokens: %w", err)
+	}
+	s.logger.Debug("Successfully fetched device tokens", zap.String("userID", userID.String()), zap.Int("count", len(tokens)))
+	return tokens, nil
 }

@@ -51,7 +51,7 @@ func NewHTTPTokenProvider(client HTTPClient, url string, logger *zap.Logger, int
 
 func (p *httpTokenProvider) GetUserDeviceTokens(ctx context.Context, userID uuid.UUID) ([]models.DeviceTokenInfo, error) {
 	log := p.logger.With(zap.String("user_id", userID.String()))
-	targetURL := fmt.Sprintf("%s/api/internal/users/%s/device-tokens", p.url, userID)
+	targetURL := fmt.Sprintf("%s/internal/auth/users/%s/device-tokens", p.url, userID)
 	log.Debug("Запрос токенов устройства", zap.String("url", targetURL))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)

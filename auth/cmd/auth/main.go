@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"novel-server/auth/internal/config"
 	"novel-server/auth/internal/handler"
+	"novel-server/auth/internal/messaging"
 	"novel-server/auth/internal/repository"
 	"novel-server/auth/internal/service"
 	"novel-server/shared/database"
@@ -19,6 +20,7 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
@@ -51,7 +53,7 @@ func main() {
 	zap.L().Info("Logger initialized successfully", zap.String("logLevel", cfg.LogLevel))
 	zap.L().Info("Configuration loaded")
 
-	// --- Database Connections ---
+	// --- External Connections ---
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -69,6 +71,14 @@ func main() {
 	defer redisClient.Close()
 	zap.L().Info("Connected to Redis")
 
+	// <<< ИЗМЕНЕНИЕ: Подключаемся к RabbitMQ с помощью функции connectRabbitMQ >>>
+	mqConn, err := connectRabbitMQ(cfg.RabbitMQURL, logger)
+	if err != nil {
+		zap.L().Fatal("Failed to connect to RabbitMQ", zap.Error(err))
+	}
+	defer mqConn.Close()
+	zap.L().Info("Connected to RabbitMQ")
+
 	// --- Dependency Injection ---
 	userRepo := database.NewPgUserRepository(pgPool, logger.Named("PgUserRepo"))
 	tokenRepo := database.NewRedisTokenRepository(redisClient, logger.Named("RedisTokenRepo"))
@@ -76,6 +86,12 @@ func main() {
 	deviceTokenService := service.NewDeviceTokenService(deviceTokenRepo, logger.Named("DeviceTokenService"))
 	authSvc := service.NewAuthService(userRepo, tokenRepo, cfg, logger.Named("AuthService"))
 	authHandler := handler.NewAuthHandler(authSvc, userRepo, deviceTokenService, cfg)
+
+	// <<< Инициализация Consumer'а >>>
+	tokenDeletionConsumer, err := messaging.NewTokenDeletionConsumer(mqConn, deviceTokenService, logger)
+	if err != nil {
+		zap.L().Fatal("Failed to create TokenDeletionConsumer", zap.Error(err))
+	}
 
 	// --- HTTP Server Setup (Gin) ---
 	gin.SetMode(gin.ReleaseMode)
@@ -121,7 +137,20 @@ func main() {
 	// <<< ПРИМЕНЯЕМ Prometheus Middleware ПОСЛЕ регистрации роутов >>>
 	p.Use(router)
 
-	// --- Start Server ---
+	// --- Start Background Workers (Consumers) ---
+	go func() {
+		zap.L().Info("Starting TokenDeletionConsumer...")
+		if err := tokenDeletionConsumer.StartConsuming(); err != nil {
+			// Логируем ошибку, если consumer остановился не штатно.
+			// В production, возможно, стоит паниковать или пытаться перезапустить.
+			zap.L().Error("TokenDeletionConsumer stopped with error", zap.Error(err))
+			// TODO: Рассмотреть стратегию обработки ошибок consumer'а (например, остановка сервиса)
+		} else {
+			zap.L().Info("TokenDeletionConsumer stopped gracefully.")
+		}
+	}()
+
+	// --- Start HTTP Server ---
 	srv := &http.Server{
 		Addr:         ":" + cfg.ServerPort,
 		Handler:      router,
@@ -130,11 +159,11 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	zap.L().Info("Starting server", zap.String("port", cfg.ServerPort))
+	zap.L().Info("Starting HTTP server", zap.String("port", cfg.ServerPort))
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			zap.L().Fatal("Server listen error", zap.Error(err))
+			zap.L().Fatal("HTTP Server listen error", zap.Error(err))
 		}
 	}()
 
@@ -144,11 +173,20 @@ func main() {
 	<-quit
 	zap.L().Info("Shutting down server...")
 
+	// <<< Останавливаем Consumer перед HTTP сервером >>>
+	zap.L().Info("Stopping TokenDeletionConsumer...")
+	if err := tokenDeletionConsumer.Stop(); err != nil {
+		zap.L().Error("Error stopping TokenDeletionConsumer", zap.Error(err))
+		// Не фатальная ошибка для shutdown, просто логируем
+	}
+
+	// Останавливаем HTTP сервер
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		zap.L().Fatal("Server forced to shutdown", zap.Error(err))
+		zap.L().Error("HTTP Server forced to shutdown", zap.Error(err))
+		// Ранее было Fatal, но лучше дать шанс закрыть другие ресурсы
 	}
 
 	zap.L().Info("Server exiting")
@@ -262,4 +300,74 @@ func setupRedis(ctx context.Context, cfg *config.Config) (*redis.Client, error) 
 
 	zap.L().Error("Failed to connect to Redis after all retries", zap.Int("attempts", maxRetries), zap.Error(lastErr))
 	return nil, fmt.Errorf("failed to connect to redis after %d attempts: %w", maxRetries, lastErr)
+}
+
+// connectRabbitMQ пытается подключиться к RabbitMQ с несколькими попытками
+// (Скопировано из gameplay-service/cmd/server/main.go)
+func connectRabbitMQ(url string, logger *zap.Logger) (*amqp091.Connection, error) {
+	var conn *amqp091.Connection
+	var err error
+	maxRetries := 50
+	retryDelay := 5 * time.Second // Используем задержку 5 секунд как в gameplay-service
+	logger.Info("Attempting to connect to RabbitMQ",
+		zap.String("url", maskRabbitMQURL(url)), // Логируем URL без пароля (используем старую функцию маскировки)
+		zap.Int("max_retries", maxRetries),
+		zap.Duration("retry_delay", retryDelay),
+	)
+	for i := 0; i < maxRetries; i++ {
+		attempt := i + 1
+		conn, err = amqp091.Dial(url)
+		if err == nil {
+			logger.Info("Successfully connected to RabbitMQ",
+				zap.Int("attempt", attempt),
+				zap.Int("max_attempts", maxRetries),
+			)
+			// Добавляем обработчик закрытия соединения для логирования (оставляем из старой версии auth)
+			go func() {
+				notifyClose := make(chan *amqp091.Error)
+				conn.NotifyClose(notifyClose)
+				err := <-notifyClose
+				if err != nil {
+					logger.Error("RabbitMQ connection closed unexpectedly", zap.Error(err))
+					// TODO: Рассмотреть механизм переподключения или остановки сервиса
+				} else {
+					logger.Info("RabbitMQ connection closed gracefully.")
+				}
+			}()
+			return conn, nil
+		}
+		logger.Warn("RabbitMQ connection failed, retrying...",
+			zap.Int("attempt", attempt),
+			zap.Int("max_attempts", maxRetries),
+			zap.Duration("retry_delay", retryDelay),
+			zap.Error(err),
+		)
+		time.Sleep(retryDelay)
+	}
+	logger.Error("Failed to connect to RabbitMQ after all retries", zap.Int("attempts", maxRetries), zap.Error(err))
+	return nil, fmt.Errorf("failed to connect to RabbitMQ after %d attempts: %w", maxRetries, err)
+}
+
+// maskRabbitMQURL маскирует пароль в URL для логирования (оставляем эту функцию, так как она используется в connectRabbitMQ выше)
+func maskRabbitMQURL(urlStr string) string {
+	// Простой парсинг, чтобы найти @ и //
+	atIndex := -1
+	schemaIndex := -1
+	for i := 0; i < len(urlStr); i++ {
+		if urlStr[i] == '@' {
+			atIndex = i
+			break
+		}
+	}
+	for i := 0; i+1 < len(urlStr); i++ {
+		if urlStr[i] == ':' && urlStr[i+1] == '/' && urlStr[i+2] == '/' {
+			schemaIndex = i + 2
+			break
+		}
+	}
+
+	if atIndex != -1 && schemaIndex != -1 && atIndex > schemaIndex+1 {
+		return urlStr[:schemaIndex+1] + "//****:****@" + urlStr[atIndex+1:]
+	}
+	return urlStr // Возвращаем как есть, если формат не стандартный
 }

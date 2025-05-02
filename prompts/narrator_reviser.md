@@ -47,6 +47,8 @@
 5.  Ensure `pp.st` and `pp.cvs` remain English.
 6.  **Output Requirement:** Respond **ONLY** with the final modified JSON object string. Ensure it's single-line, unformatted, strictly valid JSON, parsable by `JSON.parse()`/`json.loads()`. No extra text or explanation.
 
+**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, compressed JSON object described in the 'Output JSON Structure'. Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
+
 **Apply the rules above to the following User Input:**
 
 {{USER_INPUT}} 

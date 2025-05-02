@@ -27,7 +27,7 @@
 5.  **Stat Balance:** Use moderate stat changes within consequences (`cons`) (±3 to ±10 typically, ±15-25 for big moments). Respect 0-100 stat limits based on current values (`cs`). Avoid instant game over unless dramatically intended.
 6.  **Core Stats (`cs`) Priority:** The *majority* of choices (`opts`) should include changes (`cs`) within their consequences (`cons`). Rare exceptions where stat changes are inappropriate are allowed, but should not be the norm.
 7.  **New Variables (`svd`):** Define any NEW `story_variables` introduced within the optional `svd` map (`var_name: description`). These vars exist implicitly via `vis` later.
-8.  **Optional Response Text (`rt`):** Use `rt` inside `cons` *optionally* to provide explicit textual feedback. Avoid adding it if the outcome is obvious from the option text or other consequences (`cs`, `sv`, `gf`). Add `rt` to clarify non-obvious results or add important context.
+8.  **Optional Response Text (`rt`):** Use `rt` inside `cons` frequently to provide explicit textual feedback, especially when the outcome isn't immediately obvious from the option text or other consequences (`cs`, `sv`, `gf`). Add `rt` to clarify results or add important narrative context.
 
 **Output JSON Structure (MANDATORY, Compressed Keys):**
 ```json
@@ -38,9 +38,8 @@
   "svd": {          // Optional: {var_name: description} for NEW vars this turn
     "var_name_1": "description_1"
   },
-  "ch": [           // choices (exactly 10 blocks)
+  "ch": [           // choices ({{CHOICE_COUNT}} blocks)
     {
-      "sh": number,     // shuffleable (1 or 0)
       "char": "string", // Character name from stp.chars[].n
       "desc": "string", // Situation text involving 'char' (Markdown OK)
       "opts": [         // options (Exactly 2)
@@ -48,10 +47,12 @@
         {"txt": "string", "cons": {}}  // Choice 2 text (Markdown OK) & Nested JSON consequences (e.g. cs, sv, gf; rt optional)
       ]
     }
-    // ... exactly 10 choice blocks ...
+    // ... {{CHOICE_COUNT}} choice blocks ...
   ]
 }
 ```
+
+**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, compressed JSON object described in the 'Output JSON Structure'. Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
 
 **Apply the rules above to the following User Input:**
 

@@ -4,37 +4,44 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/rs/zerolog/log"
 	"go.uber.org/zap"
 
 	"novel-server/shared/interfaces"
+	"novel-server/shared/models"
 )
 
 var ErrPromptNotFoundInCache = errors.New("prompt not found in cache")
 
 // PromptProvider provides access to prompt data, caching it locally.
 type PromptProvider struct {
-	repo      interfaces.PromptRepository  // Repository for initial load
-	cache     sync.Map                     // Concurrent-safe cache: map[string]*models.Prompt
-	cacheLock sync.RWMutex                 // Mutex for map operations (alternative to sync.Map)
-	cacheMap  map[string]map[string]string // Cache: map[language]map[key]content
-	logger    *zap.Logger                  // Use *zap.Logger
+	repo              interfaces.PromptRepository        // Repository for initial load
+	dynamicConfigRepo interfaces.DynamicConfigRepository // Repository for dynamic configuration
+	cacheLock         sync.RWMutex                       // Mutex for map operations (alternative to sync.Map)
+	cacheMap          map[string]map[string]string       // Cache: map[language]map[key]content
+	logger            *zap.Logger                        // Use *zap.Logger
 }
 
 // NewPromptProvider creates a new PromptProvider.
-func NewPromptProvider(repo interfaces.PromptRepository, logger *zap.Logger) *PromptProvider {
+func NewPromptProvider(repo interfaces.PromptRepository, dynamicConfigRepo interfaces.DynamicConfigRepository, logger *zap.Logger) *PromptProvider {
 	if repo == nil {
 		log.Fatal().Msg("PromptRepository is nil for PromptProvider")
+	}
+	if dynamicConfigRepo == nil {
+		log.Fatal().Msg("DynamicConfigRepository is nil for PromptProvider")
 	}
 	if logger == nil {
 		log.Fatal().Msg("Logger is nil for PromptProvider")
 	}
 	return &PromptProvider{
-		repo:     repo,
-		cacheMap: make(map[string]map[string]string),
-		logger:   logger.Named("PromptProvider"),
+		repo:              repo,
+		dynamicConfigRepo: dynamicConfigRepo,
+		cacheMap:          make(map[string]map[string]string),
+		logger:            logger.Named("PromptProvider"),
 	}
 }
 
@@ -101,16 +108,84 @@ func (p *PromptProvider) UpdateCache(event interfaces.PromptEvent) {
 }
 
 // GetPrompt retrieves a prompt content from the cache by key and language.
+// It also replaces placeholders like {{NPC_COUNT}} with values from dynamic config.
 func (p *PromptProvider) GetPrompt(ctx context.Context, key string, language string) (string, error) {
 	p.cacheLock.RLock()
-	defer p.cacheLock.RUnlock()
+	langCache, langOk := p.cacheMap[language]
+	var content string
+	var keyOk bool
+	if langOk {
+		content, keyOk = langCache[key]
+	}
+	p.cacheLock.RUnlock()
 
-	if langCache, ok := p.cacheMap[language]; ok {
-		if content, ok := langCache[key]; ok {
-			return content, nil
-		}
+	if !langOk || !keyOk {
+		p.logger.Warn("Prompt not found in cache", zap.String("key", key), zap.String("language", language))
+		return "", ErrPromptNotFoundInCache
 	}
 
-	p.logger.Warn("Prompt not found in cache", zap.String("key", key), zap.String("language", language))
-	return "", ErrPromptNotFoundInCache
+	if strings.Contains(content, "{{NPC_COUNT}}") {
+		npcCount := 10
+		configKey := "generation.npc_count"
+		dynConf, err := p.dynamicConfigRepo.GetByKey(ctx, configKey)
+		if err != nil {
+			if !errors.Is(err, models.ErrNotFound) {
+				p.logger.Error("Failed to get dynamic config for NPC count, using default",
+					zap.String("key", configKey),
+					zap.Error(err),
+				)
+			} else {
+				p.logger.Warn("Dynamic config for NPC count not found, using default",
+					zap.String("key", configKey),
+					zap.Int("default_value", npcCount),
+				)
+			}
+		} else if dynConf != nil && dynConf.Value != "" {
+			if parsedCount, convErr := strconv.Atoi(dynConf.Value); convErr == nil && parsedCount > 0 {
+				npcCount = parsedCount
+				p.logger.Debug("Using dynamic config for NPC count", zap.String("key", configKey), zap.Int("value", npcCount))
+			} else {
+				p.logger.Error("Failed to parse dynamic config value for NPC count as positive integer, using default",
+					zap.String("key", configKey),
+					zap.String("value", dynConf.Value),
+					zap.Error(convErr),
+				)
+			}
+		}
+
+		content = strings.ReplaceAll(content, "{{NPC_COUNT}}", strconv.Itoa(npcCount))
+	}
+
+	if strings.Contains(content, "{{CHOICE_COUNT}}") {
+		choiceCount := 10
+		configKey := "generation.choice_count"
+		dynConf, err := p.dynamicConfigRepo.GetByKey(ctx, configKey)
+		if err != nil {
+			if !errors.Is(err, models.ErrNotFound) {
+				p.logger.Error("Failed to get dynamic config for CHOICE count, using default",
+					zap.String("key", configKey),
+					zap.Error(err),
+				)
+			} else {
+				p.logger.Warn("Dynamic config for CHOICE count not found, using default",
+					zap.String("key", configKey),
+					zap.Int("default_value", choiceCount),
+				)
+			}
+		} else if dynConf != nil && dynConf.Value != "" {
+			if parsedCount, convErr := strconv.Atoi(dynConf.Value); convErr == nil && parsedCount > 0 {
+				choiceCount = parsedCount
+				p.logger.Debug("Using dynamic config for CHOICE count", zap.String("key", configKey), zap.Int("value", choiceCount))
+			} else {
+				p.logger.Error("Failed to parse dynamic config value for CHOICE count as positive integer, using default",
+					zap.String("key", configKey),
+					zap.String("value", dynConf.Value),
+					zap.Error(convErr),
+				)
+			}
+		}
+		content = strings.ReplaceAll(content, "{{CHOICE_COUNT}}", strconv.Itoa(choiceCount))
+	}
+
+	return content, nil
 }

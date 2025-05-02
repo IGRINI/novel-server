@@ -173,10 +173,10 @@ func (p *NotificationProcessor) processNotificationPayloadInternal(ctx context.C
 
 	// <<< ИЗМЕНЕНО: Используем константы из sharedModels >>>
 	switch notification.PromptType {
-	case sharedModels.PromptTypeNarrator:
+	case sharedModels.PromptTypeNarrator, sharedModels.PromptTypeNarratorReviser:
 		if !isStoryConfigTask {
-			p.logger.Error("Narrator received without StoryConfigID", zap.String("task_id", taskID), zap.String("published_story_id", notification.PublishedStoryID))
-			return fmt.Errorf("invalid notification: Narrator without StoryConfigID")
+			p.logger.Error("Narrator/Reviser received without StoryConfigID", zap.String("task_id", taskID), zap.String("prompt_type", string(notification.PromptType)), zap.String("published_story_id", notification.PublishedStoryID))
+			return fmt.Errorf("invalid notification: %s without StoryConfigID", notification.PromptType)
 		}
 		return p.handleNarratorNotification(ctx, notification, storyConfigID)
 

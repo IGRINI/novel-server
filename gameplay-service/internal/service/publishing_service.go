@@ -116,7 +116,6 @@ func (s *publishingServiceImpl) PublishDraft(ctx context.Context, draftID uuid.U
 	// 3. Extract necessary fields from draft.Config
 	var tempConfig struct {
 		IsAdultContent bool `json:"ac"`
-		// Language       string `json:"ln"` // Язык теперь берем из поля draft.Language
 	}
 	if err = json.Unmarshal(draft.Config, &tempConfig); err != nil {
 		log.Error("Failed to unmarshal draft config to extract flags", zap.Error(err))

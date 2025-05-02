@@ -33,7 +33,6 @@ type sceneContentChoices struct {
 
 // sceneChoice represents a block of choices within a scene.
 type sceneChoice struct {
-	Shuffleable int           `json:"sh"` // 0 or 1
 	Description string        `json:"desc"`
 	Options     []sceneOption `json:"opts"` // Expecting exactly 2 options
 }

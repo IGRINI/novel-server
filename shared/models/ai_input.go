@@ -13,7 +13,6 @@ type MinimalCharacterDef struct {
 
 // MinimalConfigForScene contains only the config fields needed for scene generation.
 type MinimalConfigForScene struct {
-	Language   string `json:"ln"` // Language code (e.g., "en", "ru")
 	Genre      string `json:"gn"` // Genre
 	PlayerName string `json:"pn"` // Player Name
 }
@@ -53,7 +52,6 @@ func ToMinimalConfigForScene(fullCfg *Config) MinimalConfigForScene {
 		return MinimalConfigForScene{}
 	}
 	return MinimalConfigForScene{
-		Language:   fullCfg.Language,
 		Genre:      fullCfg.Genre,
 		PlayerName: fullCfg.PlayerName,
 	}

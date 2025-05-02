@@ -30,7 +30,6 @@ type SceneContent struct {
 
 // ChoiceBlock represents a single decision point in the scene.
 type ChoiceBlock struct {
-	Shuffleable int           `json:"sh"`
 	Description string        `json:"desc"`
 	Options     []SceneOption `json:"opts"`
 }

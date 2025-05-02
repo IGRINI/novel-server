@@ -118,7 +118,6 @@ func (h *GameplayHandler) getStoryConfig(c *gin.Context) { // <<< *gin.Context
 		Sd    string                      `json:"sd"`
 		Fr    string                      `json:"fr"`
 		Gn    string                      `json:"gn"`
-		Ln    string                      `json:"ln"`
 		Ac    bool                        `json:"ac"`
 		Pn    string                      `json:"pn"`
 		PDesc string                      `json:"p_desc"`
@@ -142,7 +141,6 @@ func (h *GameplayHandler) getStoryConfig(c *gin.Context) { // <<< *gin.Context
 		ShortDescription:  parsedInternal.Sd,
 		Franchise:         parsedInternal.Fr,
 		Genre:             parsedInternal.Gn,
-		Language:          parsedInternal.Ln,
 		IsAdultContent:    parsedInternal.Ac,
 		PlayerName:        parsedInternal.Pn,
 		PlayerDescription: parsedInternal.PDesc,

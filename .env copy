@@ -76,16 +76,6 @@ GAMEPLAY_SERVICE_URL=http://gameplay-service:8082
 PUSH_QUEUE_NAME=push_notifications # Имя очереди для пушей (можно опустить, если default устраивает)
 NOTIFICATION_WORKER_CONCURRENCY=10 # Кол-во воркеров (можно опустить, если default устраивает)
 TOKEN_SERVICE_URL=${AUTH_SERVICE_URL} # Используем URL Auth Service для получения токенов
-FCM_CREDENTIALS_PATH=./secrets/firebase-service-account.json # <<< ВАЖНО: Укажи ПРАВИЛЬНЫЙ путь к твоему ключу Firebase
-
-# --- Настройки APNS (добавить при необходимости) ---
-# APNS_KEY_ID=
-# APNS_TEAM_ID=
-# APNS_KEY_PATH=./secrets/apns_auth_key.p8 # <<< Укажи путь к ключу APNS .p8
-# APNS_TOPIC= # Bundle ID твоего iOS приложения
-
-# ... остальные переменные ...
-FCM_CREDENTIALS_PATH=./secrets/firebase-service-account.json # <<< УКАЖИ ПРАВИЛЬНЫЙ ПУТЬ!
 # APNS_KEY_ID=YOUR_KEY_ID
 # APNS_TEAM_ID=YOUR_TEAM_ID
 # APNS_KEY_PATH=./secrets/AuthKey_YOUR_KEY_ID.p8 # <<< УКАЖИ ПРАВИЛЬНЫЙ ПУТЬ!

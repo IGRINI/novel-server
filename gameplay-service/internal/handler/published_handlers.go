@@ -272,7 +272,6 @@ func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
 func parseChoicesBlock(chJSON json.RawMessage, responseDTO *GameSceneResponseDTO, sceneID string, log *zap.Logger) {
 	// Временная структура для парсинга блока 'ch'
 	type rawChoiceBlock struct {
-		Shuffleable int    `json:"sh"`
 		Char        string `json:"char"` // <<< ПОЛЕ ДЛЯ ПАРСИНГА
 		Description string `json:"desc"`
 		Options     []struct {
@@ -292,7 +291,6 @@ func parseChoicesBlock(chJSON json.RawMessage, responseDTO *GameSceneResponseDTO
 	responseDTO.Choices = make([]ChoiceBlockDTO, len(rawChoices))
 	for i, rawChoice := range rawChoices {
 		choiceDTO := ChoiceBlockDTO{
-			Shuffleable:   rawChoice.Shuffleable == 1,
 			CharacterName: rawChoice.Char, // <<< КОПИРУЕМ ИМЯ ПЕРСОНАЖА
 			Description:   rawChoice.Description,
 			Options:       make([]ChoiceOptionDTO, len(rawChoice.Options)),

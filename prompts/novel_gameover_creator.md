@@ -17,6 +17,7 @@
 2.  **Content & Context:** Generate `et` that reflects the specific ending trigger defined in `rsn`. Crucially, enrich this ending by considering the *overall context* from the final state `lst` (especially `cs`, `gf`, `sv`) to make the text specific and meaningful to the completed playthrough. The text must match the game's tone/style (`cfg.pp.st`, `cfg.pp.tn`).
 3.  **Conciseness:** Keep `et` concise (2-5 sentences), providing a sense of finality appropriate to the ending described.
 
+**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, compressed JSON object described in the 'Output JSON Structure'. Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
 
 **Apply the rules above to the following User Input:**
 

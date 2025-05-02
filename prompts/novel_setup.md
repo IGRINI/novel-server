@@ -22,7 +22,7 @@
     "stat1_name_from_input": {"iv": 50, "d": "string", "go": {..}, "ic": "string"}
     // ... Repeat for all 4 stats ...
   },
-  "chars": [ // ~10 NPC characters. DO NOT include player.
+  "chars": [ // {{NPC_COUNT}} NPC characters. DO NOT include player.
     {
       "n": "string",    // name
       "d": "string",    // description
@@ -31,7 +31,7 @@
       "pr": "string",   // image gen prompt (detailed, English)
       "ir": "string"    // deterministic image_reference (snake_case, from vt/name, English)
     }
-    // ... Repeat for ~10 chars ...
+    // ... Repeat for {{NPC_COUNT}} chars ...
   ],
   "spi": "string" // Story Preview Image prompt (detailed, English, based on context)
 }
@@ -45,10 +45,11 @@
     *   Assign an appropriate icon name for `ic` from the provided list: Crown, Flag, Ring, Throne, Person, GroupOfPeople, TwoHands, Mask, Compass, Pyramid, Dollar, Lightning, Sword, Shield, Helmet, Spear, Axe, Bow, Star, Gear, WarningTriangle, Mountain, Eye, Skull, Fire, Pentagram, Book, Leaf, Cane, Scales, Heart, Sun.
     *   Respect 0-100 range and `go` conditions.
 4.  **Characters (`chars`):
-    *   Generate ~10 relevant NPCs (NO player character).
+    *   Generate {{NPC_COUNT}} relevant NPCs (NO player character).
     *   Generate deterministic `ir` (image reference) based on `vt` (or well-known `n`): `[gender]_[age]_[theme]_[desc1]_[desc2]` or `snake_case(name)`. Use `male/female/other/andro/unknown`, `child/teen/adult/old`, genre tags, distinctive visual tags. Use snake_case. Identical `vt` -> identical `ir`.
 5.  **Story Preview (`spi`):** Generate a detailed English image prompt capturing story essence (`wc`, `ss`, `gn`, `fr`, `th`).
 
+**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, compressed JSON object described in the 'Output JSON Structure'. Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
 
 **Apply the rules above to the following User Input:**
 

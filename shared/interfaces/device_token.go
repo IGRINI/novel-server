@@ -25,4 +25,6 @@ type DeviceTokenService interface {
 	RegisterDeviceToken(ctx context.Context, userID uuid.UUID, data interface{}) error // Используем interface{} для DTO
 	// UnregisterDeviceToken удаляет токен устройства.
 	UnregisterDeviceToken(ctx context.Context, data interface{}) error // Используем interface{} для DTO
+	// GetDeviceTokensForUser возвращает все активные токены для указанного пользователя.
+	GetDeviceTokensForUser(ctx context.Context, userID uuid.UUID) ([]models.DeviceTokenInfo, error)
 }

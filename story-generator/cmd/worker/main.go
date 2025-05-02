@@ -101,7 +101,7 @@ func main() {
 
 	// --- Инициализация Prompt Provider ---
 	sugar.Info("Инициализация Prompt Provider...")
-	promptProvider := service.NewPromptProvider(promptRepo, logger)
+	promptProvider := service.NewPromptProvider(promptRepo, dynamicConfigRepo, logger)
 	loadCtx, loadCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if err := promptProvider.LoadInitialPrompts(loadCtx); err != nil {
 		loadCancel()
