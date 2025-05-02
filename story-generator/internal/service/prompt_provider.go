@@ -109,7 +109,10 @@ func (p *PromptProvider) UpdateCache(event interfaces.PromptEvent) {
 
 // GetPrompt retrieves a prompt content from the cache by key and language.
 // It also replaces placeholders like {{NPC_COUNT}} with values from dynamic config.
+// If the prompt is not found for the requested language, it tries to fall back to English ('en').
 func (p *PromptProvider) GetPrompt(ctx context.Context, key string, language string) (string, error) {
+	const fallbackLanguage = "en" // Define fallback language
+
 	p.cacheLock.RLock()
 	langCache, langOk := p.cacheMap[language]
 	var content string
@@ -119,9 +122,31 @@ func (p *PromptProvider) GetPrompt(ctx context.Context, key string, language str
 	}
 	p.cacheLock.RUnlock()
 
+	// If not found in the requested language, try fallback language
+	if (!langOk || !keyOk) && language != fallbackLanguage {
+		p.logger.Warn("Prompt not found in requested language, trying fallback",
+			zap.String("key", key),
+			zap.String("requested_language", language),
+			zap.String("fallback_language", fallbackLanguage))
+
+		p.cacheLock.RLock()
+		langCache, langOk = p.cacheMap[fallbackLanguage]
+		if langOk {
+			content, keyOk = langCache[key]
+		}
+		p.cacheLock.RUnlock()
+
+		if langOk && keyOk {
+			p.logger.Info("Using fallback language prompt",
+				zap.String("key", key),
+				zap.String("language_used", fallbackLanguage))
+			language = fallbackLanguage // Update language variable to reflect the actual language used for placeholder replacement later
+		}
+	}
+
 	if !langOk || !keyOk {
-		p.logger.Warn("Prompt not found in cache", zap.String("key", key), zap.String("language", language))
-		return "", ErrPromptNotFoundInCache
+		p.logger.Error("Prompt not found in cache, including fallback", zap.String("key", key), zap.String("requested_language", language)) // Changed Warn to Error as it's a definitive failure now
+		return "", fmt.Errorf("%w: key='%s', lang='%s'", ErrPromptNotFoundInCache, key, language)                                           // Return specific error with key/lang
 	}
 
 	if strings.Contains(content, "{{NPC_COUNT}}") {

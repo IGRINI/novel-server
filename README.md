@@ -266,21 +266,21 @@
     *   Тело запроса (`application/json`):
         ```json
         {
-          \"prompt\": \"Текст начального запроса пользователя...\",
-          \"language\": \"string\" // Код языка (например, \"en\", \"ru\"). Обязательное поле. Поддерживаемые: en, fr, de, es, it, pt, ru, zh, ja.
+          "prompt": "Текст начального запроса пользователя...",
+          "language": "string" // Код языка (например, "en", "ru"). Обязательное поле. Поддерживаемые: en, fr, de, es, it, pt, ru, zh, ja.
         }
         ```
     *   Ответ при успехе (`202 Accepted`): Возвращает созданный объект `StoryConfig` со статусом `generating`.
         ```json
         {
-          \"id\": \"uuid-string\", // ID созданного черновика
-          \"status\": \"generating\"
+          "id": "uuid-string", // ID созданного черновика
+          "status": "generating"
         }
         ```
     *   Ответ при ошибке:
         *   `400 Bad Request`: Невалидное тело запроса (например, отсутствует `prompt` или `language`, неподдерживаемый язык).
         *   `401 Unauthorized`: Невалидный токен.
-        *   `409 Conflict` (`{\"message\": \"User already has an active generation task\"}`): У пользователя уже есть активная задача генерации.
+        *   `409 Conflict` (`{"message": "User already has an active generation task"}`): У пользователя уже есть активная задача генерации.
         *   `500 Internal Server Error`: Ошибка при создании записи в БД или постановке задачи в очередь. **Примечание:** Если ошибка произошла *после* создания записи, но *до* отправки задачи, тело ответа может содержать созданный `StoryConfig` со статусом `error`.
 
 *   **`GET /api/stories`**
@@ -292,17 +292,17 @@
     *   Ответ при успехе (`200 OK`): Пагинированный список `StoryConfigSummary`.
         ```json
         {
-          \"data\": [
+          "data": [
             {
-              \"id\": \"uuid-string\",
-              \"title\": \"string\", // Может быть пустым, если генерация еще идет
-              \"description\": \"string\", // Может быть user_input, если генерация еще идет
-              \"createdAt\": \"timestamp\",
-              \"status\": \"generating | draft | error\"
+              "id": "uuid-string",
+              "title": "string", // Может быть пустым, если генерация еще идет
+              "description": "string", // Может быть user_input, если генерация еще идет
+              "createdAt": "timestamp",
+              "status": "generating | draft | error"
             }
             /* ... */
           ],
-          \"next_cursor\": \"string | null\"
+          "next_cursor": "string | null"
         }
         ```
     *   Ответ при ошибке:
@@ -318,35 +318,35 @@
         *   **Статус `generating` или `error`:** `StoryConfigDetail`
             ```json
             {
-              \"id\": \"uuid-string\",
-              \"createdAt\": \"timestamp\",
-              \"status\": \"generating | error\",
-              \"config\": null // Поле config будет null
+              "id": "uuid-string",
+              "createdAt": "timestamp",
+              "status": "generating | error",
+              "config": null // Поле config будет null
             }
             ```
         *   **Статус `draft`:** `StoryConfigParsedDetail` (распарсенные поля из `config`)
             ```json
             {
-              \"title\": \"string\",
-              \"shortDescription\": \"string\",
-              \"franchise\": \"string | null\",
-              \"genre\": \"string\",
-              \"language\": \"string\",
-              \"isAdultContent\": false,
-              \"playerName\": \"string\",
-              \"playerDescription\": \"string\",
-              \"worldContext\": \"string\",
-              \"storySummary\": \"string\",
-              \"coreStats\": { // Словарь статов
-                \"stat_key_1\": {
-                  \"description\": \"string\",
-                  \"initialValue\": 10,
-                  \"gameOverConditions\": {
-                    \"min\": false, // true, если Game Over при мин. значении
-                    \"max\": false  // true, если Game Over при макс. значении
+              "title": "string",
+              "shortDescription": "string",
+              "franchise": "string | null",
+              "genre": "string",
+              "language": "string",
+              "isAdultContent": false,
+              "playerName": "string",
+              "playerDescription": "string",
+              "worldContext": "string",
+              "storySummary": "string",
+              "coreStats": { // Словарь статов
+                "stat_key_1": {
+                  "description": "string",
+                  "initialValue": 10,
+                  "gameOverConditions": {
+                    "min": false, // true, если Game Over при мин. значении
+                    "max": false  // true, если Game Over при макс. значении
                   }
                 },
-                \"stat_key_2\": { ... }
+                "stat_key_2": { ... }
               }
             }
             ```
@@ -364,7 +364,7 @@
     *   Тело запроса (`application/json`):
         ```json
         {
-          \"revision_prompt\": \"Текст инструкции для изменения...\" // Поле называется revision_prompt
+          "revision_prompt": "Текст инструкции для изменения..." // Поле называется revision_prompt
         }
         ```
     *   Ответ при успехе (`202 Accepted`): **Пустое тело.** Статус черновика изменится на `generating`.
@@ -373,7 +373,7 @@
         *   `401 Unauthorized`: Невалидный токен.
         *   `403 Forbidden`: Попытка доступа к чужому черновику.
         *   `404 Not Found`: Черновик не найден.
-        *   `409 Conflict` (`{\"message\": \"Story config is not in draft state\" | \"User already has an active generation task\"}`): Черновик не готов к ревизии или у пользователя уже есть задача.
+        *   `409 Conflict` (`{"message": "Story config is not in draft state" | "User already has an active generation task"}`): Черновик не готов к ревизии или у пользователя уже есть задача.
         *   `500 Internal Server Error`: Ошибка при обновлении БД или постановке задачи.
 
 *   **`POST /api/stories/:id/publish`**
@@ -384,7 +384,7 @@
     *   Ответ при успехе (`201 Created`): Объект `PublishedStory` (или его ID?).
         ```json
         {
-          \"published_story_id\": \"uuid-string\"
+          "published_story_id": "uuid-string"
         }
         ```
     *   Ответ при ошибке:
@@ -392,7 +392,7 @@
         *   `401 Unauthorized`: Невалидный токен.
         *   `403 Forbidden`: Попытка доступа к чужому черновику.
         *   `404 Not Found`: Черновик не найден.
-        *   `409 Conflict` (`{\"message\": \"Story config is not in draft state\"}`): Черновик не готов к публикации.
+        *   `409 Conflict` (`{"message": "Story config is not in draft state"}`): Черновик не готов к публикации.
         *   `500 Internal Server Error`: Ошибка при создании `PublishedStory`, сцены или обновлении статуса черновика.
 
 *   **`POST /api/stories/drafts/:draft_id/retry`**
@@ -431,24 +431,24 @@
     *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`.
         ```json
         {
-          \"data\": [
+          "data": [
             {
-              \"id\": \"uuid-string\",
-              \"title\": \"string\",
-              \"short_description\": \"string\", // <-- Обновлено поле
-              \"author_id\": \"uuid-string\",
-              \"author_name\": \"string\", // <-- Добавлено имя автора
-              \"published_at\": \"timestamp\",
-              \"is_adult_content\": false, // <-- Обновлено поле
-              \"likes_count\": 123,
-              \"is_liked\": true,
+              "id": "uuid-string",
+              "title": "string",
+              "short_description": "string", // <-- Обновлено поле
+              "author_id": "uuid-string",
+              "author_name": "string", // <-- Добавлено имя автора
+              "published_at": "timestamp",
+              "is_adult_content": false, // <-- Обновлено поле
+              "likes_count": 123,
+              "is_liked": true,
               "hasPlayerProgress": false // Есть ли прогресс у текущего пользователя
               "status": "ready | completed | error | ..." // <<< ДОБАВЛЯЕМ СТАТУС НАЗАД
               "isPublic": true // <<< ДОБАВЛЕНО: Является ли история публичной
             }
             /* ... */
           ],
-          \"next_cursor\": \"string | null\"
+          "next_cursor": "string | null"
         }
         ```
     *   Ответ при ошибке:
@@ -463,24 +463,24 @@
     *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`.
         ```json
         {
-          \"data\": [
+          "data": [
             {
-              \"id\": \"uuid-string\",
-              \"title\": \"string\",
-              \"short_description\": \"string\", // <-- Обновлено поле
-              \"author_id\": \"uuid-string\",
-              \"author_name\": \"string\", // <-- Добавлено имя автора
-              \"published_at\": \"timestamp\",
-              \"is_adult_content\": false, // <-- Обновлено поле
-              \"likes_count\": 123,
-              \"is_liked\": false, // Лайкнул ли текущий пользователь
-              \"hasPlayerProgress\": true // Есть ли прогресс у текущего пользователя
-              \"status\": \"ready | completed | error | ...\" // <<< ДОБАВЛЯЕМ СТАТУС НАЗАД
+              "id": "uuid-string",
+              "title": "string",
+              "short_description": "string", // <-- Обновлено поле
+              "author_id": "uuid-string",
+              "author_name": "string", // <-- Добавлено имя автора
+              "published_at": "timestamp",
+              "is_adult_content": false, // <-- Обновлено поле
+              "likes_count": 123,
+              "is_liked": false, // Лайкнул ли текущий пользователь
+              "hasPlayerProgress": true // Есть ли прогресс у текущего пользователя
+              "status": "ready | completed | error | ..." // <<< ДОБАВЛЯЕМ СТАТУС НАЗАД
               "isPublic": true // <<< ДОБАВЛЕНО: Является ли история публичной
             }
             /* ... */
           ],
-          \"next_cursor\": \"string | null\"
+          "next_cursor": "string | null"
         }
         ```
     *   Ответ при ошибке:
@@ -668,7 +668,7 @@
         *   `400 Bad Request`: Невалидный UUID.
         *   `401 Unauthorized`: Невалидный токен.
         *   `404 Not Found`: История не найдена.
-        *   `409 Conflict` (`{\"message\": \"story already liked by this user\"}`): Пользователь уже лайкнул эту историю.
+        *   `409 Conflict` (`{"message": "story already liked by this user"}`): Пользователь уже лайкнул эту историю.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 *   **`DELETE /api/published-stories/:story_id/like`**
@@ -680,7 +680,7 @@
     *   Ответ при ошибке:
         *   `400 Bad Request`: Невалидный UUID.
         *   `401 Unauthorized`: Невалидный токен.
-        *   `404 Not Found` (`{\"message\": \"story not liked by this user yet\"}`): Пользователь не лайкал эту историю.
+        *   `404 Not Found` (`{"message": "story not liked by this user yet"}`): Пользователь не лайкал эту историю.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 *   **`DELETE /api/published-stories/:story_id`**
@@ -706,7 +706,7 @@
         *   `400 Bad Request`: Невалидный UUID.
         *   `401 Unauthorized`: Невалидный токен.
         *   `404 Not Found`: История не найдена.
-        *   `409 Conflict` (`{\"message\": "Story is not in error state"}`): История не в статусе ошибки.
+        *   `409 Conflict` (`{"message": "Story is not in error state"}`): История не в статусе ошибки.
         *   `500 Internal Server Error`: Ошибка при обновлении статуса или постановке задачи.
 
 *   **`PATCH /api/published-stories/:story_id/visibility`**
@@ -846,6 +846,100 @@
         }
         ```
 *   **Сообщения от клиента:** Не предусмотрены (только установка соединения).
+
+---
+
+#### Сервис Push-уведомлений (`notification-service`)
+
+Этот сервис отвечает за доставку push-уведомлений пользователям через Firebase Cloud Messaging (FCM) и Apple Push Notification service (APNS).
+
+**Локализация на клиенте (Data-Only Notifications):**
+
+Чтобы уведомления отображались на языке пользователя, **клиентское приложение (iOS/Android) отвечает за их локализацию**.
+
+Бэкенд (`notification-service`) теперь отправляет **только data-only** push-уведомления. Это значит, что стандартные поля `notification.title` и `notification.body` **не отправляются**. Вместо этого весь необходимый контент передается в специальном `data` payload, который включает:
+
+*   `loc_key`: Ключ строки локализации (например, `notification_scene_ready`). Используйте константу `constants.PushLocKey` для самого ключа (`"loc_key"`).
+*   `loc_arg_*`: Аргументы, которые нужно подставить в строку локализации (например, `loc_arg_storyTitle`). Используйте константы `constants.PushLocArg*`.
+*   `fallback_title`: Запасной заголовок на случай, если локализация не удалась.
+*   `fallback_body`: Запасное тело сообщения.
+*   Другие необходимые данные (`storyConfigId`, `publishedStoryId` и т.д.).
+
+**Задача клиента:**
+
+1.  **Получить data payload:** Обработать получение data-only уведомления (даже в background/terminated). Это особенно важно для iOS.
+    *   **Android:** Использовать `FirebaseMessagingService`.
+    *   **iOS:** **Обязательно** использовать **Notification Service Extension** для перехвата и модификации уведомления *до* его отображения, или Background Push с показом *локального* уведомления.
+2.  **Извлечь данные:** Получить `loc_key`, все `loc_arg_*`, `fallback_title`, `fallback_body` из **`data` payload** уведомления.
+3.  **Выполнить локализацию:** Попробовать найти строку перевода по `loc_key` и подставить аргументы `loc_arg_*`.
+4.  **Определить текст:** Если локализация удалась, использовать переведенные строки. Если нет (или ключа `loc_key` не было), использовать `fallback_title` и `fallback_body`.
+5.  **Отобразить уведомление:** Создать и отобразить *локальное* уведомление (или модифицировать входящее через Extension на iOS) с полученным заголовком и телом.
+
+**Типы уведомлений и их данные:**
+
+Ниже перечислены основные события, по которым отправляются push-уведомления, и данные, которые они содержат в `data` payload.
+
+*   **Черновик готов:**
+    *   `loc_key`: `notification_draft_ready` (константа `constants.PushLocKeyDraftReady`)
+    *   `data`:
+        ```json
+        {
+          "storyConfigId": "uuid-string",
+          "eventType": "draft",
+          "loc_key": "notification_draft_ready",
+          "loc_arg_storyTitle": "Название Черновика",
+          "fallback_title": "Черновик готов!",
+          "fallback_body": "Ваш черновик \"Название Черновика\" готов к настройке."
+        }
+        ```
+*   **История готова к игре:** (После генерации Setup, первой сцены и всех изображений)
+    *   `loc_key`: `notification_story_ready` (константа `constants.PushLocKeyStoryReady`)
+    *   `data`:
+        ```json
+        {
+          "publishedStoryId": "uuid-string",
+          "eventType": "ready",
+          "loc_key": "notification_story_ready",
+          "loc_arg_storyTitle": "Название Истории",
+          "fallback_title": "История готова!",
+          "fallback_body": "Ваша история \"Название Истории\" готова к игре!"
+        }
+        ```
+*   **Новая сцена готова:**
+    *   `loc_key`: `notification_scene_ready` (константа `constants.PushLocKeySceneReady`)
+    *   `data`:
+        ```json
+        {
+          "publishedStoryId": "uuid-string",
+          "gameStateId": "uuid-string",
+          "sceneId": "uuid-string",
+          "eventType": "playing", // Или scene_ready?
+          "loc_key": "notification_scene_ready",
+          "loc_arg_storyTitle": "Название Истории",
+          "fallback_title": "Название Истории", // Может лучше "Новая сцена"?
+          "fallback_body": "Новая сцена готова!"
+        }
+        ```
+*   **Игра завершена (Game Over):**
+    *   `loc_key`: `notification_game_over` (константа `constants.PushLocKeyGameOver`)
+    *   `data`:
+        ```json
+        {
+          "publishedStoryId": "uuid-string",
+          "gameStateId": "uuid-string",
+          "sceneId": "uuid-string",
+          "eventType": "completed",
+          "loc_key": "notification_game_over",
+          "loc_arg_storyTitle": "Название Истории",
+          "loc_arg_endingText": "Текст концовки...",
+          "fallback_title": "Игра завершена!",
+          "fallback_body": "История \"Название Истории\" завершена."
+        }
+        ```
+
+**Примечание:** Ключи аргументов (`loc_arg_storyTitle`, `loc_arg_endingText`), ключи fallback (`fallback_title`, `fallback_body`) и основной ключ `loc_key` определены как константы в файле `shared/constants/push_notifications.go`.
+
+---
 
 ## Локальная разработка
 

@@ -10,6 +10,7 @@ import (
 
 	// Возвращаем импорт entities
 
+	"novel-server/shared/constants"
 	"novel-server/shared/interfaces"
 
 	"github.com/gin-gonic/gin"
@@ -261,61 +262,66 @@ func (h *AdminHandler) handleSendUserNotification(c *gin.Context) {
 	userIDStr := c.Param("user_id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		h.logger.Warn("Invalid user ID format for sending notification", zap.String("rawID", userIDStr), zap.Error(err))
-		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/admin/users/%s/edit?error=invalid_user_id", userIDStr))
+		h.logger.Warn("Invalid user ID format for sending notification", zap.String("userID", userIDStr), zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректный ID пользователя"})
 		return
 	}
 
-	// Читаем сообщение из JSON тела запроса
+	// Структура для парсинга JSON тела запроса
 	var requestBody struct {
+		Title   string `json:"title"`
 		Message string `json:"message"`
 	}
+
 	if err := c.ShouldBindJSON(&requestBody); err != nil {
-		h.logger.Warn("Failed to bind notification JSON body", zap.String("userID", userIDStr), zap.Error(err))
-		// Возвращаем JSON ошибку, если тело невалидно
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-			"status":  "error",
-			"message": "Неверный формат запроса: " + err.Error(),
-		})
+		h.logger.Error("Invalid request body for sending notification", zap.Error(err), zap.String("userID", userIDStr))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Некорректное тело запроса: " + err.Error()})
 		return
 	}
 
-	message := requestBody.Message
-
-	if message == "" {
-		h.logger.Warn("Notification message is empty", zap.String("userID", userIDStr))
-		// Теперь возвращаем JSON ошибку и для пустого сообщения
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-			"status":  "error",
-			"message": "Текст уведомления не может быть пустым.",
-		})
+	// Валидация входных данных
+	if requestBody.Title == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Заголовок не может быть пустым"})
+		return
+	}
+	if requestBody.Message == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Сообщение не может быть пустым"})
 		return
 	}
 
-	h.logger.Info("Attempting to send notification", zap.String("userID", userIDStr), zap.String("message", message))
+	h.logger.Info("Received request to send notification",
+		zap.String("userID", userIDStr),
+		zap.String("title", requestBody.Title),
+		zap.String("message", requestBody.Message))
 
-	// ИЗМЕНЕНО: Используем тип interfaces.PushNotificationEvent и поле Body
+	// Проверяем, инициализирован ли publisher
+	if h.pushPublisher == nil {
+		h.logger.Error("Push publisher is not initialized, cannot send notification", zap.String("userID", userIDStr))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Сервис уведомлений недоступен"})
+		return
+	}
+
+	// Создаем событие для отправки
 	event := interfaces.PushNotificationEvent{
-		UserID: userID.String(),                      // Используем uuid.UUID
-		Title:  "Сообщение от администрации",         // Используем правильное название поля Title
-		Body:   message,                              // <<< ИЗМЕНЕНО с Message на Body
-		Data:   map[string]string{"source": "admin"}, // Можно добавить доп. данные
+		UserID: userID.String(),
+		Data: map[string]string{
+			constants.PushFallbackTitleKey: requestBody.Title,
+			constants.PushFallbackBodyKey:  requestBody.Message,
+			"source":                       "admin",
+		},
 	}
 
-	// Используем правильное имя метода PublishPushEvent (из интерфейса)
-	if err := h.pushPublisher.PublishPushEvent(c.Request.Context(), event); err != nil {
-		h.logger.Error("Failed to publish user push event", zap.Error(err), zap.String("userID", userIDStr))
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-			"status":  "error",
-			"message": "Не удалось опубликовать уведомление в очередь.",
-		})
+	// Публикуем событие в очередь
+	err = h.pushPublisher.PublishPushEvent(c.Request.Context(), event)
+	if err != nil {
+		h.logger.Error("Failed to publish push notification event",
+			zap.Error(err),
+			zap.String("userID", userIDStr),
+		)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Ошибка при отправке уведомления в очередь"})
 		return
 	}
 
-	h.logger.Info("Notification published to queue successfully", zap.String("userID", userIDStr))
-
-	c.JSON(http.StatusOK, gin.H{
-		"status":  "success",
-		"message": "Уведомление успешно отправлено в очередь.",
-	})
+	h.logger.Info("Push notification event published successfully", zap.String("userID", userIDStr), zap.String("title", requestBody.Title))
+	c.JSON(http.StatusOK, gin.H{"message": "Уведомление успешно отправлено в очередь"})
 }

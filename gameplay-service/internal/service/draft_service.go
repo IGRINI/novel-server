@@ -83,6 +83,8 @@ func (s *draftServiceImpl) GenerateInitialStory(ctx context.Context, userID uuid
 		return nil, fmt.Errorf("error preparing data for DB: %w", err)
 	}
 
+	log.Debug("Language parameter received before config creation", zap.String("languageParam", language))
+
 	config := &sharedModels.StoryConfig{
 		ID:          uuid.New(),
 		UserID:      userID,
@@ -95,6 +97,8 @@ func (s *draftServiceImpl) GenerateInitialStory(ctx context.Context, userID uuid
 		UpdatedAt:   time.Now().UTC(),
 		Language:    language,
 	}
+
+	log.Debug("StoryConfig object created", zap.String("config.ID", config.ID.String()), zap.String("config.Language", config.Language))
 
 	err = s.repo.Create(ctx, config)
 	if err != nil {
@@ -116,6 +120,8 @@ func (s *draftServiceImpl) GenerateInitialStory(ctx context.Context, userID uuid
 		}
 	*/
 
+	log.Debug("Language value from config before payload creation", zap.String("draftID", config.ID.String()), zap.String("config.Language", config.Language))
+
 	generationPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:        taskID,
 		UserID:        config.UserID.String(),
@@ -124,6 +130,8 @@ func (s *draftServiceImpl) GenerateInitialStory(ctx context.Context, userID uuid
 		StoryConfigID: config.ID.String(),
 		Language:      config.Language, // <<< ПЕРЕДАЕМ ЯЗЫК ОТДЕЛЬНО >>>
 	}
+
+	log.Debug("GenerationTaskPayload created", zap.Any("payload", generationPayload))
 
 	if err := s.publisher.PublishGenerationTask(ctx, generationPayload); err != nil {
 		log.Error("Error publishing initial generation task, attempting rollback", zap.String("draftID", config.ID.String()), zap.String("taskID", taskID), zap.Error(err))

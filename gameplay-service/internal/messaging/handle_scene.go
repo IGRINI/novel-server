@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
-	"go.uber.org/zap"
-
+	// Внутренние импорты (включая shared)
+	"novel-server/shared/constants"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
+
+	// Внешние импорты
+	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Context, notification sharedMessaging.NotificationPayload, publishedStoryID uuid.UUID) error {
@@ -183,6 +186,10 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 												p.logger.Info("First scene generated AND images are ready (or not needed). Setting status to Ready.", zap.String("publishedStoryID", publishedStoryID.String()))
 												readyStatus := sharedModels.StatusReady
 												finalStatusToSet = &readyStatus
+
+												// <<< НАЧАЛО: Отправка Push уведомления о готовности истории >>>
+												p.publishPushNotificationForStoryReady(ctx, currentStoryState)
+												// <<< КОНЕЦ: Отправка Push уведомления о готовности истории >>>
 											} else {
 												p.logger.Info("First scene generated, but images are still pending. Status remains unchanged for now.", zap.String("publishedStoryID", publishedStoryID.String()))
 											}
@@ -268,9 +275,9 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 														zap.String("new_player_status", string(gameState.PlayerStatus)),
 													)
 
+													// Обновляем current_scene_summary в PlayerProgress
 													if gameState.PlayerProgressID != nil {
 														progressID := *gameState.PlayerProgressID
-
 														var sceneSummaryContent struct {
 															Summary *string `json:"ss"`
 														}
@@ -298,6 +305,34 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 															}
 														}
 													}
+
+													// <<< ПРАВИЛЬНОЕ МЕСТО для отправки WebSocket и Push >>>
+													// Получаем актуальное состояние истории для WebSocket
+													finalPubStory, errGetStory := p.publishedRepo.GetByID(dbCtx, publishedStoryID)
+													if errGetStory != nil {
+														p.logger.Error("Failed to get PublishedStory for WebSocket update after success", zap.String("task_id", taskID), zap.Error(errGetStory))
+													} else {
+														// Отправляем WebSocket уведомление
+														wsEvent := ClientStoryUpdate{
+															ID:         publishedStoryID.String(),
+															UserID:     finalPubStory.UserID.String(),
+															UpdateType: UpdateTypeStory,
+															Status:     string(finalPubStory.Status),
+															SceneID:    scene.ID.String(),
+															StateHash:  notification.StateHash,
+															EndingText: endingText, // endingText был определен выше
+														}
+														wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+														if errWs := p.clientPub.PublishClientUpdate(wsCtx, wsEvent); errWs != nil {
+															p.logger.Error("Error sending ClientStoryUpdate (Scene Success)", zap.String("task_id", taskID), zap.Error(errWs))
+														} else {
+															p.logger.Info("ClientStoryUpdate sent (Scene Success)", zap.String("task_id", taskID), zap.String("story_id", publishedStoryID.String()), zap.String("status", wsEvent.Status))
+														}
+														wsCancel() // Закрываем контекст для WebSocket
+													}
+
+													// Отправляем Push уведомление (используя gameState, который мы обновили)
+													p.publishPushNotificationForScene(ctx, gameState, scene, publishedStoryID)
 												}
 											}
 										}
@@ -306,91 +341,6 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 											zap.String("task_id", taskID),
 											zap.String("prompt_type", string(notification.PromptType)),
 										)
-									}
-
-									finalPubStory, errGetStory := p.publishedRepo.GetByID(dbCtx, publishedStoryID)
-									if errGetStory != nil {
-										p.logger.Error("Failed to get PublishedStory for WebSocket update after success", zap.String("task_id", taskID), zap.Error(errGetStory))
-									} else {
-										clientUpdateSuccess := ClientStoryUpdate{
-											ID:         publishedStoryID.String(),
-											UserID:     finalPubStory.UserID.String(),
-											UpdateType: UpdateTypeStory,
-											Status:     string(finalPubStory.Status),
-											SceneID:    scene.ID.String(),
-											StateHash:  notification.StateHash,
-											EndingText: endingText,
-										}
-										wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
-										defer wsCancel()
-										if errWs := p.clientPub.PublishClientUpdate(wsCtx, clientUpdateSuccess); errWs != nil {
-											p.logger.Error("Error sending ClientStoryUpdate (Scene Success)", zap.String("task_id", taskID), zap.Error(errWs))
-										} else {
-											p.logger.Info("ClientStoryUpdate sent (Scene Success)", zap.String("task_id", taskID), zap.String("story_id", publishedStoryID.String()), zap.String("status", clientUpdateSuccess.Status))
-										}
-									}
-
-									if finalPubStory != nil {
-										playerStatus := sharedModels.PlayerStatusPlaying
-										if notification.PromptType == sharedModels.PromptTypeNovelGameOverCreator {
-											playerStatus = sharedModels.PlayerStatusCompleted
-										}
-										if finalPubStory.Status == sharedModels.StatusReady || playerStatus == sharedModels.PlayerStatusCompleted {
-											pushPayload := PushNotificationPayload{
-												UserID:       finalPubStory.UserID,
-												Notification: PushNotification{},
-												Data: map[string]string{
-													"type":       UpdateTypeStory,
-													"entity_id":  publishedStoryID.String(),
-													"status":     string(finalPubStory.Status),
-													"scene_id":   scene.ID.String(),
-													"state_hash": notification.StateHash,
-												},
-											}
-											storyTitle := "История"
-											if finalPubStory.Title != nil && *finalPubStory.Title != "" {
-												storyTitle = *finalPubStory.Title
-											}
-
-											if playerStatus == sharedModels.PlayerStatusCompleted {
-												pushPayload.Notification.Title = fmt.Sprintf("История '%s' завершена!", storyTitle)
-												if endingText != nil && *endingText != "" {
-													pushPayload.Notification.Body = fmt.Sprintf("Ваше приключение подошло к концу: %s", *endingText)
-												} else {
-													pushPayload.Notification.Body = "Ваше приключение подошло к концу."
-												}
-												pushPayload.Data["status"] = string(sharedModels.PlayerStatusCompleted)
-											} else {
-												pushPayload.Notification.Title = fmt.Sprintf("'%s': Новая сцена готова!", storyTitle)
-												pushPayload.Notification.Body = "Продолжите ваше приключение."
-											}
-
-											pushCtx, pushCancel := context.WithTimeout(context.Background(), 10*time.Second)
-											defer pushCancel()
-											if errPush := p.pushPub.PublishPushNotification(pushCtx, pushPayload); errPush != nil {
-												p.logger.Error("Error sending Push notification (Scene/GameOver)",
-													zap.String("task_id", taskID),
-													zap.String("published_story_id", publishedStoryID.String()),
-													zap.Error(errPush),
-												)
-											} else {
-												p.logger.Info("Push notification sent (Scene/GameOver)",
-													zap.String("task_id", taskID),
-													zap.String("published_story_id", publishedStoryID.String()),
-													zap.String("player_status", string(playerStatus)),
-													zap.String("story_status", string(finalPubStory.Status)),
-												)
-											}
-										} else {
-											p.logger.Info("PUSH notification skipped for Scene/GameOver",
-												zap.String("task_id", taskID),
-												zap.String("published_story_id", publishedStoryID.String()),
-												zap.String("story_status", string(finalPubStory.Status)),
-												zap.String("player_status", string(playerStatus)),
-											)
-										}
-									} else {
-										p.logger.Error("Push notification skipped because PublishedStory could not be fetched", zap.String("task_id", taskID))
 									}
 								}
 							}
@@ -593,3 +543,145 @@ func getMapKeys(m map[string]interface{}) []string {
 	}
 	return keys
 }
+
+// <<< НАЧАЛО: Новая функция для отправки Push уведомлений для сцены >>>
+func (p *NotificationProcessor) publishPushNotificationForScene(ctx context.Context, gameState *sharedModels.PlayerGameState, scene *sharedModels.StoryScene, publishedStoryID uuid.UUID) {
+	// Получаем детали истории для Title и Body
+	story, err := p.publishedRepo.GetByID(ctx, publishedStoryID)
+	if err != nil {
+		p.logger.Error("Failed to get PublishedStory for push notification",
+			zap.String("publishedStoryID", publishedStoryID.String()),
+			zap.String("gameStateID", gameState.ID.String()),
+			zap.Error(err),
+		)
+		return // Не отправляем уведомление, если не можем получить детали
+	}
+
+	// <<< ИЗМЕНЕНИЕ: Используем ключи локализации и data payload >>>
+	storyTitle := ""
+	if story.Title != nil {
+		storyTitle = *story.Title
+	}
+
+	locKey := constants.PushLocKeySceneReady
+	locArgs := map[string]string{
+		constants.PushLocArgStoryTitle: storyTitle,
+	}
+	fallbackBody := "Новая сцена готова!"
+
+	if gameState.PlayerStatus == sharedModels.PlayerStatusCompleted {
+		locKey = constants.PushLocKeyGameOver
+		endingText := "Вы достигли финала истории."
+		if gameState.EndingText != nil && *gameState.EndingText != "" {
+			endingText = *gameState.EndingText
+		}
+		locArgs[constants.PushLocArgEndingText] = endingText
+		fallbackBody = fmt.Sprintf("История \"%s\" завершена.", storyTitle)
+	}
+
+	// Собираем все данные в одну карту
+	data := map[string]string{
+		"publishedStoryId": publishedStoryID.String(),
+		"gameStateId":      gameState.ID.String(),
+		"sceneId":          scene.ID.String(),
+		"eventType":        "scene_ready",
+		// Локализация
+		constants.PushLocKey: locKey,
+		// Fallback текст
+		constants.PushFallbackTitleKey: storyTitle,
+		constants.PushFallbackBodyKey:  fallbackBody,
+	}
+	// Добавляем аргументы локализации
+	for key, value := range locArgs {
+		data[key] = value // Ключи уже правильные (PushLocArgStoryTitle, PushLocArgEndingText)
+	}
+
+	// Сначала парсим UserID из строки в UUID
+	userID, err := uuid.Parse(gameState.PlayerID.String())
+	if err != nil {
+		p.logger.Error("Failed to parse PlayerID for push notification payload",
+			zap.String("playerIDStr", gameState.PlayerID.String()),
+			zap.Error(err),
+		)
+		return // Не можем отправить без валидного UUID
+	}
+
+	// Создаем payload локального типа messaging.PushNotificationPayload
+	payload := PushNotificationPayload{
+		UserID: userID,
+		Notification: PushNotification{
+			Title: data[constants.PushFallbackTitleKey],
+			Body:  data[constants.PushFallbackBodyKey],
+		},
+		Data: data,
+	}
+
+	// Отправляем уведомление
+	if err := p.pushPub.PublishPushNotification(ctx, payload); err != nil {
+		p.logger.Error("Failed to publish push notification for scene/gameover",
+			zap.String("userID", payload.UserID.String()),
+			zap.String("publishedStoryID", publishedStoryID.String()),
+			zap.String("gameStateID", gameState.ID.String()),
+			zap.String("loc_key", locKey),
+			zap.Error(err),
+		)
+	} else {
+		p.logger.Info("Push notification for scene/gameover published successfully",
+			zap.String("userID", payload.UserID.String()),
+			zap.String("publishedStoryID", publishedStoryID.String()),
+			zap.String("gameStateID", gameState.ID.String()),
+			zap.String("loc_key", locKey),
+		)
+	}
+}
+
+// <<< КОНЕЦ: Новая функция для отправки Push уведомлений для сцены >>>
+
+// <<< НАЧАЛО: Новая функция для отправки Push уведомлений о готовности истории >>>
+func (p *NotificationProcessor) publishPushNotificationForStoryReady(ctx context.Context, story *sharedModels.PublishedStory) {
+	if story == nil {
+		p.logger.Error("Attempted to send push notification for nil PublishedStory (story ready)")
+		return
+	}
+
+	storyTitle := ""
+	if story.Title != nil {
+		storyTitle = *story.Title
+	}
+
+	// <<< ИЗМЕНЕНИЕ: Заполняем Data, включая fallback >>>
+	data := map[string]string{
+		"publishedStoryId": story.ID.String(),
+		"eventType":        string(sharedModels.StatusReady),
+		// Локализация
+		constants.PushLocKey:           constants.PushLocKeyStoryReady,
+		constants.PushLocArgStoryTitle: storyTitle,
+		// Fallback текст
+		constants.PushFallbackTitleKey: "История готова!",
+		constants.PushFallbackBodyKey:  fmt.Sprintf("Ваша история \"%s\" готова к игре!", storyTitle),
+	}
+
+	payload := PushNotificationPayload{
+		UserID: story.UserID,
+		Notification: PushNotification{
+			Title: data[constants.PushFallbackTitleKey],
+			Body:  data[constants.PushFallbackBodyKey],
+		},
+		Data: data,
+	}
+
+	if err := p.pushPub.PublishPushNotification(ctx, payload); err != nil {
+		p.logger.Error("Failed to publish push notification event for story ready",
+			zap.String("userID", payload.UserID.String()),
+			zap.String("publishedStoryID", story.ID.String()),
+			zap.Error(err),
+		)
+	} else {
+		p.logger.Info("Push notification event for story ready published successfully",
+			zap.String("userID", payload.UserID.String()),
+			zap.String("publishedStoryID", story.ID.String()),
+		)
+	}
+}
+
+// <<< КОНЕЦ: Новая функция для отправки Push уведомлений о готовности истории >>>

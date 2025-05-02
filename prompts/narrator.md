@@ -1,11 +1,11 @@
 # 🎮 AI: Game Config JSON Generator (JSON API Mode)
 
-**Task:** You are a JSON API generator. Based on a simple string `UserInput` describing the desired game, **generate** a new game config. Output a **single-line, COMPRESSED, valid JSON config ONLY**.
+**Task:** You are a JSON API generator. Based on a simple string `UserInput` describing the desired game, **generate** a new game config. Output a **single-line, valid JSON config ONLY**.
 
 **Input (`UserInput`):**
 *   A simple string describing the desired game.
 
-**Output JSON Structure (Compressed Keys, Required fields *):**
+**Output JSON Structure (Required fields *):**
 ```json
 {
   "t": "string",        // * title

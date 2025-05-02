@@ -83,7 +83,5 @@ type DynamicConfigEventConsumer interface {
 // PushNotificationEvent represents a push notification message.
 type PushNotificationEvent struct {
 	UserID string            `json:"user_id"`
-	Title  string            `json:"title"`
-	Body   string            `json:"body"`
 	Data   map[string]string `json:"data,omitempty"`
 }

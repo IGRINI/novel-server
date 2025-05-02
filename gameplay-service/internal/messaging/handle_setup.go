@@ -325,7 +325,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 							} else {
 								combinedInputJSON := string(combinedInputBytes)
 
-								// <<< Используем язык напрямую из publishedStory >>>
+								// Используем язык напрямую из publishedStory
 								storyLanguage := publishedStory.Language
 								if storyLanguage == "" {
 									p.logger.Warn("Language field is empty in published story, defaulting to 'en'",
@@ -340,7 +340,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 									PublishedStoryID: publishedStoryID.String(),
 									UserInput:        combinedInputJSON,
 									StateHash:        sharedModels.InitialStateHash,
-									Language:         storyLanguage, // <<< Используем извлеченный язык >>>
+									Language:         storyLanguage, // Используем извлеченный язык
 								}
 
 								if errPub := p.taskPub.PublishGenerationTask(ctx, nextTaskPayload); errPub != nil {
@@ -450,3 +450,54 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 	}
 	return nil
 }
+
+// <<< НАЧАЛО: Новая функция для отправки Push уведомлений для готового Setup >>>
+func (p *NotificationProcessor) publishPushNotificationForSetupPending(ctx context.Context, story *sharedModels.PublishedStory) {
+	if story == nil {
+		p.logger.Error("Attempted to send push notification for nil PublishedStory (setup pending)")
+		return
+	}
+
+	var title, body string
+	if story.Title != nil {
+		title = fmt.Sprintf("История \"%s\" почти готова...", *story.Title)
+	} else {
+		title = "Ваша история почти готова..."
+	}
+	if story.Description != nil {
+		body = *story.Description
+	} else {
+		body = "Скоро можно будет начать игру!"
+	}
+
+	payload := PushNotificationPayload{
+		UserID: story.UserID, // UserID уже uuid.UUID
+		Notification: PushNotification{
+			Title: title,
+			Body:  body,
+		},
+		Data: map[string]string{
+			"publishedStoryId": story.ID.String(),
+			"eventType":        string(sharedModels.StatusFirstScenePending), // Используем этот статус
+		},
+	}
+
+	if err := p.pushPub.PublishPushNotification(ctx, payload); err != nil {
+		p.logger.Error("Failed to publish push notification event for setup pending",
+			zap.String("userID", payload.UserID.String()),
+			zap.String("publishedStoryID", story.ID.String()),
+			zap.Error(err),
+		)
+	} else {
+		p.logger.Info("Push notification event for setup pending published successfully",
+			zap.String("userID", payload.UserID.String()),
+			zap.String("publishedStoryID", story.ID.String()),
+		)
+	}
+}
+
+// <<< КОНЕЦ: Новая функция для отправки Push уведомлений для готового Setup >>>
+
+// extractJsonContent пытается извлечь первый валидный JSON блок из строки,
+// игнорируя возможный текст до и после.
+// ... existing code ...

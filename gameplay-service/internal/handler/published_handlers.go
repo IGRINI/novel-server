@@ -597,10 +597,10 @@ func (h *GameplayHandler) retryPublishedStoryGeneration(c *gin.Context) {
 		return // Ошибка уже обработана
 	}
 
-	idStr := c.Param("id")
+	idStr := c.Param("story_id") // <-- ИЗМЕНЕНО: Используем "story_id" вместо "id"
 	storyID, err := uuid.Parse(idStr)
 	if err != nil {
-		h.logger.Warn("Invalid story ID format in retryPublishedStoryGeneration", zap.String("id", idStr), zap.Error(err))
+		h.logger.Warn("Invalid story ID format in retryPublishedStoryGeneration", zap.String("story_id", idStr), zap.Error(err)) // <-- ИЗМЕНЕНО: Логируем как story_id
 		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
 		return
 	}

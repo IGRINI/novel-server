@@ -35,6 +35,7 @@ type sceneContentChoices struct {
 type sceneChoice struct {
 	Description string        `json:"desc"`
 	Options     []sceneOption `json:"opts"` // Expecting exactly 2 options
+	Char        string        `json:"char"`
 }
 
 // sceneOption represents a single option within a choice block.
@@ -305,12 +306,13 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 
 	// 9. Create a *copy* of the current progress to calculate the next state
 	nextProgress := &sharedModels.PlayerProgress{
-		UserID:           currentProgress.UserID,
-		PublishedStoryID: currentProgress.PublishedStoryID,
-		CoreStats:        make(map[string]int),
-		StoryVariables:   make(map[string]interface{}),
-		GlobalFlags:      make([]string, 0, len(currentProgress.GlobalFlags)),
-		SceneIndex:       currentProgress.SceneIndex + 1,
+		UserID:                currentProgress.UserID,
+		PublishedStoryID:      currentProgress.PublishedStoryID,
+		CoreStats:             make(map[string]int),
+		StoryVariables:        make(map[string]interface{}),
+		GlobalFlags:           make([]string, 0, len(currentProgress.GlobalFlags)),
+		SceneIndex:            currentProgress.SceneIndex + 1,
+		EncounteredCharacters: make([]string, 0, len(currentProgress.EncounteredCharacters)), // <<< ДОБАВЛЕНО: Инициализация для копирования
 	}
 	for k, v := range currentProgress.CoreStats {
 		nextProgress.CoreStats[k] = v
@@ -319,6 +321,7 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		nextProgress.StoryVariables[k] = v
 	}
 	nextProgress.GlobalFlags = append(nextProgress.GlobalFlags, currentProgress.GlobalFlags...)
+	nextProgress.EncounteredCharacters = append(nextProgress.EncounteredCharacters, currentProgress.EncounteredCharacters...) // <<< ДОБАВЛЕНО: Копирование существующих
 
 	// 10. Apply consequences
 	var isGameOver bool
@@ -345,6 +348,23 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		selectedOption := choiceBlock.Options[selectedIndex]
 		madeChoicesInfo = append(madeChoicesInfo, sharedModels.UserChoiceInfo{Desc: choiceBlock.Description, Text: selectedOption.Text})
 		statCausingGameOver, gameOverTriggered := applyConsequences(nextProgress, selectedOption.Consequences, &setupContent)
+
+		// <<< ДОБАВЛЕНО: Логика добавления встреченных персонажей >>>
+		if choiceBlock.Char != "" {
+			charFound := false
+			for _, encounteredChar := range nextProgress.EncounteredCharacters {
+				if encounteredChar == choiceBlock.Char {
+					charFound = true
+					break
+				}
+			}
+			if !charFound {
+				nextProgress.EncounteredCharacters = append(nextProgress.EncounteredCharacters, choiceBlock.Char)
+				s.logger.Debug("Added new encountered character", append(logFields, zap.String("character", choiceBlock.Char))...)
+			}
+		}
+		// <<< КОНЕЦ ДОБАВЛЕНИЯ ЛОГИКИ >>>
+
 		if gameOverTriggered {
 			isGameOver = true
 			gameOverStat = statCausingGameOver
@@ -825,13 +845,14 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 		}
 
 		newInitialProgress := &sharedModels.PlayerProgress{
-			UserID:           playerID, // Link to the player creating it
-			PublishedStoryID: publishedStoryID,
-			CurrentStateHash: sharedModels.InitialStateHash,
-			CoreStats:        initialStats,
-			StoryVariables:   make(map[string]interface{}),
-			GlobalFlags:      []string{},
-			SceneIndex:       0,
+			UserID:                playerID, // Link to the player creating it
+			PublishedStoryID:      publishedStoryID,
+			CurrentStateHash:      sharedModels.InitialStateHash,
+			CoreStats:             initialStats,
+			StoryVariables:        make(map[string]interface{}),
+			GlobalFlags:           []string{},
+			SceneIndex:            0,
+			EncounteredCharacters: []string{}, // <<< ДОБАВЛЕНО: Инициализация пустого среза
 		}
 		savedID, createErr := s.playerProgressRepo.Save(ctx, newInitialProgress)
 		if createErr != nil {
@@ -1153,7 +1174,8 @@ func createGenerationPayload(
 			}
 		}
 	}
-	compressedInputData["sv"] = nonTransientVars // Only non-nil, non-transient vars resulting from choice
+	compressedInputData["sv"] = nonTransientVars               // Only non-nil, non-transient vars resulting from choice
+	compressedInputData["ec"] = progress.EncounteredCharacters // <<< ДОБАВЛЕНО: Передаем список встреченных
 
 	// Include info about the choice(s) the user just made
 	userChoiceMap := make(map[string]string) // Convert UserChoiceInfo for AI prompt
@@ -1246,6 +1268,7 @@ func createInitialSceneGenerationPayload(
 	compressedInputData["pss"] = ""                          // Empty summary for first scene
 	compressedInputData["pfd"] = ""                          // Empty direction for first scene
 	compressedInputData["pvis"] = ""                         // Empty var impact for first scene
+	compressedInputData["ec"] = []string{}                   // <<< ДОБАВЛЕНО: Пустой список для первой сцены
 
 	userInputBytes, errMarshal := json.Marshal(compressedInputData)
 	if errMarshal != nil {

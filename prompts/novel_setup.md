@@ -1,6 +1,6 @@
 # 🎮 AI: Game Setup Generator (JSON API Mode)
 
-**Task:** You are a JSON API generator. Setup initial game state (`csd` - core stats definition, `chars` - NPC list, `spi` - story preview image prompt) as a **single-line, COMPRESSED JSON** based on the input config. Output **COMPRESSED JSON ONLY**.
+**Task:** You are a JSON API generator. Setup initial game state (`csd` - core stats definition, `chars` - NPC list, `spi` - story preview image prompt) as a **single-line, JSON** based on the input config. Output **JSON ONLY**.
 
 **Input Config JSON (Partial, provided by engine):**
 ```json
@@ -15,7 +15,7 @@
 }
 ```
 
-**Output JSON Structure (Compressed Keys):**
+**Output JSON Structure:**
 ```json
 {
   "csd": { // core_stats_definition: Use EXACT names & `go` from input `cs`. Add `ic`. Enhance `d`.
@@ -38,7 +38,7 @@
 ```
 
 **Instructions:**
-1.  **Output Format:** Generate **COMPRESSED JSON ONLY** matching the output structure. Output must be single-line, strictly valid JSON, parsable by `JSON.parse()`/`json.loads()`. No extra text/formatting.
+1.  **Output Format:** Generate **JSON ONLY** matching the output structure. Output must be single-line, strictly valid JSON, parsable by `JSON.parse()`/`json.loads()`. No extra text/formatting.
 2.  **Visual/Prompt Fields:** Visual/Prompt fields (`chars.vt`, `chars.pr`, `chars.ir`, `spi`, input `pp.st`, `pp.cvs`) MUST be **English**. Strictly follow input `ac` flag.
 3.  **Core Stats (`csd`):
     *   Use EXACT stat names from input `cs` as keys. Copy `go` conditions EXACTLY.
@@ -49,7 +49,7 @@
     *   Generate deterministic `ir` (image reference) based on `vt` (or well-known `n`): `[gender]_[age]_[theme]_[desc1]_[desc2]` or `snake_case(name)`. Use `male/female/other/andro/unknown`, `child/teen/adult/old`, genre tags, distinctive visual tags. Use snake_case. Identical `vt` -> identical `ir`.
 5.  **Story Preview (`spi`):** Generate a detailed English image prompt capturing story essence (`wc`, `ss`, `gn`, `fr`, `th`).
 
-**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, compressed JSON object described in the 'Output JSON Structure'. Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
+**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, JSON object described in the 'Output JSON Structure'. Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
 
 **Apply the rules above to the following User Input:**
 

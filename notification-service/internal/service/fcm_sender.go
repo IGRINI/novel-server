@@ -104,11 +104,7 @@ func (s *fcmSender) Send(ctx context.Context, tokens []string, notification mess
 
 			msg := &fcm.Message{
 				Token: currentToken,
-				Notification: &fcm.Notification{
-					Title: notification.Title,
-					Body:  notification.Body,
-				},
-				Data: data,
+				Data:  data,
 				Android: &fcm.AndroidConfig{
 					Priority: "high",
 				},

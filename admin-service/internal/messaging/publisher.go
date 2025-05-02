@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"novel-server/shared/constants"
 	"novel-server/shared/interfaces"
 	"time"
 
@@ -117,8 +118,6 @@ func (p *rabbitMQPushPublisher) PublishPushNotification(ctx context.Context, pay
 func (p *rabbitMQPushPublisher) PublishPushEvent(ctx context.Context, event interfaces.PushNotificationEvent) error {
 	p.logger.Info("Received PushNotificationEvent, converting and publishing...",
 		zap.String("userID", event.UserID),
-		zap.String("title", event.Title),
-		zap.String("body", event.Body),
 		zap.Any("data", event.Data),
 	)
 
@@ -133,12 +132,26 @@ func (p *rabbitMQPushPublisher) PublishPushEvent(ctx context.Context, event inte
 		return fmt.Errorf("invalid user ID format '%s': %w", event.UserID, err)
 	}
 
-	// Создаем payload для старого метода
+	// Извлекаем fallback title/body из Data
+	fallbackTitle := "Notification"
+	fallbackBody := "You have a new notification."
+	if title, ok := event.Data[constants.PushFallbackTitleKey]; ok {
+		fallbackTitle = title
+		// Удаляем из Data, чтобы не дублировать?
+		// delete(event.Data, constants.PushFallbackTitleKey)
+	}
+	if body, ok := event.Data[constants.PushFallbackBodyKey]; ok {
+		fallbackBody = body
+		// Удаляем из Data, чтобы не дублировать?
+		// delete(event.Data, constants.PushFallbackBodyKey)
+	}
+
+	// Создаем payload для старого метода, используя fallback значения
 	payload := PushNotificationPayload{
 		UserID: userID,
 		Notification: PushNotification{
-			Title: event.Title,
-			Body:  event.Body,
+			Title: fallbackTitle,
+			Body:  fallbackBody,
 		},
 		Data: event.Data,
 	}

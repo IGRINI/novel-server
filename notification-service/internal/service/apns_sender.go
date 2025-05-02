@@ -94,15 +94,14 @@ func (s *apnsSender) Send(ctx context.Context, tokens []string, notification mes
 
 	// Определяем payload один раз
 	payloadData := payload.NewPayload().
-		AlertTitle(notification.Title).
-		AlertBody(notification.Body).
-		Sound("default") // Стандартный звук
-	// Добавляем кастомные данные в userInfo словаря aps
-	apsDict := make(map[string]interface{})
+		ContentAvailable().
+		Sound("default")
+
+	// Добавляем кастомные данные НЕ в aps, а на верхний уровень payload
+	// (согласно рекомендациям Apple и возможностям библиотеки go-apns2)
 	for k, v := range data {
-		apsDict[k] = v
+		payloadData.Custom(k, v)
 	}
-	payloadData.Custom("user_info", apsDict)
 
 	// Запускаем отправку в горутинах (можно ограничить количество)
 	// TODO: Добавить ограничение на количество одновременных горутин (семафор)

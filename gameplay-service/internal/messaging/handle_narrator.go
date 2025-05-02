@@ -6,13 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"novel-server/shared/constants"
+	sharedModels "novel-server/shared/models"
 	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	sharedMessaging "novel-server/shared/messaging"
-	sharedModels "novel-server/shared/models"
 )
 
 func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, notification sharedMessaging.NotificationPayload, storyConfigID uuid.UUID) error {
@@ -142,15 +143,13 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 	}
 	p.logger.Info("StoryConfig (Narrator) updated in DB", zap.String("task_id", taskID), zap.String("story_config_id", storyConfigID.String()), zap.String("new_status", string(config.Status)))
 
-	if config.Status == sharedModels.StatusDraft || config.Status == sharedModels.StatusError {
-		pushPayload := PushNotificationPayload{UserID: config.UserID, Notification: PushNotification{}, Data: map[string]string{"type": UpdateTypeDraft, "entity_id": config.ID.String(), "status": string(config.Status)}}
-		pushCtx, pushCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if errPush := p.pushPub.PublishPushNotification(pushCtx, pushPayload); errPush != nil {
-			p.logger.Error("Error sending Push notification (Narrator)", zap.String("task_id", taskID), zap.String("story_id", config.ID.String()), zap.Error(errPush))
-		} else {
-			p.logger.Info("Push notification sent (Narrator)", zap.String("task_id", taskID), zap.String("story_id", config.ID.String()))
-		}
-		pushCancel()
+	if config.Status == sharedModels.StatusDraft {
+		p.publishPushNotificationForDraft(ctx, config)
+	} else if config.Status == sharedModels.StatusError {
+		p.logger.Warn("Draft generation resulted in error, skipping push notification.",
+			zap.String("storyConfigID", config.ID.String()),
+			zap.String("task_id", taskID),
+		)
 	}
 
 	clientUpdate = ClientStoryUpdate{ID: config.ID.String(), UserID: config.UserID.String(), UpdateType: UpdateTypeDraft, Status: string(config.Status), Title: config.Title, Description: config.Description}
@@ -192,4 +191,42 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 	pubCancel()
 
 	return nil
+}
+
+func (p *NotificationProcessor) publishPushNotificationForDraft(ctx context.Context, config *sharedModels.StoryConfig) {
+	if config == nil {
+		p.logger.Error("Attempted to send push notification for nil StoryConfig")
+		return
+	}
+
+	data := map[string]string{
+		"storyConfigId":                config.ID.String(),
+		"eventType":                    string(sharedModels.StatusDraft),
+		constants.PushLocKey:           constants.PushLocKeyDraftReady,
+		constants.PushLocArgStoryTitle: config.Title,
+		constants.PushFallbackTitleKey: "Черновик готов!",
+		constants.PushFallbackBodyKey:  fmt.Sprintf("Ваш черновик \"%s\" готов к настройке.", config.Title),
+	}
+
+	payload := PushNotificationPayload{
+		UserID: config.UserID,
+		Notification: PushNotification{
+			Title: data[constants.PushFallbackTitleKey],
+			Body:  data[constants.PushFallbackBodyKey],
+		},
+		Data: data,
+	}
+
+	if err := p.pushPub.PublishPushNotification(ctx, payload); err != nil {
+		p.logger.Error("Failed to publish push notification event for draft",
+			zap.String("userID", payload.UserID.String()),
+			zap.String("storyConfigID", config.ID.String()),
+			zap.Error(err),
+		)
+	} else {
+		p.logger.Info("Push notification event for draft published successfully",
+			zap.String("userID", payload.UserID.String()),
+			zap.String("storyConfigID", config.ID.String()),
+		)
+	}
 }

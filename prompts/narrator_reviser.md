@@ -1,11 +1,11 @@
 # 🎮 AI: Game Config JSON Reviser (JSON API Mode)
 
-**Task:** You are a JSON API reviser. Based on `UserInput` containing an existing game config and revision instructions, revise the config. Output a **single-line, COMPRESSED, valid JSON config ONLY**.
+**Task:** You are a JSON API reviser. Based on `UserInput` containing an existing game config and revision instructions, revise the config. Output a **single-line, valid JSON config ONLY**.
 
 **Input (`UserInput`):**
 *   A JSON string of the previous game config, containing an additional `"ur"` key with text instructions for changes.
 
-**Output JSON Structure (Compressed Keys, Required fields *):**
+**Output JSON Structure (Required fields *):**
 *   **Note:** Exclude the `"ur"` key in the final output.
 ```json
 {
