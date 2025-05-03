@@ -2,6 +2,7 @@ package messaging
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -253,11 +254,11 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 													gameState.PlayerStatus = sharedModels.PlayerStatusCompleted
 													gameState.EndingText = endingText
 													now := time.Now().UTC()
-													gameState.CompletedAt = &now
-													gameState.CurrentSceneID = &scene.ID
+													gameState.CompletedAt = sql.NullTime{Time: now, Valid: true}
+													gameState.CurrentSceneID = uuid.NullUUID{UUID: scene.ID, Valid: true}
 												} else {
 													gameState.PlayerStatus = sharedModels.PlayerStatusPlaying
-													gameState.CurrentSceneID = &scene.ID
+													gameState.CurrentSceneID = uuid.NullUUID{UUID: scene.ID, Valid: true}
 												}
 												gameState.ErrorDetails = nil
 												gameState.LastActivityAt = time.Now().UTC()
@@ -276,8 +277,8 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 													)
 
 													// Обновляем current_scene_summary в PlayerProgress
-													if gameState.PlayerProgressID != nil {
-														progressID := *gameState.PlayerProgressID
+													if gameState.PlayerProgressID != uuid.Nil {
+														progressID := gameState.PlayerProgressID
 														var sceneSummaryContent struct {
 															Summary *string `json:"ss"`
 														}

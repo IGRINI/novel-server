@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"novel-server/shared/models"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -20,7 +21,14 @@ func (h *AuthHandler) getUserCount(c *gin.Context) {
 }
 
 func (h *AuthHandler) listUsers(c *gin.Context) {
-	users, err := h.userRepo.ListUsers(c.Request.Context())
+	cursor := c.Query("cursor")
+	limitStr := c.DefaultQuery("limit", "20")
+	limit, errLimit := strconv.Atoi(limitStr)
+	if errLimit != nil || limit <= 0 {
+		limit = 20
+	}
+
+	users, nextCursor, err := h.userRepo.ListUsers(c.Request.Context(), cursor, limit)
 	if err != nil {
 		zap.L().Error("Failed to list users from repository", zap.Error(err))
 		handleServiceError(c, err)
@@ -37,7 +45,10 @@ func (h *AuthHandler) listUsers(c *gin.Context) {
 			IsBanned:    u.IsBanned,
 		})
 	}
-	c.JSON(http.StatusOK, userDTOs)
+	c.JSON(http.StatusOK, gin.H{
+		"data":        userDTOs,
+		"next_cursor": nextCursor,
+	})
 }
 
 func (h *AuthHandler) banUser(c *gin.Context) {

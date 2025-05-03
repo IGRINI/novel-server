@@ -10,21 +10,21 @@ import (
 
 // GameSceneResponseDTO представляет структурированный ответ для текущей сцены.
 type GameSceneResponseDTO struct {
-	ID               uuid.UUID        `json:"id"`                     // ID текущей сцены
-	PublishedStoryID uuid.UUID        `json:"publishedStoryId"`       // ID истории
-	GameStateID      uuid.UUID        `json:"gameStateId"`            // ID состояния игры (слота сохранения)
-	Choices          []ChoiceBlockDTO `json:"choices,omitempty"`      // Блоки выбора
-	EndingText       *string          `json:"endingText,omitempty"`   // Текст концовки
-	Continuation     *ContinuationDTO `json:"continuation,omitempty"` // Данные для продолжения
-	CurrentStats     map[string]int   `json:"currentStats,omitempty"` // Текущие статы игрока
+	ID               uuid.UUID        `json:"id"`                      // ID текущей сцены
+	PublishedStoryID uuid.UUID        `json:"published_story_id"`      // camelCase -> snake_case
+	GameStateID      uuid.UUID        `json:"game_state_id"`           // camelCase -> snake_case
+	Choices          []ChoiceBlockDTO `json:"choices,omitempty"`       // Блоки выбора
+	EndingText       *string          `json:"ending_text,omitempty"`   // camelCase -> snake_case
+	Continuation     *ContinuationDTO `json:"continuation,omitempty"`  // Данные для продолжения
+	CurrentStats     map[string]int   `json:"current_stats,omitempty"` // camelCase -> snake_case
 }
 
 // ChoiceBlockDTO представляет блок выбора в сцене.
 type ChoiceBlockDTO struct {
-	Shuffleable   bool              `json:"shuffleable"`             // Можно ли перемешивать опции (sh: 1 = true, 0 = false)
-	CharacterName string            `json:"characterName,omitempty"` // Имя персонажа, представляющего выбор (char)
-	Description   string            `json:"description"`             // Описание ситуации/вопроса (desc)
-	Options       []ChoiceOptionDTO `json:"options"`                 // Массив из ДВУХ опций (opts)
+	Shuffleable   bool              `json:"shuffleable"`              // Можно ли перемешивать опции (sh: 1 = true, 0 = false)
+	CharacterName string            `json:"character_name,omitempty"` // camelCase -> snake_case
+	Description   string            `json:"description"`              // Описание ситуации/вопроса (desc)
+	Options       []ChoiceOptionDTO `json:"options"`                  // Массив из ДВУХ опций (opts)
 }
 
 // ChoiceOptionDTO представляет одну опцию выбора.
@@ -35,8 +35,8 @@ type ChoiceOptionDTO struct {
 
 // ConsequencesDTO представляет ПОЛНЫЕ последствия для отображения клиенту.
 type ConsequencesDTO struct {
-	ResponseText *string        `json:"responseText,omitempty"` // Текст-реакция на выбор (rt)
-	StatChanges  map[string]int `json:"statChanges,omitempty"`  // Изменения статов (cs)
+	ResponseText *string        `json:"response_text,omitempty"` // camelCase -> snake_case
+	StatChanges  map[string]int `json:"stat_changes,omitempty"`  // camelCase -> snake_case
 	// TODO: Добавить поля для sv и gf, если они нужны клиенту
 	// StoryVariables map[string]interface{} `json:"sv,omitempty"`
 	// GlobalFlags    []string               `json:"gf,omitempty"`
@@ -44,9 +44,9 @@ type ConsequencesDTO struct {
 
 // ContinuationDTO содержит данные для сцены типа "продолжение".
 type ContinuationDTO struct {
-	NewPlayerDescription string         `json:"newPlayerDescription"` // npd
-	EndingTextPrevious   string         `json:"endingTextPrevious"`   // etp
-	CoreStatsReset       map[string]int `json:"coreStatsReset"`       // csr - начальные статы для нового персонажа
+	NewPlayerDescription string         `json:"new_player_description"` // camelCase -> snake_case
+	EndingTextPrevious   string         `json:"ending_text_previous"`   // camelCase -> snake_case
+	CoreStatsReset       map[string]int `json:"core_stats_reset"`       // camelCase -> snake_case
 }
 
 // --- DTO для ответа GET /api/published-stories/:story_id/gamestates ---

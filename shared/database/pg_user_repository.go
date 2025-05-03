@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"encoding/base64"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -132,19 +134,49 @@ func (r *pgUserRepository) GetUserCount(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
-// ListUsers retrieves a list of users.
-// TODO: Add pagination (LIMIT, OFFSET)
-func (r *pgUserRepository) ListUsers(ctx context.Context) ([]models.User, error) {
-	query := `SELECT id, username, display_name, email, roles, is_banned FROM users ORDER BY id ASC`
-	r.logger.Debug("Executing query", zap.String("query", query))
-	rows, err := r.db.Query(ctx, query)
+// ListUsers retrieves a list of users with cursor pagination.
+func (r *pgUserRepository) ListUsers(ctx context.Context, cursor string, limit int) ([]models.User, string, error) {
+	if limit <= 0 {
+		limit = 20 // Default limit
+	}
+	fetchLimit := limit + 1
+
+	cursorID, err := decodeUUIDCursor(cursor)
+	if err != nil {
+		r.logger.Warn("Invalid cursor for ListUsers", zap.String("cursor", cursor), zap.Error(err))
+		return nil, "", fmt.Errorf("invalid cursor: %w", err)
+	}
+
+	query := `SELECT id, username, display_name, email, roles, is_banned FROM users `
+	args := []interface{}{}
+	paramIndex := 1
+
+	if cursorID != uuid.Nil {
+		// Sorting ASC by id, so we need items with id > cursorID
+		query += fmt.Sprintf("WHERE id > $%d ", paramIndex)
+		args = append(args, cursorID)
+		paramIndex++
+	}
+
+	query += fmt.Sprintf("ORDER BY id ASC LIMIT $%d", paramIndex)
+	args = append(args, fetchLimit)
+
+	logFields := []zap.Field{
+		zap.Int("limit", limit),
+		zap.String("cursor", cursor),
+		zap.Stringer("cursorID", cursorID),
+	}
+	r.logger.Debug("Executing ListUsers query", append(logFields, zap.String("query", query))...)
+
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		r.logger.Error("Failed to query users from postgres", zap.Error(err))
-		return nil, fmt.Errorf("failed to query users: %w", err)
+		return nil, "", fmt.Errorf("failed to query users: %w", err)
 	}
 	defer rows.Close()
 
-	users := make([]models.User, 0)
+	users := make([]models.User, 0, limit)
+	var lastUserID uuid.UUID
 	for rows.Next() {
 		var user models.User
 		if err := rows.Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Roles, &user.IsBanned); err != nil {
@@ -153,15 +185,52 @@ func (r *pgUserRepository) ListUsers(ctx context.Context) ([]models.User, error)
 			continue
 		}
 		users = append(users, user)
+		lastUserID = user.ID // Keep track of the last ID for cursor encoding
 	}
 
 	if err = rows.Err(); err != nil {
 		r.logger.Error("Error iterating user rows", zap.Error(err))
-		return nil, fmt.Errorf("error iterating user rows: %w", err)
+		return nil, "", fmt.Errorf("error iterating user rows: %w", err)
 	}
 
-	return users, nil
+	var nextCursor string
+	if len(users) == fetchLimit {
+		// Encode cursor from the *last* item fetched (which is limit+1 th item)
+		nextCursor = encodeUUIDCursor(lastUserID)
+		// Return only the requested number of items
+		users = users[:limit]
+	} // No next cursor if fewer items than fetchLimit were returned
+
+	r.logger.Debug("Users listed successfully", append(logFields, zap.Int("count", len(users)), zap.Bool("hasNext", nextCursor != ""))...)
+	return users, nextCursor, nil
 }
+
+// --- Cursor Encoding/Decoding Helpers for UUID ---
+
+// encodeUUIDCursor encodes the UUID into a base64 string.
+func encodeUUIDCursor(id uuid.UUID) string {
+	return base64.StdEncoding.EncodeToString([]byte(id.String()))
+}
+
+// decodeUUIDCursor decodes the base64 cursor string back into a UUID.
+func decodeUUIDCursor(cursor string) (uuid.UUID, error) {
+	if cursor == "" {
+		return uuid.Nil, nil // Empty cursor is valid
+	}
+	decodedBytes, err := base64.StdEncoding.DecodeString(cursor)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("invalid base64 cursor: %w", err)
+	}
+
+	cursorID, err := uuid.Parse(string(decodedBytes))
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("invalid uuid format in cursor: %w", err)
+	}
+
+	return cursorID, nil
+}
+
+// --- End Cursor Helpers ---
 
 // SetUserBanStatus updates the is_banned status for a user.
 func (r *pgUserRepository) SetUserBanStatus(ctx context.Context, userID uuid.UUID, isBanned bool) error {

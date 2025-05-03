@@ -23,7 +23,7 @@ type StoryConfigSummary struct {
 	ID          string    `json:"id"`
 	Title       string    `json:"title"`
 	Description string    `json:"description"`
-	CreatedAt   time.Time `json:"createdAt"`
+	CreatedAt   time.Time `json:"created_at"`
 	Status      string    `json:"status"`
 }
 
@@ -38,23 +38,23 @@ type StoryConfigDetail struct {
 // StoryConfigParsedDetail представляет распарсенные данные из StoryConfig.Config для ответа.
 type StoryConfigParsedDetail struct {
 	Title             string                    `json:"title"`
-	ShortDescription  string                    `json:"shortDescription"`
+	ShortDescription  string                    `json:"short_description"`
 	Franchise         string                    `json:"franchise"`
 	Genre             string                    `json:"genre"`
 	Language          string                    `json:"language"`
-	IsAdultContent    bool                      `json:"isAdultContent"`
-	PlayerName        string                    `json:"playerName"`
-	PlayerDescription string                    `json:"playerDescription"`
-	WorldContext      string                    `json:"worldContext"`
-	StorySummary      string                    `json:"storySummary"`
-	CoreStats         map[string]parsedCoreStat `json:"coreStats"`
+	IsAdultContent    bool                      `json:"is_adult_content"`
+	PlayerName        string                    `json:"player_name"`
+	PlayerDescription string                    `json:"player_description"`
+	WorldContext      string                    `json:"world_context"`
+	StorySummary      string                    `json:"story_summary"`
+	CoreStats         map[string]parsedCoreStat `json:"core_stats"`
 }
 
 // parsedCoreStat структура для статов в StoryConfigParsedDetail.
 type parsedCoreStat struct {
 	Description        string                   `json:"description"`
-	InitialValue       int                      `json:"initialValue"`
-	GameOverConditions parsedGameOverConditions `json:"gameOverConditions"`
+	InitialValue       int                      `json:"initial_value"`
+	GameOverConditions parsedGameOverConditions `json:"game_over_conditions"`
 }
 
 // parsedGameOverConditions структура для условий Game Over.

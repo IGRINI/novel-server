@@ -96,26 +96,26 @@ type CharacterDTO struct {
 
 type PublishedStoryParsedDetailDTO struct {
 	ID             uuid.UUID `json:"id"`
-	AuthorID       uuid.UUID `json:"authorId"`
-	AuthorName     string    `json:"authorName"`
-	PublishedAt    time.Time `json:"publishedAt"`
-	LikesCount     int       `json:"likesCount"`
-	IsLiked        bool      `json:"isLiked"`
-	IsAuthor       bool      `json:"isAuthor"`
-	IsPublic       bool      `json:"isPublic"`
-	IsAdultContent bool      `json:"isAdultContent"`
+	AuthorID       uuid.UUID `json:"author_id"`
+	AuthorName     string    `json:"author_name"`
+	PublishedAt    time.Time `json:"published_at"`
+	LikesCount     int       `json:"likes_count"`
+	IsLiked        bool      `json:"is_liked"`
+	IsAuthor       bool      `json:"is_author"`
+	IsPublic       bool      `json:"is_public"`
+	IsAdultContent bool      `json:"is_adult_content"`
 	Status         string    `json:"status"`
 
 	Title            string                              `json:"title"`
-	ShortDescription string                              `json:"shortDescription"`
+	ShortDescription string                              `json:"short_description"`
 	Genre            string                              `json:"genre"`
 	Language         string                              `json:"language"`
-	PlayerName       string                              `json:"playerName"`
-	CoreStats        map[string]sharedModels.CoreStatDTO `json:"coreStats"`
+	PlayerName       string                              `json:"player_name"`
+	CoreStats        map[string]sharedModels.CoreStatDTO `json:"core_stats"`
 	Characters       []sharedModels.CharacterDTO         `json:"characters"`
-	PreviewImageURL  *string                             `json:"previewImageUrl,omitempty"`
+	CoverImageURL    *string                             `json:"cover_image_url,omitempty"`
 
-	GameStates []*sharedModels.GameStateSummaryDTO `json:"gameStates,omitempty"`
+	GameStates []*sharedModels.GameStateSummaryDTO `json:"game_states,omitempty"`
 }
 
 type StoryBrowsingService interface {
@@ -355,7 +355,7 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 		PlayerName:       config.PlayerName,
 		CoreStats:        coreStatsDTO,
 		Characters:       charactersDTO,
-		PreviewImageURL:  previewURL,
+		CoverImageURL:    previewURL,
 		GameStates:       make([]*sharedModels.GameStateSummaryDTO, 0),
 	}
 

@@ -310,7 +310,7 @@ func (p *NotificationProcessor) handleInitialSceneGenerated(ctx context.Context,
 		for _, gameState := range statesToUpdate {
 			gameStateLog := log.With(zap.Stringer("gameStateID", gameState.ID))
 			gameState.PlayerStatus = sharedModels.PlayerStatusPlaying
-			gameState.CurrentSceneID = &scene.ID
+			gameState.CurrentSceneID = uuid.NullUUID{UUID: scene.ID, Valid: true}
 			gameState.LastActivityAt = now
 			gameState.ErrorDetails = nil
 			_, errSave := p.playerGameStateRepo.Save(ctx, gameState)

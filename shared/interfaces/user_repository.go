@@ -30,7 +30,7 @@ type UserRepository interface {
 	GetUserCount(ctx context.Context) (int64, error)
 
 	// ListUsers retrieves a list of users (add pagination parameters later).
-	ListUsers(ctx context.Context) ([]models.User, error)
+	ListUsers(ctx context.Context, cursor string, limit int) ([]models.User, string, error)
 
 	// SetUserBanStatus sets the ban status of a user.
 	SetUserBanStatus(ctx context.Context, userID uuid.UUID, isBanned bool) error

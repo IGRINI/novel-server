@@ -182,21 +182,25 @@ func (s *gameLoopServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUI
 	}
 
 	// 3. Status is Playing, get the Current Scene ID
-	if gameState.CurrentSceneID == nil {
-		log.Error("CRITICAL: PlayerStatus is Playing, but CurrentSceneID is nil", zap.String("gameStateID", gameState.ID.String()))
+	// <<< ИЗМЕНЕНО: Проверяем Valid для NullUUID >>>
+	if !gameState.CurrentSceneID.Valid {
+		log.Error("CRITICAL: PlayerStatus is Playing, but CurrentSceneID is NULL", zap.String("gameStateID", gameState.ID.String()))
 		// This indicates an inconsistent state. Maybe the initial scene wasn't found?
 		// Or the scene link wasn't updated after generation.
 		return nil, sharedModels.ErrSceneNotFound // Or ErrInternalServer?
 	}
 
 	// 4. Fetch the scene by its ID
-	scene, errScene := s.sceneRepo.GetByID(ctx, *gameState.CurrentSceneID)
+	// <<< ИЗМЕНЕНО: Используем .UUID из NullUUID >>>
+	scene, errScene := s.sceneRepo.GetByID(ctx, gameState.CurrentSceneID.UUID)
 	if errScene != nil {
 		if errors.Is(errScene, pgx.ErrNoRows) || errors.Is(errScene, sharedModels.ErrNotFound) {
-			log.Error("CRITICAL: CurrentSceneID from game state not found in scene repository", zap.String("sceneID", gameState.CurrentSceneID.String()))
+			// <<< ИЗМЕНЕНО: Используем .UUID.String() для логирования >>>
+			log.Error("CRITICAL: CurrentSceneID from game state not found in scene repository", zap.String("sceneID", gameState.CurrentSceneID.UUID.String()))
 			return nil, sharedModels.ErrSceneNotFound // Scene linked in state doesn't exist
 		}
-		log.Error("Error getting scene by ID from repository", zap.String("sceneID", gameState.CurrentSceneID.String()), zap.Error(errScene))
+		// <<< ИЗМЕНЕНО: Используем .UUID.String() для логирования >>>
+		log.Error("Error getting scene by ID from repository", zap.String("sceneID", gameState.CurrentSceneID.UUID.String()), zap.Error(errScene))
 		return nil, sharedModels.ErrInternalServer
 	}
 
@@ -234,17 +238,19 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	}
 
 	// 3. Check necessary IDs in GameState
-	if gameState.PlayerProgressID == nil {
-		s.logger.Error("CRITICAL: PlayerStatus is Playing, but PlayerProgressID is nil", append(logFields, zap.String("gameStateID", gameState.ID.String()))...)
+	// <<< ИЗМЕНЕНО: Сравниваем uuid.UUID с uuid.Nil >>>
+	if gameState.PlayerProgressID == uuid.Nil {
+		s.logger.Error("CRITICAL: PlayerStatus is Playing, but PlayerProgressID is Nil", append(logFields, zap.String("gameStateID", gameState.ID.String()))...)
 		return sharedModels.ErrInternalServer
 	}
-	if gameState.CurrentSceneID == nil {
-		s.logger.Error("CRITICAL: PlayerStatus is Playing, but CurrentSceneID is nil", append(logFields, zap.String("gameStateID", gameState.ID.String()))...)
+	// <<< ИЗМЕНЕНО: Проверяем Valid для NullUUID >>>
+	if !gameState.CurrentSceneID.Valid {
+		s.logger.Error("CRITICAL: PlayerStatus is Playing, but CurrentSceneID is Nil", append(logFields, zap.String("gameStateID", gameState.ID.String()))...)
 		return sharedModels.ErrSceneNotFound
 	}
 
-	currentProgressID := *gameState.PlayerProgressID
-	currentSceneID := *gameState.CurrentSceneID
+	currentProgressID := gameState.PlayerProgressID
+	currentSceneID := gameState.CurrentSceneID.UUID
 	logFields = append(logFields, zap.String("currentProgressID", currentProgressID.String()), zap.String("currentSceneID", currentSceneID.String()))
 
 	// 4. Get current PlayerProgress node
@@ -422,8 +428,10 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		// Update PlayerGameState (the specific one we are operating on)
 		now := time.Now().UTC()
 		gameState.PlayerStatus = sharedModels.PlayerStatusGameOverPending
-		gameState.PlayerProgressID = &finalProgressNodeID
-		gameState.CurrentSceneID = nil
+		// <<< ИЗМЕНЕНО: Прямое присваивание uuid.UUID >>>
+		gameState.PlayerProgressID = finalProgressNodeID
+		// <<< ИЗМЕНЕНО: Присваивание пустого NullUUID >>>
+		gameState.CurrentSceneID = uuid.NullUUID{Valid: false}
 		gameState.LastActivityAt = now
 
 		if _, err := s.playerGameStateRepo.Save(ctx, gameState); err != nil {
@@ -545,9 +553,16 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 
 		// Update PlayerGameState (the specific one we are operating on)
 		gameState.PlayerStatus = sharedModels.PlayerStatusPlaying
-		gameState.CurrentSceneID = nextSceneID
+		// <<< ИЗМЕНЕНО: Корректное присваивание NullUUID из *uuid.UUID >>>
+		if nextSceneID != nil {
+			gameState.CurrentSceneID = uuid.NullUUID{UUID: *nextSceneID, Valid: true}
+		} else {
+			// Эта ветка не должна выполняться, так как nextSceneID здесь не nil
+			gameState.CurrentSceneID = uuid.NullUUID{Valid: false}
+		}
 
-		gameState.PlayerProgressID = &nextNodeProgressID // Link to the (potentially new) progress node
+		// <<< ИЗМЕНЕНО: Прямое присваивание uuid.UUID >>>
+		gameState.PlayerProgressID = nextNodeProgressID // Link to the (potentially new) progress node
 		gameState.LastActivityAt = time.Now().UTC()
 
 		if _, err := s.playerGameStateRepo.Save(ctx, gameState); err != nil {
@@ -563,8 +578,10 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 
 		// Update PlayerGameState (the specific one we are operating on)
 		gameState.PlayerStatus = sharedModels.PlayerStatusGeneratingScene
-		gameState.CurrentSceneID = nil
-		gameState.PlayerProgressID = &nextNodeProgressID // Link to the (potentially new) progress node
+		// <<< ИЗМЕНЕНО: Присваивание пустого NullUUID >>>
+		gameState.CurrentSceneID = uuid.NullUUID{Valid: false}
+		// <<< ИЗМЕНЕНО: Прямое присваивание uuid.UUID >>>
+		gameState.PlayerProgressID = nextNodeProgressID // Link to the (potentially new) progress node
 		gameState.LastActivityAt = time.Now().UTC()
 
 		if _, err := s.playerGameStateRepo.Save(ctx, gameState); err != nil {
@@ -761,9 +778,10 @@ func (s *gameLoopServiceImpl) RetryGenerationForGameState(ctx context.Context, u
 		}(context.WithoutCancel(ctx)) // Run in background with independent context
 
 		// 6. Determine if it's the initial scene or a subsequent scene
-		if gameState.PlayerProgressID == nil {
+		// <<< ИЗМЕНЕНО: Сравниваем uuid.UUID с uuid.Nil >>>
+		if gameState.PlayerProgressID == uuid.Nil {
 			// This shouldn't happen if status is Error/GeneratingScene and setup exists, indicates inconsistency.
-			log.Error("CRITICAL: GameState is in Error/Generating but PlayerProgressID is nil. Cannot determine scene type.")
+			log.Error("CRITICAL: GameState is in Error/Generating but PlayerProgressID is Nil. Cannot determine scene type.")
 			gameState.PlayerStatus = sharedModels.PlayerStatusError // Ensure it's Error
 			errMsg := "Cannot retry: Inconsistent state (missing PlayerProgressID)"
 			gameState.ErrorDetails = &errMsg
@@ -774,8 +792,10 @@ func (s *gameLoopServiceImpl) RetryGenerationForGameState(ctx context.Context, u
 		}
 
 		// Get the progress node associated with the game state
-		progress, errProgress := s.playerProgressRepo.GetByID(ctx, *gameState.PlayerProgressID)
+		// <<< ИЗМЕНЕНО: Нет индирекции для uuid.UUID >>>
+		progress, errProgress := s.playerProgressRepo.GetByID(ctx, gameState.PlayerProgressID)
 		if errProgress != nil {
+			// <<< ИЗМЕНЕНО: Используем String() для uuid.UUID >>>
 			log.Error("Failed to get PlayerProgress node linked to game state for retry", zap.String("progressID", gameState.PlayerProgressID.String()), zap.Error(errProgress))
 			// Update game state to Error?
 			return sharedModels.ErrInternalServer
@@ -884,14 +904,17 @@ func (s *gameLoopServiceImpl) GetPlayerProgress(ctx context.Context, userID uuid
 	}
 
 	// 2. Check if PlayerProgressID exists in the game state.
-	if gameState.PlayerProgressID == nil {
+	// <<< ИЗМЕНЕНО: Сравниваем uuid.UUID с uuid.Nil >>>
+	if gameState.PlayerProgressID == uuid.Nil {
 		log.Warn("Player game state exists but has no associated PlayerProgressID", zap.String("gameStateID", gameState.ID.String()))
 		return nil, sharedModels.ErrNotFound // Progress node is effectively not found
 	}
 
 	// 3. Fetch the PlayerProgress node using the ID from the game state.
-	progress, errProgress := s.playerProgressRepo.GetByID(ctx, *gameState.PlayerProgressID)
+	// <<< ИЗМЕНЕНО: Нет индирекции для uuid.UUID >>>
+	progress, errProgress := s.playerProgressRepo.GetByID(ctx, gameState.PlayerProgressID)
 	if errProgress != nil {
+		// <<< ИЗМЕНЕНО: Используем String() для uuid.UUID >>>
 		log.Error("Failed to get player progress node by ID from repository", zap.String("progressID", gameState.PlayerProgressID.String()), zap.Error(errProgress))
 		if errors.Is(errProgress, pgx.ErrNoRows) || errors.Is(errProgress, sharedModels.ErrNotFound) {
 			return nil, sharedModels.ErrNotFound // Indicates inconsistency
@@ -1089,11 +1112,17 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 	newGameState := &sharedModels.PlayerGameState{
 		PlayerID:         playerID,
 		PublishedStoryID: publishedStoryID,
-		PlayerProgressID: &initialProgressID,
-		CurrentSceneID:   initialSceneID,
-		PlayerStatus:     playerStatus,
-		StartedAt:        now,
-		LastActivityAt:   now,
+		// <<< ИЗМЕНЕНО: Прямое присваивание uuid.UUID >>>
+		PlayerProgressID: initialProgressID,
+		// <<< ИЗМЕНЕНО: Корректное присваивание NullUUID из *uuid.UUID >>>
+		CurrentSceneID: uuid.NullUUID{}, // Инициализируем пустым
+		PlayerStatus:   playerStatus,
+		StartedAt:      now,
+		LastActivityAt: now,
+	}
+	// <<< ИЗМЕНЕНО: Устанавливаем значение CurrentSceneID после создания структуры >>>
+	if initialSceneID != nil {
+		newGameState.CurrentSceneID = uuid.NullUUID{UUID: *initialSceneID, Valid: true}
 	}
 
 	// 6. Save the new PlayerGameState

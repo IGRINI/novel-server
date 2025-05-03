@@ -46,18 +46,21 @@
 
 *   **Базовый URL изображений:** `https://crion.space/generated-images`
 
-Конкретные URL формируются следующим образом:
+Конкретные URL формируются и используются следующим образом:
 
 *   **Превью опубликованной истории:**
-    *   Формат: `[Базовый URL изображений]/history_preview_{publishedStoryID}.jpg`
+    *   **Получение URL:** Полный URL превью возвращается API в поле `coverImageUrl` (или аналогичном) в ответах эндпоинтов, возвращающих информацию об опубликованных историях (например, `GET /api/published-stories/me`, `GET /api/published-stories/public`, `GET /api/published-stories/:story_id`). Если превью еще не сгенерировано, значение поля будет `null`.
+    *   Формат URL: `[Базовый URL изображений]/history_preview_{publishedStoryID}.jpg`
     *   Пример: `https://crion.space/generated-images/history_preview_a1b2c3d4-e5f6-7890-1234-567890abcdef.jpg`
     *   Где `{publishedStoryID}` - это UUID опубликованной истории.
 
 *   **Изображение персонажа:**
-    *   Формат: `[Базовый URL изображений]/{imageReference}.jpg`
-    *   Где `{imageReference}` - это уникальный идентификатор, который `gameplay-service` передает в `image-generator` при постановке задачи на генерацию изображения персонажа (например, `character_{characterID}_{taskID}`). Этот же `imageReference` возвращается в поле `characters[].imageReference` эндпоинта `GET /api/published-stories/:id`.
-    *   Пример: `https://crion.space/generated-images/character_b2c3d4e5-f6a7-8901-2345-67890abcdef12_task12345.jpg`
-    *   **Примечание:** Бэкенд не возвращает готовые URL изображений персонажей в API. Фронтенду необходимо будет получить `imageReference` (вероятно, из данных Setup истории) и самостоятельно конструировать полный URL.
+    *   **Получение URL:** Бэкенд **не** возвращает готовые URL изображений персонажей. Клиент должен:
+        1.  Получить поле `imageReference` из данных Setup истории (например, через `GET /api/published-stories/:story_id` в поле `characters[].imageReference`).
+        2.  Самостоятельно сконструировать полный URL, используя базовый URL изображений и полученный `imageReference`.
+    *   Формат URL: `[Базовый URL изображений]/{imageReference}.jpg`
+    *   Где `{imageReference}` - это уникальный идентификатор (например, `ch_male_adult_wizard_...`).
+    *   Пример: `https://crion.space/generated-images/ch_male_adult_wizard_abc123.jpg`
 
 ### Аутентификация
 
@@ -435,16 +438,17 @@
             {
               "id": "uuid-string",
               "title": "string",
-              "short_description": "string", // <-- Обновлено поле
-              "author_id": "uuid-string",
-              "author_name": "string", // <-- Добавлено имя автора
-              "published_at": "timestamp",
-              "is_adult_content": false, // <-- Обновлено поле
-              "likes_count": 123,
-              "is_liked": true,
-              "hasPlayerProgress": false // Есть ли прогресс у текущего пользователя
-              "status": "ready | completed | error | ..." // <<< ДОБАВЛЯЕМ СТАТУС НАЗАД
-              "isPublic": true // <<< ДОБАВЛЕНО: Является ли история публичной
+              "short_description": "string | null", // (snake_case)
+              "author_id": "uuid-string", // (snake_case)
+              "author_name": "string", // (snake_case)
+              "published_at": "timestamp-string", // (snake_case)
+              "is_adult_content": false, // (snake_case)
+              "likes_count": 123, // (snake_case)
+              "is_liked": true, // (snake_case)
+              "has_player_progress": false, // (snake_case)
+              "status": "ready | error | ...",
+              "is_public": true, // (snake_case)
+              "cover_image_url": "https://crion.space/generated-images/history_preview_...jpg | null" // (snake_case, omitempty)
             }
             /* ... */
           ],
@@ -467,16 +471,17 @@
             {
               "id": "uuid-string",
               "title": "string",
-              "short_description": "string", // <-- Обновлено поле
-              "author_id": "uuid-string",
-              "author_name": "string", // <-- Добавлено имя автора
-              "published_at": "timestamp",
-              "is_adult_content": false, // <-- Обновлено поле
-              "likes_count": 123,
-              "is_liked": false, // Лайкнул ли текущий пользователь
-              "hasPlayerProgress": true // Есть ли прогресс у текущего пользователя
-              "status": "ready | completed | error | ..." // <<< ДОБАВЛЯЕМ СТАТУС НАЗАД
-              "isPublic": true // <<< ДОБАВЛЕНО: Является ли история публичной
+              "short_description": "string | null", // (snake_case)
+              "author_id": "uuid-string", // (snake_case)
+              "author_name": "string", // (snake_case)
+              "published_at": "timestamp-string", // (snake_case)
+              "is_adult_content": false, // (snake_case)
+              "likes_count": 123, // (snake_case)
+              "is_liked": false, // (snake_case)
+              "has_player_progress": true, // (snake_case)
+              "status": "ready | error | ...",
+              "is_public": true, // (snake_case)
+              "cover_image_url": "https://crion.space/generated-images/history_preview_...jpg | null" // (snake_case, omitempty)
             }
             /* ... */
           ],
@@ -496,29 +501,29 @@
         ```json
         {
           "id": "uuid-string",
-          "authorId": "uuid-string",
-          "authorName": "string",
-          "publishedAt": "timestamp-string",
-          "likesCount": 15,
-          "isLiked": true,
-          "isAuthor": false,
-          "isPublic": true,
-          "isAdultContent": false,
+          "author_id": "uuid-string", // camelCase -> snake_case
+          "author_name": "string", // camelCase -> snake_case
+          "published_at": "timestamp-string", // camelCase -> snake_case
+          "likes_count": 15, // camelCase -> snake_case
+          "is_liked": true, // camelCase -> snake_case
+          "is_author": false, // camelCase -> snake_case
+          "is_public": true, // camelCase -> snake_case
+          "is_adult_content": false, // camelCase -> snake_case
           "status": "published",
           "title": "Загадочный Особняк",
-          "shortDescription": "Исследуйте тайны старого поместья...",
+          "short_description": "Исследуйте тайны старого поместья...", // camelCase -> snake_case
           "genre": "детектив",
           "language": "ru",
-          "playerName": "Сыщик",
-          "coreStats": {
+          "player_name": "Сыщик", // camelCase -> snake_case
+          "core_stats": { // camelCase -> snake_case
             "sanity": { "description": "Рассудок", "initialValue": 10, "gameOverMin": true, "gameOverMax": false, "icon": "brain" },
             "clues": { "description": "Улики", "initialValue": 0, "gameOverMin": false, "gameOverMax": false, "icon": "magnifying-glass" }
           },
           "characters": [
-            { "name": "Дворецкий", "description": "Верный слуга... или нет?", "personality": "Загадочный", "imageReference": "butler_ref" }
+            { "name": "Дворецкий", "description": "Верный слуга... или нет?", "personality": "Загадочный", "imageReference": "ch_butler_ref_123" }
           ],
-          "previewImageUrl": "/images/published/story-uuid/preview.webp",
-          "gameStates": [
+          "cover_image_url": "https://crion.space/generated-images/history_preview_...jpg | null", // Имя поля и snake_case
+          "game_states": [ // camelCase -> snake_case
             {
               "id": "game-state-uuid-1",
               "lastActivityAt": "2024-04-20T10:30:00Z",
@@ -551,15 +556,15 @@
         [
           {
             "id": "game-state-uuid-1",
-            "lastActivityAt": "2024-04-20T10:30:00Z",
-            "sceneIndex": 5,
-            "currentSceneSummary": "Краткое описание сцены 10..."
+            "last_activity_at": "2024-04-20T10:30:00Z", // camelCase -> snake_case
+            "scene_index": 5, // camelCase -> snake_case
+            "current_scene_summary": "Краткое описание сцены 10..." // camelCase -> snake_case
           },
           {
             "id": "game-state-uuid-2",
-            "lastActivityAt": "2024-04-19T15:00:00Z",
-            "sceneIndex": 2,
-            "currentSceneSummary": "Внутри таверны пахнет элем и..."
+            "last_activity_at": "2024-04-19T15:00:00Z", // camelCase -> snake_case
+            "scene_index": 2, // camelCase -> snake_case
+            "current_scene_summary": "Внутри таверны пахнет элем и..." // camelCase -> snake_case
           }
         ]
         ```
@@ -580,9 +585,9 @@
         ```json
         {
           "id": "uuid-string", // ID текущей сцены
-          "publishedStoryId": "uuid-string", // ID опубликованной истории
-          "gameStateId": "uuid-string", // ID состояния игры (game_state_id из пути)
-          "currentStats": { // Текущие статы игрока в этом сохранении
+          "published_story_id": "uuid-string", // ID опубликованной истории (snake_case)
+          "game_state_id": "uuid-string", // ID состояния игры (snake_case)
+          "current_stats": { // Текущие статы игрока в этом сохранении (snake_case)
             "stat_key_1": 50,
             "stat_key_2": 35
           },
@@ -590,31 +595,31 @@
           "choices": [
             {
               "shuffleable": false, // Можно ли перемешивать (sh: 1 = true, 0 = false)
-              "characterName": "Advisor Zaltar", // <<< НОВОЕ ПОЛЕ: Имя персонажа из поля 'char'
+              "character_name": "Advisor Zaltar", // Имя персонажа (snake_case)
               "description": "Описание блока/ситуации выбора", // Текст из 'desc'
               "options": [
                 {
                   "text": "Текст опции 1", // Текст опции (Используется ключ 'text')
                   "consequences": { // ПОСЛЕДСТВИЯ ОПЦИИ (может быть null)
-                    "responseText": "Текст-реакция на выбор (если есть)", // Текст из 'rt', КЛИЕНТУ ОТДАЕТСЯ КАК responseText
-                    "statChanges": { "Wealth": -15, "Army": 5 } // Изменения статов (из 'cs'), КЛИЕНТУ ОТДАЕТСЯ КАК statChanges, будет null если нет
+                    "response_text": "Текст-реакция на выбор (если есть)", // (snake_case)
+                    "stat_changes": { "Wealth": -15, "Army": 5 } // (snake_case), будет null если нет
                   }
                 },
                 {
                   "text": "Текст опции 2", // Текст опции (Используется ключ 'text')
-                  "consequences": null // БУДЕТ null, если нет ни 'responseText', ни 'statChanges'
+                  "consequences": null // БУДЕТ null, если нет ни 'response_text', ни 'stat_changes'
                 }
               ]
             }
             // ... другие блоки выбора
           ],
           // --- Поле для type="game_over" ---
-          "endingText": "Текст концовки игры...", // Текст из 'et' (будет null для других типов)
+          "ending_text": "Текст концовки игры...", // (snake_case, будет null для других типов)
           // --- Поле для type="continuation" ---
           "continuation": { // Будет null для других типов
-            "newPlayerDescription": "Описание нового персонажа...", // Текст из 'npd'
-            "endingTextPrevious": "Текст концовки для предыдущего персонажа...", // Текст из 'etp'
-            "coreStatsReset": { "stat_key_1": 10, ... } // Новые базовые статы из 'csr'
+            "new_player_description": "Описание нового персонажа...", // (snake_case)
+            "ending_text_previous": "Текст концовки для предыдущего персонажа...", // (snake_case)
+            "core_stats_reset": { "stat_key_1": 10, ... } // Новые базовые статы (snake_case)
           }
         }
         ```
@@ -753,14 +758,15 @@
         ```json
         {
           "id": "uuid-string", // ID созданного состояния игры (gameStateID)
-          "playerId": "uuid-string",
-          "publishedStoryId": "uuid-string",
-          "playerProgressId": "uuid-string", // ID начального узла прогресса
-          "currentSceneId": "uuid-string | null", // ID начальной сцены (или null, если она еще генерируется)
-          "playerStatus": "generating_scene | playing", // Статус
-          "startedAt": "timestamp-string",
-          "lastActivityAt": "timestamp-string",
-          "errorDetails": null
+          "player_id": "uuid-string", // camelCase -> snake_case
+          "published_story_id": "uuid-string", // camelCase -> snake_case
+          "player_progress_id": "uuid-string", // ID начального узла прогресса (camelCase -> snake_case)
+          "current_scene_id": "uuid-string | null", // ID начальной сцены (camelCase -> snake_case)
+          "player_status": "generating_scene | playing", // Статус (camelCase -> snake_case)
+          "started_at": "timestamp-string", // camelCase -> snake_case
+          "last_activity_at": "timestamp-string", // camelCase -> snake_case
+          "error_details": null, // (camelCase -> snake_case)
+          "completed_at": null // (camelCase -> snake_case)
         }
         ```
     *   Ответ при ошибке:
@@ -806,8 +812,9 @@
           "event": "scene_generated",
           "payload": {
             "published_story_id": "uuid-string",
-            "scene_id": "uuid-string",
-            "state_hash": "string" // Хеш состояния, для которого сгенерирована сцена
+            "game_state_id": "uuid-string", // <<< ДОБАВЛЕНО (вместо state_hash)
+            "scene_id": "uuid-string"
+            // "state_hash": "string" // <<< УДАЛЕНО
           }
         }
         ```
@@ -817,7 +824,8 @@
           "event": "scene_error",
           "payload": {
             "published_story_id": "uuid-string",
-            "state_hash": "string", // Хеш состояния, для которого произошла ошибка
+            "game_state_id": "uuid-string", // <<< ДОБАВЛЕНО (вместо state_hash)
+            // "state_hash": "string", // <<< УДАЛЕНО
             "error": "Сообщение об ошибке"
           }
         }
@@ -900,8 +908,8 @@
     *   `data`:
         ```json
         {
-          "storyConfigId": "uuid-string",
-          "eventType": "draft",
+          "story_config_id": "uuid-string", // camelCase -> snake_case
+          "event_type": "draft", // camelCase -> snake_case
           "loc_key": "notification_draft_ready",
           "loc_arg_storyTitle": "Название Черновика",
           "fallback_title": "Черновик готов!",
@@ -913,14 +921,14 @@
     *   `data`:
         ```json
         {
-          "publishedStoryId": "uuid-string",
-          "eventType": "ready",
+          "published_story_id": "uuid-string", // camelCase -> snake_case
+          "event_type": "ready", // camelCase -> snake_case
           "loc_key": "notification_story_ready",
           "loc_arg_storyTitle": "Название Истории",
           "fallback_title": "История готова!",
           "fallback_body": "Ваша история \"Название Истории\" готова к игре!",
           "title": "Название Истории",
-          "authorName": "Имя Автора"
+          "author_name": "Имя Автора" // camelCase -> snake_case
         }
         ```
 *   **Новая сцена готова:**
@@ -928,16 +936,16 @@
     *   `data`:
         ```json
         {
-          "publishedStoryId": "uuid-string",
-          "gameStateId": "uuid-string",
-          "sceneId": "uuid-string",
-          "eventType": "playing", // Или scene_ready?
+          "published_story_id": "uuid-string", // camelCase -> snake_case
+          "game_state_id": "uuid-string", // camelCase -> snake_case
+          "scene_id": "uuid-string", // camelCase -> snake_case
+          "event_type": "playing", // Или scene_ready? (camelCase -> snake_case)
           "loc_key": "notification_scene_ready",
           "loc_arg_storyTitle": "Название Истории",
           "fallback_title": "Название Истории", // Может лучше "Новая сцена"?
           "fallback_body": "Новая сцена готова!",
           "title": "Название Истории",
-          "authorName": "Имя Автора"
+          "author_name": "Имя Автора" // camelCase -> snake_case
         }
         ```
 *   **Игра завершена (Game Over):**
@@ -945,17 +953,17 @@
     *   `data`:
         ```json
         {
-          "publishedStoryId": "uuid-string",
-          "gameStateId": "uuid-string",
-          "sceneId": "uuid-string",
-          "eventType": "completed",
+          "published_story_id": "uuid-string", // camelCase -> snake_case
+          "game_state_id": "uuid-string", // camelCase -> snake_case
+          "scene_id": "uuid-string", // camelCase -> snake_case
+          "event_type": "completed", // camelCase -> snake_case
           "loc_key": "notification_game_over",
           "loc_arg_storyTitle": "Название Истории",
           "loc_arg_endingText": "Текст концовки...",
           "fallback_title": "Игра завершена!",
           "fallback_body": "История \"Название Истории\" завершена.",
           "title": "Название Истории",
-          "authorName": "Имя Автора"
+          "author_name": "Имя Автора" // camelCase -> snake_case
         }
         ```
 

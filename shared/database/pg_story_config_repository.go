@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
 
@@ -629,5 +630,83 @@ func (r *pgStoryConfigRepository) UpdateStatus(ctx context.Context, id uuid.UUID
 	}
 
 	r.logger.Info("Story config status updated successfully", logFields...)
+	return nil
+}
+
+// AppendUserInput добавляет новый пользовательский ввод к существующему списку.
+// <<< ИЗМЕНЕНИЕ: Оборачиваем в транзакцию с FOR UPDATE для предотвращения race conditions >>>
+func (r *pgStoryConfigRepository) AppendUserInput(ctx context.Context, id uuid.UUID, userInput string) error {
+	logFields := []zap.Field{
+		zap.String("storyConfigID", id.String()),
+	}
+	r.logger.Debug("Appending user input to story config", logFields...)
+
+	// НАЧАЛО ТРАНЗАКЦИИ
+	// Используем хелпер или проверяем тип r.db, если нужно поддерживать и Pool, и Tx
+	pool, ok := r.db.(*pgxpool.Pool)
+	if !ok {
+		r.logger.Error("r.db is not *pgxpool.Pool, cannot begin transaction for AppendUserInput", logFields...)
+		return fmt.Errorf("внутренняя ошибка: невозможно начать транзакцию (неверный тип DBTX)")
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		r.logger.Error("Failed to begin transaction for appending user input", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка начала транзакции: %w", err)
+	}
+	defer tx.Rollback(ctx) // Откат по умолчанию
+
+	// 1. Получаем текущий user_input С БЛОКИРОВКОЙ
+	var currentInputBytes []byte
+	selectQuery := `SELECT user_input FROM story_configs WHERE id = $1 FOR UPDATE`
+	err = tx.QueryRow(ctx, selectQuery, id).Scan(&currentInputBytes)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			r.logger.Warn("Story config not found for appending user input", logFields...)
+			return models.ErrNotFound
+		}
+		r.logger.Error("Failed to get user_input for update", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка получения user_input: %w", err)
+	}
+
+	// 2. Десериализуем, добавляем новый ввод, сериализуем обратно
+	var currentInput []string
+	if len(currentInputBytes) > 0 { // Проверяем, что JSON не пустой/NULL перед десериализацией
+		if errUnmarshal := json.Unmarshal(currentInputBytes, &currentInput); errUnmarshal != nil {
+			r.logger.Error("Failed to unmarshal existing user_input", append(logFields, zap.Error(errUnmarshal))...)
+			return fmt.Errorf("ошибка десериализации user_input: %w", errUnmarshal)
+		}
+	}
+	// Если currentInput все еще nil (был NULL или пустой JSON массив), инициализируем
+	if currentInput == nil {
+		currentInput = make([]string, 0)
+	}
+
+	currentInput = append(currentInput, userInput)
+	newInputBytes, errMarshal := json.Marshal(currentInput)
+	if errMarshal != nil {
+		r.logger.Error("Failed to marshal new user_input", append(logFields, zap.Error(errMarshal))...)
+		return fmt.Errorf("ошибка сериализации user_input: %w", errMarshal)
+	}
+
+	// 3. Обновляем запись
+	updateQuery := `UPDATE story_configs SET user_input = $1, updated_at = NOW() WHERE id = $2`
+	commandTag, err := tx.Exec(ctx, updateQuery, newInputBytes, id)
+	if err != nil {
+		r.logger.Error("Failed to update user_input", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления user_input: %w", err)
+	}
+	if commandTag.RowsAffected() == 0 {
+		// Это не должно произойти, т.к. строка была заблокирована
+		r.logger.Error("Story config disappeared during AppendUserInput transaction", logFields...)
+		return models.ErrNotFound // Или другая ошибка несогласованности
+	}
+
+	// 4. Коммит транзакции
+	if err := tx.Commit(ctx); err != nil {
+		r.logger.Error("Failed to commit transaction for appending user input", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка коммита транзакции: %w", err)
+	}
+
+	r.logger.Info("User input appended successfully to story config", logFields...)
 	return nil
 }

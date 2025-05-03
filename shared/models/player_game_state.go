@@ -1,6 +1,7 @@
 package models
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,17 +22,17 @@ const (
 // PlayerGameState представляет состояние игры конкретного игрока для опубликованной истории.
 // Эта запись создается, когда игрок начинает играть в историю.
 type PlayerGameState struct {
-	ID               uuid.UUID    `json:"id" db:"id"`                                           // Уникальный ID состояния игры
-	PlayerID         uuid.UUID    `json:"player_id" db:"player_id"`                             // ID игрока (из сервиса auth)
-	PublishedStoryID uuid.UUID    `json:"published_story_id" db:"published_story_id"`           // ID опубликованной истории
-	CurrentSceneID   *uuid.UUID   `json:"current_scene_id,omitempty" db:"current_scene_id"`     // ID текущей сцены, на которой находится игрок
-	PlayerProgressID *uuid.UUID   `json:"player_progress_id,omitempty" db:"player_progress_id"` // Ссылка на детальное состояние прогресса
-	PlayerStatus     PlayerStatus `json:"player_status" db:"player_status"`                     // Текущий статус игрока в этой игре
-	EndingText       *string      `json:"ending_text,omitempty" db:"ending_text"`               // Текст концовки (если StatusCompleted)
-	ErrorDetails     *string      `json:"error_details,omitempty" db:"error_details"`           // Детали ошибки генерации для игрока
-	StartedAt        time.Time    `json:"started_at" db:"started_at"`                           // Время начала игры игроком
-	LastActivityAt   time.Time    `json:"last_activity_at" db:"last_activity_at"`               // Время последнего действия игрока (выбор, генерация)
-	CompletedAt      *time.Time   `json:"completed_at,omitempty" db:"completed_at"`             // Время завершения игры (если StatusCompleted)
+	ID               uuid.UUID     `json:"id" db:"id"`
+	PlayerID         uuid.UUID     `json:"player_id" db:"player_id"`
+	PublishedStoryID uuid.UUID     `json:"published_story_id" db:"published_story_id"`
+	CurrentSceneID   uuid.NullUUID `json:"current_scene_id" db:"current_scene_id"`
+	PlayerProgressID uuid.UUID     `json:"player_progress_id" db:"player_progress_id"`
+	PlayerStatus     PlayerStatus  `json:"player_status" db:"player_status"`
+	EndingText       *string       `json:"ending_text,omitempty" db:"ending_text"`
+	ErrorDetails     *string       `json:"error_details,omitempty" db:"error_details"`
+	StartedAt        time.Time     `json:"started_at" db:"started_at"`
+	LastActivityAt   time.Time     `json:"last_activity_at" db:"last_activity_at"`
+	CompletedAt      sql.NullTime  `json:"completed_at,omitempty" db:"completed_at"`
 }
 
 // PlayerCoreStats - можно использовать для парсинга CoreStats JSON, если потребуется.
