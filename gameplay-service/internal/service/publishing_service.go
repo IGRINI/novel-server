@@ -196,41 +196,17 @@ func (s *publishingServiceImpl) SetStoryVisibility(ctx context.Context, storyID,
 	}
 	s.logger.Info("Attempting to set story visibility", logFields...)
 
-	// 1. Получаем историю, чтобы проверить автора и статус
-	story, err := s.publishedRepo.GetByID(ctx, storyID)
+	// 4. Вызываем метод репозитория для обновления флага, передавая требуемый статус
+	err := s.publishedRepo.UpdateVisibility(ctx, storyID, userID, isPublic, sharedModels.StatusReady)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			s.logger.Warn("Story not found for visibility update", logFields...)
-			return sharedModels.ErrNotFound // Используем стандартную ошибку
+		// Обрабатываем ошибки, возвращенные репозиторием
+		if errors.Is(err, sharedModels.ErrNotFound) || errors.Is(err, sharedModels.ErrForbidden) || errors.Is(err, sharedModels.ErrStoryNotReadyForPublishing) {
+			s.logger.Warn("Visibility update failed due to precondition", append(logFields, zap.Error(err))...)
+			return err // Возвращаем конкретную ошибку (NotFound, Forbidden, NotReady)
 		}
-		s.logger.Error("Failed to get story for visibility update", append(logFields, zap.Error(err))...)
-		return ErrInternal // Внутренняя ошибка
-	}
-
-	// 2. Проверяем, является ли пользователь автором
-	if story.UserID != userID {
-		s.logger.Warn("User is not the author, cannot change visibility", logFields...)
-		return sharedModels.ErrForbidden // Используем стандартную ошибку
-	}
-
-	// 3. Проверяем статус истории (разрешаем публикацию только если Ready)
-	if story.Status != sharedModels.StatusReady {
-		s.logger.Warn("Story is not in Ready status, cannot change visibility", append(logFields, zap.String("status", string(story.Status)))...)
-		return ErrStoryNotReadyForPublishing // Возвращаем локальную ошибку
-	}
-
-	// 4. Вызываем метод репозитория для обновления флага
-	err = s.publishedRepo.UpdateVisibility(ctx, storyID, userID, isPublic)
-	if err != nil {
-		// Ошибки NotFound/Forbidden должны были быть обработаны репозиторием,
-		// но на всякий случай проверяем и логируем.
-		if errors.Is(err, sharedModels.ErrNotFound) || errors.Is(err, sharedModels.ErrForbidden) {
-			s.logger.Error("Visibility update failed with unexpected NotFound/Forbidden (should have been caught earlier or by repo)", append(logFields, zap.Error(err))...)
-			// Возвращаем ошибку как есть, но логируем как неожиданную
-			return err
-		}
+		// Другая ошибка репозитория или БД
 		s.logger.Error("Failed to update visibility in repository", append(logFields, zap.Error(err))...)
-		return ErrInternal // Другая ошибка репозитория
+		return sharedModels.ErrInternalServer // Возвращаем общую внутреннюю ошибку
 	}
 
 	s.logger.Info("Story visibility updated successfully", logFields...)

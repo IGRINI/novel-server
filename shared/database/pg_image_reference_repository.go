@@ -9,18 +9,21 @@ import (
 	sharedModels "novel-server/shared/models"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
 
+// Compile-time check to ensure pgImageReferenceRepository implements the interface
+var _ interfaces.ImageReferenceRepository = (*pgImageReferenceRepository)(nil)
+
 // pgImageReferenceRepository реализует интерфейс ImageReferenceRepository для PostgreSQL.
 type pgImageReferenceRepository struct {
-	db     *pgxpool.Pool
+	db     interfaces.DBTX // Can be *pgxpool.Pool or *pgx.Tx
 	logger *zap.Logger
 }
 
 // NewPgImageReferenceRepository создает новый экземпляр pgImageReferenceRepository.
-func NewPgImageReferenceRepository(db *pgxpool.Pool, logger *zap.Logger) interfaces.ImageReferenceRepository {
+func NewPgImageReferenceRepository(db interfaces.DBTX, logger *zap.Logger) interfaces.ImageReferenceRepository {
 	return &pgImageReferenceRepository{
 		db:     db,
 		logger: logger.Named("PgImageReferenceRepo"), // Добавляем имя для логгера
@@ -73,4 +76,41 @@ func (r *pgImageReferenceRepository) SaveOrUpdateImageReference(ctx context.Cont
 	}
 
 	return nil
+}
+
+// GetImageURLsByReferences retrieves multiple image URLs based on a list of reference strings.
+func (r *pgImageReferenceRepository) GetImageURLsByReferences(ctx context.Context, refs []string) (map[string]string, error) {
+	if len(refs) == 0 {
+		return make(map[string]string), nil // Return empty map if no refs provided
+	}
+
+	query := `SELECT reference, image_url FROM image_references WHERE reference = ANY($1::text[])`
+	logFields := []zap.Field{zap.Int("ref_count", len(refs))}
+	r.logger.Debug("Getting image URLs by references (batch)", logFields...)
+
+	rows, err := r.db.Query(ctx, query, pq.Array(refs))
+	if err != nil {
+		r.logger.Error("Failed to query image URLs by references", append(logFields, zap.Error(err))...)
+		return nil, fmt.Errorf("failed to query image URLs by references: %w", err)
+	}
+	defer rows.Close()
+
+	results := make(map[string]string)
+	for rows.Next() {
+		var ref, url string
+		if err := rows.Scan(&ref, &url); err != nil {
+			r.logger.Error("Failed to scan image reference row", append(logFields, zap.Error(err))...)
+			// Continue scanning other rows even if one fails
+			continue
+		}
+		results[ref] = url
+	}
+
+	if err := rows.Err(); err != nil {
+		r.logger.Error("Error iterating image reference rows", append(logFields, zap.Error(err))...)
+		return nil, fmt.Errorf("error iterating image reference results: %w", err)
+	}
+
+	r.logger.Debug("Image URLs retrieved successfully (batch)", append(logFields, zap.Int("found_count", len(results)))...)
+	return results, nil
 }

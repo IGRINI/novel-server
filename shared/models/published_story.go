@@ -136,9 +136,28 @@ type PublishedStorySummary struct {
 
 // PublishedStorySummaryWithProgress extends PublishedStorySummary with player progress info.
 type PublishedStorySummaryWithProgress struct {
-	PublishedStorySummary
-	HasPlayerProgress bool `json:"hasPlayerProgress" db:"has_player_progress"`
-	IsPublic          bool `json:"isPublic" db:"is_public"`
+	PublishedStorySummary        // Вложенная структура с основными полями
+	AuthorName            string `json:"authorName" db:"author_name"` // <<< ДОБАВЛЕНО: Имя автора (из JOIN) >>>
+	HasPlayerProgress     bool   `json:"hasPlayerProgress" db:"has_player_progress"`
+	IsPublic              bool   `json:"isPublic" db:"is_public"` // <<< ДОБАВЛЕНО: Флаг публичности >>>
+}
+
+// <<< НОВАЯ СТРУКТУРА ДЛЯ ОПТИМИЗИРОВАННОГО ЗАПРОСА >>>
+// PublishedStoryDetailWithProgressAndLike содержит все данные для DTO, получаемые одним запросом.
+type PublishedStoryDetailWithProgressAndLike struct {
+	ID                uuid.UUID   `db:"id"`
+	Title             string      `db:"title"`
+	ShortDescription  string      `db:"description"` // Получаем из description
+	AuthorID          uuid.UUID   `db:"user_id"`
+	AuthorName        string      `db:"author_name"`
+	PublishedAt       time.Time   `db:"created_at"`
+	IsAdultContent    bool        `db:"is_adult_content"`
+	LikesCount        int64       `db:"likes_count"`
+	Status            StoryStatus `db:"status"`
+	CoverImageURL     *string     `db:"cover_image_url"`
+	IsPublic          bool        `db:"is_public"`
+	IsLiked           bool        `db:"is_liked"`
+	HasPlayerProgress bool        `db:"has_player_progress"`
 }
 
 // StatRule defines conditions for game over based on core stats.

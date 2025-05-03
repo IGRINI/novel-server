@@ -439,15 +439,14 @@ func (h *GameplayHandler) unlikeStory(c *gin.Context) {
 
 	err = h.service.UnlikeStory(c.Request.Context(), userID, id)
 	if err != nil {
+		// Логируем только действительно неожиданные ошибки
 		if !errors.Is(err, sharedModels.ErrNotFound) && !errors.Is(err, service.ErrStoryNotFound) {
-			// Ошибка 'лайк не найден' также игнорируется при логировании ошибки
-			if !errors.Is(err, service.ErrNotLikedYet) {
-				log.Error("Error unliking story", zap.Error(err))
-			}
+			log.Error("Error unliking story", zap.Error(err))
 		}
-		// Возвращаем 204 даже если лайка не было (цель достигнута - лайка нет)
-		if errors.Is(err, sharedModels.ErrNotFound) || errors.Is(err, service.ErrStoryNotFound) || errors.Is(err, service.ErrNotLikedYet) {
-			log.Info("Story or like not found, unliking skipped (considered success)")
+		// Возвращаем 204 если истории не было или другая ошибка NotFound
+		// (т.к. цель - отсутствие лайка - достигнута или не могла быть достигнута из-за отсутствия истории)
+		if errors.Is(err, sharedModels.ErrNotFound) || errors.Is(err, service.ErrStoryNotFound) {
+			log.Info("Story not found, unliking skipped (considered success)")
 			c.Status(http.StatusNoContent)
 			return
 		}
@@ -507,28 +506,24 @@ func (h *GameplayHandler) listLikedStories(c *gin.Context) {
 			log.Warn("Received nil LikedStoryDetailDTO in listLikedStories")
 			continue
 		}
-		title := ""
-		if detail.Title != nil {
-			title = *detail.Title
-		}
-		description := ""
-		if detail.Description != nil {
-			description = *detail.Description
-		}
+		title := detail.Title                  // Используем поле из PublishedStorySummary
+		description := detail.ShortDescription // Используем поле из PublishedStorySummary
 		storySummaries[i] = sharedModels.PublishedStorySummaryWithProgress{
 			PublishedStorySummary: sharedModels.PublishedStorySummary{
 				ID:               detail.ID,
 				Title:            title,
-				ShortDescription: description, // Map description to ShortDescription
-				AuthorID:         detail.UserID,
-				AuthorName:       detail.AuthorName, // <-- Исправлено: Используем поле из DTO
-				PublishedAt:      detail.CreatedAt,
-				IsAdultContent:   detail.IsAdultContent, // Assuming this field exists in LikedStoryDetailDTO
-				LikesCount:       detail.LikesCount,     // Assuming this field exists
-				IsLiked:          true,                  // Always true for liked stories endpoint
+				ShortDescription: description,     // Используем уже полученное значение
+				AuthorID:         detail.AuthorID, // <<< ПРАВИЛЬНО
+				AuthorName:       detail.AuthorName,
+				PublishedAt:      detail.PublishedAt, // <<< ПРАВИЛЬНО
+				IsAdultContent:   detail.IsAdultContent,
+				LikesCount:       detail.LikesCount,
+				IsLiked:          true,                 // Всегда true для этого эндпоинта
+				Status:           detail.Status,        // <<< ДОБАВЛЕНО: Не хватало статуса
+				CoverImageURL:    detail.CoverImageURL, // <<< ДОБАВЛЕНО: Не хватало обложки
 			},
-			HasPlayerProgress: detail.HasPlayerProgress, // Assuming this field exists
-			IsPublic:          detail.IsPublic,          // <<< ИСПРАВЛЕНО: Присваиваем поле на правильном уровне
+			HasPlayerProgress: detail.HasPlayerProgress,
+			IsPublic:          detail.IsPublic,
 		}
 	}
 

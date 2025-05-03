@@ -1565,82 +1565,69 @@ func (s *gameLoopServiceImpl) checkAndGenerateSetupImages(ctx context.Context, s
 	imageTasks := make([]sharedMessaging.CharacterImageTaskPayload, 0, len(setupContent.Characters))
 
 	log.Info("Checking which images need generation (from checkAndGenerateSetupImages)")
+
+	// <<< НАЧАЛО ИЗМЕНЕНИЯ: Оптимизация с GetImageURLsByReferences >>>
+	// 1. Собрать все референсы персонажей для проверки
+	characterRefsToCheck := make([]string, 0, len(setupContent.Characters))
+	refToCharDataMap := make(map[string]sharedModels.CharacterDefinition) // <<< ИСПРАВЛЕНО: Правильный тип
 	for _, charData := range setupContent.Characters {
 		if charData.ImageRef == "" || charData.Prompt == "" {
-			log.Debug("Skipping character image check: missing ImageRef or Prompt", zap.String("char_name", charData.Name))
-			continue
+			continue // Пропускаем, если нет рефа или промпта
 		}
-		imageRef := charData.ImageRef
-		// <<< НАЧАЛО ИЗМЕНЕНИЯ: Гарантируем префикс ch_ >>>
-		correctedRef := imageRef // Новая переменная для исправленного референса
-
-		if !strings.HasPrefix(imageRef, "ch_") {
-			log.Warn("Character ImageRef does not start with 'ch_'. Attempting correction.",
-				zap.String("original_ref", imageRef),
-				zap.String("char_name", charData.Name),
-				zap.String("published_story_id", story.ID.String()),
-			)
-			// Сначала удаляем известные некорректные префиксы
-			if strings.HasPrefix(imageRef, "character_") {
-				correctedRef = strings.TrimPrefix(imageRef, "character_")
-			} else if strings.HasPrefix(imageRef, "char_") {
-				correctedRef = strings.TrimPrefix(imageRef, "char_")
+		// Корректируем референс (гарантируем префикс ch_)
+		originalRef := charData.ImageRef
+		correctedRef := originalRef
+		if !strings.HasPrefix(originalRef, "ch_") {
+			if strings.HasPrefix(originalRef, "character_") {
+				correctedRef = strings.TrimPrefix(originalRef, "character_")
+			} else if strings.HasPrefix(originalRef, "char_") {
+				correctedRef = strings.TrimPrefix(originalRef, "char_")
 			} else {
-				// Если префикс неизвестен, используем исходную строку (без префикса)
-				correctedRef = imageRef
+				correctedRef = originalRef
 			}
-
-			// Гарантированно добавляем префикс ch_
 			correctedRef = "ch_" + strings.TrimPrefix(correctedRef, "ch_")
-
-			// Исправляем опечатку в строке лога (убираем кавычку после ch_):
-			log.Info("Ensured ImageRef prefix is 'ch_'.", zap.String("original_ref", imageRef), zap.String("new_ref", correctedRef))
 		}
-		// <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
+		characterRefsToCheck = append(characterRefsToCheck, correctedRef)
+		refToCharDataMap[correctedRef] = charData // Сохраняем данные по исправленному референсу
+	}
 
-		_, errCheck := s.imageReferenceRepo.GetImageURLByReference(ctx, correctedRef) // Используем correctedRef
+	// 2. Выполнить один запрос для получения существующих URL
+	existingURLs := make(map[string]string)
+	var errCheckBatch error
+	if len(characterRefsToCheck) > 0 {
+		existingURLs, errCheckBatch = s.imageReferenceRepo.GetImageURLsByReferences(ctx, characterRefsToCheck)
+		if errCheckBatch != nil {
+			log.Error("Error checking character ImageRefs in DB (batch)", zap.Error(errCheckBatch))
+			// Не прерываем весь процесс, просто не сможем сгенерировать
+			// Можно вернуть ошибку, если это критично
+			// return false, fmt.Errorf("failed to batch check image references: %w", errCheckBatch)
+		}
+	}
 
-		// <<< ИСПРАВЛЕНО: Используем sharedModels.ErrNotFound и убираем проверку по строке >>>
-		if errors.Is(errCheck, sharedModels.ErrNotFound) || errors.Is(errCheck, pgx.ErrNoRows) {
-			log.Debug("Character image needs generation", zap.String("image_ref", correctedRef))
+	// 3. Определить, какие изображения нужно сгенерировать
+	for _, ref := range characterRefsToCheck {
+		if _, exists := existingURLs[ref]; !exists {
+			// URL не найден, значит нужно генерировать
+			log.Debug("Character image needs generation (checked via batch)", zap.String("image_ref", ref))
 			needsCharacterImages = true
+			charData := refToCharDataMap[ref] // Получаем данные персонажа
 			characterIDForTask := uuid.New()
 			// <<< ВОЗВРАЩАЕМ ИСПОЛЬЗОВАНИЕ СУФФИКСА >>>
 			fullCharacterPrompt := charData.Prompt + characterVisualStyle + characterStyleSuffix
 			imageTask := sharedMessaging.CharacterImageTaskPayload{
 				TaskID:           characterIDForTask.String(),
-				UserID:           userID.String(), // <<< ИСПРАВЛЕНО: Преобразуем в строку
+				UserID:           userID.String(),
 				CharacterID:      characterIDForTask,
 				Prompt:           fullCharacterPrompt,
 				NegativePrompt:   charData.NegPrompt,
-				ImageReference:   correctedRef, // Используем correctedRef
+				ImageReference:   ref, // Используем исправленный референс
 				Ratio:            "2:3",
 				PublishedStoryID: story.ID,
 			}
 			imageTasks = append(imageTasks, imageTask)
-		} else if errCheck != nil { // Ловим другие ошибки
-			log.Error("Error checking Character ImageRef in DB", zap.String("image_ref", correctedRef), zap.Error(errCheck))
-		} else { // Ошибки нет
-			log.Debug("Character image already exists", zap.String("image_ref", correctedRef))
+		} else {
+			log.Debug("Character image already exists (checked via batch)", zap.String("image_ref", ref))
 		}
-	}
-
-	log.Info("Checking if preview image needs generation")
-	if setupContent.StoryPreviewImagePrompt != "" {
-		previewImageRef := fmt.Sprintf("history_preview_%s", story.ID.String())
-		_, errCheck := s.imageReferenceRepo.GetImageURLByReference(ctx, previewImageRef)
-
-		// <<< ИСПРАВЛЕНО: Используем sharedModels.ErrNotFound и убираем проверку по строке >>>
-		if errors.Is(errCheck, sharedModels.ErrNotFound) || errors.Is(errCheck, pgx.ErrNoRows) {
-			log.Debug("Preview image needs generation", zap.String("image_ref", previewImageRef))
-			needsPreviewImage = true
-		} else if errCheck != nil { // Ловим другие ошибки
-			log.Error("Error checking Preview ImageRef in DB", zap.String("image_ref", previewImageRef), zap.Error(errCheck))
-		} else { // Ошибки нет
-			log.Debug("Preview image already exists", zap.String("image_ref", previewImageRef))
-		}
-	} else {
-		log.Info("StoryPreviewImagePrompt (spi) is empty in setup, no preview generation needed.")
 	}
 
 	areImagesPending := needsPreviewImage || needsCharacterImages

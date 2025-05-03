@@ -202,7 +202,7 @@ func (s *draftServiceImpl) ReviseDraft(ctx context.Context, id uuid.UUID, userID
 
 	// <<< Новая логика формирования UserInput для ревизии >>>
 	var userInputForTask string
-	if config.Config == nil || len(config.Config) == 0 {
+	if len(config.Config) == 0 {
 		// Если нет предыдущего конфига, ревизия невозможна по новой логике промпта
 		log.Error("Cannot revise draft: previous config is missing or empty", zap.String("draftID", config.ID.String()))
 		// Возвращаем ошибку, т.к. AI ожидает JSON с 'ur' для ревизии
@@ -300,32 +300,6 @@ func (s *draftServiceImpl) ListUserDrafts(ctx context.Context, userID uuid.UUID,
 	} else {
 		nextCursor = "" // No next page if we didn't fetch extra
 	}
-
-	// Временная структура для парсинга только title из config JSON
-	type configTitle struct {
-		Title string `json:"title"`
-	}
-
-	for i := range configs {
-		// Проверяем, есть ли config и не пуст ли он
-		if configs[i].Config != nil && len(configs[i].Config) > 0 && string(configs[i].Config) != "null" {
-			var ct configTitle
-			if err := json.Unmarshal(configs[i].Config, &ct); err == nil {
-				// Если парсинг успешен и title не пустой, обновляем поле Title в основной структуре
-				if ct.Title != "" {
-					configs[i].Title = ct.Title
-				}
-			} else {
-				// Логируем ошибку парсинга, но не прерываем процесс
-				log.Warn("Failed to unmarshal config JSON to extract title",
-					zap.String("draftID", configs[i].ID.String()),
-					zap.Error(err))
-			}
-		} else {
-			// Если config пустой или null, Title остается пустым (или тем, что было в БД, если оно там есть)
-		}
-	}
-	// <<< КОНЕЦ ИЗМЕНЕНИЙ >>>
 
 	log.Debug("User drafts listed successfully", zap.Int("count", len(configs)), zap.Bool("hasNext", nextCursor != ""))
 	return configs, nextCursor, nil

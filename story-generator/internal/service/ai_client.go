@@ -9,10 +9,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"novel-server/shared/interfaces"
-	"novel-server/shared/models"
-	"novel-server/story-generator/internal/config"
-	"strconv"
 	"strings"
 	"time"
 
@@ -23,17 +19,12 @@ import (
 	// Prometheus imports
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"novel-server/shared/configservice"
 )
 
-// <<< УДАЛЕНЫ КОНСТАНТЫ ЦЕН >>>
+// <<< УДАЛЕНЫ КОНСТАНТЫ И ДЕФОЛТЫ, т.к. они теперь в shared/configservice >>>
 /*
-const (
-	pricePerMillionInputTokensUSD  = 0.1 // Цена за 1М входных токенов в USD
-	pricePerMillionOutputTokensUSD = 0.4 // Цена за 1М выходных токенов в USD
-)
-*/
-
-// <<< ДОБАВЛЕНЫ КЛЮЧИ КОНФИГУРАЦИИ И ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ >>>
 const (
 	// Экспортируем ключи и дефолты, которые используются в main.go
 	ConfigKeyAIMaxAttempts    = "ai.max_attempts"
@@ -56,9 +47,11 @@ const (
 
 	configKeyAIClientType = "ai.client_type"
 	defaultAIClientType   = "openai"
-)
 
-// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
+	configKeyAIAPIKey = "ai.api_key" // Ключ для получения API ключа
+)
+*/
+// <<< КОНЕЦ УДАЛЕНИЯ >>>
 
 // <<< Структура для параметров генерации (дублируем из admin-service/client) >>>
 // Используем указатели, чтобы отличить 0/0.0 от отсутствия.
@@ -152,34 +145,11 @@ type AIClient interface {
 	GenerateTextStream(ctx context.Context, userID string, systemPrompt string, userInput string, params GenerationParams, chunkHandler func(string) error) (UsageInfo, error)
 }
 
-// <<< ДОБАВЛЕНО: Функция получения значения конфига с fallback >>>
-func getConfigValueFloat(ctx context.Context, repo interfaces.DynamicConfigRepository, key string, defaultValue float64) float64 {
-	config, err := repo.GetByKey(ctx, key)
-	if err != nil {
-		if !errors.Is(err, models.ErrNotFound) {
-			log.Printf("[WARN] Ошибка получения значения конфига '%s': %v. Используется значение по умолчанию: %f", key, err, defaultValue)
-		} else {
-			log.Printf("[INFO] Значение конфига '%s' не найдено. Используется значение по умолчанию: %f", key, defaultValue)
-		}
-		return defaultValue
-	}
-
-	value, err := strconv.ParseFloat(config.Value, 64)
-	if err != nil {
-		log.Printf("[WARN] Ошибка парсинга значения конфига '%s' ('%s'): %v. Используется значение по умолчанию: %f", key, config.Value, err, defaultValue)
-		return defaultValue
-	}
-	log.Printf("[DEBUG] Получено значение конфига '%s': %f", key, value)
-	return value
-}
-
-// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
-
-// <<< ИЗМЕНЕНО: calculateCost теперь принимает репозиторий и контекст >>>
+// <<< ИЗМЕНЕНО: calculateCost теперь принимает *configservice.ConfigService >>>
 // calculateCost рассчитывает оценочную стоимость запроса на основе токенов.
-func calculateCost(ctx context.Context, repo interfaces.DynamicConfigRepository, promptTokens, completionTokens int) float64 {
-	pricePerMillionInput := getConfigValueFloat(ctx, repo, configKeyInputCost, defaultInputCost)
-	pricePerMillionOutput := getConfigValueFloat(ctx, repo, configKeyOutputCost, defaultOutputCost)
+func calculateCost(configService *configservice.ConfigService, promptTokens, completionTokens int) float64 {
+	pricePerMillionInput := configService.GetFloat(configservice.ConfigKeyInputCost, configservice.DefaultInputCost)
+	pricePerMillionOutput := configService.GetFloat(configservice.ConfigKeyOutputCost, configservice.DefaultOutputCost)
 
 	inputCost := float64(promptTokens) * pricePerMillionInput / 1_000_000.0
 	outputCost := float64(completionTokens) * pricePerMillionOutput / 1_000_000.0
@@ -188,71 +158,31 @@ func calculateCost(ctx context.Context, repo interfaces.DynamicConfigRepository,
 
 // <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
 
-// <<< ДОБАВЛЕНО: Функция получения строкового значения конфига с fallback >>>
-func getConfigValueString(ctx context.Context, repo interfaces.DynamicConfigRepository, key string, defaultValue string) string {
-	config, err := repo.GetByKey(ctx, key)
-	if err != nil {
-		if !errors.Is(err, models.ErrNotFound) {
-			log.Printf("[WARN] Ошибка получения значения конфига '%s': %v. Используется значение по умолчанию: %s", key, err, defaultValue)
-		} else {
-			log.Printf("[INFO] Значение конфига '%s' не найдено. Используется значение по умолчанию: %s", key, defaultValue)
-		}
-		return defaultValue
-	}
-	if config.Value == "" {
-		log.Printf("[INFO] Значение конфига '%s' пустое. Используется значение по умолчанию: %s", key, defaultValue)
-		return defaultValue
-	}
-	log.Printf("[DEBUG] Получено значение конфига '%s': %s", key, config.Value)
-	return config.Value
-}
-
-// <<< ДОБАВЛЕНО: Хелперы для Duration и Int >>>
-func getConfigValueDuration(ctx context.Context, repo interfaces.DynamicConfigRepository, key string, defaultValue time.Duration) time.Duration {
-	strValue := getConfigValueString(ctx, repo, key, "") // Получаем строку
-	if strValue == "" {
-		return defaultValue // Если пусто или не найдено, используем дефолт
-	}
-	duration, err := time.ParseDuration(strValue)
-	if err != nil {
-		log.Printf("[WARN] Ошибка парсинга duration конфига '%s' ('%s'): %v. Используется значение по умолчанию: %v", key, strValue, err, defaultValue)
-		return defaultValue
-	}
-	log.Printf("[DEBUG] Получено значение duration конфига '%s': %v", key, duration)
-	return duration
-}
-
-func getConfigValueInt(ctx context.Context, repo interfaces.DynamicConfigRepository, key string, defaultValue int) int {
-	strValue := getConfigValueString(ctx, repo, key, "") // Получаем строку
-	if strValue == "" {
-		return defaultValue // Если пусто или не найдено, используем дефолт
-	}
-	intValue, err := strconv.Atoi(strValue)
-	if err != nil {
-		log.Printf("[WARN] Ошибка парсинга int конфига '%s' ('%s'): %v. Используется значение по умолчанию: %d", key, strValue, err, defaultValue)
-		return defaultValue
-	}
-	log.Printf("[DEBUG] Получено значение int конфига '%s': %d", key, intValue)
-	return intValue
-}
-
 // --- OpenAI Client Implementation ---
 
 // openAIClient реализует AIClient с использованием go-openai
 type openAIClient struct {
-	client   *openaigo.Client
-	repo     interfaces.DynamicConfigRepository
-	provider string
+	client        *openaigo.Client
+	configService *configservice.ConfigService // <<< ИЗМЕНЕНО: Тип на shared configservice >>>
+	provider      string
 }
 
 // GenerateText генерирует текст на основе системного промта и ввода пользователя
 func (c *openAIClient) GenerateText(ctx context.Context, userID string, systemPrompt string, userInput string, params GenerationParams) (string, UsageInfo, error) {
 	usageInfo := UsageInfo{} // Инициализируем пустую структуру
 
-	// <<< ИЗМЕНЕНО: Получаем актуальное имя модели и BaseURL перед каждым запросом >>>
-	currentModel := getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel)
-	currentBaseURL := getConfigValueString(ctx, c.repo, configKeyAIBaseURL, defaultAIBaseURL)
+	// <<< ИЗМЕНЕНО: Получаем актуальные настройки из ConfigService >>>
+	currentModel := c.configService.GetString(configservice.ConfigKeyAIModel, configservice.DefaultAIModel)
+	currentBaseURL := c.configService.GetString(configservice.ConfigKeyAIBaseURL, configservice.DefaultAIBaseURL)
+	// <<< ВАЖНО: API ключ теперь тоже читаем из ConfigService >>>
+	currentAPIKey := c.configService.GetString(configservice.ConfigKeyAIAPIKey, "") // По умолчанию пустой ключ
 	log.Printf("[DEBUG] Preparing OpenAI request. BaseURL: %s, Model: %s, UserID: %s", currentBaseURL, currentModel, userID)
+
+	if currentAPIKey == "" && c.provider == "OpenAI" { // Проверяем ключ только для OpenAI
+		log.Printf("[ERROR] OpenAI API key is missing in dynamic config (key: %s). Cannot make request.", configservice.ConfigKeyAIAPIKey)
+		aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "error_missing_key", "user_id": userID}).Inc()
+		return "", usageInfo, fmt.Errorf("%w: OpenAI API key is not configured", ErrAIGenerationFailed)
+	}
 
 	// Валидация системного промпта
 	if strings.TrimSpace(systemPrompt) == "" {
@@ -295,13 +225,20 @@ func (c *openAIClient) GenerateText(ctx context.Context, userID string, systemPr
 	requestJSON, _ := json.Marshal(request)
 	log.Printf("[DEBUG] OpenAI Request Body: %s", string(requestJSON))
 
-	// <<< ВАЖНО: Нужно пересоздать клиент или обновить его конфиг, если BaseURL изменился >>>
-	// Простой вариант: предположить, что BaseURL и APIKey не меняются так часто
-	// и использовать клиент, созданный при старте. Если они МОГУТ меняться,
-	// потребуется более сложная логика (пересоздание клиента или обновление конфига).
-	// Пока используем существующий c.client
+	// <<< ВАЖНО: Создаем или обновляем клиент OpenAI с актуальным API ключом и URL >>>
+	openaiConfig := openaigo.DefaultConfig(currentAPIKey)
+	openaiConfig.BaseURL = currentBaseURL
+	// Используем HTTP клиент с таймаутом, полученным из ConfigService
+	aiTimeout := c.configService.GetDuration(configservice.ConfigKeyAITimeout, configservice.DefaultAITimeout)
+	httpClient := &http.Client{
+		Timeout: aiTimeout,
+	}
+	openaiConfig.HTTPClient = httpClient
+	// Создаем временный клиент для этого конкретного запроса
+	// TODO: Оптимизировать, если ключ/URL меняются редко (например, кэшировать клиент)
+	tempClient := openaigo.NewClientWithConfig(openaiConfig)
 
-	resp, err := c.client.CreateChatCompletion(
+	resp, err := tempClient.CreateChatCompletion(
 		ctx,
 		request,
 	)
@@ -344,7 +281,8 @@ func (c *openAIClient) GenerateText(ctx context.Context, userID string, systemPr
 		usageInfo.PromptTokens = resp.Usage.PromptTokens
 		usageInfo.CompletionTokens = resp.Usage.CompletionTokens
 		usageInfo.TotalTokens = resp.Usage.TotalTokens
-		usageInfo.EstimatedCostUSD = calculateCost(ctx, c.repo, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+		// <<< ИЗМЕНЕНО: Передаем configService в calculateCost >>>
+		usageInfo.EstimatedCostUSD = calculateCost(c.configService, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
 		log.Printf("[DEBUG] Calculated cost (userID: %s, model: %s): %.8f", userID, currentModel, usageInfo.EstimatedCostUSD) // Используем currentModel
 		if usageInfo.EstimatedCostUSD > 0 {
 			aiEstimatedCostUSD.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Add(usageInfo.EstimatedCostUSD) // Используем currentModel
@@ -359,9 +297,20 @@ func (c *openAIClient) GenerateText(ctx context.Context, userID string, systemPr
 // Возвращает UsageInfo с токенами (если удалось их получить) и ошибку.
 func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, systemPrompt string, userInput string, params GenerationParams, chunkHandler func(string) error) (UsageInfo, error) {
 	usageInfo := UsageInfo{} // Инициализируем пустую структуру
+
+	// <<< ИЗМЕНЕНО: Получаем актуальные настройки из ConfigService >>>
+	currentModel := c.configService.GetString(configservice.ConfigKeyAIModel, configservice.DefaultAIModel)
+	currentBaseURL := c.configService.GetString(configservice.ConfigKeyAIBaseURL, configservice.DefaultAIBaseURL)
+	currentAPIKey := c.configService.GetString(configservice.ConfigKeyAIAPIKey, "")
+
+	if currentAPIKey == "" && c.provider == "OpenAI" {
+		log.Printf("[ERROR] OpenAI API key is missing for stream (key: %s).", configservice.ConfigKeyAIAPIKey)
+		// Не инкрементируем метрику запроса, т.к. он не будет сделан
+		return usageInfo, fmt.Errorf("%w: OpenAI API key is not configured for stream", ErrAIGenerationFailed)
+	}
+
 	if strings.TrimSpace(systemPrompt) == "" {
 		log.Printf("Ошибка стриминга: Системный промт пуст после подготовки. userID: %s", userID)
-		// Не инкрементируем метрику здесь, т.к. запрос не будет отправлен
 		return usageInfo, fmt.Errorf("%w: системный промт пуст для стриминга", ErrAIGenerationFailed)
 	}
 
@@ -379,7 +328,7 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 	}
 
 	request := openaigo.ChatCompletionRequest{
-		Model:       getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel),
+		Model:       currentModel,
 		Messages:    messages,
 		Stream:      true,
 		Temperature: float32Val(params.Temperature),
@@ -388,12 +337,22 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 	}
 
 	log.Printf("Отправка STREAM запроса к %s: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes, UserID: %s",
-		c.provider, getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), len(systemPrompt), len(userInput), userID)
+		c.provider, currentModel, len(systemPrompt), len(userInput), userID)
 
-	stream, err := c.client.CreateChatCompletionStream(ctx, request)
+	// <<< ВАЖНО: Создаем или обновляем клиент OpenAI с актуальным API ключом и URL >>>
+	openaiConfig := openaigo.DefaultConfig(currentAPIKey)
+	openaiConfig.BaseURL = currentBaseURL
+	aiTimeout := c.configService.GetDuration(configservice.ConfigKeyAITimeout, configservice.DefaultAITimeout)
+	httpClient := &http.Client{
+		Timeout: aiTimeout, // Timeout for the entire stream request?
+	}
+	openaiConfig.HTTPClient = httpClient
+	tempClient := openaigo.NewClientWithConfig(openaiConfig)
+
+	stream, err := tempClient.CreateChatCompletionStream(ctx, request)
 	if err != nil {
 		log.Printf("Ошибка создания стрима от %s API (userID: %s): %v", c.provider, userID, err)
-		aiRequestsTotal.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "status": "error_stream_init", "user_id": userID}).Inc()
+		aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "error_stream_init", "user_id": userID}).Inc()
 		return usageInfo, fmt.Errorf("%w: ошибка создания стрима: %v", ErrAIGenerationFailed, err)
 	}
 	defer stream.Close()
@@ -413,7 +372,7 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 		}
 		if err != nil {
 			log.Printf("Ошибка чтения из стрима %s (userID: %s): %v", c.provider, userID, err)
-			aiRequestsTotal.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "status": "error_stream_read", "user_id": userID}).Inc()
+			aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "error_stream_read", "user_id": userID}).Inc()
 			return usageInfo, fmt.Errorf("%w: ошибка чтения стрима: %v", ErrAIGenerationFailed, err)
 		}
 
@@ -427,7 +386,7 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 			chunk := response.Choices[0].Delta.Content
 			responseTextBuilder.WriteString(chunk) // <<< Собираем полный текст
 			// Примерный подсчет токенов на лету (менее точный, чем Usage)
-			tke, err := tiktoken.EncodingForModel(getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel))
+			tke, err := tiktoken.EncodingForModel(currentModel)
 			if err == nil {
 				completionTokensCount += len(tke.Encode(chunk, nil, nil))
 			}
@@ -452,20 +411,21 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 		usageInfo.PromptTokens = promptTokensCount
 		usageInfo.CompletionTokens = completionTokensCount
 		usageInfo.TotalTokens = finalUsage.TotalTokens
-		usageInfo.EstimatedCostUSD = calculateCost(ctx, c.repo, promptTokensCount, completionTokensCount)
+		// <<< ИЗМЕНЕНО: Передаем configService в calculateCost >>>
+		usageInfo.EstimatedCostUSD = calculateCost(c.configService, promptTokensCount, completionTokensCount)
 		log.Printf("%s Stream Usage (from final block, userID: %s): Prompt=%d, Completion=%d, Total=%d",
 			c.provider, userID, promptTokensCount, completionTokensCount, finalUsage.TotalTokens)
 		// Обновляем метрики
-		aiRequestsTotal.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "status": "success_stream", "user_id": userID}).Inc()
-		aiRequestDuration.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(duration.Seconds())
-		aiPromptTokens.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(float64(promptTokensCount))
-		aiCompletionTokens.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(float64(completionTokensCount))
-		aiTotalTokens.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(float64(finalUsage.TotalTokens))
+		aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "success_stream", "user_id": userID}).Inc()
+		aiRequestDuration.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(duration.Seconds())
+		aiPromptTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(promptTokensCount))
+		aiCompletionTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(completionTokensCount))
+		aiTotalTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(finalUsage.TotalTokens))
 	} else {
 		// Если финальный Usage не пришел (зависит от модели/API)
 		// Используем примерный подсчет completion токенов и оцениваем prompt токены
 		log.Printf("[WARN] Final usage block not received in stream (userID: %s). Using estimated token counts.", userID)
-		tke, err := tiktoken.EncodingForModel(getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel))
+		tke, err := tiktoken.EncodingForModel(currentModel)
 		if err == nil {
 			// Оцениваем prompt токены
 			promptTokensCount = len(tke.Encode(systemPrompt, nil, nil)) + len(tke.Encode(userInput, nil, nil))
@@ -474,25 +434,26 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 			usageInfo.PromptTokens = promptTokensCount
 			usageInfo.CompletionTokens = completionTokensCount
 			usageInfo.TotalTokens = totalTokens
-			usageInfo.EstimatedCostUSD = calculateCost(ctx, c.repo, promptTokensCount, completionTokensCount)
+			// <<< ИЗМЕНЕНО: Передаем configService в calculateCost >>>
+			usageInfo.EstimatedCostUSD = calculateCost(c.configService, promptTokensCount, completionTokensCount)
 			log.Printf("%s Stream Usage (estimated, userID: %s): Prompt≈%d, Completion≈%d, Total≈%d",
 				c.provider, userID, promptTokensCount, completionTokensCount, totalTokens)
 			// Обновляем метрики (с примерными значениями)
-			aiRequestsTotal.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "status": "success_stream_estimated", "user_id": userID}).Inc()
-			aiRequestDuration.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(duration.Seconds())
-			aiPromptTokens.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(float64(promptTokensCount))
-			aiCompletionTokens.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(float64(completionTokensCount))
-			aiTotalTokens.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(float64(totalTokens))
+			aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "success_stream_estimated", "user_id": userID}).Inc()
+			aiRequestDuration.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(duration.Seconds())
+			aiPromptTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(promptTokensCount))
+			aiCompletionTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(completionTokensCount))
+			aiTotalTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(totalTokens))
 		} else {
-			log.Printf("[ERROR] Could not get tokenizer for model %s to estimate stream tokens (userID: %s). Skipping token metrics for this stream.", getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), userID)
+			log.Printf("[ERROR] Could not get tokenizer for model %s to estimate stream tokens (userID: %s). Skipping token metrics for this stream.", currentModel, userID)
 			// Обновляем только счетчик запросов без токенов/стоимости
-			aiRequestsTotal.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "status": "success_stream_no_tokens", "user_id": userID}).Inc()
-			aiRequestDuration.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(duration.Seconds())
+			aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "success_stream_no_tokens", "user_id": userID}).Inc()
+			aiRequestDuration.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(duration.Seconds())
 		}
 	}
 
 	if usageInfo.EstimatedCostUSD > 0 {
-		aiEstimatedCostUSD.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Add(usageInfo.EstimatedCostUSD)
+		aiEstimatedCostUSD.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Add(usageInfo.EstimatedCostUSD)
 		log.Printf("%s Stream Usage Cost (estimated, userID: %s): $%.6f", c.provider, userID, usageInfo.EstimatedCostUSD)
 	}
 
@@ -526,18 +487,21 @@ func intVal(i *int) int {
 
 // ollamaClient реализует AIClient с использованием ollama/api
 type ollamaClient struct {
-	client  *api.Client
-	timeout time.Duration // Храним таймаут для контекста
+	client        *api.Client
+	configService *configservice.ConfigService // <<< ИЗМЕНЕНО: Тип на shared configservice >>>
 }
 
 // newOllamaClient создает новый клиент для взаимодействия с Ollama
-func newOllamaClient(baseURL string, timeout time.Duration) (AIClient, error) {
+func newOllamaClient(configService *configservice.ConfigService) (AIClient, error) { // <<< Принимает *configservice.ConfigService >>>
+	aiBaseURL := configService.GetString(configservice.ConfigKeyAIBaseURL, configservice.DefaultAIBaseURL)   // Получаем из кэша
+	aiTimeout := configService.GetDuration(configservice.ConfigKeyAITimeout, configservice.DefaultAITimeout) // Получаем из кэша
+
 	httpClient := &http.Client{
-		Timeout: timeout, // <<< Используем переданный таймаут
+		Timeout: aiTimeout, // Используем таймаут из кэша
 	}
 
 	// api.NewClient требует URL без суффикса /v1
-	ollamaBaseURL := strings.TrimSuffix(baseURL, "/v1") // <<< Используем переданный baseURL
+	ollamaBaseURL := strings.TrimSuffix(aiBaseURL, "/v1") // <<< Используем aiBaseURL из кэша
 	ollamaBaseURL = strings.TrimSuffix(ollamaBaseURL, "/")
 
 	parsedURL, err := url.Parse(ollamaBaseURL)
@@ -547,11 +511,11 @@ func newOllamaClient(baseURL string, timeout time.Duration) (AIClient, error) {
 
 	client := api.NewClient(parsedURL, httpClient)
 
-	log.Printf("Ollama Клиент создан. Используемый BaseURL: %s, Timeout: %v", ollamaBaseURL, timeout) // <<< Используем переданные параметры
+	log.Printf("Ollama Клиент создан. Используемый BaseURL: %s, Timeout: %v", ollamaBaseURL, aiTimeout) // <<< Используем параметры из кэша
 
 	return &ollamaClient{
-		client:  client,
-		timeout: timeout, // Сохраняем таймаут
+		client:        client,
+		configService: configService, // <<< Сохраняем *configservice.ConfigService
 	}, nil
 }
 
@@ -559,9 +523,17 @@ func newOllamaClient(baseURL string, timeout time.Duration) (AIClient, error) {
 func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPrompt string, userInput string, params GenerationParams) (string, UsageInfo, error) {
 	usageInfo := UsageInfo{EstimatedCostUSD: 0} // Ollama API не возвращает стоимость
 
+	// <<< Получаем модель и таймаут из ConfigService >>>
+	currentModel := c.configService.GetString(configservice.ConfigKeyAIModel, "")
+	if currentModel == "" {
+		log.Printf("[ERROR] Ollama model is not configured (key: %s)", configservice.ConfigKeyAIModel)
+		return "", usageInfo, fmt.Errorf("%w: Ollama model name is not configured", ErrAIGenerationFailed)
+	}
+	aiTimeout := c.configService.GetDuration(configservice.ConfigKeyAITimeout, configservice.DefaultAITimeout)
+
 	if strings.TrimSpace(systemPrompt) == "" {
 		log.Printf("Ошибка: Системный промт пуст. Невозможно отправить запрос к Ollama. userID: %s", userID)
-		aiRequestsTotal.With(prometheus.Labels{"model": "placeholder", "status": "error", "user_id": userID}).Inc()
+		aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "error", "user_id": userID}).Inc()
 		return "", usageInfo, fmt.Errorf("%w: системный промт пуст", ErrAIGenerationFailed)
 	}
 
@@ -573,23 +545,23 @@ func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPr
 	}
 
 	req := &api.ChatRequest{
-		Model:    "placeholder",
+		Model:    currentModel, // Используем модель из кэша
 		Messages: messages,
 		Stream:   func(b bool) *bool { return &b }(false), // Не стримим
-		Options: map[string]interface{}{
-			"temperature": params.Temperature,       // Передаем *float64 напрямую
-			"top_p":       params.TopP,              // Передаем *float64 напрямую
-			"num_predict": intVal(params.MaxTokens), // <<< Возвращаем num_predict, т.к. ollamaClient использует нативный API
+		Options: map[string]interface{}{ // <<< ИСПРАВЛЕНО: Передаем значения, а не указатели >>>
+			"temperature": float32Val(params.Temperature),
+			"top_p":       float32Val(params.TopP),
+			"num_predict": intVal(params.MaxTokens),
 		},
 	}
 
 	// Создаем контекст с таймаутом, специфичным для этого запроса
-	requestCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	requestCtx, cancel := context.WithTimeout(ctx, aiTimeout) // Используем таймаут из кэша
 	defer cancel()
 
 	startTime := time.Now()
 	log.Printf("Отправка запроса к Ollama: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes, UserID: %s",
-		"placeholder", len(systemPrompt), len(userInput), userID)
+		currentModel, len(systemPrompt), len(userInput), userID)
 
 	// <<< DEBUG: Логирование полного запроса перед отправкой >>>
 	log.Printf("[OLLAMA_DEBUG] Request Messages: %+v", req.Messages)
@@ -624,11 +596,11 @@ func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPr
 		// <<< END DEBUG >>>
 		// Проверяем, не связана ли ошибка с таймаутом контекста
 		if errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("Ошибка таймаута (%v) от Ollama API за %v (userID: %s): %v", c.timeout, duration, userID, err)
+			log.Printf("Ошибка таймаута (%v) от Ollama API за %v (userID: %s): %v", aiTimeout, duration, userID, err)
 		} else {
 			log.Printf("Ошибка от Ollama API за %v (userID: %s): %v", duration, userID, err)
 		}
-		aiRequestsTotal.With(prometheus.Labels{"model": "placeholder", "status": "error", "user_id": userID}).Inc()
+		aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "error", "user_id": userID}).Inc()
 		return "", usageInfo, fmt.Errorf("%w: %v", ErrAIGenerationFailed, err)
 	}
 
@@ -637,7 +609,7 @@ func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPr
 		log.Printf("[OLLAMA_DEBUG] Empty content in final response: %+v", resp)
 		// <<< END DEBUG >>>
 		log.Printf("Ollama API вернул пустой ответ за %v (userID: %s)", duration, userID)
-		aiRequestsTotal.With(prometheus.Labels{"model": "placeholder", "status": "error", "user_id": userID}).Inc()
+		aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "error", "user_id": userID}).Inc()
 		return "", usageInfo, fmt.Errorf("%w: получен пустой ответ", ErrAIGenerationFailed)
 	}
 
@@ -645,8 +617,8 @@ func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPr
 	log.Printf("[OLLAMA_DEBUG] Successful final response: %+v", resp)
 	// <<< END DEBUG >>>
 
-	aiRequestsTotal.With(prometheus.Labels{"model": "placeholder", "status": "success", "user_id": userID}).Inc()
-	aiRequestDuration.With(prometheus.Labels{"model": "placeholder", "user_id": userID}).Observe(duration.Seconds())
+	aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "success", "user_id": userID}).Inc()
+	aiRequestDuration.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(duration.Seconds())
 
 	generatedText := resp.Message.Content
 	log.Printf("Ответ от Ollama API получен за %v. Длина ответа: %d символов. (userID: %s)", duration, len(generatedText), userID)
@@ -662,9 +634,9 @@ func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPr
 	if usageInfo.TotalTokens > 0 {
 		log.Printf("Ollama Usage (userID: %s): PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
 			userID, usageInfo.PromptTokens, usageInfo.CompletionTokens, usageInfo.TotalTokens)
-		aiPromptTokens.With(prometheus.Labels{"model": "placeholder", "user_id": userID}).Observe(float64(usageInfo.PromptTokens))
-		aiCompletionTokens.With(prometheus.Labels{"model": "placeholder", "user_id": userID}).Observe(float64(usageInfo.CompletionTokens))
-		aiTotalTokens.With(prometheus.Labels{"model": "placeholder", "user_id": userID}).Observe(float64(usageInfo.TotalTokens))
+		aiPromptTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(usageInfo.PromptTokens))
+		aiCompletionTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(usageInfo.CompletionTokens))
+		aiTotalTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(usageInfo.TotalTokens))
 		// Не обновляем стоимость, так как она 0
 	}
 
@@ -674,6 +646,14 @@ func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPr
 // GenerateTextStream генерирует текст с использованием Ollama в потоковом режиме
 func (c *ollamaClient) GenerateTextStream(ctx context.Context, userID string, systemPrompt string, userInput string, params GenerationParams, chunkHandler func(string) error) (UsageInfo, error) {
 	usageInfo := UsageInfo{EstimatedCostUSD: 0} // Ollama API не возвращает стоимость
+
+	// <<< Получаем модель и таймаут из ConfigService >>>
+	currentModel := c.configService.GetString(configservice.ConfigKeyAIModel, "")
+	if currentModel == "" {
+		log.Printf("[ERROR] Ollama model is not configured for stream (key: %s)", configservice.ConfigKeyAIModel)
+		return usageInfo, fmt.Errorf("%w: Ollama model name is not configured for stream", ErrAIGenerationFailed)
+	}
+	aiTimeout := c.configService.GetDuration(configservice.ConfigKeyAITimeout, configservice.DefaultAITimeout)
 
 	if strings.TrimSpace(systemPrompt) == "" {
 		log.Printf("Ошибка стриминга Ollama: Системный промт пуст. userID: %s", userID)
@@ -688,23 +668,23 @@ func (c *ollamaClient) GenerateTextStream(ctx context.Context, userID string, sy
 	}
 
 	req := &api.ChatRequest{
-		Model:    "placeholder",
+		Model:    currentModel, // Используем модель из кэша
 		Messages: messages,
 		Stream:   func(b bool) *bool { return &b }(true), // Стримим
-		Options: map[string]interface{}{
-			"temperature": params.Temperature,
-			"top_p":       params.TopP,
+		Options: map[string]interface{}{ // <<< ИСПРАВЛЕНО: Передаем значения, а не указатели >>>
+			"temperature": float32Val(params.Temperature),
+			"top_p":       float32Val(params.TopP),
 			"num_predict": intVal(params.MaxTokens),
 		},
 	}
 
 	// Создаем контекст с таймаутом
-	requestCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	requestCtx, cancel := context.WithTimeout(ctx, aiTimeout) // Используем таймаут из кэша
 	defer cancel()
 
 	startTime := time.Now()
 	log.Printf("Отправка STREAM запроса к Ollama: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes, UserID: %s",
-		"placeholder", len(systemPrompt), len(userInput), userID)
+		currentModel, len(systemPrompt), len(userInput), userID)
 
 	var finalErr error
 	var promptTokens, completionTokens int
@@ -738,11 +718,11 @@ func (c *ollamaClient) GenerateTextStream(ctx context.Context, userID string, sy
 	if err != nil {
 		// Если ошибка произошла во время стриминга (не в chunkHandler)
 		if errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("Ошибка таймаута (%v) во время стриминга Ollama за %v (userID: %s): %v", c.timeout, duration, userID, err)
+			log.Printf("Ошибка таймаута (%v) во время стриминга Ollama за %v (userID: %s): %v", aiTimeout, duration, userID, err)
 		} else {
 			log.Printf("Ошибка во время стриминга Ollama за %v (userID: %s): %v", duration, userID, err)
 		}
-		aiRequestsTotal.With(prometheus.Labels{"model": "placeholder", "status": "error_stream", "user_id": userID}).Inc()
+		aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "error_stream", "user_id": userID}).Inc()
 		// Если ошибка произошла в chunkHandler, она уже была возвращена выше
 		// Если ошибка произошла в самом клиенте Ollama, возвращаем ее
 		if finalErr == nil { // Не перезаписываем ошибку из resp.Done, если она была
@@ -756,15 +736,15 @@ func (c *ollamaClient) GenerateTextStream(ctx context.Context, userID string, sy
 
 	// Стрим успешно завершен (либо обработчиком, либо сам по себе)
 	log.Printf("Обработка стрима Ollama завершена за %v. (userID: %s)", duration, userID)
-	aiRequestsTotal.With(prometheus.Labels{"model": "placeholder", "status": "success_stream", "user_id": userID}).Inc()
-	aiRequestDuration.With(prometheus.Labels{"model": "placeholder", "user_id": userID}).Observe(duration.Seconds())
+	aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "success_stream", "user_id": userID}).Inc()
+	aiRequestDuration.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(duration.Seconds())
 
 	if promptTokens > 0 || completionTokens > 0 {
 		log.Printf("Ollama Stream Usage (userID: %s): PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
 			userID, promptTokens, completionTokens, promptTokens+completionTokens)
-		aiPromptTokens.With(prometheus.Labels{"model": "placeholder", "user_id": userID}).Observe(float64(promptTokens))
-		aiCompletionTokens.With(prometheus.Labels{"model": "placeholder", "user_id": userID}).Observe(float64(completionTokens))
-		aiTotalTokens.With(prometheus.Labels{"model": "placeholder", "user_id": userID}).Observe(float64(promptTokens + completionTokens))
+		aiPromptTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(promptTokens))
+		aiCompletionTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(completionTokens))
+		aiTotalTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(promptTokens + completionTokens))
 	}
 
 	// Заполняем UsageInfo из последнего ответа Ollama
@@ -781,71 +761,40 @@ var streamBoolTrue = true
 // --- Factory Function ---
 
 // NewAIClient создает новый клиент для взаимодействия с AI в зависимости от конфигурации
-// Принимает репозиторий конфигов для получения модели, URL, типа клиента и таймаута
-func NewAIClient(cfg *config.Config, repo interfaces.DynamicConfigRepository) (AIClient, error) {
+// <<< ИЗМЕНЕНО: Принимает *configservice.ConfigService >>>
+func NewAIClient(configService *configservice.ConfigService) (AIClient, error) {
 
-	ctx := context.Background()
-	aiBaseURL := getConfigValueString(ctx, repo, configKeyAIBaseURL, defaultAIBaseURL)
-	aiClientType := getConfigValueString(ctx, repo, configKeyAIClientType, defaultAIClientType)
-	aiTimeout := getConfigValueDuration(ctx, repo, ConfigKeyAITimeout, DefaultAITimeout)
-	// --- Получение остальных параметров (max_attempts, base_retry_delay) будет в main.go при создании TaskHandler ---
+	// <<< Получаем настройки из ConfigService, используем константы из shared >>>
+	aiBaseURL := configService.GetString(configservice.ConfigKeyAIBaseURL, configservice.DefaultAIBaseURL)
+	aiClientType := configService.GetString(configservice.ConfigKeyAIClientType, configservice.DefaultAIClientType)
+	aiTimeout := configService.GetDuration(configservice.ConfigKeyAITimeout, configservice.DefaultAITimeout)
+	aiAPIKey := configService.GetString(configservice.ConfigKeyAIAPIKey, "")
 
-	switch strings.ToLower(aiClientType) { // <<< Используем aiClientType из конфига
+	switch strings.ToLower(aiClientType) {
 	case "openai":
 		log.Printf("Используется реализация AI клиента: OpenAI")
-		openaiConfig := openaigo.DefaultConfig(cfg.AIAPIKey)
+		if aiAPIKey == "" {
+			log.Printf("[WARN] OpenAI API ключ не найден в конфигурации (key: %s). Клиент создан, но запросы будут неудачными.", configservice.ConfigKeyAIAPIKey)
+			// Не возвращаем ошибку, позволяем создать клиент, но логируем
+		}
+		openaiConfig := openaigo.DefaultConfig(aiAPIKey) // Используем ключ из конфига
 		openaiConfig.BaseURL = aiBaseURL
 		httpClient := &http.Client{
-			Timeout: aiTimeout, // <<< Используем aiTimeout из конфига
+			Timeout: aiTimeout,
 		}
 		openaiConfig.HTTPClient = httpClient
 		client := openaigo.NewClientWithConfig(openaiConfig)
 		log.Printf("OpenAI Клиент создан. Используемый BaseURL: %s, Timeout: %v", aiBaseURL, aiTimeout)
 		return &openAIClient{
-			client:   client,
-			repo:     repo,
-			provider: "OpenAI",
+			client:        client,
+			configService: configService, // <<< Сохраняем *configservice.ConfigService
+			provider:      "OpenAI",
 		}, nil
 	case "ollama":
 		log.Printf("Используется реализация AI клиента: Ollama")
-		// <<< Передаем параметры в newOllamaClient >>>
-		return newOllamaClient(aiBaseURL, aiTimeout) // <<< Используем aiTimeout
+		// <<< Передаем *configservice.ConfigService в newOllamaClient >>>
+		return newOllamaClient(configService)
 	default:
 		return nil, fmt.Errorf("неизвестный тип AI клиента: '%s'", aiClientType)
 	}
 }
-
-// -----------------------------------------------------------------
-
-// <<< ЭКСПОРТИРУЕМ ХЕЛПЕРЫ >>>
-// GetConfigValueDuration получает Duration из конфига с fallback
-func GetConfigValueDuration(ctx context.Context, repo interfaces.DynamicConfigRepository, key string, defaultValue time.Duration) time.Duration {
-	strValue := getConfigValueString(ctx, repo, key, "") // Получаем строку
-	if strValue == "" {
-		return defaultValue // Если пусто или не найдено, используем дефолт
-	}
-	duration, err := time.ParseDuration(strValue)
-	if err != nil {
-		log.Printf("[WARN] Ошибка парсинга duration конфига '%s' ('%s'): %v. Используется значение по умолчанию: %v", key, strValue, err, defaultValue)
-		return defaultValue
-	}
-	log.Printf("[DEBUG] Получено значение duration конфига '%s': %v", key, duration)
-	return duration
-}
-
-// GetConfigValueInt получает Int из конфига с fallback
-func GetConfigValueInt(ctx context.Context, repo interfaces.DynamicConfigRepository, key string, defaultValue int) int {
-	strValue := getConfigValueString(ctx, repo, key, "") // Получаем строку
-	if strValue == "" {
-		return defaultValue // Если пусто или не найдено, используем дефолт
-	}
-	intValue, err := strconv.Atoi(strValue)
-	if err != nil {
-		log.Printf("[WARN] Ошибка парсинга int конфига '%s' ('%s'): %v. Используется значение по умолчанию: %d", key, strValue, err, defaultValue)
-		return defaultValue
-	}
-	log.Printf("[DEBUG] Получено значение int конфига '%s': %d", key, intValue)
-	return intValue
-}
-
-// ... (остальной код) ...

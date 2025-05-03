@@ -14,7 +14,7 @@ import (
 	sharedLogger "novel-server/shared/logger"         // <<< Добавляем импорт shared/logger
 
 	// <<< ИЗМЕНЕНО: Добавляем алиас для shared/messaging >>>
-	sharedMessaging "novel-server/shared/messaging"
+
 	sharedMiddleware "novel-server/shared/middleware" // <<< Импортируем shared/middleware
 	"os"
 	"os/signal"
@@ -22,6 +22,9 @@ import (
 	"time"
 
 	"novel-server/gameplay-service/internal/clients"
+
+	sharedConfigService "novel-server/shared/configservice" // <<< ДОБАВЛЕНО: Импорт shared configservice >>>
+	sharedConsumer "novel-server/shared/messaging/consumer" // <<< ДОБАВЛЕНО: Импорт shared consumer >>>
 
 	"github.com/gin-contrib/cors" // <<< Импортируем Gin CORS
 	"github.com/gin-gonic/gin"    // <<< Импортируем Gin
@@ -114,13 +117,13 @@ func main() {
 	)
 	logger.Info("Auth Service client initialized")
 
-	// <<< НОВОЕ: Инициализация ConfigService >>>
-	configService, err := service.NewConfigService(dynamicConfigRepo, logger)
+	// <<< НОВОЕ: Инициализация ConfigService >>> // <<< Используем sharedConfigService >>>
+	configService, err := sharedConfigService.NewConfigService(dynamicConfigRepo, logger)
 	if err != nil {
-		// Решаем, что делать при ошибке загрузки конфигов. Возможно, выйти?
 		logger.Fatal("Не удалось инициализировать ConfigService", zap.Error(err))
 	}
-	// ----------------------------------
+	logger.Info("ConfigService инициализирован")
+	// ------------------------------------------
 
 	// --- Инициализация сервисов --- //
 	gameplayService := service.NewGameplayService(
@@ -218,26 +221,23 @@ func main() {
 	}()
 
 	// <<< НОВОЕ: Инициализация консьюмера обновлений конфигурации >>>
-	// <<< ИЗМЕНЕНО: Используем sharedMessaging >>>
-	configUpdateConsumer, err := sharedMessaging.NewConfigUpdateConsumer(
-		rabbitConn,
-		configService, // Передаем конкретный ConfigService, он удовлетворяет интерфейсу ConfigUpdater
+	logger.Info("Настройка RabbitMQ консьюмеров...")
+	consumerCtx, consumerCancel := context.WithCancel(context.Background())
+
+	// ConfigUpdateConsumer // <<< Используем sharedConsumer >>>
+	// configUpdater := service.NewConfigServiceUpdater(configService)
+	configUpdateConsumer := sharedConsumer.NewConfigUpdateConsumer(
+		rabbitConn,    // Используем созданное соединение
+		configService, // Передаем конкретный ConfigService
 		logger,
+		cfg.InternalUpdatesQueueName, // Имя очереди из конфига gameplay-service
 	)
-	if err != nil {
-		logger.Fatal("Не удалось создать консьюмер обновлений конфигурации", zap.Error(err))
+	// Запускаем консьюмера (если Start возвращает ошибку)
+	if err := configUpdateConsumer.Start(consumerCtx); err != nil {
+		consumerCancel()
+		logger.Fatal("Не удалось запустить ConfigUpdateConsumer", zap.Error(err))
 	}
-	go func() {
-		logger.Info("Запуск горутины консьюмера обновлений конфигурации...")
-		if err := configUpdateConsumer.StartConsuming(); err != nil {
-			// Эта ошибка может возникнуть, если консьюмер был остановлен (nil) или при ошибке канала
-			if err != amqp.ErrClosed { // Не логируем как ошибку при штатной остановке
-				logger.Error("Консьюмер обновлений конфигурации завершился с ошибкой", zap.Error(err))
-			}
-		}
-		logger.Info("Горутина консьюмера обновлений конфигурации завершена.")
-	}()
-	// <<< КОНЕЦ НОВОГО КОНСЬЮМЕРА >>>
+	logger.Info("ConfigUpdateConsumer запущен")
 
 	// --- Настройка Gin --- //
 	gin.SetMode(gin.ReleaseMode)
@@ -324,8 +324,13 @@ func main() {
 
 	// <<< НОВОЕ: Остановка консьюмера обновлений конфигурации >>>
 	logger.Info("Остановка консьюмера обновлений конфигурации...")
-	configUpdateConsumer.Stop()
-	logger.Info("Консьюмер обновлений конфигурации остановлен.")
+	consumerCancel() // Сигнал для всех консьюмеров на завершение
+
+	// Останавливаем конкретно ConfigUpdateConsumer
+	if err := configUpdateConsumer.Stop(); err != nil {
+		logger.Error("Ошибка при остановке ConfigUpdateConsumer", zap.Error(err))
+	}
+	logger.Info("ConfigUpdateConsumer остановлен.")
 	// <<< КОНЕЦ >>>
 
 	// Shutdown HTTP сервера

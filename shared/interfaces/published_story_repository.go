@@ -42,10 +42,10 @@ type PublishedStoryRepository interface {
 	DecrementLikesCount(ctx context.Context, id uuid.UUID) error
 
 	// UpdateVisibility updates the visibility of a story.
-	UpdateVisibility(ctx context.Context, storyID, userID uuid.UUID, isPublic bool) error
+	// It ensures the operation is performed by the owner and potentially checks status.
+	UpdateVisibility(ctx context.Context, storyID, userID uuid.UUID, isPublic bool, requiredStatus models.StoryStatus) error
 
 	// ListByIDs retrieves a list of published stories based on their IDs.
-	// The order of returned stories is not guaranteed to match the input ID order.
 	ListByIDs(ctx context.Context, ids []uuid.UUID) ([]*models.PublishedStory, error)
 
 	// UpdateConfigAndSetup updates the config and setup of a story.
@@ -67,7 +67,8 @@ type PublishedStoryRepository interface {
 	IsStoryLikedByUser(ctx context.Context, storyID uuid.UUID, userID uuid.UUID) (bool, error)
 
 	// ListLikedByUser retrieves a paginated list of stories liked by a specific user using cursor pagination.
-	ListLikedByUser(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*models.PublishedStory, string, error)
+	// Returns summaries with progress information.
+	ListLikedByUser(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*models.PublishedStorySummaryWithProgress, string, error)
 
 	// Delete удаляет опубликованную историю и все связанные с ней данные (сцены, прогресс, лайки).
 	// Требует ID истории и ID пользователя для проверки владения.
@@ -116,4 +117,7 @@ type PublishedStoryRepository interface {
 	// UpdateStatusFlagsAndDetails обновляет статус, флаги ожидания и детали ошибки.
 	// Используется при установке статуса Error или потенциально других переходах.
 	UpdateStatusFlagsAndDetails(ctx context.Context, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, errorDetails *string) error
+
+	// GetSummaryWithDetails получает детали истории, имя автора, флаг лайка и прогресса для указанного пользователя.
+	GetSummaryWithDetails(ctx context.Context, storyID, userID uuid.UUID) (*models.PublishedStoryDetailWithProgressAndLike, error)
 }

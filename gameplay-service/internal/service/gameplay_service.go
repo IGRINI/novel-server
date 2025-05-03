@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"novel-server/gameplay-service/internal/config"
 	"novel-server/gameplay-service/internal/messaging"
+	sharedConfigService "novel-server/shared/configservice"
 	interfaces "novel-server/shared/interfaces"
 	sharedModels "novel-server/shared/models"
 
@@ -63,7 +64,7 @@ type GameplayService interface {
 	// Like methods (delegated)
 	LikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
 	UnlikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
-	ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*LikedStoryDetailDTO, string, error)
+	ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStorySummaryWithProgress, string, error)
 
 	// Story Browsing methods (delegated)
 	ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStorySummaryDTO, string, error)
@@ -142,11 +143,14 @@ type gameplayServiceImpl struct {
 	storyBrowsingService StoryBrowsingService
 	gameLoopService      GameLoopService
 	publisher            messaging.TaskPublisher
+	imgBatchPublisher    messaging.CharacterImageTaskBatchPublisher
+	imageRefRepo         interfaces.ImageReferenceRepository
+	dynamicConfigRepo    interfaces.DynamicConfigRepository
 	pool                 *pgxpool.Pool
 	logger               *zap.Logger
 	authClient           interfaces.AuthServiceClient
 	cfg                  *config.Config
-	configService        *ConfigService
+	configService        *sharedConfigService.ConfigService
 }
 
 func NewGameplayService(
@@ -164,14 +168,14 @@ func NewGameplayService(
 	logger *zap.Logger,
 	authClient interfaces.AuthServiceClient,
 	cfg *config.Config,
-	configService *ConfigService,
+	configService *sharedConfigService.ConfigService,
 ) GameplayService {
 	// <<< СОЗДАЕМ DraftService >>>
 	draftSvc := NewDraftService(configRepo, taskPublisher, logger, cfg)
 	// <<< СОЗДАЕМ PublishingService >>>
 	publishingSvc := NewPublishingService(configRepo, publishedRepo, taskPublisher, pool, logger)
 	// <<< СОЗДАЕМ LikeService >>>
-	likeSvc := NewLikeService(likeRepo, publishedRepo, playerGameStateRepo, authClient, logger)
+	likeSvc := NewLikeService(publishedRepo, playerGameStateRepo, authClient, logger)
 	// <<< СОЗДАЕМ StoryBrowsingService >>>
 	storyBrowsingSvc := NewStoryBrowsingService(
 		publishedRepo,
@@ -186,7 +190,8 @@ func NewGameplayService(
 	// <<< СОЗДАЕМ GameLoopService >>>
 	gameLoopSvc := NewGameLoopService(
 		publishedRepo, sceneRepo, playerProgressRepo, playerGameStateRepo,
-		taskPublisher, configRepo,
+		taskPublisher,
+		configRepo,
 		imageRefRepo,
 		imgBatchPublisher,
 		dynamicConfigRepo,
@@ -207,6 +212,9 @@ func NewGameplayService(
 		storyBrowsingService: storyBrowsingSvc,
 		gameLoopService:      gameLoopSvc,
 		publisher:            taskPublisher,
+		imgBatchPublisher:    imgBatchPublisher,
+		imageRefRepo:         imageRefRepo,
+		dynamicConfigRepo:    dynamicConfigRepo,
 		pool:                 pool,
 		logger:               logger.Named("GameplayService"),
 		authClient:           authClient,
@@ -271,7 +279,7 @@ func (s *gameplayServiceImpl) UnlikeStory(ctx context.Context, userID uuid.UUID,
 }
 
 // ListLikedStories delegates to LikeService.
-func (s *gameplayServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*LikedStoryDetailDTO, string, error) {
+func (s *gameplayServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStorySummaryWithProgress, string, error) {
 	return s.likeService.ListLikedStories(ctx, userID, cursor, limit)
 }
 

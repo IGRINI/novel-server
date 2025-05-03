@@ -6,13 +6,15 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	sharedConfigService "novel-server/shared/configservice"
 	sharedDatabase "novel-server/shared/database"
 	sharedLogger "novel-server/shared/logger"
-	sharedPayloads "novel-server/shared/messaging"
+	sharedMessaging "novel-server/shared/messaging"
+	sharedConsumer "novel-server/shared/messaging/consumer"
 	"novel-server/story-generator/internal/api"
 	"novel-server/story-generator/internal/config"
 	internalMessaging "novel-server/story-generator/internal/messaging"
-	"novel-server/story-generator/internal/service"
+	internalService "novel-server/story-generator/internal/service"
 	"novel-server/story-generator/internal/worker"
 	"os"
 	"os/signal"
@@ -93,16 +95,24 @@ func main() {
 	sceneRepo := sharedDatabase.NewPgStorySceneRepository(dbPool, logger)
 	sugar.Info("Репозитории инициализированы")
 
+	// --- Инициализация ConfigService ---
+	sugar.Info("Инициализация ConfigService...")
+	configService, err := sharedConfigService.NewConfigService(dynamicConfigRepo, logger)
+	if err != nil {
+		sugar.Fatalf("Не удалось инициализировать ConfigService: %v", err)
+	}
+	sugar.Info("ConfigService инициализирован")
+
 	// --- Инициализация AI клиента ---
 	sugar.Info("Инициализация AI клиента...")
-	aiClient, err := service.NewAIClient(cfg, dynamicConfigRepo)
+	aiClient, err := internalService.NewAIClient(configService)
 	if err != nil {
 		sugar.Fatalf("Ошибка инициализации AI клиента: %v", err)
 	}
 
 	// --- Инициализация Prompt Provider ---
 	sugar.Info("Инициализация Prompt Provider...")
-	promptProvider := service.NewPromptProvider(promptRepo, dynamicConfigRepo, logger)
+	promptProvider := internalService.NewPromptProvider(promptRepo, dynamicConfigRepo, logger)
 	loadCtx, loadCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if err := promptProvider.LoadInitialPrompts(loadCtx); err != nil {
 		loadCancel()
@@ -174,7 +184,7 @@ func main() {
 	sugar.Infof("DLQ '%s' успешно связана с DLX '%s' с ключом '%s'.", dlqName, dlxName, dlqRoutingKey)
 
 	// --- Объявляем основные очереди (добавляем аргументы для DLX) ---
-	queues := []string{taskQueueName, "game_over_tasks", "draft_story_tasks"}
+	queues := []string{taskQueueName, "game_over_tasks", "draft_story_tasks", cfg.InternalUpdatesQueueName}
 	for _, qName := range queues {
 		args := amqp.Table{
 			"x-queue-mode": "lazy", // Используем lazy queues для экономии памяти
@@ -209,27 +219,35 @@ func main() {
 	sugar.Info("QoS (prefetch count=1) установлен")
 
 	// --- Инициализация сервисов RabbitMQ ---
-	sugar.Info("Инициализация сервисов RabbitMQ (Notifier, PromptConsumer)...")
-	notifier, err := service.NewRabbitMQNotifier(ch, cfg)
+	sugar.Info("Инициализация сервисов RabbitMQ (Notifier, PromptConsumer, ConfigUpdateConsumer)...")
+	notifier, err := internalService.NewRabbitMQNotifier(ch, cfg)
 	if err != nil {
 		sugar.Fatalf("Не удалось создать notifier: %v", err)
 	}
 
-	// Создаем и запускаем PromptConsumer
-	promptConsumer := internalMessaging.NewPromptConsumer(conn, promptProvider, logger)
+	// --- Создаем и запускаем консьюмеров ---
 	consumerCtx, consumerCancel := context.WithCancel(context.Background())
+
+	// PromptConsumer
+	promptConsumer := internalMessaging.NewPromptConsumer(conn, promptProvider, logger)
 	if err := promptConsumer.Start(consumerCtx); err != nil {
 		consumerCancel()
 		sugar.Fatalf("Не удалось запустить PromptConsumer: %v", err)
 	}
-	sugar.Info("Сервисы RabbitMQ инициализированы")
+
+	// ConfigUpdateConsumer
+	configUpdateConsumer := sharedConsumer.NewConfigUpdateConsumer(conn, configService, logger, cfg.InternalUpdatesQueueName)
+	if err := configUpdateConsumer.Start(consumerCtx); err != nil {
+		consumerCancel()
+		sugar.Fatalf("Не удалось запустить ConfigUpdateConsumer: %v", err)
+	}
+	sugar.Info("Сервисы RabbitMQ и консьюмеры инициализированы и запущены")
 
 	// --- Создаем обработчик задач воркера ---
 	sugar.Info("Создание обработчика задач...")
-	mainCtx := context.Background()
-	aiMaxAttempts := service.GetConfigValueInt(mainCtx, dynamicConfigRepo, service.ConfigKeyAIMaxAttempts, service.DefaultAIMaxAttempts)
-	aiBaseRetryDelay := service.GetConfigValueDuration(mainCtx, dynamicConfigRepo, service.ConfigKeyAIBaseRetryDelay, service.DefaultAIBaseRetryDelay)
-	aiTimeout := service.GetConfigValueDuration(mainCtx, dynamicConfigRepo, service.ConfigKeyAITimeout, service.DefaultAITimeout)
+	aiMaxAttempts := configService.GetInt(sharedConfigService.ConfigKeyAIMaxAttempts, sharedConfigService.DefaultAIMaxAttempts)
+	aiBaseRetryDelay := configService.GetDuration(sharedConfigService.ConfigKeyAIBaseRetryDelay, sharedConfigService.DefaultAIBaseRetryDelay)
+	aiTimeout := configService.GetDuration(sharedConfigService.ConfigKeyAITimeout, sharedConfigService.DefaultAITimeout)
 
 	taskHandler := worker.NewTaskHandler(
 		aiMaxAttempts,
@@ -267,9 +285,9 @@ func main() {
 
 	// Запускаем горутину для обработки сообщений
 	go func() {
-		defer close(done) // Сигнализируем о завершении горутины
+		defer close(done)
 		for msg := range msgs {
-			var payload sharedPayloads.GenerationTaskPayload
+			var payload sharedMessaging.GenerationTaskPayload
 			err := json.Unmarshal(msg.Body, &payload)
 			if err != nil {
 				sugar.Errorf("Ошибка десериализации JSON: %v; Body: %s", err, string(msg.Body))
@@ -304,12 +322,20 @@ func main() {
 	}
 	sugar.Info("HTTP сервер остановлен.")
 
-	sugar.Info("Остановка PromptConsumer...")
+	sugar.Info("Отмена контекста консьюмеров...")
 	consumerCancel()
+
+	sugar.Info("Остановка PromptConsumer...")
 	if err := promptConsumer.Stop(); err != nil {
 		sugar.Errorf("Ошибка при остановке PromptConsumer: %v", err)
 	}
 	sugar.Info("PromptConsumer остановлен.")
+
+	sugar.Info("Остановка ConfigUpdateConsumer...")
+	if err := configUpdateConsumer.Stop(); err != nil {
+		sugar.Errorf("Ошибка при остановке ConfigUpdateConsumer: %v", err)
+	}
+	sugar.Info("ConfigUpdateConsumer остановлен.")
 
 	sugar.Info("Отмена подписки основного консьюмера...")
 	if err := ch.Cancel("", false); err != nil {
@@ -415,11 +441,13 @@ func connectRabbitMQ(url string) (*amqp.Connection, error) {
 	var conn *amqp.Connection
 	var err error
 	maxRetries := 5
-	retryDelay := 5 * time.Second
+	retryDelay := 3 * time.Second
 
 	for i := 0; i < maxRetries; i++ {
+		log.Printf("Попытка %d/%d подключения к RabbitMQ...", i+1, maxRetries)
 		conn, err = amqp.Dial(url)
 		if err == nil {
+			log.Printf("Успешное подключение к RabbitMQ (попытка %d)", i+1)
 			return conn, nil // Успешное подключение
 		}
 		log.Printf("Не удалось подключиться к RabbitMQ (попытка %d/%d): %v. Повтор через %v...", i+1, maxRetries, err, retryDelay)
