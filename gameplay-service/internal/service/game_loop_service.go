@@ -998,7 +998,7 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 	log := s.logger.With(zap.String("playerID", playerID.String()), zap.String("publishedStoryID", publishedStoryID.String()))
 	log.Info("CreateNewGameState called")
 
-	// <<< НАЧАЛО ИЗМЕНЕНИЯ: Проверка лимита сохранений (1 слот) >>>
+	// Проверка лимита сохранений (1 слот)
 	existingStates, errList := s.playerGameStateRepo.ListByPlayerAndStory(ctx, playerID, publishedStoryID)
 	if errList != nil {
 		log.Error("Failed to list existing game states before creation", zap.Error(errList))
@@ -1008,7 +1008,6 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 		log.Warn("Attempted to create new game state when one already exists", zap.Int("existingCount", len(existingStates)))
 		return nil, sharedModels.ErrSaveSlotExists // Возвращаем новую ошибку
 	}
-	// <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
 
 	// 1. Fetch the published story to ensure it's ready
 	publishedStory, storyErr := s.publishedRepo.GetByID(ctx, publishedStoryID)
@@ -1055,7 +1054,7 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 			StoryVariables:        make(map[string]interface{}),
 			GlobalFlags:           []string{},
 			SceneIndex:            0,
-			EncounteredCharacters: []string{}, // <<< ДОБАВЛЕНО: Инициализация пустого среза
+			EncounteredCharacters: []string{},
 		}
 		savedID, createErr := s.playerProgressRepo.Save(ctx, newInitialProgress)
 		if createErr != nil {
@@ -1075,7 +1074,7 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 	if sceneErr == nil {
 		initialSceneID = &initialScene.ID
 		log.Debug("Found initial scene", zap.String("sceneID", initialSceneID.String()))
-	} else if !errors.Is(sceneErr, pgx.ErrNoRows) && !errors.Is(sceneErr, sharedModels.ErrNotFound) { // <<< ДОБАВЛЕНА ПРОВЕРКА ErrNotFound
+	} else if !errors.Is(sceneErr, pgx.ErrNoRows) && !errors.Is(sceneErr, sharedModels.ErrNotFound) {
 		log.Error("Error fetching initial scene by hash", zap.Error(sceneErr))
 		// Continue without initial scene ID, state will be GeneratingScene if scene is missing
 	}
@@ -1120,7 +1119,9 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 			}
 			return nil, sharedModels.ErrInternalServer // Indicate failure to start generation
 		}
-		generationPayload.GameStateID = newGameState.ID.String() // Link task to the new game state
+
+		// <<< УДАЛЕНО: Привязка задачи к конкретному GameStateID >>>
+		// generationPayload.GameStateID = newGameState.ID.String()
 
 		if errPub := s.publisher.PublishGenerationTask(ctx, generationPayload); errPub != nil {
 			log.Error("Error publishing initial scene generation task after creating game state", zap.Error(errPub))
@@ -1461,6 +1462,13 @@ func createInitialSceneGenerationPayload(
 		}
 	}
 
+	// --- Язык берем напрямую из структуры PublishedStory --- // <<< ВОССТАНОВЛЕНО
+	storyLanguage := story.Language // <<< ВОССТАНОВЛЕНО
+	if storyLanguage == "" {        // <<< ВОССТАНОВЛЕНО
+		log.Printf("WARN: Story language is empty for StoryID %s, defaulting to 'en'", story.ID) // <<< ВОССТАНОВЛЕНО
+		storyLanguage = "en"                                                                     // <<< ВОССТАНОВЛЕНО
+	} // <<< ВОССТАНОВЛЕНО
+
 	compressedInputData := make(map[string]interface{})
 	compressedInputData["cfg"] = minimalConfig               // Minimal Config
 	compressedInputData["stp"] = minimalSetup                // Minimal Setup
@@ -1482,12 +1490,13 @@ func createInitialSceneGenerationPayload(
 
 	payload := sharedMessaging.GenerationTaskPayload{
 		TaskID:           uuid.New().String(),
-		UserID:           userID.String(),                     // Use string UUID
-		PublishedStoryID: story.ID.String(),                   // Use string UUID
-		PromptType:       sharedModels.PromptTypeNovelCreator, // First scene uses NovelCreator prompt type now
+		UserID:           userID.String(),                               // Use string UUID
+		PublishedStoryID: story.ID.String(),                             // Use string UUID
+		PromptType:       sharedModels.PromptTypeNovelFirstSceneCreator, // <<< ИСПРАВЛЕНО: Правильный тип для первой сцены
 		UserInput:        userInputJSON,
 		StateHash:        sharedModels.InitialStateHash, // Use the constant for initial state hash
-		// GameStateID is added later before publishing
+		Language:         storyLanguage,                 // <<< Используем язык из PublishedStory (с fallback на 'en') >>>
+		// GameStateID is intentionally omitted for the initial scene task
 	}
 
 	return payload, nil
@@ -1734,159 +1743,230 @@ func (s *gameLoopServiceImpl) UpdateSceneInternal(ctx context.Context, sceneID u
 
 // RetryInitialGeneration handles retrying generation for a published story's Setup or Initial Scene.
 func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID, storyID uuid.UUID) error {
-	log := s.logger.With(
-		zap.String("publishedStoryID", storyID.String()),
-		zap.Stringer("userID", userID),
-	)
+	log := s.logger.With(zap.Stringer("storyID", storyID), zap.Stringer("userID", userID))
 	log.Info("RetryInitialGeneration called")
 
-	// 1. Get the Published Story
-	publishedStory, errStory := s.publishedRepo.GetByID(ctx, storyID)
-	if errStory != nil {
-		if errors.Is(errStory, pgx.ErrNoRows) || errors.Is(errStory, sharedModels.ErrNotFound) {
-			log.Warn("Published story not found for initial retry")
+	// 1. Get the Published Story first
+	publishedStory, err := s.publishedRepo.GetByID(ctx, storyID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, sharedModels.ErrNotFound) {
+			log.Warn("Published story not found for retry")
 			return sharedModels.ErrStoryNotFound
 		}
-		log.Error("Failed to get published story for initial retry", zap.Error(errStory))
+		log.Error("Failed to get published story for retry", zap.Error(err))
 		return sharedModels.ErrInternalServer
 	}
 
-	// 2. Verify ownership (important!)
-	if publishedStory.UserID != userID {
-		// Allow admins to retry any story? Or strict ownership? Let's assume strict for now.
-		// TODO: Revisit admin retry permissions if needed.
-		log.Warn("User attempted to retry initial generation for a story they do not own", zap.Stringer("ownerID", publishedStory.UserID))
-		return sharedModels.ErrForbidden
+	// 2. Check if the user is the author
+	if publishedStory.UserID != userID { // Correct field: UserID
+		log.Warn("User is not the author, cannot retry generation")
+		return sharedModels.ErrForbidden // Or ErrBadRequest? Forbidden seems more appropriate.
 	}
 
-	// 3. Check if Setup exists
-	setupExists := publishedStory.Setup != nil && string(publishedStory.Setup) != "null"
-
-	if !setupExists {
-		// --- Case 1: Setup generation failed or never completed ---
-		log.Info("Setup is missing, attempting Setup retry.")
-
-		// Check if story status allows setup retry (e.g., was Error)
-		if publishedStory.Status != sharedModels.StatusError && publishedStory.Status != sharedModels.StatusSetupPending {
-			log.Warn("Attempting setup retry, but story status is not Error or SetupPending", zap.String("status", string(publishedStory.Status)))
-			// Allow retry even if status isn't Error, maybe it got stuck in SetupPending?
-			// return sharedModels.ErrCannotRetry
-		}
+	// 3. Check if NovelSetup exists
+	if publishedStory.Setup == nil || len(publishedStory.Setup) == 0 {
+		log.Info("NovelSetup is missing, retrying setup generation")
 
 		if publishedStory.Config == nil {
-			log.Error("CRITICAL: Story Config is nil, cannot retry Setup generation.")
-			// Update story status to Error?
-			if publishedStory.Status != sharedModels.StatusError {
-				errMsg := "Cannot retry Setup: Story Config is missing"
-				if err := s.publishedRepo.UpdateStatusFlagsAndDetails(ctx, publishedStory.ID, sharedModels.StatusError, false, false, &errMsg); err != nil {
-					log.Error("Failed to update story status to Error after discovering missing config", zap.Error(err))
-				}
+			log.Error("Cannot retry setup: Story config is missing")
+			// Update story status to Error? Not strictly necessary, but good practice
+			errMsg := "Cannot retry Setup: Story Config is missing"
+			if errUpdate := s.publishedRepo.UpdateStatusFlagsAndDetails(ctx, storyID, sharedModels.StatusError, false, false, &errMsg); errUpdate != nil {
+				log.Error("Failed to update story status to Error after discovering missing config for setup retry", zap.Error(errUpdate))
 			}
-			return sharedModels.ErrInternalServer // Cannot proceed
+			return sharedModels.ErrInternalServer // Cannot proceed without config
 		}
 
-		// Update PublishedStory status to SetupPending
-		if err := s.publishedRepo.UpdateStatusFlagsAndDetails(ctx, publishedStory.ID, sharedModels.StatusSetupPending, false, false, nil); err != nil {
-			log.Error("Failed to update story status to SetupPending before setup retry task publish", zap.Error(err))
-			// Continue anyway, maybe publish will succeed
-		} else {
-			log.Info("Updated PublishedStory status to SetupPending for setup retry")
+		// Mark story as setup pending, clear error
+		if errUpdate := s.publishedRepo.UpdateStatusFlagsAndDetails(ctx, storyID, sharedModels.StatusSetupPending, false, false, nil); errUpdate != nil {
+			log.Error("Failed to update story status to SetupPending before retry", zap.Error(errUpdate))
+			return fmt.Errorf("failed to update story status: %w", errUpdate)
 		}
 
-		// Create and publish Setup task payload
+		// Publish setup generation task
 		taskID := uuid.New().String()
-		configJSONString := string(publishedStory.Config)
 		setupPayload := sharedMessaging.GenerationTaskPayload{
 			TaskID:           taskID,
-			UserID:           publishedStory.UserID.String(), // Use UserID from the story
+			UserID:           publishedStory.UserID.String(), // UserID from story
+			PublishedStoryID: storyID.String(),
 			PromptType:       sharedModels.PromptTypeNovelSetup,
-			UserInput:        configJSONString,
-			PublishedStoryID: publishedStory.ID.String(),
+			UserInput:        string(publishedStory.Config), // Use story config as input
 			Language:         publishedStory.Language,
+			// No StateHash or GameStateID needed for Setup
 		}
-
-		if errPub := s.publisher.PublishGenerationTask(ctx, setupPayload); errPub != nil {
-			log.Error("Error publishing retry setup generation task", zap.Error(errPub))
-			// Attempt to roll back status?
-			errMsg := fmt.Sprintf("Failed to publish setup generation task: %v", errPub)
-			if err := s.publishedRepo.UpdateStatusFlagsAndDetails(context.Background(), publishedStory.ID, sharedModels.StatusError, false, false, &errMsg); err != nil {
-				log.Error("Failed to roll back story status to Error after setup retry publish error", zap.Error(err))
+		if errPub := s.publisher.PublishGenerationTask(ctx, setupPayload); errPub != nil { // Correct publisher method
+			log.Error("Failed to publish setup retry task", zap.Error(errPub))
+			// Try to revert status? Or leave as pending? Leave as pending for now.
+			errMsg := fmt.Sprintf("Failed to publish setup retry task: %v", errPub)
+			if errUpdate := s.publishedRepo.UpdateStatusFlagsAndDetails(context.Background(), storyID, sharedModels.StatusError, false, false, &errMsg); errUpdate != nil {
+				log.Error("Failed to revert story status to Error after failed setup publish", zap.Error(errUpdate))
 			}
-			return sharedModels.ErrInternalServer
+			return fmt.Errorf("failed to publish setup retry task: %w", errPub)
 		}
-
-		log.Info("Retry setup generation task published successfully", zap.String("taskID", taskID))
-		return nil // Indicate setup retry was initiated.
-
-	} else {
-		// --- Case 2: Setup exists, check for Initial Scene failure ---
-		log.Info("Setup exists, checking for initial scene failure.")
-
-		// Find the player's game state(s) for this story
-		gameStates, errList := s.playerGameStateRepo.ListByPlayerAndStory(ctx, userID, storyID)
-		if errList != nil {
-			log.Error("Failed to list game states for initial scene retry check", zap.Error(errList))
-			return sharedModels.ErrInternalServer
-		}
-
-		if len(gameStates) == 0 {
-			// No game state exists yet. This implies the user hasn't started playing.
-			// If the story status IS Error, maybe the error happened *before* state creation? Unlikely.
-			// If the story status is Ready, maybe the user just hasn't played?
-			// Or maybe the initial CreateNewGameState failed?
-			log.Warn("Setup exists, but no game state found for user/story during initial retry check.")
-			// What should happen? Maybe create the initial game state now?
-			// For now, let's return an error indicating nothing specific to retry at the state level.
-			return fmt.Errorf("%w: no game state found to retry for initial scene", sharedModels.ErrNotFound)
-		}
-
-		// Based on current logic (1 slot per user/story), we expect exactly one state.
-		if len(gameStates) > 1 {
-			log.Warn("Found multiple game states for user/story during initial retry check. Using the first one found.", zap.Int("count", len(gameStates)))
-			// TODO: When multi-slot is implemented, need better logic to find the 'initial' or 'target' state.
-		}
-
-		targetGameState := gameStates[0] // Assume the first one is the one we need
-
-		// Check if this game state corresponds to the *initial* progress
-		if targetGameState.PlayerProgressID == nil {
-			log.Error("CRITICAL: Game state exists but PlayerProgressID is nil during initial retry check.", zap.String("gameStateID", targetGameState.ID.String()))
-			return sharedModels.ErrInternalServer // Inconsistent state
-		}
-
-		progress, errProgress := s.playerProgressRepo.GetByID(ctx, *targetGameState.PlayerProgressID)
-		if errProgress != nil {
-			log.Error("Failed to get PlayerProgress linked to game state for initial retry check", zap.String("progressID", targetGameState.PlayerProgressID.String()), zap.Error(errProgress))
-			return sharedModels.ErrInternalServer
-		}
-
-		if progress.CurrentStateHash != sharedModels.InitialStateHash {
-			log.Warn("Found game state is not linked to the initial progress hash during initial retry check.", zap.String("gameStateID", targetGameState.ID.String()), zap.String("progressHash", progress.CurrentStateHash))
-			// This means the player has already progressed past the initial scene.
-			// The story-level retry shouldn't attempt to retry the initial scene in this case.
-			// The user should use the game-state-specific retry endpoint if a later scene failed.
-			return fmt.Errorf("%w: game state is not at the initial scene, cannot perform initial retry", sharedModels.ErrCannotRetry)
-		}
-
-		// We found the initial game state. Check its status.
-		if targetGameState.PlayerStatus != sharedModels.PlayerStatusError && targetGameState.PlayerStatus != sharedModels.PlayerStatusGeneratingScene {
-			log.Warn("Initial game state found, but its status is not Error or GeneratingScene.", zap.String("gameStateID", targetGameState.ID.String()), zap.String("status", string(targetGameState.PlayerStatus)))
-			// Nothing to retry for this specific state.
-			return fmt.Errorf("%w: initial game state status is '%s', nothing to retry", sharedModels.ErrCannotRetry, targetGameState.PlayerStatus)
-		}
-
-		// --- All checks passed: Retry the initial scene for this game state ---
-		log.Info("Initial game state found in error/generating status. Initiating retry via RetryGenerationForGameState.", zap.String("gameStateID", targetGameState.ID.String()))
-
-		// Call the specific retry function for this game state
-		errRetry := s.RetryGenerationForGameState(ctx, userID, storyID, targetGameState.ID)
-		if errRetry != nil {
-			log.Error("Error occurred during call to RetryGenerationForGameState for initial scene", zap.Error(errRetry))
-			// Return the error from the specific retry function
-			return errRetry
-		}
-
-		log.Info("Initial scene retry initiated successfully via RetryGenerationForGameState.")
-		return nil
+		log.Info("Published setup retry task successfully", zap.String("taskID", taskID))
+		return nil // Success
 	}
+
+	// 4. NovelSetup exists, check if the initial scene text exists
+	scene, err := s.sceneRepo.GetByStoryIDAndStateHash(ctx, storyID, sharedModels.InitialStateHash) // Correct constant usage
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, sharedModels.ErrNotFound) {
+			log.Info("Initial scene not found, retrying first scene generation")
+			// Mark story as first scene pending, clear error
+			if errUpdate := s.publishedRepo.UpdateStatusFlagsAndDetails(ctx, storyID, publishedStory.Status, true, publishedStory.AreImagesPending, nil); errUpdate != nil {
+				log.Error("Failed to update story IsFirstScenePending flag before retry", zap.Error(errUpdate))
+				return fmt.Errorf("failed to update story status: %w", errUpdate)
+			}
+
+			// Create and publish first scene generation task (without GameStateID)
+			payload, errPayload := createInitialSceneGenerationPayload(userID, publishedStory)
+			if errPayload != nil {
+				log.Error("Failed to create initial scene generation payload for retry", zap.Error(errPayload))
+				// Revert status?
+				errMsg := fmt.Sprintf("Failed to create initial scene payload: %v", errPayload)
+				if errUpdate := s.publishedRepo.UpdateStatusFlagsAndDetails(context.Background(), storyID, publishedStory.Status, false, publishedStory.AreImagesPending, &errMsg); errUpdate != nil {
+					log.Error("Failed to revert IsFirstScenePending after payload creation error", zap.Error(errUpdate))
+				}
+				return fmt.Errorf("failed to create generation payload: %w", errPayload)
+			}
+			// Note: createInitialSceneGenerationPayload sets PromptTypeNovelCreator
+			if errPub := s.publisher.PublishGenerationTask(ctx, payload); errPub != nil { // Correct publisher method
+				log.Error("Failed to publish initial scene retry task", zap.Error(errPub))
+				// Revert status?
+				errMsg := fmt.Sprintf("Failed to publish initial scene task: %v", errPub)
+				if errUpdate := s.publishedRepo.UpdateStatusFlagsAndDetails(context.Background(), storyID, publishedStory.Status, false, publishedStory.AreImagesPending, &errMsg); errUpdate != nil {
+					log.Error("Failed to revert IsFirstScenePending after publish error", zap.Error(errUpdate))
+				}
+				return fmt.Errorf("failed to publish generation task: %w", errPub)
+			}
+			log.Info("Published initial scene retry task successfully", zap.String("taskID", payload.TaskID))
+			return nil // Success
+		}
+		// Other error fetching scene
+		log.Error("Failed to check for initial scene", zap.Error(err))
+		return sharedModels.ErrInternalServer
+	}
+
+	// 5. Both Setup and the Initial Scene TEXT exist. Check for the cover image.
+	if publishedStory.CoverImageURL == nil || *publishedStory.CoverImageURL == "" { // Correct check for *string
+		log.Info("Initial scene text exists, but cover image is missing. Retrying image generation.", zap.String("sceneID", scene.ID.String()))
+
+		// --- Reconstruct Cover Image Prompt --- START ---
+		var setupContent sharedModels.NovelSetupContent
+		if errUnmarshalSetup := json.Unmarshal(publishedStory.Setup, &setupContent); errUnmarshalSetup != nil {
+			log.Error("Failed to unmarshal setup JSON to reconstruct cover prompt", zap.Error(errUnmarshalSetup))
+			// Mark as error? Or just fail retry?
+			return fmt.Errorf("failed to parse setup for cover image retry: %w", errUnmarshalSetup)
+		}
+
+		if setupContent.StoryPreviewImagePrompt == "" {
+			log.Error("Cannot retry cover image generation: StoryPreviewImagePrompt (spi) is empty in setup", zap.String("storyID", storyID.String()))
+			return fmt.Errorf("cannot retry cover image: StoryPreviewImagePrompt is missing in setup")
+		}
+
+		var fullConfig sharedModels.Config
+		var characterVisualStyle string
+		var storyStyle string
+		var previewStyleSuffix string = "" // Default empty
+
+		// Get styles from Config
+		if errUnmarshalConfig := json.Unmarshal(publishedStory.Config, &fullConfig); errUnmarshalConfig != nil {
+			log.Warn("Failed to unmarshal config JSON to get styles for cover prompt reconstruction", zap.Error(errUnmarshalConfig))
+			// Proceed without styles if config parsing fails
+		} else {
+			characterVisualStyle = fullConfig.PlayerPrefs.CharacterVisualStyle
+			storyStyle = fullConfig.PlayerPrefs.Style
+			if characterVisualStyle != "" {
+				characterVisualStyle = ", " + characterVisualStyle
+			}
+			if storyStyle != "" {
+				storyStyle = ", " + storyStyle
+			}
+		}
+
+		// Get suffix from Dynamic Config (similar to checkAndGenerateSetupImages)
+		previewDynConfKey := "prompt.story_preview_style_suffix"
+		dynamicConfigPreview, errConfPreview := s.dynamicConfigRepo.GetByKey(ctx, previewDynConfKey)
+		if errConfPreview != nil {
+			if !errors.Is(errConfPreview, sharedModels.ErrNotFound) {
+				log.Error("Failed to get dynamic config for story preview style suffix, using empty default", zap.String("key", previewDynConfKey), zap.Error(errConfPreview))
+			} // else: NotFound is fine, use default empty string
+		} else if dynamicConfigPreview != nil && dynamicConfigPreview.Value != "" {
+			previewStyleSuffix = dynamicConfigPreview.Value
+			log.Info("Using dynamic config suffix for cover image retry prompt", zap.String("key", previewDynConfKey))
+		}
+
+		// Combine the prompt parts
+		// TODO: Confirm if characterVisualStyle should be included for cover/preview images.
+		reconstructedCoverPrompt := setupContent.StoryPreviewImagePrompt + storyStyle + characterVisualStyle + previewStyleSuffix
+		log.Debug("Reconstructed cover image prompt", zap.String("prompt", reconstructedCoverPrompt))
+		// --- Reconstruct Cover Image Prompt --- END ---
+
+		// Mark story as images pending, clear error
+		if errUpdate := s.publishedRepo.UpdateStatusFlagsAndDetails(ctx, storyID, publishedStory.Status, publishedStory.IsFirstScenePending, true, nil); errUpdate != nil { // Use AreImagesPending flag
+			log.Error("Failed to update story AreImagesPending flag before image retry", zap.Error(errUpdate))
+			return fmt.Errorf("failed to update story status for image retry: %w", errUpdate)
+		}
+
+		// Publish image generation task for the initial scene's cover image
+		previewImageRef := fmt.Sprintf("history_preview_%s", storyID.String()) // Use the same reference as in checkAndGenerateSetupImages
+		coverTaskPayload := sharedMessaging.CharacterImageTaskPayload{         // Use CharacterImageTaskPayload
+			TaskID:           uuid.New().String(),
+			UserID:           userID.String(),          // UserID needs to be string
+			CharacterID:      storyID,                  // Use StoryID as CharacterID for preview?
+			Prompt:           reconstructedCoverPrompt, // Use the reconstructed prompt
+			NegativePrompt:   "",                       // TODO: Add negative prompt if available in setup/config?
+			ImageReference:   previewImageRef,          // Use specific reference for cover
+			Ratio:            "3:2",                    // Standard cover ratio?
+			PublishedStoryID: storyID,
+		}
+
+		// Publish using the character image batch publisher
+		coverBatchPayload := sharedMessaging.CharacterImageTaskBatchPayload{BatchID: uuid.New().String(), Tasks: []sharedMessaging.CharacterImageTaskPayload{coverTaskPayload}}
+		if errPub := s.characterImageTaskBatchPub.PublishCharacterImageTaskBatch(ctx, coverBatchPayload); errPub != nil {
+			log.Error("Failed to publish cover image retry task", zap.Error(errPub))
+			// Attempt to revert AreImagesPending flag?
+			errMsg := fmt.Sprintf("Failed to publish cover image task: %v", errPub)
+			if errUpdate := s.publishedRepo.UpdateStatusFlagsAndDetails(context.Background(), storyID, publishedStory.Status, publishedStory.IsFirstScenePending, false, &errMsg); errUpdate != nil {
+				log.Error("Failed to revert AreImagesPending flag after image publish error", zap.Error(errUpdate))
+			}
+			return fmt.Errorf("failed to publish image generation task: %w", errPub)
+		}
+
+		log.Info("Published cover image retry task successfully", zap.String("taskID", coverTaskPayload.TaskID))
+		return nil // Success
+	}
+
+	// --- ADDED: Check for pending character images if cover exists --- START ---
+	// This condition is met if the code reached here (meaning Setup and Scene Text exist) AND the cover image URL is not empty.
+	if publishedStory.AreImagesPending {
+		log.Info("Cover image exists, but AreImagesPending flag is true. Checking and retrying character images asynchronously.")
+
+		// Check/Generate setup images (async, doesn't block retry)
+		go func(bgCtx context.Context, story *sharedModels.PublishedStory, setupBytes []byte, authorID uuid.UUID) {
+			_, errImages := s.checkAndGenerateSetupImages(bgCtx, story, setupBytes, authorID)
+			if errImages != nil {
+				// Log error from background task
+				s.logger.Error("Error during background checkAndGenerateSetupImages triggered by initial retry",
+					zap.String("publishedStoryID", story.ID.String()),
+					zap.Stringer("userID", authorID),
+					zap.Error(errImages))
+			}
+		}(context.WithoutCancel(ctx), publishedStory, publishedStory.Setup, userID) // Pass necessary data to goroutine
+
+		// We initiated the async check/retry for character images.
+		return nil // Success
+	}
+	// --- ADDED: Check for pending character images if cover exists --- END ---
+
+	// 6. Setup, Scene Text, and Cover Image all exist, and AreImagesPending is false. Nothing to retry initially.
+	log.Warn("Setup, initial scene text, cover image exist, and no images are pending. Nothing to retry via initial retry endpoint.")
+	return ErrCannotRetryInitial // Use a more specific error?
 }
+
+var (
+	ErrCannotRetryInitial      = errors.New("cannot retry initial generation steps (setup, first scene text, cover image) as they already exist or are pending")
+	ErrNoSaveSlotsAvailable    = errors.New("no save slots available")                                   // TODO: Define this properly
+	ErrSaveSlotLimitReached    = errors.New("player has reached the maximum number of save slots")       // TODO: Define this properly
+	ErrInitialSceneNotReadyYet = errors.New("initial scene for the story is not generated or ready yet") // Added error
+)

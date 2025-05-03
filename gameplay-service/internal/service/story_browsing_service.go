@@ -196,61 +196,54 @@ func (s *storyBrowsingServiceImpl) ListMyPublishedStories(ctx context.Context, u
 		limit = 20
 	}
 
-	stories, nextCursor, err := s.publishedRepo.ListByUserID(ctx, userID, cursor, limit)
+	// <<< ИЗМЕНЕНО: Вызываем ListUserSummariesWithProgress >>>
+	summaries, nextCursor, err := s.publishedRepo.ListUserSummariesWithProgress(ctx, userID, cursor, limit, false) // filterAdult = false для списка своих
 	if err != nil {
-		log.Error("Failed to list user published stories using cursor", zap.Error(err))
+		log.Error("Failed to list user published stories summaries with progress", zap.Error(err))
 		return nil, "", sharedModels.ErrInternalServer
 	}
 
-	storyIDs := make([]uuid.UUID, len(stories))
-	for i, story := range stories {
-		storyIDs[i] = story.ID
-	}
+	// <<< ИСПРАВЛЕНО: Получаем имена авторов из summaries >>>
+	authorNames := s.fetchAuthorNames(ctx, summaries) // Передаем summaries
 
-	// Fetch auxiliary data
-	authorNames := s.fetchAuthorNames(ctx, stories)
-	progressExistsMap := s.fetchProgressExists(ctx, userID, storyIDs)
-	likesMap := make(map[uuid.UUID]bool)
-	if userID != uuid.Nil && len(storyIDs) > 0 {
-		for _, storyID := range storyIDs {
-			liked, errLike := s.likeRepo.CheckLike(ctx, userID, storyID)
-			if errLike != nil {
-				s.logger.Error("Failed to check like for story in list", zap.String("storyID", storyID.String()), zap.Error(errLike))
-				// Continue, assume not liked on error
+	// <<< УДАЛЕНО: Лишняя проверка прогресса и лайков >>>
+	/*
+		storyIDs := make([]uuid.UUID, len(stories))
+		for i, story := range stories {
+			storyIDs[i] = story.ID
+		}
+		progressExistsMap := s.fetchProgressExists(ctx, userID, storyIDs)
+		likesMap := make(map[uuid.UUID]bool)
+		if userID != uuid.Nil && len(storyIDs) > 0 {
+			for _, storyID := range storyIDs {
+				liked, errLike := s.likeRepo.CheckLike(ctx, userID, storyID)
+				if errLike != nil {
+					s.logger.Error("Failed to check like for story in list", zap.String("storyID", storyID.String()), zap.Error(errLike))
+				}
+				likesMap[storyID] = liked
 			}
-			likesMap[storyID] = liked
 		}
-	}
+	*/
+	// <<< КОНЕЦ УДАЛЕНИЯ >>>
 
-	results := make([]*PublishedStorySummaryDTO, 0, len(stories))
-	for _, story := range stories {
-		var title, description string
-		var likesCount int
-		if story.Title != nil {
-			title = *story.Title
-		}
-		if story.Description != nil {
-			description = *story.Description
-		}
-		likesCount = int(story.LikesCount)
-
+	results := make([]*PublishedStorySummaryDTO, 0, len(summaries))
+	for _, summary := range summaries {
 		results = append(results, &PublishedStorySummaryDTO{
-			ID:                story.ID,
-			Title:             title,
-			ShortDescription:  description,
-			AuthorID:          story.UserID,
-			AuthorName:        authorNames[story.UserID],
-			PublishedAt:       story.CreatedAt,
-			IsAdultContent:    story.IsAdultContent,
-			LikesCount:        likesCount,
-			IsLiked:           likesMap[story.ID],
-			HasPlayerProgress: progressExistsMap[story.ID],
-			IsPublic:          story.IsPublic,
-			Status:            story.Status,
+			ID:                summary.ID,
+			Title:             summary.Title,
+			ShortDescription:  summary.ShortDescription,
+			AuthorID:          summary.AuthorID,
+			AuthorName:        authorNames[summary.AuthorID],
+			PublishedAt:       summary.PublishedAt,
+			IsAdultContent:    summary.IsAdultContent,
+			LikesCount:        int(summary.LikesCount), // <<< ИСПРАВЛЕНО: Преобразование int64 в int >>>
+			IsLiked:           summary.IsLiked,
+			HasPlayerProgress: summary.HasPlayerProgress,
+			IsPublic:          true, // <<< TODO: В summary нет IsPublic >>>
+			Status:            summary.Status,
 		})
 	}
 
-	log.Debug("Successfully listed user published stories with progress", zap.Int("count", len(results)), zap.Bool("hasNext", nextCursor != ""))
 	return results, nextCursor, nil
 }
 
@@ -263,70 +256,65 @@ func (s *storyBrowsingServiceImpl) ListPublicStories(ctx context.Context, userID
 		limit = 20
 	}
 
-	stories, nextCursor, err := s.publishedRepo.ListPublic(ctx, cursor, limit)
+	// <<< ИЗМЕНЕНО: Используем ListUserSummariesWithProgress для получения IsLiked и HasProgress >>>
+	summaries, nextCursor, err := s.publishedRepo.ListUserSummariesWithProgress(ctx, userID, cursor, limit, true) // filterAdult = true
 	if err != nil {
-		log.Error("Failed to list public stories using cursor", zap.Error(err))
+		s.logger.Error("Failed to list public stories summaries with progress", zap.Error(err))
 		return nil, "", sharedModels.ErrInternalServer
 	}
 
-	storyIDs := make([]uuid.UUID, len(stories))
-	for i, story := range stories {
-		storyIDs[i] = story.ID
-	}
+	// <<< ИСПРАВЛЕНО: Получаем имена авторов из summaries >>>
+	authorNames := s.fetchAuthorNames(ctx, summaries) // Передаем summaries
 
-	// Fetch auxiliary data
-	authorNames := s.fetchAuthorNames(ctx, stories)
-	progressExistsMap := s.fetchProgressExists(ctx, userID, storyIDs)
-	likesMap := make(map[uuid.UUID]bool)
-	if userID != uuid.Nil && len(storyIDs) > 0 {
-		for _, storyID := range storyIDs {
-			liked, errLike := s.likeRepo.CheckLike(ctx, userID, storyID)
-			if errLike != nil {
-				s.logger.Error("Failed to check like for public story in list", zap.String("storyID", storyID.String()), zap.Error(errLike))
-				// Continue, assume not liked on error
+	// <<< УДАЛЕНО: Лишняя проверка прогресса и лайков >>>
+	/*
+		storyIDs := make([]uuid.UUID, len(stories))
+		for i, story := range stories {
+			storyIDs[i] = story.ID
+		}
+		progressExistsMap := s.fetchProgressExists(ctx, userID, storyIDs)
+		likesMap := make(map[uuid.UUID]bool)
+		if userID != uuid.Nil && len(storyIDs) > 0 {
+			for _, storyID := range storyIDs {
+				liked, errLike := s.likeRepo.CheckLike(ctx, userID, storyID)
+				if errLike != nil {
+					s.logger.Error("Failed to check like for public story in list", zap.String("storyID", storyID.String()), zap.Error(errLike))
+					// Continue, assume not liked on error
+				}
+				likesMap[storyID] = liked
 			}
-			likesMap[storyID] = liked
 		}
-	}
+	*/
+	// <<< КОНЕЦ УДАЛЕНИЯ >>>
 
-	results := make([]*PublishedStorySummaryDTO, 0, len(stories))
-	for _, story := range stories {
-		var title, description string
-		var likesCount int
-		if story.Title != nil {
-			title = *story.Title
-		}
-		if story.Description != nil {
-			description = *story.Description
-		}
-		likesCount = int(story.LikesCount)
-
+	results := make([]*PublishedStorySummaryDTO, 0, len(summaries))
+	for _, summary := range summaries {
 		results = append(results, &PublishedStorySummaryDTO{
-			ID:                story.ID,
-			Title:             title,
-			ShortDescription:  description,
-			AuthorID:          story.UserID,
-			AuthorName:        authorNames[story.UserID],
-			PublishedAt:       story.CreatedAt,
-			IsAdultContent:    story.IsAdultContent,
-			LikesCount:        likesCount,
-			IsLiked:           likesMap[story.ID],
-			HasPlayerProgress: progressExistsMap[story.ID],
-			IsPublic:          story.IsPublic,
-			Status:            story.Status,
+			ID:                summary.ID,
+			Title:             summary.Title,
+			ShortDescription:  summary.ShortDescription,
+			AuthorID:          summary.AuthorID,
+			AuthorName:        authorNames[summary.AuthorID],
+			PublishedAt:       summary.PublishedAt,
+			IsAdultContent:    summary.IsAdultContent,
+			LikesCount:        int(summary.LikesCount), // <<< ИСПРАВЛЕНО: Преобразование int64 в int >>>
+			IsLiked:           summary.IsLiked,
+			HasPlayerProgress: summary.HasPlayerProgress,
+			IsPublic:          summary.IsPublic, // <<< ИСПРАВЛЕНО: Доступ к IsPublic напрямую из summary >>>
+			Status:            summary.Status,   // <<< ИСПРАВЛЕНО: Доступ к Status напрямую из summary >>>
 		})
 	}
 
-	log.Debug("Successfully listed public stories with progress", zap.Int("count", len(results)), zap.Bool("hasNext", nextCursor != ""))
+	log.Debug("Successfully listed public stories summaries with progress", zap.Int("count", len(results)), zap.Bool("hasNext", nextCursor != ""))
 	return results, nextCursor, nil
 }
 
-// Helper to fetch author names
-func (s *storyBrowsingServiceImpl) fetchAuthorNames(ctx context.Context, stories []*sharedModels.PublishedStory) map[uuid.UUID]string {
+// <<< ИСПРАВЛЕНО: Хелпер fetchAuthorNames принимает []models.PublishedStorySummaryWithProgress >>>
+func (s *storyBrowsingServiceImpl) fetchAuthorNames(ctx context.Context, summaries []sharedModels.PublishedStorySummaryWithProgress) map[uuid.UUID]string {
 	authorIDsMap := make(map[uuid.UUID]struct{})
-	for _, story := range stories {
-		if story != nil {
-			authorIDsMap[story.UserID] = struct{}{}
+	for _, summary := range summaries {
+		if summary.PublishedStorySummary.AuthorID != uuid.Nil {
+			authorIDsMap[summary.PublishedStorySummary.AuthorID] = struct{}{}
 		}
 	}
 	uniqueAuthorIDs := make([]uuid.UUID, 0, len(authorIDsMap))
@@ -340,12 +328,8 @@ func (s *storyBrowsingServiceImpl) fetchAuthorNames(ctx context.Context, stories
 		if err != nil {
 			s.logger.Warn("Failed to fetch author details from auth-service, names will be empty", zap.Error(err))
 		} else {
-			for _, id := range uniqueAuthorIDs {
-				if info, ok := authorInfos[id]; ok {
-					authorNames[id] = info.DisplayName
-				} else {
-					authorNames[id] = "[unknown]"
-				}
+			for _, info := range authorInfos { // Итерируем по результату GetUsersInfo
+				authorNames[info.ID] = info.Username // Используем ID и Username из UserInfoDTO
 			}
 		}
 	}
@@ -664,12 +648,19 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetailsWithProgress(ctx cont
 	}
 
 	// 3. Fetch Author Name
-	authorName := s.fetchAuthorNames(ctx, []*sharedModels.PublishedStory{story})[story.UserID]
+	summaryForName := sharedModels.PublishedStorySummaryWithProgress{
+		PublishedStorySummary: sharedModels.PublishedStorySummary{
+			ID:       story.ID,
+			AuthorID: story.UserID,
+		},
+		// Остальные поля не нужны для fetchAuthorNames
+	}
+	authorName := s.fetchAuthorNames(ctx, []sharedModels.PublishedStorySummaryWithProgress{summaryForName})[summaryForName.PublishedStorySummary.AuthorID]
 
 	// 4. Check Player Progress
 	hasProgress := s.fetchProgressExists(ctx, userID, []uuid.UUID{story.ID})[story.ID]
 
-	// 5. Check if Liked by user
+	// 5. Check Like Status
 	isLiked := false
 	if userID != uuid.Nil {
 		liked, errLike := s.likeRepo.CheckLike(ctx, userID, publishedStoryID)

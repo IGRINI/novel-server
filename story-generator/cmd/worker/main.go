@@ -90,6 +90,7 @@ func main() {
 	resultRepo := sharedDatabase.NewPgGenerationResultRepository(dbPool, logger)
 	promptRepo := sharedDatabase.NewPgPromptRepository(dbPool)
 	dynamicConfigRepo := sharedDatabase.NewPgDynamicConfigRepository(dbPool, logger)
+	sceneRepo := sharedDatabase.NewPgStorySceneRepository(dbPool, logger)
 	sugar.Info("Репозитории инициализированы")
 
 	// --- Инициализация AI клиента ---
@@ -236,6 +237,7 @@ func main() {
 		aiTimeout,
 		aiClient,
 		resultRepo,
+		sceneRepo,
 		notifier,
 		promptProvider,
 	)

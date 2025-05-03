@@ -3,6 +3,7 @@ package worker
 import (
 	// Для рендеринга шаблона
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -17,7 +18,9 @@ import (
 	"novel-server/story-generator/internal/service" // Для шаблонизации промтов
 	"strings"                                       // <<< ДОБАВЛЕНО: для strings.Replace >>>
 	"time"
+
 	// "novel-server/story-generator/internal/model" // <<< Удаляем импорт model
+	"github.com/google/uuid"
 )
 
 // Ключ для системного промпта
@@ -33,6 +36,7 @@ type TaskHandler struct {
 	aiTimeout      time.Duration // <<< ДОБАВЛЕНО
 	aiClient       service.AIClient
 	resultRepo     sharedInterfaces.GenerationResultRepository
+	sceneRepo      sharedInterfaces.StorySceneRepository // <<< ДОБАВЛЕНО: Репозиторий для сцен >>>
 	notifier       service.Notifier
 	prompts        *service.PromptProvider
 	// configProvider *service.ConfigProvider // <<< УДАЛЕНО
@@ -46,6 +50,7 @@ func NewTaskHandler(
 	aiTimeout time.Duration,
 	aiClient service.AIClient,
 	resultRepo sharedInterfaces.GenerationResultRepository,
+	sceneRepo sharedInterfaces.StorySceneRepository, // <<< ДОБАВЛЕНО: Принимаем репозиторий сцен >>>
 	notifier service.Notifier,
 	promptProvider *service.PromptProvider,
 	// configProvider *service.ConfigProvider, // <<< УДАЛЕНО
@@ -57,6 +62,7 @@ func NewTaskHandler(
 		aiTimeout:      aiTimeout,
 		aiClient:       aiClient,
 		resultRepo:     resultRepo,
+		sceneRepo:      sceneRepo, // <<< ДОБАВЛЕНО: Сохраняем репозиторий сцен >>>
 		notifier:       notifier,
 		prompts:        promptProvider,
 		// configProvider: configProvider, // <<< УДАЛЕНО
@@ -284,7 +290,7 @@ func (h *TaskHandler) saveResultAndNotify(
 		ID:               payload.TaskID,
 		UserID:           payload.UserID,
 		PromptType:       payload.PromptType,
-		GeneratedText:    generatedText,
+		GeneratedText:    generatedText, // Сохраняем полный текст ответа AI в generation_results для отладки
 		ProcessingTimeMs: duration.Milliseconds(),
 		CreatedAt:        time.Now().UTC().Add(-duration),
 		CompletedAt:      time.Now().UTC(),
@@ -295,45 +301,100 @@ func (h *TaskHandler) saveResultAndNotify(
 	if execErr != nil {
 		result.Error = execErr.Error()
 	}
-	errorDetails := ""
-	if execErr != nil {
-		errorDetails = execErr.Error()
-	}
 
-	// Сохранение в БД
+	// Всегда сохраняем результат в generation_results (для аудита и статистики)
 	saveDbErr := h.resultRepo.Save(ctx, result)
 	if saveDbErr != nil {
-		log.Printf("[TaskID: %s] КРИТИЧЕСКАЯ ОШИБКА: Не удалось сохранить результат генерации: %v; Result: %+v", payload.TaskID, saveDbErr, result)
-		if errorDetails == "" {
-			errorDetails = fmt.Sprintf("ошибка сохранения результата: %v", saveDbErr)
-		} else {
-			errorDetails = fmt.Sprintf("ошибка обработки: %s; ошибка сохранения: %v", errorDetails, saveDbErr)
+		log.Printf("[TaskID: %s] КРИТИЧЕСКАЯ ОШИБКА: Не удалось сохранить результат генерации в generation_results: %v; Result: %+v", payload.TaskID, saveDbErr, result)
+		// Не прерываем выполнение, попробуем отправить уведомление об ошибке
+		if execErr == nil { // Если исходной ошибки не было, то эта ошибка становится основной
+			execErr = fmt.Errorf("ошибка сохранения результата генерации: %w", saveDbErr)
 		}
-		notifyErr := h.notify(ctx, payload, messaging.NotificationStatusError, errorDetails)
-		if notifyErr != nil {
-			return fmt.Errorf("ошибка сохранения (%w) и ошибка уведомления (%w)", saveDbErr, notifyErr)
-		}
-		return fmt.Errorf("ошибка сохранения результата: %w", saveDbErr)
 	}
 
-	log.Printf("[TaskID: %s] Результат генерации сохранен в БД.", payload.TaskID)
+	log.Printf("[TaskID: %s] Результат генерации сохранен в generation_results.", payload.TaskID)
 
-	// Отправка уведомления
+	// --- СОХРАНЕНИЕ СЦЕНЫ (только при успехе и для нужных типов) --- START
 	notifyStatus := messaging.NotificationStatusSuccess
+	errorDetails := ""
 	if execErr != nil {
 		notifyStatus = messaging.NotificationStatusError
-	}
+		errorDetails = execErr.Error()
+	} else {
+		// Ошибки не было, проверяем тип промпта
+		isScenePrompt := payload.PromptType == sharedModels.PromptTypeNovelFirstSceneCreator ||
+			payload.PromptType == sharedModels.PromptTypeNovelCreator ||
+			payload.PromptType == sharedModels.PromptTypeNovelGameOverCreator
 
+		if isScenePrompt {
+			log.Printf("[TaskID: %s] Попытка сохранения сгенерированной сцены (PromptType: %s)...", payload.TaskID, payload.PromptType)
+			// Парсим PublishedStoryID
+			storyUUID, storyParseErr := uuid.Parse(payload.PublishedStoryID)
+			if storyParseErr != nil {
+				log.Printf("[TaskID: %s] КРИТИЧЕСКАЯ ОШИБКА: Не удалось распарсить PublishedStoryID '%s' для сохранения сцены: %v", payload.TaskID, payload.PublishedStoryID, storyParseErr)
+				execErr = fmt.Errorf("invalid PublishedStoryID '%s' for scene saving: %w", payload.PublishedStoryID, storyParseErr)
+				notifyStatus = messaging.NotificationStatusError
+				errorDetails = execErr.Error()
+			} else {
+				// Создаем объект сцены
+				// ПРЕДПОЛАГАЕМ, что generatedText - это валидный JSON для SceneContent
+				scene := &sharedModels.StoryScene{
+					// ID будет сгенерирован базой данных при использовании Upsert
+					PublishedStoryID: storyUUID,
+					StateHash:        payload.StateHash,
+					Content:          json.RawMessage(generatedText),
+					// ImagePrompt НЕ сохраняем!
+					// CreatedAt будет установлен базой данных
+				}
+
+				// Используем Upsert, т.к. задача может быть перезапущена
+				upsertErr := h.sceneRepo.Upsert(ctx, scene)
+				if upsertErr != nil {
+					log.Printf("[TaskID: %s] КРИТИЧЕСКАЯ ОШИБКА: Не удалось сохранить/обновить сцену (StoryID: %s, StateHash: %s): %v", payload.TaskID, payload.PublishedStoryID, payload.StateHash, upsertErr)
+					execErr = fmt.Errorf("ошибка сохранения сцены: %w", upsertErr)
+					notifyStatus = messaging.NotificationStatusError
+					errorDetails = execErr.Error()
+				} else {
+					log.Printf("[TaskID: %s] Сцена успешно сохранена/обновлена (StoryID: %s, StateHash: %s).", payload.TaskID, payload.PublishedStoryID, payload.StateHash)
+				}
+			}
+		}
+	}
+	// --- СОХРАНЕНИЕ СЦЕНЫ --- END
+
+	// Отправка уведомления (статус и ошибка могли измениться при сохранении сцены)
 	notifyErr := h.notify(ctx, payload, notifyStatus, errorDetails)
 	if notifyErr != nil {
-		return fmt.Errorf("ошибка отправки уведомления после сохранения: %w", notifyErr)
+		if execErr == nil && saveDbErr == nil { // Если до этого не было ошибок
+			return fmt.Errorf("ошибка отправки уведомления: %w", notifyErr) // Основная ошибка - отправка уведомления
+		} else {
+			// Если были ошибки до этого (AI, save result, save scene), они важнее.
+			// Просто логируем, что уведомление тоже не ушло.
+			log.Printf("[TaskID: %s] Ошибка отправки уведомления '%s' после предыдущей ошибки '%s': %v",
+				payload.TaskID, notifyStatus, errorDetails, notifyErr)
+			// Возвращаем исходную ошибку (execErr приоритетнее saveDbErr)
+			if execErr != nil {
+				return execErr
+			}
+			return saveDbErr // execErr был nil, но была ошибка сохранения результата
+		}
 	}
 
-	if execErr == nil && saveDbErr == nil {
+	if execErr == nil && saveDbErr == nil && notifyStatus == messaging.NotificationStatusSuccess {
+		// Инкрементируем успех только если ВСЕ прошло хорошо (включая сохранение сцены)
 		MetricsIncrementTaskSucceeded()
+		log.Printf("[TaskID: %s] Успешное завершение и уведомление отправлено.", payload.TaskID)
 	}
 
-	return nil
+	// Возвращаем ошибку, если она была на каком-либо этапе (AI, save result, save scene)
+	if execErr != nil {
+		return execErr
+	}
+	if saveDbErr != nil {
+		return saveDbErr // Ошибка сохранения результата (менее приоритетная)
+	}
+
+	return nil // Все прошло успешно
 }
 
 // notify отправляет уведомление
@@ -344,21 +405,44 @@ func (h *TaskHandler) notify(ctx context.Context, payload messaging.GenerationTa
 		PromptType:       payload.PromptType,
 		Status:           status,
 		ErrorDetails:     errorDetails,
-		StateHash:        payload.StateHash,
 		StoryConfigID:    payload.StoryConfigID,
 		PublishedStoryID: payload.PublishedStoryID,
+		StateHash:        payload.StateHash,
+		// GameStateID устанавливается в зависимости от типа сцены и наличия его в payload
 	}
 
+	// --- Логика установки GameStateID в уведомлении --- START
+	// Определяем, относится ли задача к генерации сцены
+	isSceneGenerationTask := payload.PromptType == sharedModels.PromptTypeNovelFirstSceneCreator ||
+		payload.PromptType == sharedModels.PromptTypeNovelCreator ||
+		payload.PromptType == sharedModels.PromptTypeNovelGameOverCreator
+
+	// GameStateID передается в уведомлении, ЕСЛИ:
+	// 1. Это НЕ генерация сцены ВОВСЕ.
+	// ИЛИ
+	// 2. Это генерация сцены, но это НЕ начальная сцена (StateHash != initial) ИЛИ GameStateID БЫЛ в исходном payload.
+	if !isSceneGenerationTask || (payload.StateHash != sharedModels.InitialStateHash || payload.GameStateID != "") {
+		notification.GameStateID = payload.GameStateID
+		log.Printf("[TaskID: %s] GameStateID '%s' будет передан в уведомлении (isScene: %t, isInitialHash: %t, payloadHasGid: %t).",
+			payload.TaskID, payload.GameStateID, isSceneGenerationTask, payload.StateHash == sharedModels.InitialStateHash, payload.GameStateID != "")
+	} else {
+		// Это генерация НАЧАЛЬНОЙ сцены, и GameStateID в payload был пустой.
+		// Не передаем GameStateID в уведомлении.
+		notification.GameStateID = ""
+		log.Printf("[TaskID: %s] Генерация начальной сцены без исходного GameStateID, GameStateID в уведомлении будет пустой.", payload.TaskID)
+	}
+	// --- Логика установки GameStateID в уведомлении --- END
+
 	if err := h.notifier.Notify(ctx, notification); err != nil {
-		log.Printf("[TaskID: %s] Не удалось отправить уведомление (Status: %s, Error: '%s'): %v",
-			payload.TaskID, status, errorDetails, err)
+		log.Printf("[TaskID: %s] Не удалось отправить уведомление (Status: %s, Error: '%s', GID: '%s'): %v",
+			payload.TaskID, status, errorDetails, notification.GameStateID, err)
 		return err
 	}
 
 	if status == messaging.NotificationStatusSuccess {
-		log.Printf("[TaskID: %s] Уведомление об успехе отправлено.", payload.TaskID)
+		log.Printf("[TaskID: %s] Уведомление об успехе отправлено (GID: '%s').", payload.TaskID, notification.GameStateID)
 	} else {
-		log.Printf("[TaskID: %s] Уведомление об ошибке отправлено (%s).", payload.TaskID, errorDetails)
+		log.Printf("[TaskID: %s] Уведомление об ошибке отправлено (Error: '%s', GID: '%s').", payload.TaskID, errorDetails, notification.GameStateID)
 	}
 	return nil
 }

@@ -74,6 +74,7 @@ func LoadConfig() (*Config, error) {
 		if loadErr != nil {
 			return nil, fmt.Errorf("ошибка чтения секрета ai_api_key (требуется для openai): %w", loadErr)
 		}
+		log.Printf("[DEBUG] Loaded AIAPIKey (length %d): '%s'", len(cfg.AIAPIKey), cfg.AIAPIKey)
 		log.Println("  AI API Key: [ЗАГРУЖЕН]")
 	} else {
 		log.Printf("[INFO] AI_CLIENT_TYPE установлен в '%s', секрет ai_api_key не загружается.", aiClientTypeEnv)

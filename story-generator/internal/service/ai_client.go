@@ -241,7 +241,6 @@ func getConfigValueInt(ctx context.Context, repo interfaces.DynamicConfigReposit
 // openAIClient реализует AIClient с использованием go-openai
 type openAIClient struct {
 	client   *openaigo.Client
-	model    string
 	repo     interfaces.DynamicConfigRepository
 	provider string
 }
@@ -250,19 +249,25 @@ type openAIClient struct {
 func (c *openAIClient) GenerateText(ctx context.Context, userID string, systemPrompt string, userInput string, params GenerationParams) (string, UsageInfo, error) {
 	usageInfo := UsageInfo{} // Инициализируем пустую структуру
 
+	// <<< ИЗМЕНЕНО: Получаем актуальное имя модели и BaseURL перед каждым запросом >>>
+	currentModel := getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel)
+	currentBaseURL := getConfigValueString(ctx, c.repo, configKeyAIBaseURL, defaultAIBaseURL)
+	log.Printf("[DEBUG] Preparing OpenAI request. BaseURL: %s, Model: %s, UserID: %s", currentBaseURL, currentModel, userID)
+
+	// Валидация системного промпта
 	if strings.TrimSpace(systemPrompt) == "" {
 		log.Printf("Ошибка: Системный промт пуст после подготовки. userID: %s", userID)
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error", "user_id": userID}).Inc()
+		aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "error", "user_id": userID}).Inc() // Используем currentModel
 		return "", usageInfo, fmt.Errorf("%w: системный промт пуст", ErrAIGenerationFailed)
 	}
 
+	// Формирование сообщений
 	messages := []openaigo.ChatCompletionMessage{
 		{
 			Role:    openaigo.ChatMessageRoleSystem,
 			Content: systemPrompt,
 		},
 	}
-	// Добавляем ввод пользователя, если он есть
 	if userInput != "" {
 		messages = append(messages, openaigo.ChatCompletionMessage{
 			Role:    openaigo.ChatMessageRoleUser,
@@ -272,66 +277,77 @@ func (c *openAIClient) GenerateText(ctx context.Context, userID string, systemPr
 
 	startTime := time.Now()
 	log.Printf("Отправка запроса к %s: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes, UserID: %s",
-		c.provider, c.model, len(systemPrompt), len(userInput), userID)
+		c.provider, currentModel, len(systemPrompt), len(userInput), userID) // Используем currentModel
 
-	// <<< ДОБАВЛЕНО: Логирование полного запроса >>>
+	// Логирование
 	log.Printf("[DEBUG_INPUT] System Prompt for %s (UserID: %s):\n--- START ---\n%s\n--- END ---", c.provider, userID, systemPrompt)
 	log.Printf("[DEBUG_INPUT] User Input for %s (UserID: %s):\n--- START ---\n%s\n--- END ---", c.provider, userID, userInput)
-	// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
+
+	// Создание запроса
+	request := openaigo.ChatCompletionRequest{
+		Model:       currentModel, // <<< Используем актуальную модель >>>
+		Messages:    messages,
+		Temperature: float32Val(params.Temperature),
+		MaxTokens:   intVal(params.MaxTokens),
+		TopP:        float32Val(params.TopP),
+	}
+
+	requestJSON, _ := json.Marshal(request)
+	log.Printf("[DEBUG] OpenAI Request Body: %s", string(requestJSON))
+
+	// <<< ВАЖНО: Нужно пересоздать клиент или обновить его конфиг, если BaseURL изменился >>>
+	// Простой вариант: предположить, что BaseURL и APIKey не меняются так часто
+	// и использовать клиент, созданный при старте. Если они МОГУТ меняться,
+	// потребуется более сложная логика (пересоздание клиента или обновление конфига).
+	// Пока используем существующий c.client
 
 	resp, err := c.client.CreateChatCompletion(
 		ctx,
-		openaigo.ChatCompletionRequest{
-			Model:    c.model,
-			Messages: messages,
-			// <<< Передаем параметры в API >>>
-			Temperature: float32Val(params.Temperature), // Конвертируем *float64 в float32
-			MaxTokens:   intVal(params.MaxTokens),       // Конвертируем *int в int
-			TopP:        float32Val(params.TopP),        // Конвертируем *float64 в float32
-		},
+		request,
 	)
 
 	duration := time.Since(startTime)
 
 	if err != nil {
-		log.Printf("Ошибка от %s API за %v (userID: %s): %v", c.provider, duration, userID, err)
-		// <<< Prometheus Metrics: Increment error counter >>>
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error", "user_id": userID}).Inc()
+		log.Printf("Ошибка от %s API за %v (userID: %s). Error Type: %T, Error: %v",
+			c.provider, duration, userID, err, err)
+		var apiError *openaigo.APIError
+		if errors.As(err, &apiError) {
+			log.Printf("[DEBUG] OpenAI API Error Details: StatusCode=%d, Type=%s, Code=%v, Message=%s",
+				apiError.HTTPStatusCode, apiError.Type, apiError.Code, apiError.Message)
+		}
+		aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "error", "user_id": userID}).Inc() // Используем currentModel
 		return "", usageInfo, fmt.Errorf("%w: %v", ErrAIGenerationFailed, err)
 	}
 
 	if len(resp.Choices) == 0 || resp.Choices[0].Message.Content == "" {
+		log.Printf("[DEBUG] Received response object from %s (before empty content check, userID: %s): %+v", c.provider, userID, resp)
 		log.Printf("%s API вернул пустой ответ за %v (userID: %s)", c.provider, duration, userID)
-		// <<< Prometheus Metrics: Increment error counter (empty response treated as error) >>>
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error_empty_response", "user_id": userID}).Inc() // More specific status
+		aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "error_empty_response", "user_id": userID}).Inc() // Используем currentModel
 		return "", usageInfo, fmt.Errorf("%w: получен пустой ответ", ErrAIGenerationFailed)
 	}
 
-	// <<< Prometheus Metrics: Increment success counter and observe metrics >>>
-	aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "success", "user_id": userID}).Inc()
-	aiRequestDuration.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(duration.Seconds())
+	// Prometheus Metrics
+	aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "success", "user_id": userID}).Inc()    // Используем currentModel
+	aiRequestDuration.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(duration.Seconds()) // Используем currentModel
 
 	generatedText := resp.Choices[0].Message.Content
 	log.Printf("Ответ от %s API получен за %v. Длина ответа: %d символов. (userID: %s)", c.provider, duration, len(generatedText), userID)
-
-	// Дополнительно можно логировать Usage info: resp.Usage
 	log.Printf("[DEBUG] AI Usage received (userID: %s): %+v", userID, resp.Usage)
 	if resp.Usage.TotalTokens > 0 {
 		log.Printf("AI Usage (userID: %s): PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
 			userID, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
-		// <<< Prometheus Metrics: Observe token counts >>>
-		aiPromptTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(resp.Usage.PromptTokens))
-		aiCompletionTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(resp.Usage.CompletionTokens))
-		aiTotalTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(resp.Usage.TotalTokens))
+		aiPromptTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(resp.Usage.PromptTokens))         // Используем currentModel
+		aiCompletionTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(resp.Usage.CompletionTokens)) // Используем currentModel
+		aiTotalTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(resp.Usage.TotalTokens))           // Используем currentModel
 
-		// Заполняем UsageInfo
 		usageInfo.PromptTokens = resp.Usage.PromptTokens
 		usageInfo.CompletionTokens = resp.Usage.CompletionTokens
 		usageInfo.TotalTokens = resp.Usage.TotalTokens
 		usageInfo.EstimatedCostUSD = calculateCost(ctx, c.repo, resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
-		log.Printf("[DEBUG] Calculated cost (userID: %s, model: %s): %.8f", userID, c.model, usageInfo.EstimatedCostUSD)
+		log.Printf("[DEBUG] Calculated cost (userID: %s, model: %s): %.8f", userID, currentModel, usageInfo.EstimatedCostUSD) // Используем currentModel
 		if usageInfo.EstimatedCostUSD > 0 {
-			aiEstimatedCostUSD.With(prometheus.Labels{"model": c.model, "user_id": userID}).Add(usageInfo.EstimatedCostUSD)
+			aiEstimatedCostUSD.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Add(usageInfo.EstimatedCostUSD) // Используем currentModel
 			log.Printf("%s Usage Cost (estimated, userID: %s): $%.6f", c.provider, userID, usageInfo.EstimatedCostUSD)
 		}
 	}
@@ -363,7 +379,7 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 	}
 
 	request := openaigo.ChatCompletionRequest{
-		Model:       c.model,
+		Model:       getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel),
 		Messages:    messages,
 		Stream:      true,
 		Temperature: float32Val(params.Temperature),
@@ -372,12 +388,12 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 	}
 
 	log.Printf("Отправка STREAM запроса к %s: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes, UserID: %s",
-		c.provider, c.model, len(systemPrompt), len(userInput), userID)
+		c.provider, getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), len(systemPrompt), len(userInput), userID)
 
 	stream, err := c.client.CreateChatCompletionStream(ctx, request)
 	if err != nil {
 		log.Printf("Ошибка создания стрима от %s API (userID: %s): %v", c.provider, userID, err)
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error_stream_init", "user_id": userID}).Inc()
+		aiRequestsTotal.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "status": "error_stream_init", "user_id": userID}).Inc()
 		return usageInfo, fmt.Errorf("%w: ошибка создания стрима: %v", ErrAIGenerationFailed, err)
 	}
 	defer stream.Close()
@@ -397,7 +413,7 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 		}
 		if err != nil {
 			log.Printf("Ошибка чтения из стрима %s (userID: %s): %v", c.provider, userID, err)
-			aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error_stream_read", "user_id": userID}).Inc()
+			aiRequestsTotal.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "status": "error_stream_read", "user_id": userID}).Inc()
 			return usageInfo, fmt.Errorf("%w: ошибка чтения стрима: %v", ErrAIGenerationFailed, err)
 		}
 
@@ -411,7 +427,7 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 			chunk := response.Choices[0].Delta.Content
 			responseTextBuilder.WriteString(chunk) // <<< Собираем полный текст
 			// Примерный подсчет токенов на лету (менее точный, чем Usage)
-			tke, err := tiktoken.EncodingForModel(c.model)
+			tke, err := tiktoken.EncodingForModel(getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel))
 			if err == nil {
 				completionTokensCount += len(tke.Encode(chunk, nil, nil))
 			}
@@ -440,16 +456,16 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 		log.Printf("%s Stream Usage (from final block, userID: %s): Prompt=%d, Completion=%d, Total=%d",
 			c.provider, userID, promptTokensCount, completionTokensCount, finalUsage.TotalTokens)
 		// Обновляем метрики
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "success_stream", "user_id": userID}).Inc()
-		aiRequestDuration.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(duration.Seconds())
-		aiPromptTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(promptTokensCount))
-		aiCompletionTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(completionTokensCount))
-		aiTotalTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(finalUsage.TotalTokens))
+		aiRequestsTotal.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "status": "success_stream", "user_id": userID}).Inc()
+		aiRequestDuration.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(duration.Seconds())
+		aiPromptTokens.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(float64(promptTokensCount))
+		aiCompletionTokens.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(float64(completionTokensCount))
+		aiTotalTokens.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(float64(finalUsage.TotalTokens))
 	} else {
 		// Если финальный Usage не пришел (зависит от модели/API)
 		// Используем примерный подсчет completion токенов и оцениваем prompt токены
 		log.Printf("[WARN] Final usage block not received in stream (userID: %s). Using estimated token counts.", userID)
-		tke, err := tiktoken.EncodingForModel(c.model)
+		tke, err := tiktoken.EncodingForModel(getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel))
 		if err == nil {
 			// Оцениваем prompt токены
 			promptTokensCount = len(tke.Encode(systemPrompt, nil, nil)) + len(tke.Encode(userInput, nil, nil))
@@ -462,21 +478,21 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 			log.Printf("%s Stream Usage (estimated, userID: %s): Prompt≈%d, Completion≈%d, Total≈%d",
 				c.provider, userID, promptTokensCount, completionTokensCount, totalTokens)
 			// Обновляем метрики (с примерными значениями)
-			aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "success_stream_estimated", "user_id": userID}).Inc()
-			aiRequestDuration.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(duration.Seconds())
-			aiPromptTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(promptTokensCount))
-			aiCompletionTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(completionTokensCount))
-			aiTotalTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(totalTokens))
+			aiRequestsTotal.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "status": "success_stream_estimated", "user_id": userID}).Inc()
+			aiRequestDuration.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(duration.Seconds())
+			aiPromptTokens.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(float64(promptTokensCount))
+			aiCompletionTokens.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(float64(completionTokensCount))
+			aiTotalTokens.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(float64(totalTokens))
 		} else {
-			log.Printf("[ERROR] Could not get tokenizer for model %s to estimate stream tokens (userID: %s). Skipping token metrics for this stream.", c.model, userID)
+			log.Printf("[ERROR] Could not get tokenizer for model %s to estimate stream tokens (userID: %s). Skipping token metrics for this stream.", getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), userID)
 			// Обновляем только счетчик запросов без токенов/стоимости
-			aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "success_stream_no_tokens", "user_id": userID}).Inc()
-			aiRequestDuration.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(duration.Seconds())
+			aiRequestsTotal.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "status": "success_stream_no_tokens", "user_id": userID}).Inc()
+			aiRequestDuration.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Observe(duration.Seconds())
 		}
 	}
 
 	if usageInfo.EstimatedCostUSD > 0 {
-		aiEstimatedCostUSD.With(prometheus.Labels{"model": c.model, "user_id": userID}).Add(usageInfo.EstimatedCostUSD)
+		aiEstimatedCostUSD.With(prometheus.Labels{"model": getConfigValueString(ctx, c.repo, configKeyAIModel, defaultAIModel), "user_id": userID}).Add(usageInfo.EstimatedCostUSD)
 		log.Printf("%s Stream Usage Cost (estimated, userID: %s): $%.6f", c.provider, userID, usageInfo.EstimatedCostUSD)
 	}
 
@@ -511,12 +527,11 @@ func intVal(i *int) int {
 // ollamaClient реализует AIClient с использованием ollama/api
 type ollamaClient struct {
 	client  *api.Client
-	model   string
 	timeout time.Duration // Храним таймаут для контекста
 }
 
 // newOllamaClient создает новый клиент для взаимодействия с Ollama
-func newOllamaClient(baseURL, model string, timeout time.Duration) (AIClient, error) {
+func newOllamaClient(baseURL string, timeout time.Duration) (AIClient, error) {
 	httpClient := &http.Client{
 		Timeout: timeout, // <<< Используем переданный таймаут
 	}
@@ -532,11 +547,10 @@ func newOllamaClient(baseURL, model string, timeout time.Duration) (AIClient, er
 
 	client := api.NewClient(parsedURL, httpClient)
 
-	log.Printf("Ollama Клиент создан. Используемый BaseURL: %s, Model: %s, Timeout: %v", ollamaBaseURL, model, timeout) // <<< Используем переданные параметры
+	log.Printf("Ollama Клиент создан. Используемый BaseURL: %s, Timeout: %v", ollamaBaseURL, timeout) // <<< Используем переданные параметры
 
 	return &ollamaClient{
 		client:  client,
-		model:   model,   // <<< Используем переданный model
 		timeout: timeout, // Сохраняем таймаут
 	}, nil
 }
@@ -547,7 +561,7 @@ func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPr
 
 	if strings.TrimSpace(systemPrompt) == "" {
 		log.Printf("Ошибка: Системный промт пуст. Невозможно отправить запрос к Ollama. userID: %s", userID)
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error", "user_id": userID}).Inc()
+		aiRequestsTotal.With(prometheus.Labels{"model": "placeholder", "status": "error", "user_id": userID}).Inc()
 		return "", usageInfo, fmt.Errorf("%w: системный промт пуст", ErrAIGenerationFailed)
 	}
 
@@ -559,7 +573,7 @@ func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPr
 	}
 
 	req := &api.ChatRequest{
-		Model:    c.model,
+		Model:    "placeholder",
 		Messages: messages,
 		Stream:   func(b bool) *bool { return &b }(false), // Не стримим
 		Options: map[string]interface{}{
@@ -575,7 +589,7 @@ func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPr
 
 	startTime := time.Now()
 	log.Printf("Отправка запроса к Ollama: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes, UserID: %s",
-		c.model, len(systemPrompt), len(userInput), userID)
+		"placeholder", len(systemPrompt), len(userInput), userID)
 
 	// <<< DEBUG: Логирование полного запроса перед отправкой >>>
 	log.Printf("[OLLAMA_DEBUG] Request Messages: %+v", req.Messages)
@@ -614,7 +628,7 @@ func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPr
 		} else {
 			log.Printf("Ошибка от Ollama API за %v (userID: %s): %v", duration, userID, err)
 		}
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error", "user_id": userID}).Inc()
+		aiRequestsTotal.With(prometheus.Labels{"model": "placeholder", "status": "error", "user_id": userID}).Inc()
 		return "", usageInfo, fmt.Errorf("%w: %v", ErrAIGenerationFailed, err)
 	}
 
@@ -623,7 +637,7 @@ func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPr
 		log.Printf("[OLLAMA_DEBUG] Empty content in final response: %+v", resp)
 		// <<< END DEBUG >>>
 		log.Printf("Ollama API вернул пустой ответ за %v (userID: %s)", duration, userID)
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error", "user_id": userID}).Inc()
+		aiRequestsTotal.With(prometheus.Labels{"model": "placeholder", "status": "error", "user_id": userID}).Inc()
 		return "", usageInfo, fmt.Errorf("%w: получен пустой ответ", ErrAIGenerationFailed)
 	}
 
@@ -631,8 +645,8 @@ func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPr
 	log.Printf("[OLLAMA_DEBUG] Successful final response: %+v", resp)
 	// <<< END DEBUG >>>
 
-	aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "success", "user_id": userID}).Inc()
-	aiRequestDuration.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(duration.Seconds())
+	aiRequestsTotal.With(prometheus.Labels{"model": "placeholder", "status": "success", "user_id": userID}).Inc()
+	aiRequestDuration.With(prometheus.Labels{"model": "placeholder", "user_id": userID}).Observe(duration.Seconds())
 
 	generatedText := resp.Message.Content
 	log.Printf("Ответ от Ollama API получен за %v. Длина ответа: %d символов. (userID: %s)", duration, len(generatedText), userID)
@@ -648,9 +662,9 @@ func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPr
 	if usageInfo.TotalTokens > 0 {
 		log.Printf("Ollama Usage (userID: %s): PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
 			userID, usageInfo.PromptTokens, usageInfo.CompletionTokens, usageInfo.TotalTokens)
-		aiPromptTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(usageInfo.PromptTokens))
-		aiCompletionTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(usageInfo.CompletionTokens))
-		aiTotalTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(usageInfo.TotalTokens))
+		aiPromptTokens.With(prometheus.Labels{"model": "placeholder", "user_id": userID}).Observe(float64(usageInfo.PromptTokens))
+		aiCompletionTokens.With(prometheus.Labels{"model": "placeholder", "user_id": userID}).Observe(float64(usageInfo.CompletionTokens))
+		aiTotalTokens.With(prometheus.Labels{"model": "placeholder", "user_id": userID}).Observe(float64(usageInfo.TotalTokens))
 		// Не обновляем стоимость, так как она 0
 	}
 
@@ -674,7 +688,7 @@ func (c *ollamaClient) GenerateTextStream(ctx context.Context, userID string, sy
 	}
 
 	req := &api.ChatRequest{
-		Model:    c.model,
+		Model:    "placeholder",
 		Messages: messages,
 		Stream:   func(b bool) *bool { return &b }(true), // Стримим
 		Options: map[string]interface{}{
@@ -690,7 +704,7 @@ func (c *ollamaClient) GenerateTextStream(ctx context.Context, userID string, sy
 
 	startTime := time.Now()
 	log.Printf("Отправка STREAM запроса к Ollama: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes, UserID: %s",
-		c.model, len(systemPrompt), len(userInput), userID)
+		"placeholder", len(systemPrompt), len(userInput), userID)
 
 	var finalErr error
 	var promptTokens, completionTokens int
@@ -728,7 +742,7 @@ func (c *ollamaClient) GenerateTextStream(ctx context.Context, userID string, sy
 		} else {
 			log.Printf("Ошибка во время стриминга Ollama за %v (userID: %s): %v", duration, userID, err)
 		}
-		aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "error_stream", "user_id": userID}).Inc()
+		aiRequestsTotal.With(prometheus.Labels{"model": "placeholder", "status": "error_stream", "user_id": userID}).Inc()
 		// Если ошибка произошла в chunkHandler, она уже была возвращена выше
 		// Если ошибка произошла в самом клиенте Ollama, возвращаем ее
 		if finalErr == nil { // Не перезаписываем ошибку из resp.Done, если она была
@@ -742,15 +756,15 @@ func (c *ollamaClient) GenerateTextStream(ctx context.Context, userID string, sy
 
 	// Стрим успешно завершен (либо обработчиком, либо сам по себе)
 	log.Printf("Обработка стрима Ollama завершена за %v. (userID: %s)", duration, userID)
-	aiRequestsTotal.With(prometheus.Labels{"model": c.model, "status": "success_stream", "user_id": userID}).Inc()
-	aiRequestDuration.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(duration.Seconds())
+	aiRequestsTotal.With(prometheus.Labels{"model": "placeholder", "status": "success_stream", "user_id": userID}).Inc()
+	aiRequestDuration.With(prometheus.Labels{"model": "placeholder", "user_id": userID}).Observe(duration.Seconds())
 
 	if promptTokens > 0 || completionTokens > 0 {
 		log.Printf("Ollama Stream Usage (userID: %s): PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
 			userID, promptTokens, completionTokens, promptTokens+completionTokens)
-		aiPromptTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(promptTokens))
-		aiCompletionTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(completionTokens))
-		aiTotalTokens.With(prometheus.Labels{"model": c.model, "user_id": userID}).Observe(float64(promptTokens + completionTokens))
+		aiPromptTokens.With(prometheus.Labels{"model": "placeholder", "user_id": userID}).Observe(float64(promptTokens))
+		aiCompletionTokens.With(prometheus.Labels{"model": "placeholder", "user_id": userID}).Observe(float64(completionTokens))
+		aiTotalTokens.With(prometheus.Labels{"model": "placeholder", "user_id": userID}).Observe(float64(promptTokens + completionTokens))
 	}
 
 	// Заполняем UsageInfo из последнего ответа Ollama
@@ -771,7 +785,6 @@ var streamBoolTrue = true
 func NewAIClient(cfg *config.Config, repo interfaces.DynamicConfigRepository) (AIClient, error) {
 
 	ctx := context.Background()
-	aiModel := getConfigValueString(ctx, repo, configKeyAIModel, defaultAIModel)
 	aiBaseURL := getConfigValueString(ctx, repo, configKeyAIBaseURL, defaultAIBaseURL)
 	aiClientType := getConfigValueString(ctx, repo, configKeyAIClientType, defaultAIClientType)
 	aiTimeout := getConfigValueDuration(ctx, repo, ConfigKeyAITimeout, DefaultAITimeout)
@@ -780,24 +793,23 @@ func NewAIClient(cfg *config.Config, repo interfaces.DynamicConfigRepository) (A
 	switch strings.ToLower(aiClientType) { // <<< Используем aiClientType из конфига
 	case "openai":
 		log.Printf("Используется реализация AI клиента: OpenAI")
-		openaiConfig := openaigo.DefaultConfig(cfg.AIAPIKey) // AIAPIKey все еще берем из старого конфига/секретов
+		openaiConfig := openaigo.DefaultConfig(cfg.AIAPIKey)
 		openaiConfig.BaseURL = aiBaseURL
 		httpClient := &http.Client{
 			Timeout: aiTimeout, // <<< Используем aiTimeout из конфига
 		}
 		openaiConfig.HTTPClient = httpClient
 		client := openaigo.NewClientWithConfig(openaiConfig)
-		log.Printf("OpenAI Клиент создан. Используемый BaseURL: %s, Model: %s, Timeout: %v", aiBaseURL, aiModel, aiTimeout)
+		log.Printf("OpenAI Клиент создан. Используемый BaseURL: %s, Timeout: %v", aiBaseURL, aiTimeout)
 		return &openAIClient{
 			client:   client,
-			model:    aiModel,
 			repo:     repo,
 			provider: "OpenAI",
 		}, nil
 	case "ollama":
 		log.Printf("Используется реализация AI клиента: Ollama")
 		// <<< Передаем параметры в newOllamaClient >>>
-		return newOllamaClient(aiBaseURL, aiModel, aiTimeout) // <<< Используем aiTimeout
+		return newOllamaClient(aiBaseURL, aiTimeout) // <<< Используем aiTimeout
 	default:
 		return nil, fmt.Errorf("неизвестный тип AI клиента: '%s'", aiClientType)
 	}
