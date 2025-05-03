@@ -10,17 +10,22 @@ http:
         prefixes:
           - "/api"
 
-    # Убирает /api/stories перед отправкой запроса в gameplay-service
-    gameplay-stripprefix:
-      stripPrefix:
-        prefixes:
-          - "/api"
-
     # Убирает /admin перед отправкой запроса в admin-service (для защищенных путей)
     admin-protected-stripprefix:
       stripPrefix:
         prefixes:
           - "/admin"
+
+    # <<< НОВЫЕ MIDDLEWARE ДЛЯ V1 >>>
+    auth-v1-stripprefix:
+      stripPrefix:
+        prefixes:
+          - "/api/v1" # Убираем /api/v1 для auth-service
+
+    gameplay-v1-stripprefix:
+      stripPrefix:
+        prefixes:
+          - "/api/v1" # Убираем /api/v1 для gameplay-service
 
   # ============================================
   # Routers
@@ -39,21 +44,21 @@ http:
     auth-router:
       entryPoints:
         - "web"
-      rule: "PathPrefix(`/api`)"
+      rule: "PathPrefix(`/api/v1`)" # <<< ИЗМЕНЕНО: Правило теперь для /api/v1
       service: "auth-service"
       middlewares:
-        - "auth-stripprefix"
+        - "auth-v1-stripprefix" # <<< ИЗМЕНЕНО: Используем новый middleware
       priority: 10
 
     # --- Gameplay Service ---
     gameplay-http-router:
       entryPoints:
         - "web"
-      # Matches any of the gameplay service API prefixes
-      rule: "(PathPrefix(`/api/stories`) || PathPrefix(`/api/published-stories`) || PathPrefix(`/api/gamestates`))"
+      # <<< ИЗМЕНЕНО: Правила теперь для /api/v1/... >>>
+      rule: "(PathPrefix(`/api/v1/stories`) || PathPrefix(`/api/v1/published-stories`) || PathPrefix(`/api/v1/gamestates`))"
       service: "gameplay-service"
       middlewares:
-       - "gameplay-stripprefix"
+       - "gameplay-v1-stripprefix" # <<< ИЗМЕНЕНО: Используем новый middleware
       priority: 11 # Higher priority for API routes
 
     # --- Admin Service (Login Page) ---

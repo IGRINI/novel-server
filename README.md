@@ -74,7 +74,7 @@
 
 ---
 
-#### Сервис Аутентификации (`/auth` и `/api`)
+#### Сервис Аутентификации (`/auth` и `/api/v1`)
 
 Предоставляет эндпоинты для управления пользователями и токенами.
 
@@ -190,9 +190,9 @@
         *   `401 Unauthorized`: Токен невалиден (не парсится, неверная подпись, истек срок). Возвращает `{\"valid\": false, \"error\": \"reason...\"}`.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-##### Защищенные эндпоинты (`/api`)
+##### Защищенные эндпоинты (`/api/v1`)
 
-*   **`GET /api/me`**
+*   **`GET /api/v1/me`**
     *   Описание: Получение информации о текущем аутентифицированном пользователе.
     *   Аутентификация: **Требуется** (`Authorization: Bearer <access_token>`).
     *   Тело запроса: Нет.
@@ -212,7 +212,7 @@
         *   `404 Not Found` (`{\"code\": 40402, \"message\": \"User not found\"}`): Пользователь, связанный с токеном, не найден в БД.
         *   `500 Internal Server Error` (`{\"code\": 50001, \"message\": \"...\"}`): Внутренняя ошибка сервера.
 
-*   **`POST /api/device-tokens`**
+*   **`POST /api/v1/device-tokens`**
     *   Описание: Регистрирует токен устройства для текущего аутентифицированного пользователя, чтобы получать push-уведомления. Если токен для этого пользователя уже существует, обновляет платформу и время последнего использования.
     *   Аутентификация: **Требуется** (`Authorization: Bearer <access_token>`).
     *   Тело запроса (`application/json`):
@@ -233,7 +233,7 @@
         *   `401 Unauthorized`: Невалидный access токен.
         *   `500 Internal Server Error`: Ошибка базы данных при сохранении токена.
 
-*   **`DELETE /api/device-tokens`**
+*   **`DELETE /api/v1/device-tokens`**
     *   Описание: Удаляет указанный токен устройства из системы. Пользователь больше не будет получать push-уведомления на это устройство.
     *   Аутентификация: **Требуется** (`Authorization: Bearer <access_token>`).
     *   Тело запроса (`application/json`):
@@ -255,15 +255,15 @@
 
 ---
 
-#### Сервис Геймплея (`/api`)
+#### Сервис Геймплея (`/api/v1`)
 
 Управляет процессом создания, редактирования, публикации и прохождения историй.
 
-**Важное замечание:** Внутри `gameplay-service` и в его API идентификация пользователей (`user_id`) и сущностей (черновики, опубликованные истории) происходит с использованием **`uuid.UUID`**. Это отличается от старого числового `user_id`, который мог использоваться ранее. Эндпоинт `/api/me` из сервиса `auth` также возвращает `user_id` как UUID.
+**Важное замечание:** Внутри `gameplay-service` и в его API идентификация пользователей (`user_id`) и сущностей (черновики, опубликованные истории) происходит с использованием **`uuid.UUID`**. Это отличается от старого числового `user_id`, который мог использоваться ранее. Эндпоинт `/api/v1/me` из сервиса `auth` также возвращает `user_id` как UUID.
 
-##### Черновики историй (`/api/stories`)
+##### Черновики историй (`/api/v1/stories`)
 
-*   **`POST /api/stories/generate`**
+*   **`POST /api/v1/stories/generate`**
     *   Описание: Запуск генерации **нового** черновика истории на основе промпта.
     *   Аутентификация: **Требуется.**
     *   Тело запроса (`application/json`):
@@ -286,7 +286,7 @@
         *   `409 Conflict` (`{"message": "User already has an active generation task"}`): У пользователя уже есть активная задача генерации.
         *   `500 Internal Server Error`: Ошибка при создании записи в БД или постановке задачи в очередь. **Примечание:** Если ошибка произошла *после* создания записи, но *до* отправки задачи, тело ответа может содержать созданный `StoryConfig` со статусом `error`.
 
-*   **`GET /api/stories`**
+*   **`GET /api/v1/stories`**
     *   Описание: Получение списка **своих** черновиков (`StoryConfig`). Поддерживает курсорную пагинацию.
     *   Аутентификация: **Требуется.**
     *   Query параметры:
@@ -313,7 +313,7 @@
         *   `401 Unauthorized`: Невалидный токен.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`GET /api/stories/:id`**
+*   **`GET /api/v1/stories/:id`**
     *   Описание: Получение детальной информации о **своем** черновике по его UUID. Возвращает либо базовую информацию (если генерация не завершена/ошибка), либо распарсенный конфиг.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:id` - UUID черновика (`StoryConfig`).
@@ -360,7 +360,7 @@
         *   `404 Not Found`: Черновик не найден.
         *   `500 Internal Server Error`: Ошибка парсинга JSON конфига или другая внутренняя ошибка.
 
-*   **`POST /api/stories/:id/revise`**
+*   **`POST /api/v1/stories/:id/revise`**
     *   Описание: Запуск задачи на **перегенерацию** существующего черновика на основе новой инструкции.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:id` - UUID черновика (`StoryConfig`).
@@ -379,7 +379,7 @@
         *   `409 Conflict` (`{"message": "Story config is not in draft state" | "User already has an active generation task"}`): Черновик не готов к ревизии или у пользователя уже есть задача.
         *   `500 Internal Server Error`: Ошибка при обновлении БД или постановке задачи.
 
-*   **`POST /api/stories/:id/publish`**
+*   **`POST /api/v1/stories/:id/publish`**
     *   Описание: Публикация готового черновика. Создает запись `PublishedStory` и первую сцену на основе конфига.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:id` - UUID черновика (`StoryConfig`).
@@ -398,7 +398,7 @@
         *   `409 Conflict` (`{"message": "Story config is not in draft state"}`): Черновик не готов к публикации.
         *   `500 Internal Server Error`: Ошибка при создании `PublishedStory`, сцены или обновлении статуса черновика.
 
-*   **`POST /api/stories/drafts/:draft_id/retry`**
+*   **`POST /api/v1/stories/drafts/:draft_id/retry`**
     *   Описание: Повторный запуск задачи генерации для черновика, который завершился с ошибкой (`status: "error"`).
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:draft_id` - UUID черновика (`StoryConfig`).
@@ -412,7 +412,7 @@
         *   `409 Conflict` (`{"message": "Story config is not in error state" | "User already has an active generation task"}`): Черновик не в статусе ошибки или у пользователя уже есть задача.
         *   `500 Internal Server Error`: Ошибка при обновлении БД или постановке задачи.
 
-*   **`DELETE /api/stories/:id`**
+*   **`DELETE /api/v1/stories/:id`**
     *   Описание: Удаление **своего** черновика истории.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:id` - UUID черновика (`StoryConfig`).
@@ -425,12 +425,12 @@
         *   `404 Not Found`: Черновик не найден.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера при удалении.
 
-##### Опубликованные истории (`/api/published-stories`)
+##### Опубликованные истории (`/api/v1/published-stories`)
 
-*   **`GET /api/published-stories/me`**
+*   **`GET /api/v1/published-stories/me`**
     *   Описание: Получение списка **своих** опубликованных историй. Поддерживает курсорную пагинацию.
     *   Аутентификация: **Требуется.**
-    *   Query параметры: `limit`, `cursor` (аналогично `/api/stories`).
+    *   Query параметры: `limit`, `cursor` (аналогично `/api/v1/stories`).
     *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`.
         ```json
         {
@@ -460,7 +460,7 @@
         *   `401 Unauthorized`: Невалидный токен.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`GET /api/published-stories/public`**
+*   **`GET /api/v1/published-stories/public`**
     *   Описание: Получение списка **публичных** опубликованных историй (доступных всем). Поддерживает курсорную пагинацию.
     *   Аутентификация: **Требуется** (проверяется токен, но доступ не ограничивается автором).
     *   Query параметры: `limit`, `cursor`.
@@ -493,7 +493,7 @@
         *   `401 Unauthorized`: Невалидный токен.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`GET /api/published-stories/:story_id`**
+*   **`GET /api/v1/published-stories/:story_id`**
     *   Описание: Получение детальной информации об **одной** опубликованной истории с распарсенными полями конфига/сетапа и списком сохранений текущего пользователя.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:story_id` - UUID опубликованной истории (`PublishedStory`).
@@ -547,7 +547,7 @@
         *   `404 Not Found`: История не найдена.
         *   `500 Internal Server Error`: Внутренняя ошибка (например, ошибка парсинга JSON или получения данных).
 
-*   **`GET /api/published-stories/:story_id/gamestates`**
+*   **`GET /api/v1/published-stories/:story_id/gamestates`**
     *   Описание: Получение списка состояний игры (сохранений) для **текущего пользователя** в указанной опубликованной истории.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:story_id` - UUID опубликованной истории (`PublishedStory`).
@@ -575,7 +575,7 @@
         *   `404 Not Found`: Опубликованная история не найдена.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`GET /api/published-stories/:story_id/gamestates/:game_state_id/scene`**
+*   **`GET /api/v1/published-stories/:story_id/gamestates/:game_state_id/scene`**
     *   Описание: Получение текущей сцены для **конкретного состояния игры (сохранения)**. Если идет генерация следующей сцены для этого состояния, возвращается ошибка `409 Conflict`.
     *   Аутентификация: **Требуется.**
     *   Параметры пути:
@@ -630,7 +630,7 @@
         *   `409 Conflict` (`{"code": ..., "message": "Scene generation in progress" | "Game over generation in progress" | "Game already completed"}`): Невозможно получить сцену из-за текущего статуса состояния игры.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`POST /api/published-stories/:story_id/gamestates/:game_state_id/choice`**
+*   **`POST /api/v1/published-stories/:story_id/gamestates/:game_state_id/choice`**
     *   Описание: Отправка выбора игрока для текущей сцены в **конкретном состоянии игры (сохранении)**. Запускает процесс обновления состояния и генерации следующей сцены/концовки (асинхронно).
     *   Аутентификация: **Требуется.**
     *   Параметры пути:
@@ -650,7 +650,7 @@
         *   `409 Conflict` (`{"code": ..., "message": "Player not in 'Playing' status" | "Scene generation in progress"}`): Невозможно сделать выбор из-за текущего статуса состояния игры.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`DELETE /api/published-stories/:story_id/gamestates/:game_state_id`**
+*   **`DELETE /api/v1/published-stories/:story_id/gamestates/:game_state_id`**
     *   Описание: Удаление конкретного состояния игры (слота сохранения) для **своей** игровой сессии в опубликованной истории.
     *   Аутентификация: **Требуется.**
     *   Параметры пути:
@@ -663,7 +663,7 @@
         *   `404 Not Found`: Опубликованная история или указанное состояние игры не найдены (или состояние игры не принадлежит пользователю).
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`POST /api/published-stories/:story_id/like`**
+*   **`POST /api/v1/published-stories/:story_id/like`**
     *   Описание: Поставить лайк опубликованной истории.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:story_id` - UUID опубликованной истории (`PublishedStory`).
@@ -676,7 +676,7 @@
         *   `409 Conflict` (`{"message": "story already liked by this user"}`): Пользователь уже лайкнул эту историю.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`DELETE /api/published-stories/:story_id/like`**
+*   **`DELETE /api/v1/published-stories/:story_id/like`**
     *   Описание: Убрать лайк с опубликованной истории.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:story_id` - UUID опубликованной истории (`PublishedStory`).
@@ -688,7 +688,7 @@
         *   `404 Not Found` (`{"message": "story not liked by this user yet"}`): Пользователь не лайкал эту историю.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`DELETE /api/published-stories/:story_id`**
+*   **`DELETE /api/v1/published-stories/:story_id`**
     *   Описание: Удаление **своей** опубликованной истории.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:story_id` - UUID опубликованной истории (`PublishedStory`).
@@ -701,7 +701,7 @@
         *   `404 Not Found`: История не найдена.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера при удалении.
 
-*   **`POST /api/published-stories/:story_id/retry`**
+*   **`POST /api/v1/published-stories/:story_id/retry`**
     *   Описание: Повторный запуск **начальных** шагов генерации для опубликованной истории, которая имеет статус ошибки или у которой отсутствуют необходимые компоненты (Setup, текст первой сцены, изображение обложки, изображения персонажей). Эндпоинт последовательно проверяет и запускает перегенерацию необходимого шага: сначала Setup, затем текст первой сцены, затем изображение обложки, и, наконец, проверяет и запускает (асинхронно) генерацию недостающих изображений персонажей, если флаг `are_images_pending` установлен. Этот эндпоинт **не** ретраит генерацию сцен *после* первой.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:story_id` - UUID опубликованной истории (`PublishedStory`).
@@ -714,7 +714,7 @@
         *   `409 Conflict` (`{"message": "Story/initial state is not in error state"}`): История или начальное состояние игры не в статусе ошибки.
         *   `500 Internal Server Error`: Ошибка при обновлении статуса или постановке задачи.
 
-*   **`POST /api/published-stories/:story_id/gamestates/:game_state_id/retry`**
+*   **`POST /api/v1/published-stories/:story_id/gamestates/:game_state_id/retry`**
     *   Описание: Повторный запуск задачи генерации **конкретной** сцены для указанного состояния игры (`PlayerGameState`), которое завершилось с ошибкой (`playerStatus: "error"`).
     *   Аутентификация: **Требуется.**
     *   Параметры пути:
@@ -730,7 +730,7 @@
         *   `409 Conflict` (`{"message": "Game state is not in error state"}`): Состояние игры не в статусе ошибки.
         *   `500 Internal Server Error`: Ошибка при обновлении статуса или постановке задачи.
 
-*   **`PATCH /api/published-stories/:story_id/visibility`**
+*   **`PATCH /api/v1/published-stories/:story_id/visibility`**
     *   Описание: Изменение видимости **своей** опубликованной истории (сделать публичной или приватной).
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:story_id` - UUID опубликованной истории (`PublishedStory`).
@@ -749,7 +749,7 @@
         *   `409 Conflict` (`{"message": "Story is not ready for publishing" | "Adult content cannot be made public"}`): История не готова к публикации или контент 18+ не может быть сделан публичным.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
-*   **`POST /api/published-stories/:story_id/gamestates`**
+*   **`POST /api/v1/published-stories/:story_id/gamestates`**
     *   Описание: Создание нового (и единственного) состояния игры (сохранения) для **текущего пользователя** в указанной опубликованной истории. Вызывается, когда игрок нажимает "Начать игру".
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:story_id` - UUID опубликованной истории (`PublishedStory`).
@@ -993,7 +993,7 @@
 1.  **Начало игры (Создание Сохранения):**
     *   Пользователь выбирает историю и нажимает "Начать игру" (или "Продолжить", если есть сохранения).
     *   Если сохранений нет или пользователь хочет начать заново, клиент отправляет запрос:
-        *   `POST /api/published-stories/:story_id/gamestates`
+        *   `POST /api/v1/published-stories/:story_id/gamestates`
     *   Сервер создает новое состояние игры (`PlayerGameState`) и возвращает его (`201 Created`):
         ```json
         {
@@ -1007,7 +1007,7 @@
 
 2.  **Запрос текущей сцены:**
     *   Клиент использует сохраненный `game_state_id` и отправляет запрос:
-        *   `GET /api/published-stories/:story_id/gamestates/:game_state_id/scene`
+        *   `GET /api/v1/published-stories/:story_id/gamestates/:game_state_id/scene`
     *   Сервер возвращает текущую сцену (`200 OK`, см. описание DTO `GameSceneResponseDTO` выше, теперь полностью в `snake_case`) или ошибку:
         *   `409 Conflict`: Если сцена или концовка еще генерируется (`generating_scene` или `game_over_pending`). Клиент должен подождать WebSocket-события.
         *   `404 Not Found`: Состояние игры не найдено (маловероятно, если ID был только что получен).
@@ -1022,7 +1022,7 @@
 
 4.  **Отправка выбора:**
     *   Клиент отправляет сделанный выбор на сервер:
-        *   `POST /api/published-stories/:story_id/gamestates/:game_state_id/choice`
+        *   `POST /api/v1/published-stories/:story_id/gamestates/:game_state_id/choice`
         *   Тело запроса: `{"selected_option_indices": [ index1, index2, ...]}` (поле уже в `snake_case`)
     *   Сервер принимает выбор (`200 OK`), обновляет внутреннее состояние прогресса и **асинхронно** запускает задачу на генерацию следующей сцены или концовки.
 
@@ -1040,7 +1040,7 @@
         *   Событие: `scene_error` или `game_over_error`
         *   Payload: `{"published_story_id": "...", "game_state_id": "...", "error": "..."}` (для `scene_error`) или `{"published_story_id": "...", "error": "..."}` (для `game_over_error`) (поля в `snake_case`)
         *   Действие клиента: Показать пользователю сообщение об ошибке. Можно предложить кнопку "Попробовать снова", которая вызовет:
-            *   `POST /api/published-stories/:story_id/gamestates/:game_state_id/retry`
+            *   `POST /api/v1/published-stories/:story_id/gamestates/:game_state_id/retry`
             После успешного ответа `202 Accepted` на ретрай, клиент снова **переходит к шагу 5** (Ожидание WebSocket).
 
 6.  **Цикл:** Шаги 2-5 повторяются, пока не будет получена сцена с `ending_text`.
