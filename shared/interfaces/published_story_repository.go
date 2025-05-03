@@ -101,9 +101,6 @@ type PublishedStoryRepository interface {
 	// GetConfigAndSetup получает Config и Setup по ID истории.
 	GetConfigAndSetup(ctx context.Context, id uuid.UUID) (json.RawMessage, json.RawMessage, error)
 
-	// UpdatePreviewImageReference обновляет ссылку на изображение превью.
-	UpdatePreviewImageReference(ctx context.Context, id uuid.UUID, imageRef *string) error
-
 	// FindAndMarkStaleGeneratingAsError находит опубликованные истории, которые 'зависли' в статусе генерации,
 	// и обновляет их статус на StatusError.
 	// staleThreshold: длительность, после которой история считается зависшей (например, 1 час).

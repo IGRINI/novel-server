@@ -505,7 +505,7 @@ func (p *NotificationProcessor) checkStoryReadinessAfterImage(ctx context.Contex
 	log := p.logger.With(zap.Stringer("publishedStoryID", publishedStoryID))
 	log.Info("Checking story readiness after image generated")
 
-	dbCtx, cancel := context.WithTimeout(ctx, 30*time.Second) // Таймаут для всех DB операций
+	dbCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // <<< ИЗМЕНЕНИЕ: Используем context.Background()
 	defer cancel()
 
 	// 1. Получаем текущее состояние истории

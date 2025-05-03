@@ -4,12 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"novel-server/shared/interfaces"
 	"time"
 
 	"github.com/rabbitmq/amqp091-go"
 	"github.com/rs/zerolog/log"
-
-	"novel-server/shared/interfaces"
 )
 
 const (

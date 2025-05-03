@@ -36,7 +36,7 @@ func NewRabbitMQNotifier(ch *amqp.Channel, cfg *config.Config) (Notifier, error)
 		false,
 		false,
 		false,
-		nil,
+		amqp.Table{"x-queue-mode": "lazy"},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("не удалось объявить очередь уведомлений '%s': %w", queueName, err)

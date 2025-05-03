@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -134,14 +136,16 @@ func (s *imageServiceImpl) GenerateAndStoreImage(ctx context.Context, taskPayloa
 	log.Info("Image saved to file", zap.String("path", filePath))
 
 	// 3. Формируем публичный URL
-	// Объединяем базовый URL и имя файла.
-	imageURL := s.imageBaseURL + "/" + fileName
-	// Убираем двойные слеши, если imageBaseURL содержит / в конце
-	imageURL = strings.Replace(imageURL, "//", "/", -1)
-	if !strings.HasPrefix(imageURL, "https://") && !strings.HasPrefix(imageURL, "http://") {
-		// По умолчанию добавляем https, если протокол не указан
-		imageURL = "https://" + imageURL // Предполагаем HTTPS для публичных URL
+	// Используем net/url для корректного объединения путей
+	baseURL, errBase := url.Parse(strings.TrimSuffix(s.imageBaseURL, "/")) // Убираем слэш в конце базового URL
+	if errBase != nil {
+		log.Error("Failed to parse image base URL", zap.String("base_url", s.imageBaseURL), zap.Error(errBase))
+		return GenerateImageResult{Error: fmt.Errorf("invalid image base URL configured: %w", errBase)}
 	}
+	// Добавляем имя файла к пути базового URL
+	baseURL.Path = path.Join(baseURL.Path, fileName) // Используем path.Join для корректной сборки пути
+	imageURL := baseURL.String()
+
 	log.Info("Public image URL generated", zap.String("url", imageURL))
 
 	// 4. Вернуть URL
