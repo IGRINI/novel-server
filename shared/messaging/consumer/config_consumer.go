@@ -15,6 +15,11 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	configUpdateExchange     = "config_update_exchange"
+	configUpdateExchangeType = "fanout"
+)
+
 // ConfigUpdateConsumer слушает сообщения об обновлении конфигурации.
 type ConfigUpdateConsumer struct {
 	conn        *amqp.Connection
@@ -33,13 +38,11 @@ func NewConfigUpdateConsumer(
 	conn *amqp.Connection,
 	configSvc *configservice.ConfigService, // Use shared ConfigService type
 	logger *zap.Logger,
-	queueName string,
 ) *ConfigUpdateConsumer {
 	return &ConfigUpdateConsumer{
 		conn:      conn,
 		configSvc: configSvc,
 		logger:    logger.Named("ConfigUpdateConsumer"),
-		queueName: queueName,
 		stopChan:  make(chan struct{}),
 	}
 }
@@ -59,31 +62,57 @@ func (c *ConfigUpdateConsumer) Start(ctx context.Context) error {
 	}
 	c.channel = ch
 
+	// Объявляем Exchange (fanout, durable)
+	err = ch.ExchangeDeclare(
+		configUpdateExchange,
+		configUpdateExchangeType,
+		true,  // durable
+		false, // auto-deleted
+		false, // internal
+		false, // no-wait
+		nil,   // arguments
+	)
+	if err != nil {
+		c.cleanupChannel()
+		return fmt.Errorf("ошибка объявления exchange '%s': %w", configUpdateExchange, err)
+	}
+
+	// Объявляем временную, эксклюзивную очередь (durable=false, exclusive=true, autoDelete=true)
+	q, err := ch.QueueDeclare(
+		"",    // name (пустое для автогенерации)
+		false, // durable
+		true,  // delete when unused (auto-delete)
+		true,  // exclusive (только это соединение)
+		false, // no-wait
+		nil,   // arguments
+	)
+	if err != nil {
+		c.cleanupChannel()
+		return fmt.Errorf("ошибка объявления временной очереди для config updates: %w", err)
+	}
+	c.queueName = q.Name // Сохраняем имя временной очереди
+	c.logger.Info("Объявлена временная очередь для config updates", zap.String("queueName", c.queueName))
+
+	// Биндим очередь к exchange
+	err = ch.QueueBind(
+		c.queueName,
+		"", // routing key (не используется для fanout)
+		configUpdateExchange,
+		false,
+		nil,
+	)
+	if err != nil {
+		c.cleanupChannel()
+		return fmt.Errorf("ошибка биндинга очереди '%s' к exchange '%s': %w", c.queueName, configUpdateExchange, err)
+	}
+
 	// Используем переданный контекст для возможности отмены извне
 	localCtx, cancel := context.WithCancel(ctx)
 	c.cancelFunc = cancel
 
-	// Объявляем очередь (на случай, если она еще не создана)
-	// Это не обязательно, если main.go уже ее объявляет, но делает консьюмера более самодостаточным.
-	_, err = ch.QueueDeclare(
-		c.queueName, // name
-		true,        // durable
-		false,       // delete when unused
-		false,       // exclusive
-		false,       // no-wait
-		// nil,      // arguments (здесь не нужны специфичные аргументы типа DLX)
-		amqp.Table{"x-queue-mode": "lazy"}, // Добавляем lazy mode
-	)
-	if err != nil {
-		ch.Close() // Закрываем канал при ошибке
-		c.channel = nil
-		return fmt.Errorf("ошибка объявления очереди '%s': %w", c.queueName, err)
-	}
-
 	// Устанавливаем QoS для этого канала
 	if err := ch.Qos(1, 0, false); err != nil {
-		ch.Close()
-		c.channel = nil
+		c.cleanupChannel()
 		return fmt.Errorf("ошибка установки QoS для ConfigUpdateConsumer: %w", err)
 	}
 
@@ -95,13 +124,12 @@ func (c *ConfigUpdateConsumer) Start(ctx context.Context) error {
 		c.consumerTag,
 		false, // autoAck = false
 		false, // exclusive
-		false, // noLocal - не поддерживается RabbitMQ
+		false, // noLocal
 		false, // noWait
 		nil,   // args
 	)
 	if err != nil {
-		ch.Close()
-		c.channel = nil
+		c.cleanupChannel()
 		return fmt.Errorf("ошибка регистрации консьюмера '%s': %w", c.queueName, err)
 	}
 

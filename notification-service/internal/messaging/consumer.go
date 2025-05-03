@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	// "novel-server/notification-service/internal/service" // Убираем импорт service
+	sharedModels "novel-server/shared/models" // <<< Добавляем импорт
 	"sync"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 // NotificationSender определяет интерфейс для отправки уведомлений.
 // Перенесен сюда из пакета service для избежания цикла импорта.
 type NotificationSender interface {
-	SendNotification(ctx context.Context, payload PushNotificationPayload) error
+	SendNotification(ctx context.Context, payload sharedModels.PushNotificationPayload) error
 }
 
 type Consumer struct {
@@ -145,7 +146,7 @@ func NewProcessor(logger *zap.Logger, sender NotificationSender) *Processor {
 func (p *Processor) ProcessMessage(ctx context.Context, d amqp.Delivery) {
 	p.logger.Debug("Обработка сообщения", zap.Uint64("delivery_tag", d.DeliveryTag))
 
-	var payload PushNotificationPayload
+	var payload sharedModels.PushNotificationPayload
 	if err := json.Unmarshal(d.Body, &payload); err != nil {
 		p.logger.Error("Ошибка десериализации JSON",
 			zap.Error(err),

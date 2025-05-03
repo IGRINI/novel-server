@@ -23,6 +23,7 @@ type Config struct {
 	// Настройки RabbitMQ
 	RabbitMQURL              string `envconfig:"RABBITMQ_URL" default:"amqp://guest:guest@localhost:5672/"`
 	InternalUpdatesQueueName string `envconfig:"INTERNAL_UPDATES_QUEUE_NAME" default:"internal_updates"`
+	ConfigUpdatesQueueName   string `envconfig:"CONFIG_UPDATES_QUEUE_NAME" default:"config_updates"`
 
 	// Настройки Pushgateway
 	PushgatewayURL string `envconfig:"PUSHGATEWAY_URL" default:"http://localhost:9091"`
@@ -94,6 +95,7 @@ func LoadConfig() (*Config, error) {
 	log.Printf("  Log Output: %s", cfg.LogOutput)
 	log.Printf("  RabbitMQ URL: %s", cfg.RabbitMQURL)
 	log.Printf("  Internal Updates Queue: %s", cfg.InternalUpdatesQueueName)
+	log.Printf("  Config Updates Queue: %s", cfg.ConfigUpdatesQueueName)
 	log.Printf("  Pushgateway URL: %s", cfg.PushgatewayURL)
 	// Параметры AI теперь читаются из dynamic_configs, здесь не логируем
 	log.Printf("  DB Host: %s", cfg.DBHost)

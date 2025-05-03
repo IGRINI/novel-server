@@ -8,35 +8,51 @@ import (
 	"fmt"
 	"time"
 
-	// Внутренние импорты (включая shared)
 	"novel-server/shared/constants"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
+	"novel-server/shared/notifications"
+	"novel-server/shared/utils"
 
-	// Внешние импорты
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
+
+// stringRef возвращает указатель на строку.
+func stringRef(s string) *string {
+	return &s
+}
 
 func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Context, notification sharedMessaging.NotificationPayload, publishedStoryID uuid.UUID) error {
 	taskID := notification.TaskID
 	dbCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	p.logger.Info("Processing Scene/GameOver",
+	gameStateID, errParseStateID := uuid.Parse(notification.GameStateID)
+	if errParseStateID != nil {
+		p.logger.Error("ERROR: Failed to parse GameStateID from scene notification", zap.Error(errParseStateID))
+		return fmt.Errorf("invalid GameStateID: %w", errParseStateID) // Nack
+	}
+	_ = gameStateID // Используем blank identifier, если ID больше не нужен напрямую
+
+	logWithState := p.logger.With(
 		zap.String("task_id", taskID),
 		zap.String("published_story_id", publishedStoryID.String()),
 		zap.String("state_hash", notification.StateHash),
 	)
+	logWithState.Info("Processing Scene/GameOver")
 
+	var parseErr error
+	var finalGameState *sharedModels.PlayerGameState
+	var finalScene *sharedModels.StoryScene
+	var wsEventToSend string
+	var errorDetailsForWs *string
+	var storyForWs *sharedModels.PublishedStory // Для получения UserID при ошибке
+
+	// --- Обработка УСПЕХА генерации ---
 	if notification.Status == sharedMessaging.NotificationStatusSuccess {
-		p.logger.Info("Scene/GameOver Success notification",
-			zap.String("task_id", taskID),
-			zap.String("published_story_id", publishedStoryID.String()),
-			zap.String("state_hash", notification.StateHash),
-		)
+		logWithState.Info("Scene/GameOver Success notification")
 
-		var parseErr error
 		var rawGeneratedText string
 
 		genResultCtx, genResultCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -44,34 +60,21 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 		genResultCancel()
 
 		if genErr != nil {
-			p.logger.Error("DB ERROR (Scene): Could not get GenerationResult by TaskID",
-				zap.String("task_id", taskID),
-				zap.String("published_story_id", publishedStoryID.String()),
-				zap.String("state_hash", notification.StateHash),
-				zap.Error(genErr),
-			)
+			logWithState.Error("DB ERROR (Scene): Could not get GenerationResult by TaskID", zap.Error(genErr))
 			parseErr = fmt.Errorf("failed to fetch generation result: %w", genErr)
 		} else if genResult.Error != "" {
-			p.logger.Error("TASK ERROR (Scene): GenerationResult indicates an error",
-				zap.String("task_id", taskID),
-				zap.String("published_story_id", publishedStoryID.String()),
-				zap.String("state_hash", notification.StateHash),
-				zap.String("gen_error", genResult.Error),
-			)
+			logWithState.Error("TASK ERROR (Scene): GenerationResult indicates an error", zap.String("gen_error", genResult.Error))
 			parseErr = errors.New(genResult.Error)
 		} else {
 			rawGeneratedText = genResult.GeneratedText
-			p.logger.Debug("Successfully fetched GeneratedText from DB", zap.String("task_id", taskID))
+			logWithState.Debug("Successfully fetched GeneratedText from DB")
 		}
 
 		if parseErr == nil {
-			jsonToParse := extractJsonContent(rawGeneratedText)
+			jsonToParse := utils.ExtractJsonContent(rawGeneratedText)
 			if jsonToParse == "" {
-				p.logger.Error("SCENE PARSING ERROR: Could not extract JSON from Scene/GameOver text (fetched)",
-					zap.String("task_id", taskID),
-					zap.String("published_story_id", publishedStoryID.String()),
-					zap.String("state_hash", notification.StateHash),
-					zap.String("raw_text_snippet", stringShort(rawGeneratedText, 100)),
+				logWithState.Error("SCENE PARSING ERROR: Could not extract JSON from Scene/GameOver text (fetched)",
+					zap.String("raw_text_snippet", utils.StringShort(rawGeneratedText, 100)),
 				)
 				parseErr = errors.New("failed to extract JSON block from Scene/GameOver text")
 			} else {
@@ -80,48 +83,36 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 
 				var tempSceneContentData interface{}
 				if err := json.Unmarshal(sceneContentJSON, &tempSceneContentData); err != nil {
-					p.logger.Error("INVALID SCENE JSON: Failed to parse Scene/GameOver JSON content before saving (fetched)",
-						zap.String("task_id", taskID),
-						zap.String("published_story_id", publishedStoryID.String()),
-						zap.String("state_hash", notification.StateHash),
+					logWithState.Error("INVALID SCENE JSON: Failed to parse Scene/GameOver JSON content before saving (fetched)",
 						zap.Error(err),
-						zap.String("json_to_parse", stringShort(jsonToParse, 500)),
+						zap.String("json_to_parse", utils.StringShort(jsonToParse, 500)),
 					)
 					parseErr = fmt.Errorf("invalid scene JSON format: %w", err)
 				} else {
-					p.logger.Info("Scene JSON content validated successfully", zap.String("task_id", taskID))
+					logWithState.Info("Scene JSON content validated successfully")
 
 					contentMap, ok := tempSceneContentData.(map[string]interface{})
 					if !ok {
-						p.logger.Error("SCENE STRUCTURE ERROR: Parsed JSON is not a map",
-							zap.String("task_id", taskID),
-							zap.String("published_story_id", publishedStoryID.String()),
-							zap.String("state_hash", notification.StateHash),
+						logWithState.Error("SCENE STRUCTURE ERROR: Parsed JSON is not a map",
 							zap.String("type_found", fmt.Sprintf("%T", tempSceneContentData)),
 						)
 						parseErr = errors.New("parsed scene JSON is not an object")
 					} else {
 						choicesData, keyExists := contentMap["ch"]
 						if !keyExists {
-							p.logger.Error("SCENE STRUCTURE ERROR: Missing 'ch' key in scene JSON",
-								zap.String("task_id", taskID),
-								zap.String("published_story_id", publishedStoryID.String()),
-								zap.String("state_hash", notification.StateHash),
-								zap.Any("parsed_keys", getMapKeys(contentMap)),
+							logWithState.Error("SCENE STRUCTURE ERROR: Missing 'ch' key in scene JSON",
+								zap.Any("parsed_keys", utils.GetMapKeys(contentMap)),
 							)
 							parseErr = errors.New("missing 'ch' key in scene JSON")
 						} else {
 							_, isArray := choicesData.([]interface{})
 							if !isArray {
-								p.logger.Error("SCENE STRUCTURE ERROR: Value for 'ch' key is not an array",
-									zap.String("task_id", taskID),
-									zap.String("published_story_id", publishedStoryID.String()),
-									zap.String("state_hash", notification.StateHash),
+								logWithState.Error("SCENE STRUCTURE ERROR: Value for 'ch' key is not an array",
 									zap.String("type_found", fmt.Sprintf("%T", choicesData)),
 								)
 								parseErr = errors.New("value for 'ch' key is not an array")
 							} else {
-								p.logger.Info("Scene JSON structure validated successfully (contains 'ch' array)", zap.String("task_id", taskID))
+								logWithState.Info("Scene JSON structure validated successfully (contains 'ch' array)")
 
 								if notification.PromptType == sharedModels.PromptTypeNovelGameOverCreator {
 									var endingContent struct {
@@ -314,14 +305,14 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 														p.logger.Error("Failed to get PublishedStory for WebSocket update after success", zap.String("task_id", taskID), zap.Error(errGetStory))
 													} else {
 														// Отправляем WebSocket уведомление
-														wsEvent := ClientStoryUpdate{
+														wsEvent := sharedModels.ClientStoryUpdate{
 															ID:         publishedStoryID.String(),
 															UserID:     finalPubStory.UserID.String(),
-															UpdateType: UpdateTypeStory,
+															UpdateType: sharedModels.UpdateTypeStory,
 															Status:     string(finalPubStory.Status),
-															SceneID:    scene.ID.String(),
+															SceneID:    stringRef(scene.ID.String()),
 															StateHash:  notification.StateHash,
-															EndingText: endingText, // endingText был определен выше
+															EndingText: endingText,
 														}
 														wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
 														if errWs := p.clientPub.PublishClientUpdate(wsCtx, wsEvent); errWs != nil {
@@ -379,12 +370,12 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 			if errGetStory != nil {
 				p.logger.Error("Failed to get PublishedStory for WebSocket update after processing error", zap.String("task_id", taskID), zap.Error(errGetStory))
 			} else {
-				clientUpdateError := ClientStoryUpdate{
+				clientUpdateError := sharedModels.ClientStoryUpdate{
 					ID:           publishedStoryID.String(),
 					UserID:       storyForWsUpdate.UserID.String(),
-					UpdateType:   UpdateTypeStory,
+					UpdateType:   sharedModels.UpdateTypeStory,
 					Status:       string(sharedModels.StatusError),
-					ErrorDetails: &errDetails,
+					ErrorDetails: stringRef(errDetails),
 					StateHash:    notification.StateHash,
 				}
 				wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -414,7 +405,7 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 						)
 					} else {
 						gameState.PlayerStatus = sharedModels.PlayerStatusError
-						gameState.ErrorDetails = &notification.ErrorDetails
+						gameState.ErrorDetails = stringRef(errDetails)
 						gameState.LastActivityAt = time.Now().UTC()
 						if _, errSaveState := p.playerGameStateRepo.Save(ctx, gameState); errSaveState != nil {
 							p.logger.Error("ERROR: Failed to save PlayerGameState with Error status",
@@ -481,7 +472,7 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 					)
 				} else {
 					gameState.PlayerStatus = sharedModels.PlayerStatusError
-					gameState.ErrorDetails = &notification.ErrorDetails
+					gameState.ErrorDetails = stringRef(notification.ErrorDetails)
 					gameState.LastActivityAt = time.Now().UTC()
 					if _, errSaveState := p.playerGameStateRepo.Save(ctx, gameState); errSaveState != nil {
 						p.logger.Error("ERROR: Failed to save PlayerGameState with Error status",
@@ -505,12 +496,12 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 		}
 
 		if storyForWsUpdate != nil {
-			clientUpdateError := ClientStoryUpdate{
+			clientUpdateError := sharedModels.ClientStoryUpdate{
 				ID:           publishedStoryID.String(),
 				UserID:       storyForWsUpdate.UserID.String(),
-				UpdateType:   UpdateTypeStory,
+				UpdateType:   sharedModels.UpdateTypeStory,
 				Status:       string(sharedModels.StatusError),
-				ErrorDetails: &notification.ErrorDetails,
+				ErrorDetails: stringRef(notification.ErrorDetails),
 				StateHash:    notification.StateHash,
 			}
 			wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -522,7 +513,81 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 			}
 		}
 	}
-	return nil
+
+	// <<< ВОССТАНОВЛЕННЫЙ БЛОК: ОТПРАВКА WebSocket УВЕДОМЛЕНИЯ >>>
+	if wsEventToSend != "" { // Отправляем, если событие было определено
+		var sceneIDToSend *string
+		if finalScene != nil {
+			sid := finalScene.ID.String()
+			sceneIDToSend = &sid
+		}
+		stateHashForWs := notification.StateHash // Всегда берем из уведомления
+		var endingTextForWs *string
+		var userIDForWs string
+		var storyIDForWs string
+		var statusForWs string
+
+		if finalGameState != nil { // Если есть состояние игры
+			userIDForWs = finalGameState.PlayerID.String()
+			storyIDForWs = finalGameState.PublishedStoryID.String()
+			endingTextForWs = finalGameState.EndingText       // Может быть nil
+			statusForWs = string(finalGameState.PlayerStatus) // Берем статус из GameState
+		} else if storyForWs != nil { // Если состояния нет, но есть история (для ошибки)
+			userIDForWs = storyForWs.UserID.String()
+			storyIDForWs = storyForWs.ID.String()
+			statusForWs = string(sharedModels.StatusError) // Статус Error
+		} else { // Не можем определить UserID
+			p.logger.Error("Cannot send WS update for scene, failed to determine UserID", zap.Stringer("gameStateID", gameStateID), zap.Stringer("publishedStoryID", publishedStoryID))
+			// Не возвращаем ошибку, чтобы не Nack'ать, просто не шлем WS
+		}
+
+		if userIDForWs != "" { // Если UserID определен
+			// Создаем объект ClientStoryUpdate для отправки
+			clientUpdate := sharedModels.ClientStoryUpdate{
+				ID:         storyIDForWs,
+				UserID:     userIDForWs,
+				UpdateType: sharedModels.UpdateTypeStory, // TODO: Определять GameState на основе finalGameState?
+				Status:     statusForWs,
+				StateHash:  stateHashForWs,
+				EndingText: endingTextForWs, // Может быть nil
+			}
+			if sceneIDToSend != nil {
+				clientUpdate.SceneID = sceneIDToSend                       // Просто присваиваем *string
+				clientUpdate.UpdateType = sharedModels.UpdateTypeGameState // Устанавливаем тип GameState, если есть SceneID
+				if finalGameState != nil {
+					clientUpdate.ID = finalGameState.ID.String() // Используем ID GameState, если он есть
+				} else {
+					p.logger.Warn("SceneID present, but finalGameState is nil. Cannot set ClientUpdate ID to GameStateID.", zap.String("storyID", storyIDForWs))
+				}
+			}
+			if errorDetailsForWs != nil {
+				clientUpdate.ErrorDetails = errorDetailsForWs
+			}
+
+			// Отправляем в горутине
+			go func(updateToSend sharedModels.ClientStoryUpdate) {
+				if err := p.clientPub.PublishClientUpdate(context.Background(), updateToSend); err != nil {
+					p.logger.Error("Failed to publish client scene update event",
+						zap.String("wsEvent", wsEventToSend),
+						zap.String("updateID", updateToSend.ID),
+						zap.String("updateType", string(updateToSend.UpdateType)), // Преобразуем к string
+						zap.String("userID", updateToSend.UserID),
+						zap.Error(err),
+					)
+				} else {
+					p.logger.Info("Client scene/gameover update event published successfully via RabbitMQ",
+						zap.String("wsEvent", wsEventToSend),
+						zap.String("updateID", updateToSend.ID),
+						zap.String("updateType", string(updateToSend.UpdateType)),
+						zap.String("userID", updateToSend.UserID),
+					)
+				}
+				// Отправка через NATS не требуется, т.к. websocket-service слушает RabbitMQ.
+			}(clientUpdate)
+		}
+	}
+
+	return nil // Подтверждаем сообщение RabbitMQ
 }
 
 // Определение структуры ClientStoryUpdate и PushNotificationPayload
@@ -536,18 +601,9 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 // Helper function (example, already exists in consumer.go)
 // func stringShort(s string, maxLen int) string { ... }
 
-// --- Вспомогательная функция ---
-func getMapKeys(m map[string]interface{}) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
-}
-
-// <<< НАЧАЛО: Новая функция для отправки Push уведомлений для сцены >>>
+// <<< НАЧАЛО: Обновленная функция для отправки Push уведомлений для сцены/концовки >>>
 func (p *NotificationProcessor) publishPushNotificationForScene(ctx context.Context, gameState *sharedModels.PlayerGameState, scene *sharedModels.StoryScene, publishedStoryID uuid.UUID) {
-	// Получаем детали истории для Title и Body
+	// Получаем детали истории для payload
 	story, err := p.publishedRepo.GetByID(ctx, publishedStoryID)
 	if err != nil {
 		p.logger.Error("Failed to get PublishedStory for push notification",
@@ -558,69 +614,62 @@ func (p *NotificationProcessor) publishPushNotificationForScene(ctx context.Cont
 		return // Не отправляем уведомление, если не можем получить детали
 	}
 
-	// <<< ИЗМЕНЕНИЕ: Используем ключи локализации и data payload >>>
-	storyTitle := ""
-	if story.Title != nil {
-		storyTitle = *story.Title
+	// Функция для получения имени автора (аналогично publishPushNotificationForStoryReady)
+	getAuthorName := func(userID uuid.UUID) string {
+		authorName := "Unknown Author"
+		if p.authClient != nil {
+			authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			userInfoMap, err := p.authClient.GetUsersInfo(authCtx, []uuid.UUID{userID})
+			cancel()
+			if err != nil {
+				p.logger.Error("Failed to get author info map for push notification (scene/gameover)", zap.Stringer("userID", userID), zap.Error(err))
+			} else if userInfo, ok := userInfoMap[userID]; ok {
+				if userInfo.DisplayName != "" {
+					authorName = userInfo.DisplayName
+				} else {
+					authorName = userInfo.Username
+				}
+			} else {
+				p.logger.Warn("Author info not found in map from auth service for push notification (scene/gameover)", zap.Stringer("userID", userID))
+			}
+		} else {
+			p.logger.Warn("authClient is nil in NotificationProcessor, cannot fetch author name for push notification")
+		}
+		return authorName
 	}
 
-	locKey := constants.PushLocKeySceneReady
-	locArgs := map[string]string{
-		constants.PushLocArgStoryTitle: storyTitle,
-	}
-	fallbackTitle := "New Scene"
-	fallbackBody := "New scene ready!"
+	var payload *sharedModels.PushNotificationPayload
+	var buildErr error
+	var locKey string // Для логирования
 
 	if gameState.PlayerStatus == sharedModels.PlayerStatusCompleted {
+		// --- Строим Payload для Game Over ---
 		locKey = constants.PushLocKeyGameOver
-		endingText := "You have reached the end of the story."
-		if gameState.EndingText != nil && *gameState.EndingText != "" {
+		endingText := ""
+		if gameState.EndingText != nil {
 			endingText = *gameState.EndingText
 		}
-		locArgs[constants.PushLocArgEndingText] = endingText
-		fallbackTitle = "Game Over!"
-		fallbackBody = fmt.Sprintf("The story \"%s\" has ended.", storyTitle)
+		payload, buildErr = notifications.BuildGameOverPushPayload(story, gameState.ID, scene.ID, endingText, getAuthorName)
+
+	} else {
+		// --- Строим Payload для Scene Ready ---
+		locKey = constants.PushLocKeySceneReady
+		payload, buildErr = notifications.BuildSceneReadyPushPayload(story, gameState.ID, scene.ID, getAuthorName)
 	}
 
-	// Собираем все данные в одну карту
-	data := map[string]string{
-		"publishedStoryId": gameState.PublishedStoryID.String(),
-		"gameStateId":      gameState.ID.String(),
-		"sceneId":          scene.ID.String(),
-		"eventType":        "scene_ready",
-		// Локализация
-		constants.PushLocKey: locKey,
-		// Fallback текст (на английском)
-		constants.PushFallbackTitleKey: fallbackTitle,
-		constants.PushFallbackBodyKey:  fallbackBody,
-	}
-	// Добавляем аргументы локализации
-	for key, value := range locArgs {
-		data[key] = value
-	}
-
-	// Сначала парсим UserID из строки в UUID
-	userID, err := uuid.Parse(gameState.PlayerID.String())
-	if err != nil {
-		p.logger.Error("Failed to parse PlayerID for push notification payload",
-			zap.String("playerIDStr", gameState.PlayerID.String()),
-			zap.Error(err),
+	// Проверяем ошибку сборки payload
+	if buildErr != nil {
+		p.logger.Error("Failed to build push notification payload",
+			zap.String("publishedStoryID", publishedStoryID.String()),
+			zap.String("gameStateID", gameState.ID.String()),
+			zap.String("loc_key", locKey),
+			zap.Error(buildErr),
 		)
-		return // Не можем отправить без валидного UUID
-	}
-
-	// Создаем payload локального типа messaging.PushNotificationPayload
-	payload := PushNotificationPayload{
-		UserID: userID,
-		Notification: PushNotification{
-			Title: data[constants.PushFallbackTitleKey],
-			Body:  data[constants.PushFallbackBodyKey],
-		},
-		Data: data,
+		return
 	}
 
 	// Отправляем уведомление
-	if err := p.pushPub.PublishPushNotification(ctx, payload); err != nil {
+	if err := p.pushPub.PublishPushNotification(ctx, *payload); err != nil {
 		p.logger.Error("Failed to publish push notification for scene/gameover",
 			zap.String("userID", payload.UserID.String()),
 			zap.String("publishedStoryID", publishedStoryID.String()),
@@ -638,67 +687,41 @@ func (p *NotificationProcessor) publishPushNotificationForScene(ctx context.Cont
 	}
 }
 
-// <<< КОНЕЦ: Новая функция для отправки Push уведомлений для сцены >>>
+// <<< КОНЕЦ: Обновленная функция >>>
 
 // <<< НАЧАЛО: Новая функция для отправки Push уведомлений о готовности истории >>>
 func (p *NotificationProcessor) publishPushNotificationForStoryReady(ctx context.Context, story *sharedModels.PublishedStory) {
-	if story == nil {
-		p.logger.Error("Attempted to send push notification for nil PublishedStory (story ready)")
+	// Функция для получения имени автора (передается в конструктор payload)
+	getAuthorName := func(userID uuid.UUID) string {
+		authorName := "Unknown Author"
+		if p.authClient != nil {
+			authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			userInfoMap, err := p.authClient.GetUsersInfo(authCtx, []uuid.UUID{userID})
+			cancel()
+			if err != nil {
+				p.logger.Error("Failed to get author info map for push notification (story ready)", zap.Stringer("userID", userID), zap.Error(err))
+			} else if userInfo, ok := userInfoMap[userID]; ok {
+				if userInfo.DisplayName != "" {
+					authorName = userInfo.DisplayName
+				} else {
+					authorName = userInfo.Username
+				}
+			} else {
+				p.logger.Warn("Author info not found in map from auth service for push notification (story ready)", zap.Stringer("userID", userID))
+			}
+		} else {
+			p.logger.Warn("authClient is nil in NotificationProcessor, cannot fetch author name for push notification")
+		}
+		return authorName
+	}
+
+	payload, err := notifications.BuildStoryReadyPushPayload(story, getAuthorName)
+	if err != nil {
+		p.logger.Error("Failed to build push notification payload for story ready", zap.Error(err))
 		return
 	}
 
-	storyTitle := ""
-	if story.Title != nil {
-		storyTitle = *story.Title
-	}
-
-	// <<< ДОБАВЛЕНО: Получение имени автора >>>
-	authorName := "Unknown Author"
-	if p.authClient != nil {
-		authCtx, cancel := context.WithTimeout(ctx, 5*time.Second) // Таймаут для запроса к auth
-		userInfoMap, err := p.authClient.GetUsersInfo(authCtx, []uuid.UUID{story.UserID})
-		cancel()
-		if err != nil {
-			p.logger.Error("Failed to get author info map for push notification (story ready)", zap.Stringer("userID", story.UserID), zap.Error(err))
-		} else if userInfo, ok := userInfoMap[story.UserID]; ok { // <<< ИЗМЕНЕНО: Проверяем наличие в карте >>>
-			if userInfo.DisplayName != "" {
-				authorName = userInfo.DisplayName
-			} else {
-				authorName = userInfo.Username
-			}
-		} else {
-			p.logger.Warn("Author info not found in map from auth service for push notification (story ready)", zap.Stringer("userID", story.UserID))
-		}
-	} else {
-		p.logger.Warn("authClient is nil in NotificationProcessor, cannot fetch author name for push notification")
-	}
-	// <<< КОНЕЦ: Получение имени автора >>>
-
-	// Собираем все данные для payload
-	data := map[string]string{
-		"publishedStoryId": story.ID.String(),
-		"eventType":        string(sharedModels.StatusReady),
-		// Локализация
-		constants.PushLocKey:           constants.PushLocKeyStoryReady,
-		constants.PushLocArgStoryTitle: storyTitle,
-		// Fallback текст (на английском)
-		constants.PushFallbackTitleKey: "Story Ready!",
-		constants.PushFallbackBodyKey:  fmt.Sprintf("Your story \"%s\" is ready to play!", storyTitle),
-		// Дополнительные данные
-		"title":      storyTitle,
-		"authorName": authorName,
-	}
-
-	payload := PushNotificationPayload{
-		UserID: story.UserID,
-		Notification: PushNotification{
-			Title: data[constants.PushFallbackTitleKey],
-			Body:  data[constants.PushFallbackBodyKey],
-		},
-		Data: data,
-	}
-
-	if err := p.pushPub.PublishPushNotification(ctx, payload); err != nil {
+	if err := p.pushPub.PublishPushNotification(ctx, *payload); err != nil {
 		p.logger.Error("Failed to publish push notification event for story ready",
 			zap.String("userID", payload.UserID.String()),
 			zap.String("publishedStoryID", story.ID.String()),

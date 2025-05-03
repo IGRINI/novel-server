@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"novel-server/notification-service/internal/config"
-	"novel-server/notification-service/internal/messaging"
+	sharedModels "novel-server/shared/models"
 	"sync"
 
 	"github.com/sideshow/apns2"
@@ -23,7 +23,7 @@ func NewStubApnsSender(logger *zap.Logger) PlatformSender {
 	return &stubApnsSender{logger: logger.Named("stub_apns_sender")}
 }
 
-func (s *stubApnsSender) Send(ctx context.Context, tokens []string, notification messaging.PushNotification, data map[string]string) error {
+func (s *stubApnsSender) Send(ctx context.Context, tokens []string, notification sharedModels.PushNotification, data map[string]string) error {
 	s.logger.Info("ЗАГЛУШКА: Отправка APNS",
 		zap.Strings("tokens", tokens),
 		zap.String("title", notification.Title),
@@ -82,7 +82,7 @@ func NewApnsSender(cfg config.APNSConfig, logger *zap.Logger) (PlatformSender, e
 	}, nil
 }
 
-func (s *apnsSender) Send(ctx context.Context, tokens []string, notification messaging.PushNotification, data map[string]string) error {
+func (s *apnsSender) Send(ctx context.Context, tokens []string, notification sharedModels.PushNotification, data map[string]string) error {
 	log := s.logger
 	log.Info("Начало отправки APNS уведомлений", zap.Int("count", len(tokens)))
 

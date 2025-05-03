@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"novel-server/notification-service/internal/messaging"
+	sharedModels "novel-server/shared/models"
 	"sync"
 
 	"go.uber.org/zap"
@@ -17,7 +18,7 @@ import (
 
 // PlatformSender определяет интерфейс для отправки на конкретную платформу (FCM/APNS).
 type PlatformSender interface {
-	Send(ctx context.Context, tokens []string, notification messaging.PushNotification, data map[string]string) error
+	Send(ctx context.Context, tokens []string, notification sharedModels.PushNotification, data map[string]string) error
 	Platform() string // "android" или "ios"
 }
 
@@ -51,7 +52,7 @@ func NewNotificationService(tp TokenProvider, logger *zap.Logger, fcmSender, apn
 // Убедимся, что *notificationService реализует нужный интерфейс (который теперь в messaging)
 var _ messaging.NotificationSender = (*notificationService)(nil)
 
-func (s *notificationService) SendNotification(ctx context.Context, payload messaging.PushNotificationPayload) error {
+func (s *notificationService) SendNotification(ctx context.Context, payload sharedModels.PushNotificationPayload) error {
 	log := s.logger.With(zap.String("user_id", payload.UserID.String()))
 	log.Info("Получен запрос на отправку уведомления")
 

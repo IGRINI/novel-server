@@ -9,7 +9,8 @@ import (
 	sharedMessaging "novel-server/shared/messaging" // Используем общие структуры
 	"time"
 
-	"github.com/google/uuid"
+	sharedModels "novel-server/shared/models"
+
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -33,44 +34,12 @@ type CharacterImageTaskBatchPublisher interface {
 
 // ClientUpdatePublisher defines the interface for publishing updates to the client.
 type ClientUpdatePublisher interface {
-	PublishClientUpdate(ctx context.Context, payload ClientStoryUpdate) error // Используем новую структуру
+	PublishClientUpdate(ctx context.Context, payload sharedModels.ClientStoryUpdate) error
 }
 
 // PushNotificationPublisher defines the interface for publishing push notification requests.
 type PushNotificationPublisher interface {
-	PublishPushNotification(ctx context.Context, payload PushNotificationPayload) error
-}
-
-// PushNotificationPayload is the structure sent to the push notification queue.
-type PushNotificationPayload struct {
-	UserID       uuid.UUID         `json:"user_id"`
-	Notification PushNotification  `json:"notification"`
-	Data         map[string]string `json:"data,omitempty"` // Optional data for the client app
-}
-
-// PushNotification contains the visible parts of the push message.
-type PushNotification struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
-}
-
-// Определяем структуру для отфильтрованного сообщения клиенту
-// (Пока поля примерные, нужно уточнить точный набор)
-type ClientStoryUpdate struct {
-	ID                string   `json:"id"`                           // StoryConfig ID or PublishedStory ID
-	UserID            string   `json:"user_id"`                      // User ID
-	UpdateType        string   `json:"type"`                         // "draft_update" or "story_update"
-	Status            string   `json:"status"`                       // New status (Draft, Generating, Ready, Error, Completed, etc.)
-	Title             string   `json:"title,omitempty"`              // Title (mainly for Draft)
-	Description       string   `json:"description,omitempty"`        // Description (mainly for Draft)
-	ErrorDetails      *string  `json:"error_details,omitempty"`      // Error details if status is Error
-	PlayerDescription string   `json:"player_description,omitempty"` // Specific fields from config/setup
-	Themes            []string `json:"themes,omitempty"`
-	WorldLore         []string `json:"world_lore,omitempty"`
-	// Fields specific to published story updates
-	SceneID    string  `json:"scene_id,omitempty"`    // ID of the new scene
-	StateHash  string  `json:"state_hash,omitempty"`  // Hash of the state leading to the new scene
-	EndingText *string `json:"ending_text,omitempty"` // Text for completed stories
+	PublishPushNotification(ctx context.Context, payload sharedModels.PushNotificationPayload) error
 }
 
 // rabbitMQPublisher implements the TaskPublisher, ClientUpdatePublisher, PushNotificationPublisher, CharacterImageTaskPublisher interfaces for RabbitMQ.
@@ -264,7 +233,7 @@ func (p *rabbitMQPublisher) PublishCharacterImageTaskBatch(ctx context.Context, 
 }
 
 // PublishClientUpdate publishes an update to the client.
-func (p *rabbitMQPublisher) PublishClientUpdate(ctx context.Context, payload ClientStoryUpdate) error {
+func (p *rabbitMQPublisher) PublishClientUpdate(ctx context.Context, payload sharedModels.ClientStoryUpdate) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		log.Printf("Publisher: Ошибка маршалинга ClientStoryUpdate: %v", err)
@@ -286,7 +255,7 @@ func (p *rabbitMQPublisher) PublishGameOverTask(ctx context.Context, payload sha
 }
 
 // PublishPushNotification publishes a push notification request.
-func (p *rabbitMQPublisher) PublishPushNotification(ctx context.Context, payload PushNotificationPayload) error {
+func (p *rabbitMQPublisher) PublishPushNotification(ctx context.Context, payload sharedModels.PushNotificationPayload) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		log.Printf("PushPublisher: Ошибка маршалинга PushNotificationPayload для UserID %s: %v", payload.UserID, err)

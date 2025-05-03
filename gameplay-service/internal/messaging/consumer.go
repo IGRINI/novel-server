@@ -105,16 +105,38 @@ func (c *NotificationConsumer) StartConsuming() error {
 	// Не закрываем канал здесь, так как он может быть нужен для переподключения
 	// defer ch.Close()
 
+	// Инициализируем аргументы как nil по умолчанию
+	var queueArgs amqp.Table = nil
+
+	// Добавляем аргумент x-queue-mode: lazy ТОЛЬКО для очереди internal_updates
+	// Сравниваем имя очереди, для которой запущен этот консьюмер,
+	// с именем, указанным в конфиге для internal_updates.
+	if c.queueName == c.config.InternalUpdatesQueueName {
+		c.logger.Debug("Объявляем очередь с x-queue-mode=lazy", zap.String("queue", c.queueName))
+		queueArgs = amqp.Table{
+			"x-queue-mode": "lazy",
+		}
+	} else {
+		c.logger.Debug("Объявляем очередь без дополнительных аргументов", zap.String("queue", c.queueName))
+	}
+
 	q, err := ch.QueueDeclare(
 		c.queueName,
-		true,  // durable
-		false, // delete when unused
-		false, // exclusive
-		false, // no-wait
-		nil,   // arguments
+		true,      // durable
+		false,     // delete when unused
+		false,     // exclusive
+		false,     // no-wait
+		queueArgs, // Используем подготовленные аргументы (могут быть nil)
 	)
 	if err != nil {
-		return fmt.Errorf("не удалось объявить очередь '%s': %w", c.queueName, err)
+		// Логируем ошибку с деталями
+		c.logger.Error("Не удалось объявить очередь",
+			zap.String("queue", c.queueName),
+			zap.Any("args", queueArgs), // Логируем аргументы, с которыми пытались объявить
+			zap.Error(err),
+		)
+		// Возвращаем более подробную ошибку
+		return fmt.Errorf("не удалось объявить очередь '%s' с аргументами %v: %w", c.queueName, queueArgs, err)
 	}
 
 	// Устанавливаем prefetch count для ограничения количества сообщений, получаемых за раз

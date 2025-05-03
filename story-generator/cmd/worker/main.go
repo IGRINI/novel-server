@@ -236,7 +236,7 @@ func main() {
 	}
 
 	// ConfigUpdateConsumer
-	configUpdateConsumer := sharedConsumer.NewConfigUpdateConsumer(conn, configService, logger, cfg.InternalUpdatesQueueName)
+	configUpdateConsumer := sharedConsumer.NewConfigUpdateConsumer(conn, configService, logger)
 	if err := configUpdateConsumer.Start(consumerCtx); err != nil {
 		consumerCancel()
 		sugar.Fatalf("Не удалось запустить ConfigUpdateConsumer: %v", err)

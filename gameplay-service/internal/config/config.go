@@ -43,6 +43,7 @@ type Config struct {
 	PushNotificationQueueName string `envconfig:"PUSH_NOTIFICATION_QUEUE_NAME" default:"push_notifications"`
 	ImageGeneratorTaskQueue   string `envconfig:"IMAGE_GENERATOR_TASK_QUEUE" default:"image_generation_tasks"`
 	ImageGeneratorResultQueue string `envconfig:"IMAGE_GENERATION_RESULT_QUEUE" default:"image_generation_results"`
+	ConfigUpdatesQueueName    string `envconfig:"CONFIG_UPDATES_QUEUE_NAME" default:"config_updates"`
 
 	// Настройки JWT (для проверки токена пользователя в middleware)
 	// Секретное поле БЕЗ envconfig тега
@@ -144,6 +145,7 @@ func LoadConfig() (*Config, error) {
 	log.Printf("  RabbitMQ URL: %s", cfg.RabbitMQURL)
 	log.Printf("  Generation Task Queue: %s", cfg.GenerationTaskQueue)
 	log.Printf("  Internal Updates Queue Name: %s", cfg.InternalUpdatesQueueName)
+	log.Printf("  Config Updates Queue Name: %s", cfg.ConfigUpdatesQueueName)
 	log.Printf("  Client Updates Queue Name: %s", cfg.ClientUpdatesQueueName)
 	log.Printf("  Push Notification Queue Name: %s", cfg.PushNotificationQueueName)
 	log.Printf("  Image Generator Task Queue: %s", cfg.ImageGeneratorTaskQueue)

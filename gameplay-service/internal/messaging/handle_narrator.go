@@ -5,16 +5,62 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
-	"novel-server/shared/constants"
-	sharedModels "novel-server/shared/models"
 	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	sharedMessaging "novel-server/shared/messaging"
+	sharedModels "novel-server/shared/models"
+	"novel-server/shared/notifications"
+	"novel-server/shared/utils"
 )
+
+const (
+	consumeConcurrencyNarrator = 5
+	retryCount                 = 3
+	retryDelay                 = 5 * time.Second
+	maxGeneratedImageCount     = 10
+	maxSceneImageCount         = 4
+	maxSetupImageCount         = 4
+
+	DefaultImagePrompt = "fantasy art, ((masterpiece)), illustration, epic composition, high quality, detailed, BREAK Cinematic, dramatic lighting, vibrant colors, perfect anatomy, beautiful face"
+)
+
+func (p *NotificationProcessor) publishClientDraftUpdate(ctx context.Context, storyConfig *sharedModels.StoryConfig, errorMsg *string) {
+	if storyConfig == nil {
+		p.logger.Error("publishClientDraftUpdate called with nil StoryConfig")
+		return
+	}
+
+	update := sharedModels.ClientStoryUpdate{
+		ID:         storyConfig.ID.String(),
+		UserID:     storyConfig.UserID.String(),
+		UpdateType: sharedModels.UpdateTypeDraft,
+		Status:     string(storyConfig.Status),
+	}
+
+	if errorMsg != nil && *errorMsg != "" {
+		update.ErrorDetails = errorMsg
+	}
+
+	if err := p.clientPub.PublishClientUpdate(ctx, update); err != nil {
+		p.logger.Error("Failed to publish client draft update event",
+			zap.String("updateType", string(update.UpdateType)),
+			zap.String("status", update.Status),
+			zap.String("storyConfigID", update.ID),
+			zap.String("userID", update.UserID),
+			zap.Error(err),
+		)
+	} else {
+		p.logger.Info("Client draft update event published successfully",
+			zap.String("updateType", string(update.UpdateType)),
+			zap.String("status", update.Status),
+			zap.String("storyConfigID", update.ID),
+			zap.String("userID", update.UserID),
+		)
+	}
+}
 
 func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, notification sharedMessaging.NotificationPayload, storyConfigID uuid.UUID) error {
 	taskID := notification.TaskID
@@ -29,7 +75,6 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 		return fmt.Errorf("error getting StoryConfig %s: %w", storyConfigID, err)
 	}
 
-	var clientUpdate ClientStoryUpdate
 	var parseErr error
 	if notification.Status == sharedMessaging.NotificationStatusSuccess {
 		if config.Status != sharedModels.StatusGenerating {
@@ -68,50 +113,21 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 		}
 
 		if parseErr == nil {
-			jsonToParse := extractJsonContent(rawGeneratedText)
+			jsonToParse := utils.ExtractJsonContent(rawGeneratedText)
 			if jsonToParse == "" {
-				p.logger.Error("PARSING ERROR: Could not extract JSON from Narrator text (fetched from DB)",
+				p.logger.Error("PARSING ERROR: Could not extract JSON from Narrator text (fetched)",
 					zap.String("task_id", taskID),
 					zap.String("story_config_id", storyConfigID.String()),
-					zap.String("raw_text_snippet", stringShort(rawGeneratedText, 100)),
+					zap.String("raw_text_snippet", utils.StringShort(rawGeneratedText, 100)),
 				)
 				config.Status = sharedModels.StatusError
-				parseErr = errors.New("failed to extract JSON block from fetched result")
+				parseErr = errors.New("failed to extract JSON block from Narrator text")
 			} else {
-				configBytes := []byte(jsonToParse)
-				var generatedConfig map[string]interface{}
-				jsonUnmarshalErr := json.Unmarshal(configBytes, &generatedConfig)
-				if jsonUnmarshalErr == nil {
-					title, titleOk := generatedConfig["t"].(string)
-					desc, descOk := generatedConfig["sd"].(string)
-					if titleOk && descOk && title != "" && desc != "" {
-						config.Config = json.RawMessage(configBytes)
-						config.Title = title
-						config.Description = desc
-						config.Status = sharedModels.StatusDraft
-						p.logger.Info("Narrator JSON parsed and key fields extracted", zap.String("task_id", taskID), zap.String("story_config_id", storyConfigID.String()))
-					} else {
-						p.logger.Error("FILLING ERROR: Narrator JSON parsed, but 't' or 'sd' missing/empty",
-							zap.String("task_id", taskID),
-							zap.String("story_config_id", storyConfigID.String()),
-							zap.Bool("title_ok", titleOk),
-							zap.Bool("title_empty", title == ""),
-							zap.Bool("desc_ok", descOk),
-							zap.Bool("desc_empty", desc == ""),
-						)
-						config.Status = sharedModels.StatusError
-						parseErr = errors.New("required fields 't' or 'sd' missing or empty in generated JSON")
-					}
-				} else {
-					p.logger.Error("PARSING ERROR: Failed to parse Narrator JSON (fetched from DB)",
-						zap.String("task_id", taskID),
-						zap.String("story_config_id", storyConfigID.String()),
-						zap.Error(jsonUnmarshalErr),
-						zap.String("json_to_parse", jsonToParse),
-					)
-					config.Status = sharedModels.StatusError
-					parseErr = jsonUnmarshalErr
-				}
+				var configJSON json.RawMessage
+				configJSON = json.RawMessage(jsonToParse)
+				config.Config = configJSON
+				config.Status = sharedModels.StatusDraft
+				p.logger.Info("Successfully parsed and updated StoryConfig.Config", zap.String("task_id", taskID), zap.String("story_config_id", storyConfigID.String()))
 			}
 		}
 		config.UpdatedAt = time.Now().UTC()
@@ -132,6 +148,14 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 		return nil
 	}
 
+	var errorDetails *string
+	if parseErr != nil {
+		errStr := parseErr.Error()
+		errorDetails = &errStr
+	} else if notification.Status == sharedMessaging.NotificationStatusError {
+		errorDetails = &notification.ErrorDetails
+	}
+
 	updateErr := p.repo.Update(dbCtx, config)
 	if updateErr != nil {
 		p.logger.Error("CRITICAL ERROR: Failed to save StoryConfig updates (Narrator)",
@@ -144,81 +168,27 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 	p.logger.Info("StoryConfig (Narrator) updated in DB", zap.String("task_id", taskID), zap.String("story_config_id", storyConfigID.String()), zap.String("new_status", string(config.Status)))
 
 	if config.Status == sharedModels.StatusDraft {
+		go p.publishClientDraftUpdate(ctx, config, nil)
 		p.publishPushNotificationForDraft(ctx, config)
 	} else if config.Status == sharedModels.StatusError {
+		go p.publishClientDraftUpdate(ctx, config, errorDetails)
 		p.logger.Warn("Draft generation resulted in error, skipping push notification.",
 			zap.String("storyConfigID", config.ID.String()),
 			zap.String("task_id", taskID),
 		)
 	}
 
-	clientUpdate = ClientStoryUpdate{ID: config.ID.String(), UserID: config.UserID.String(), UpdateType: UpdateTypeDraft, Status: string(config.Status), Title: config.Title, Description: config.Description}
-	if config.Status == sharedModels.StatusError {
-		var errDetails string
-		if notification.ErrorDetails != "" {
-			errDetails = notification.ErrorDetails
-		} else if parseErr != nil {
-			errDetails = fmt.Sprintf("Processing error: %v", parseErr)
-		} else {
-			errDetails = "Unknown processing error"
-		}
-		clientUpdate.ErrorDetails = &errDetails
-	}
-	if parseErr == nil && notification.Status == sharedMessaging.NotificationStatusSuccess {
-		var generatedConfig map[string]interface{}
-		if err := json.Unmarshal(config.Config, &generatedConfig); err == nil {
-			if pDesc, ok := generatedConfig["p_desc"].(string); ok {
-				clientUpdate.PlayerDescription = pDesc
-			}
-			if pp, ok := generatedConfig["pp"].(map[string]interface{}); ok {
-				if thRaw, ok := pp["th"].([]interface{}); ok {
-					clientUpdate.Themes = castToStringSlice(thRaw)
-				}
-				if wlRaw, ok := pp["wl"].([]interface{}); ok {
-					clientUpdate.WorldLore = castToStringSlice(wlRaw)
-				}
-			}
-		} else {
-			log.Printf("[processor][TaskID: %s] Ошибка повторного парсинга JSON Narrator для StoryConfig %s: %v", taskID, storyConfigID, err)
-		}
-	}
-	pubCtx, pubCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := p.clientPub.PublishClientUpdate(pubCtx, clientUpdate); err != nil {
-		p.logger.Error("Error sending ClientStoryUpdate (Narrator)", zap.String("task_id", taskID), zap.String("story_id", config.ID.String()), zap.Error(err))
-	} else {
-		p.logger.Info("ClientStoryUpdate sent (Narrator)", zap.String("task_id", taskID), zap.String("story_id", config.ID.String()))
-	}
-	pubCancel()
-
 	return nil
 }
 
 func (p *NotificationProcessor) publishPushNotificationForDraft(ctx context.Context, config *sharedModels.StoryConfig) {
-	if config == nil {
-		p.logger.Error("Attempted to send push notification for nil StoryConfig")
+	payload, err := notifications.BuildDraftReadyPushPayload(config)
+	if err != nil {
+		p.logger.Error("Failed to build push notification payload for draft", zap.Error(err))
 		return
 	}
 
-	data := map[string]string{
-		"storyConfigId":                config.ID.String(),
-		"eventType":                    string(sharedModels.StatusDraft),
-		constants.PushLocKey:           constants.PushLocKeyDraftReady,
-		constants.PushLocArgStoryTitle: config.Title,
-		constants.PushFallbackTitleKey: "Draft Ready!",
-		constants.PushFallbackBodyKey:  fmt.Sprintf("Your draft \"%s\" is ready for setup.", config.Title),
-		"title":                        config.Title,
-	}
-
-	payload := PushNotificationPayload{
-		UserID: config.UserID,
-		Notification: PushNotification{
-			Title: data[constants.PushFallbackTitleKey],
-			Body:  data[constants.PushFallbackBodyKey],
-		},
-		Data: data,
-	}
-
-	if err := p.pushPub.PublishPushNotification(ctx, payload); err != nil {
+	if err := p.pushPub.PublishPushNotification(ctx, *payload); err != nil {
 		p.logger.Error("Failed to publish push notification event for draft",
 			zap.String("userID", payload.UserID.String()),
 			zap.String("storyConfigID", config.ID.String()),

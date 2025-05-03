@@ -113,7 +113,29 @@ func (p *NotificationProcessor) Process(ctx context.Context, delivery amqp.Deliv
 
 	// Попытка 1: Обработать как NotificationPayload
 	var notification sharedMessaging.NotificationPayload
+
+	// <<< ЛОГИРОВАНИЕ: Залогировать тело сообщения перед анмаршалингом >>>
+	p.logger.Debug("Raw message body received",
+		zap.ByteString("body", delivery.Body),
+		zap.String("correlation_id", delivery.CorrelationId),
+		zap.Uint64("delivery_tag", delivery.DeliveryTag),
+	)
+
 	errNotification := json.Unmarshal(delivery.Body, &notification)
+
+	// <<< ЛОГИРОВАНИЕ: Залогировать ImageURL после анмаршалинга >>>
+	if notification.ImageURL != nil {
+		p.logger.Debug("ImageURL after unmarshal",
+			zap.Stringp("image_url_ptr", notification.ImageURL),
+			zap.String("task_id", notification.TaskID),
+			zap.String("correlation_id", delivery.CorrelationId),
+		)
+	} else {
+		p.logger.Debug("ImageURL after unmarshal is nil",
+			zap.String("task_id", notification.TaskID),
+			zap.String("correlation_id", delivery.CorrelationId),
+		)
+	}
 
 	if errNotification != nil {
 		// Если не удалось распарсить как NotificationPayload
@@ -338,14 +360,17 @@ func (p *NotificationProcessor) handleInitialSceneGenerated(ctx context.Context,
 			if errUpdate != nil {
 				log.Error("Failed to update published story flags after initial scene generated", zap.Error(errUpdate))
 			} else {
-				log.Info("Successfully updated published story flags (IsFirstScenePending=false)")
-				// Проверяем готовность и отправляем Push, если нужно
-				if !currentStoryState.AreImagesPending {
-					log.Info("Initial scene ready AND images ready, triggering push notification")
-					// <<< ИСПРАВЛЕНО: Вызываем publishPushNotificationForStoryReady (который должен быть в handle_scene.go или handle_setup.go) >>>
-					// TODO: Убедиться, что publishPushNotificationForStoryReady доступен или перенести логику
+				log.Info("Successfully updated published story flags (IsFirstScenePending=false)", zap.String("final_status", string(currentStatus)))
+				// Проверяем готовность и отправляем уведомления, если нужно
+				if shouldSetReady := !currentStoryState.IsFirstScenePending && !currentStoryState.AreImagesPending && currentStatus != sharedModels.StatusReady; shouldSetReady {
+					log.Info("Initial scene ready AND images ready, triggering notifications")
+					// <<< ДОБАВЛЕНО: Отправляем WebSocket уведомление о готовности истории >>>
+					go p.publishClientStoryUpdateOnReady(ctx, currentStoryState)
+					// Отправляем Push-уведомление (закомментировано, т.к. требует реальной функции)
 					p.logger.Warn("TODO: Call the actual publishPushNotificationForStoryReady method")
 					// go p.publishPushNotificationForStoryReady(ctx, currentStoryState)
+				} else if !currentStoryState.AreImagesPending {
+					log.Info("Initial scene ready, but story status was already Error or Ready.")
 				} else {
 					log.Info("Initial scene ready, but images still pending.")
 				}
@@ -422,10 +447,10 @@ func (p *NotificationProcessor) publishClientStoryUpdateOnError(ctx context.Cont
 		p.logger.Warn("Cannot publish client story update on error, UserID is nil", zap.Stringer("storyID", storyID))
 		return
 	}
-	payload := ClientStoryUpdate{
+	payload := sharedModels.ClientStoryUpdate{
 		ID:           storyID.String(),
 		UserID:       userID.String(),
-		UpdateType:   UpdateTypeStory,
+		UpdateType:   sharedModels.UpdateTypeStory,
 		Status:       string(sharedModels.StatusError),
 		ErrorDetails: &errorDetails,
 	}
@@ -439,10 +464,10 @@ func (p *NotificationProcessor) publishClientStoryUpdateOnReady(ctx context.Cont
 	if story == nil {
 		return
 	}
-	payload := ClientStoryUpdate{
+	payload := sharedModels.ClientStoryUpdate{
 		ID:         story.ID.String(),
 		UserID:     story.UserID.String(),
-		UpdateType: UpdateTypeStory,
+		UpdateType: sharedModels.UpdateTypeStory,
 		Status:     string(sharedModels.StatusReady),
 		// Другие поля (SceneID, StateHash, ErrorDetails) не нужны для этого типа обновления
 	}
@@ -457,12 +482,13 @@ func (p *NotificationProcessor) publishClientGameStateUpdateOnSuccess(ctx contex
 	if gameState == nil {
 		return
 	}
-	payload := ClientStoryUpdate{
-		ID:         gameState.PublishedStoryID.String(),
+	sceneIDStr := sceneID.String()
+	payload := sharedModels.ClientStoryUpdate{
+		ID:         gameState.ID.String(),
 		UserID:     gameState.PlayerID.String(),
-		UpdateType: UpdateTypeStory,
-		Status:     string(gameState.PlayerStatus), // Статус состояния игры
-		SceneID:    sceneID.String(),
+		UpdateType: sharedModels.UpdateTypeGameState,
+		Status:     string(gameState.PlayerStatus),
+		SceneID:    &sceneIDStr,
 	}
 	if err := p.clientPub.PublishClientUpdate(context.Background(), payload); err != nil {
 		p.logger.Error("Failed to publish client game state update on success", zap.Error(err), zap.Stringer("gameStateID", gameState.ID))
@@ -480,9 +506,9 @@ func (p *NotificationProcessor) publishPushOnError(ctx context.Context, storyID 
 		body = body[:147] + "..."
 	}
 
-	pushPayload := PushNotificationPayload{
+	pushPayload := sharedModels.PushNotificationPayload{
 		UserID: userID,
-		Notification: PushNotification{
+		Notification: sharedModels.PushNotification{
 			Title: title,
 			Body:  body,
 		},
@@ -496,7 +522,7 @@ func (p *NotificationProcessor) publishPushOnError(ctx context.Context, storyID 
 	}
 }
 
-// --- End Helper methods ---
+// <<< КОНЕЦ: Функция проверки готовности >>>
 
 // <<< НАЧАЛО: Функция проверки готовности после генерации изображения >>>
 // checkStoryReadinessAfterImage проверяет, все ли необходимые изображения и первая сцена для истории готовы.
@@ -530,7 +556,7 @@ func (p *NotificationProcessor) checkStoryReadinessAfterImage(ctx context.Contex
 	} else {
 		// 3. Проверяем, все ли изображения готовы (если флаг AreImagesPending еще true)
 		var setupContent sharedModels.NovelSetupContent
-		if story.Setup == nil || len(story.Setup) == 0 {
+		if len(story.Setup) == 0 {
 			log.Error("Setup is missing or empty for PublishedStory, cannot verify all images.")
 			// Возможно, стоит сбросить флаг AreImagesPending в Error? Пока нет.
 			return
@@ -550,7 +576,7 @@ func (p *NotificationProcessor) checkStoryReadinessAfterImage(ctx context.Contex
 				// <<< ИСПРАВЛЕНИЕ: Применяем ту же логику префикса, что и в старом коде >>>
 				correctedRef := char.ImageRef
 				if !strings.HasPrefix(correctedRef, "ch_") {
-					log.Warn("Character ImageRef in Setup does not start with 'ch_'. Attempting correction for check.", zap.String("original_ref", correctedRef))
+					// log.Warn("Character ImageRef in Setup does not start with 'ch_'. Attempting correction for check.", zap.String("original_ref", correctedRef)) // <<< УБИРАЕМ ЛОГ
 					if strings.HasPrefix(correctedRef, "character_") {
 						correctedRef = strings.TrimPrefix(correctedRef, "character_")
 					} else if strings.HasPrefix(correctedRef, "char_") {
@@ -569,7 +595,7 @@ func (p *NotificationProcessor) checkStoryReadinessAfterImage(ctx context.Contex
 		} else {
 			log.Debug("Checking URLs for required image references", zap.Strings("refs", requiredRefs))
 			for _, ref := range requiredRefs {
-				_, errCheck := p.imageReferenceRepo.GetImageURLByReference(dbCtx, ref)
+				imageURL, errCheck := p.imageReferenceRepo.GetImageURLByReference(dbCtx, ref)
 				if errCheck != nil {
 					if errors.Is(errCheck, sharedModels.ErrNotFound) {
 						log.Info("Required image reference still missing URL, not all images are ready yet.", zap.String("missing_ref", ref))
@@ -579,6 +605,12 @@ func (p *NotificationProcessor) checkStoryReadinessAfterImage(ctx context.Contex
 						log.Error("Error checking image reference URL.", zap.String("checked_ref", ref), zap.Error(errCheck))
 						// Техническая ошибка при проверке, выходим
 						return
+					}
+				} else {
+					if imageURL == "" || strings.HasPrefix(imageURL, "https://https:/") { // Проверяем на пустоту и некорректный префикс
+						log.Warn("Required image reference found, but URL is invalid or empty.", zap.String("ref", ref), zap.String("invalid_url", imageURL))
+						allImagesReady = false
+						break // Нашли некорректный URL
 					}
 				}
 			}
@@ -592,13 +624,41 @@ func (p *NotificationProcessor) checkStoryReadinessAfterImage(ctx context.Contex
 
 		// Если все изображения готовы, обновляем флаг
 		log.Info("All required image URLs found or none were required. Marking images as not pending.")
-		errUpdatePending := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, story.Status, story.IsFirstScenePending, false, nil)
+
+		// <<< НАЧАЛО ИЗМЕНЕНИЯ: Определяем правильный статус >>>
+		var newStatus sharedModels.StoryStatus
+		if story.IsFirstScenePending {
+			// Если первая сцена еще ожидается, ставим статус first_scene_pending
+			newStatus = sharedModels.StatusFirstScenePending
+			log.Info("All images ready, setting status to trigger first scene generation.", zap.String("new_status", string(newStatus)))
+		} else {
+			// Если первая сцена уже не ожидается (что маловероятно на этом этапе, но для полноты),
+			// то сохраняем текущий статус (который может быть 'error' или другой)
+			newStatus = story.Status
+			log.Info("All images ready, but first scene is not pending. Keeping current status.", zap.String("current_status", string(newStatus)))
+		}
+
+		// Обновляем статус и флаг AreImagesPending
+		errUpdatePending := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, newStatus, story.IsFirstScenePending, false, nil)
 		if errUpdatePending != nil {
-			log.Error("Failed to update AreImagesPending flag to false.", zap.Error(errUpdatePending))
-			// Ошибка обновления флага, но продолжаем проверку статуса Ready
+			log.Error("Failed to update status and AreImagesPending flag.", zap.Error(errUpdatePending))
+			// Выходим, так как не смогли обновить важную информацию
+			return
 		}
 		// Обновляем локальную переменную для дальнейшей проверки
 		story.AreImagesPending = false
+		story.Status = newStatus // Обновляем и локальный статус
+
+		// <<< НАЧАЛО БЛОКА ОТПРАВКИ ЗАДАЧИ >>>
+		// Если статус изменился на first_scene_pending, отправляем задачу
+		if newStatus == sharedModels.StatusFirstScenePending {
+			log.Info("Publishing task for first scene generation...")
+			if errPublish := p.publishFirstSceneTaskInternal(ctx, story); errPublish != nil {
+				log.Error("Failed to publish first scene task after images became ready", zap.Error(errPublish))
+				// Не выходим, но логируем критическую ошибку
+			}
+		}
+		// <<< КОНЕЦ БЛОКА ОТПРАВКИ ЗАДАЧИ >>>
 	}
 
 	// 4. Проверяем, готова ли первая сцена и нужно ли установить статус Ready
@@ -620,6 +680,96 @@ func (p *NotificationProcessor) checkStoryReadinessAfterImage(ctx context.Contex
 }
 
 // <<< КОНЕЦ: Функция проверки готовности >>>
+
+// --- Helper for Publishing First Scene Task ---
+
+// <<< НАЧАЛО: Логика отправки задачи первой сцены >>>
+// publishFirstSceneTaskInternal отправляет задачу на генерацию первой сцены
+// (логика скопирована и адаптирована из handleNovelSetupNotification)
+func (p *NotificationProcessor) publishFirstSceneTaskInternal(ctx context.Context, story *sharedModels.PublishedStory) error {
+	log := p.logger.With(zap.Stringer("publishedStoryID", story.ID))
+	log.Info("Preparing task for first scene generation (Internal)")
+
+	if len(story.Config) == 0 {
+		log.Error("Cannot publish first scene task: Config is nil or empty")
+		return errors.New("config is nil or empty")
+	}
+	if len(story.Setup) == 0 {
+		log.Error("Cannot publish first scene task: Setup is nil or empty")
+		return errors.New("setup is nil or empty")
+	}
+
+	// Распарсиваем Setup для получения упрощенной структуры
+	var setupContent sharedModels.NovelSetupContent
+	if errUnmarshalSetup := json.Unmarshal(story.Setup, &setupContent); errUnmarshalSetup != nil {
+		log.Error("Cannot publish first scene task: Failed to unmarshal setup JSON", zap.Error(errUnmarshalSetup))
+		return fmt.Errorf("failed to unmarshal setup JSON: %w", errUnmarshalSetup)
+	}
+
+	var simplifiedSetup map[string]interface{}
+	simplifiedChars := make([]map[string]string, 0, len(setupContent.Characters))
+	for _, char := range setupContent.Characters {
+		simplifiedChar := map[string]string{"n": char.Name, "d": char.Description}
+		if char.Personality != "" {
+			simplifiedChar["p"] = char.Personality
+		}
+		simplifiedChars = append(simplifiedChars, simplifiedChar)
+	}
+	simplifiedSetup = map[string]interface{}{
+		"chars": simplifiedChars,
+		"csd":   setupContent.CoreStatsDefinition,
+	}
+
+	// Создаем минимальный конфиг
+	minimalConfig := ToMinimalConfigForFirstScene(story.Config) // Используем существующую функцию из пакета
+
+	// Собираем combinedInputMap
+	combinedInputMap := make(map[string]interface{})
+	combinedInputMap["cfg"] = minimalConfig
+	combinedInputMap["stp"] = simplifiedSetup
+	combinedInputMap["sv"] = make(map[string]interface{})    // Пустые начальные значения
+	combinedInputMap["gf"] = []string{}                      // Пустые начальные значения
+	combinedInputMap["uc"] = []sharedModels.UserChoiceInfo{} // Пустые начальные значения
+	combinedInputMap["pss"] = ""                             // Пустые начальные значения
+	combinedInputMap["pfd"] = ""                             // Пустые начальные значения
+	combinedInputMap["pvis"] = ""                            // Пустые начальные значения
+
+	combinedInputBytes, errMarshal := json.Marshal(combinedInputMap)
+	if errMarshal != nil {
+		log.Error("Failed to marshal combined input map for first scene task", zap.Error(errMarshal))
+		return fmt.Errorf("failed to marshal combined input map: %w", errMarshal)
+	}
+	combinedInputJSON := string(combinedInputBytes)
+
+	// Используем язык из истории
+	storyLanguage := story.Language
+	if storyLanguage == "" {
+		log.Warn("Language field is empty in published story, defaulting to 'en' for first scene task")
+		storyLanguage = "en"
+	}
+
+	// Формируем payload задачи
+	nextTaskPayload := sharedMessaging.GenerationTaskPayload{
+		TaskID:           uuid.New().String(),
+		UserID:           story.UserID.String(),
+		PromptType:       sharedModels.PromptTypeNovelFirstSceneCreator,
+		PublishedStoryID: story.ID.String(),
+		UserInput:        combinedInputJSON, // <<< Правильное поле
+		StateHash:        sharedModels.InitialStateHash,
+		Language:         storyLanguage,
+	}
+
+	// Отправляем задачу
+	if errPub := p.taskPub.PublishGenerationTask(ctx, nextTaskPayload); errPub != nil {
+		log.Error("Failed to send first scene generation task", zap.Error(errPub), zap.String("next_task_id", nextTaskPayload.TaskID))
+		return fmt.Errorf("failed to publish task for first scene: %w", errPub)
+	}
+
+	log.Info("First scene generation task sent successfully (Internal)", zap.String("next_task_id", nextTaskPayload.TaskID))
+	return nil
+}
+
+// <<< КОНЕЦ: Логика отправки задачи первой сцены >>>
 
 // Note: Methods handleNarratorNotification, handleNovelSetupNotification, handleSceneGenerationNotification,
 // handleImageNotification should be defined in their respective handle_*.go files.

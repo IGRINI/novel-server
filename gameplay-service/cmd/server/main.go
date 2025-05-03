@@ -224,20 +224,22 @@ func main() {
 	logger.Info("Настройка RabbitMQ консьюмеров...")
 	consumerCtx, consumerCancel := context.WithCancel(context.Background())
 
-	// ConfigUpdateConsumer // <<< Используем sharedConsumer >>>
-	// configUpdater := service.NewConfigServiceUpdater(configService)
+	// --- ConfigUpdateConsumer для config_updates --- // <<< ИЗМЕНЕНИЕ >>>
 	configUpdateConsumer := sharedConsumer.NewConfigUpdateConsumer(
 		rabbitConn,    // Используем созданное соединение
 		configService, // Передаем конкретный ConfigService
 		logger,
-		cfg.InternalUpdatesQueueName, // Имя очереди из конфига gameplay-service
 	)
 	// Запускаем консьюмера (если Start возвращает ошибку)
-	if err := configUpdateConsumer.Start(consumerCtx); err != nil {
-		consumerCancel()
-		logger.Fatal("Не удалось запустить ConfigUpdateConsumer", zap.Error(err))
-	}
-	logger.Info("ConfigUpdateConsumer запущен")
+	// Передаем consumerCtx для управления жизненным циклом
+	go func() {
+		logger.Info("Запуск горутины ConfigUpdateConsumer...")
+		if err := configUpdateConsumer.Start(consumerCtx); err != nil {
+			logger.Error("ConfigUpdateConsumer завершился с ошибкой", zap.Error(err))
+			consumerCancel() // Отменяем контекст при ошибке, чтобы остановить другие консьюмеры, если нужно
+		}
+		logger.Info("Горутина ConfigUpdateConsumer завершена.")
+	}()
 
 	// --- Настройка Gin --- //
 	gin.SetMode(gin.ReleaseMode)

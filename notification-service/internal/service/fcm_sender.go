@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"novel-server/notification-service/internal/config"
-	"novel-server/notification-service/internal/messaging"
+
+	// "novel-server/notification-service/internal/messaging" // Больше не нужен
 	interfaces "novel-server/shared/interfaces"
+	sharedModels "novel-server/shared/models" // <<< Добавлен импорт
 
 	"sync"
 
@@ -25,7 +27,7 @@ func NewStubFCMSender(logger *zap.Logger) PlatformSender {
 	return &stubFCMSender{logger: logger.Named("stub_fcm_sender")}
 }
 
-func (s *stubFCMSender) Send(ctx context.Context, tokens []string, notification messaging.PushNotification, data map[string]string) error {
+func (s *stubFCMSender) Send(ctx context.Context, tokens []string, notification sharedModels.PushNotification, data map[string]string) error { // <<< Исправлен тип
 	s.logger.Info("ЗАГЛУШКА: Отправка FCM",
 		zap.Strings("tokens", tokens),
 		zap.String("title", notification.Title),
@@ -85,7 +87,7 @@ func NewFCMSender(cfg config.FCMConfig, logger *zap.Logger, tokenDeletionPublish
 	}, nil
 }
 
-func (s *fcmSender) Send(ctx context.Context, tokens []string, notification messaging.PushNotification, data map[string]string) error {
+func (s *fcmSender) Send(ctx context.Context, tokens []string, notification sharedModels.PushNotification, data map[string]string) error { // <<< Исправлен тип
 	log := s.logger
 	log.Info("Начало отправки FCM уведомлений (по одному)", zap.Int("count", len(tokens)))
 

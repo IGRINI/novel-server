@@ -11,8 +11,11 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
+	"novel-server/shared/constants"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
+	"novel-server/shared/notifications"
+	"novel-server/shared/utils"
 )
 
 // MinimalConfigForFirstScene - структура для минимального конфига, отправляемого для PromptTypeNovelFirstSceneCreator
@@ -58,6 +61,49 @@ func ToMinimalConfigForFirstScene(configBytes []byte) MinimalConfigForFirstScene
 		StorySummary:   fullConfig.StorySummary, // <<< ДОБАВЛЕНО
 		PlayerPrefs:    minimalPrefs,            // <<< ДОБАВЛЕНО
 	}
+}
+
+// publishStoryUpdateViaRabbitMQ отправляет обновление статуса PublishedStory через RabbitMQ.
+// Используется для событий Setup/Image Generation.
+func (p *NotificationProcessor) publishStoryUpdateViaRabbitMQ(ctx context.Context, story *sharedModels.PublishedStory, eventType string, errorMsg *string) {
+	if story == nil {
+		p.logger.Error("Attempted to publish story update for nil PublishedStory")
+		return
+	}
+
+	clientUpdate := sharedModels.ClientStoryUpdate{
+		ID:           story.ID.String(), // Всегда ID PublishedStory
+		UserID:       story.UserID.String(),
+		UpdateType:   sharedModels.UpdateTypeStory, // Всегда Story
+		Status:       string(story.Status),
+		ErrorDetails: errorMsg,
+		StoryTitle:   story.Title,
+	}
+
+	// Логирование перед отправкой
+	p.logger.Info("Attempting to publish client story update via RabbitMQ...",
+		zap.String("update_type", string(clientUpdate.UpdateType)),
+		zap.String("id", clientUpdate.ID),
+		zap.String("status", clientUpdate.Status),
+		zap.String("ws_event", eventType), // Передаем исходное событие для логов
+	)
+
+	// Отправка через RabbitMQ паблишер
+	wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer wsCancel()
+	if errWs := p.clientPub.PublishClientUpdate(wsCtx, clientUpdate); errWs != nil {
+		p.logger.Error("Error sending ClientStoryUpdate (Story) via RabbitMQ", zap.Error(errWs),
+			zap.String("storyID", clientUpdate.ID),
+		)
+	} else {
+		p.logger.Info("ClientStoryUpdate (Story) sent successfully via RabbitMQ",
+			zap.String("storyID", clientUpdate.ID),
+			zap.String("status", clientUpdate.Status),
+			zap.String("ws_event", eventType),
+		)
+	}
+
+	// Отправка через NATS не требуется, т.к. websocket-service слушает RabbitMQ.
 }
 
 func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context, notification sharedMessaging.NotificationPayload, publishedStoryID uuid.UUID) error {
@@ -111,12 +157,12 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 		}
 
 		if parseErr == nil {
-			jsonToParse := extractJsonContent(rawGeneratedText)
+			jsonToParse := utils.ExtractJsonContent(rawGeneratedText)
 			if jsonToParse == "" {
 				p.logger.Error("SETUP PARSING ERROR: Could not extract JSON from Setup text (fetched)",
 					zap.String("task_id", taskID),
 					zap.String("published_story_id", publishedStoryID.String()),
-					zap.String("raw_text_snippet", stringShort(rawGeneratedText, 100)),
+					zap.String("raw_text_snippet", utils.StringShort(rawGeneratedText, 100)),
 				)
 				parseErr = errors.New("failed to extract JSON block from Setup text")
 			} else {
@@ -174,11 +220,11 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 							correctedRef := imageRef
 
 							if !strings.HasPrefix(imageRef, "ch_") {
-								p.logger.Warn("Character ImageRef does not start with 'ch_'. Attempting correction.",
-									zap.String("original_ref", imageRef),
-									zap.String("char_name", charData.Name),
-									zap.String("published_story_id", publishedStoryID.String()),
-								)
+								// p.logger.Warn("Character ImageRef does not start with 'ch_'. Attempting correction.", // <<< УБИРАЕМ ЛОГ
+								// 	zap.String("original_ref", imageRef),
+								// 	zap.String("char_name", charData.Name),
+								// 	zap.String("published_story_id", publishedStoryID.String()),
+								// )
 								if strings.HasPrefix(imageRef, "character_") {
 									correctedRef = strings.TrimPrefix(imageRef, "character_")
 								} else if strings.HasPrefix(imageRef, "char_") {
@@ -288,83 +334,16 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 							p.logger.Info("No image generation needed.", zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()))
 						}
 
-						if errUnmarshalSetup == nil {
-							var simplifiedSetup map[string]interface{}
-							simplifiedChars := make([]map[string]string, 0, len(setupContent.Characters))
-							for _, char := range setupContent.Characters {
-								simplifiedChar := map[string]string{"n": char.Name, "d": char.Description}
-								if char.Personality != "" {
-									simplifiedChar["p"] = char.Personality
-								}
-								simplifiedChars = append(simplifiedChars, simplifiedChar)
-							}
-							simplifiedSetup = map[string]interface{}{
-								"chars": simplifiedChars,
-								"csd":   setupContent.CoreStatsDefinition,
-							}
-
-							combinedInputMap := make(map[string]interface{})
-							minimalConfig := ToMinimalConfigForFirstScene(publishedStory.Config)
-							combinedInputMap["cfg"] = minimalConfig
-							combinedInputMap["stp"] = simplifiedSetup
-							combinedInputMap["sv"] = make(map[string]interface{})
-							combinedInputMap["gf"] = []string{}
-							combinedInputMap["uc"] = []sharedModels.UserChoiceInfo{}
-							combinedInputMap["pss"] = ""
-							combinedInputMap["pfd"] = ""
-							combinedInputMap["pvis"] = ""
-
-							combinedInputBytes, errMarshal := json.Marshal(combinedInputMap)
-							if errMarshal != nil {
-								p.logger.Error("CRITICAL ERROR: Failed to marshal JSON for FirstScene task, cannot proceed.",
+						if !areImagesPending {
+							p.logger.Info("No images pending, attempting to publish first scene task using internal helper...")
+							if errPub := p.publishFirstSceneTaskInternal(ctx, publishedStory); errPub != nil {
+								p.logger.Error("CRITICAL ERROR: Failed to send first scene generation task (using internal helper)",
 									zap.String("task_id", taskID),
 									zap.String("published_story_id", publishedStoryID.String()),
-									zap.Error(errMarshal),
+									zap.Error(errPub),
 								)
-								parseErr = fmt.Errorf("failed to marshal FirstScene payload for %s: %w", publishedStoryID, errMarshal)
-							} else {
-								combinedInputJSON := string(combinedInputBytes)
-
-								// Используем язык напрямую из publishedStory
-								storyLanguage := publishedStory.Language
-								if storyLanguage == "" {
-									p.logger.Warn("Language field is empty in published story, defaulting to 'en'",
-										zap.String("published_story_id", publishedStoryID.String()))
-									storyLanguage = "en"
-								}
-
-								nextTaskPayload := sharedMessaging.GenerationTaskPayload{
-									TaskID:           uuid.New().String(),
-									UserID:           publishedStory.UserID.String(),
-									PromptType:       sharedModels.PromptTypeNovelFirstSceneCreator,
-									PublishedStoryID: publishedStoryID.String(),
-									UserInput:        combinedInputJSON,
-									StateHash:        sharedModels.InitialStateHash,
-									Language:         storyLanguage, // Используем извлеченный язык
-								}
-
-								if errPub := p.taskPub.PublishGenerationTask(ctx, nextTaskPayload); errPub != nil {
-									p.logger.Error("CRITICAL ERROR: Failed to send first scene generation task",
-										zap.String("task_id", taskID),
-										zap.String("next_task_id", nextTaskPayload.TaskID),
-										zap.String("published_story_id", publishedStoryID.String()),
-										zap.Error(errPub),
-									)
-									parseErr = fmt.Errorf("failed to publish task for first scene: %w", errPub)
-								} else {
-									p.logger.Info("First scene generation task sent successfully",
-										zap.String("task_id", taskID),
-										zap.String("next_task_id", nextTaskPayload.TaskID),
-										zap.String("published_story_id", publishedStoryID.String()),
-									)
-								}
+								parseErr = fmt.Errorf("failed to publish task for first scene: %w", errPub)
 							}
-						} else {
-							p.logger.Error("Setup content could not be unmarshaled, skipping first scene generation task.",
-								zap.String("task_id", taskID),
-								zap.String("published_story_id", publishedStoryID.String()),
-								zap.Error(errUnmarshalSetup),
-							)
 						}
 					}
 				}
@@ -394,24 +373,23 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 				)
 			}
 
-			clientUpdateError := ClientStoryUpdate{
-				ID:           publishedStoryID.String(),
-				UserID:       publishedStory.UserID.String(),
-				UpdateType:   UpdateTypeStory,
-				Status:       string(sharedModels.StatusError),
-				ErrorDetails: &errDetails,
-				StateHash:    "",
-			}
-			wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer wsCancel()
-			if errWs := p.clientPub.PublishClientUpdate(wsCtx, clientUpdateError); errWs != nil {
-				p.logger.Error("Error sending ClientStoryUpdate (Setup Processing Error)", zap.String("task_id", taskID), zap.Error(errWs))
-			} else {
-				p.logger.Info("ClientStoryUpdate sent (Setup Processing Error)", zap.String("task_id", taskID), zap.String("story_id", publishedStoryID.String()))
-			}
+			// Отправка WebSocket уведомления об ошибке обработки
+			go p.publishStoryUpdateViaRabbitMQ(ctx, publishedStory, constants.WSEventSetupError, &errDetails)
 
 			return parseErr
 		}
+
+		// Отправка WebSocket уведомления об успехе Setup
+		finalStoryState, errGetFinal := p.publishedRepo.GetByID(ctx, publishedStoryID)
+		if errGetFinal != nil {
+			p.logger.Error("Failed to get final story state for WS notification after setup success", zap.Error(errGetFinal))
+		} else {
+			// Отправляем обновление с текущим статусом (вероятно, FirstScenePending или ImageGenerationPending)
+			go p.publishStoryUpdateViaRabbitMQ(ctx, finalStoryState, constants.WSEventSetupGenerated, nil)
+		}
+
+		// Отправляем Push уведомление
+		go p.publishPushNotificationForSetupPending(ctx, publishedStory)
 	} else {
 		p.logger.Warn("Setup Error notification received",
 			zap.String("task_id", taskID),
@@ -419,7 +397,9 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 			zap.String("error_details", notification.ErrorDetails),
 		)
 
-		if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, sharedModels.StatusError, false, false, &notification.ErrorDetails); errUpdateStory != nil {
+		dbCtxUpdateStory, cancelUpdateStory := context.WithTimeout(ctx, 10*time.Second)
+		defer cancelUpdateStory()
+		if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtxUpdateStory, publishedStoryID, sharedModels.StatusError, false, false, &notification.ErrorDetails); errUpdateStory != nil {
 			p.logger.Error("CRITICAL ERROR: Failed to update PublishedStory status to Error after Setup generation error",
 				zap.String("task_id", taskID),
 				zap.String("published_story_id", publishedStoryID.String()),
@@ -432,57 +412,21 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 			)
 		}
 
-		clientUpdateError := ClientStoryUpdate{
-			ID:           publishedStoryID.String(),
-			UserID:       publishedStory.UserID.String(),
-			UpdateType:   UpdateTypeStory,
-			Status:       string(sharedModels.StatusError),
-			ErrorDetails: &notification.ErrorDetails,
-			StateHash:    "",
-		}
-		wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer wsCancel()
-		if errWs := p.clientPub.PublishClientUpdate(wsCtx, clientUpdateError); errWs != nil {
-			p.logger.Error("Error sending ClientStoryUpdate (Setup Generator Error)", zap.String("task_id", taskID), zap.Error(errWs))
-		} else {
-			p.logger.Info("ClientStoryUpdate sent (Setup Generator Error)", zap.String("task_id", taskID), zap.String("story_id", publishedStoryID.String()))
-		}
+		// Отправка WebSocket уведомления об ошибке генерации
+		go p.publishStoryUpdateViaRabbitMQ(ctx, publishedStory, constants.WSEventSetupError, &notification.ErrorDetails)
 	}
 	return nil
 }
 
-// <<< НАЧАЛО: Новая функция для отправки Push уведомлений для готового Setup >>>
+// publishPushNotificationForSetupPending использует notifications.BuildSetupPendingPushPayload
 func (p *NotificationProcessor) publishPushNotificationForSetupPending(ctx context.Context, story *sharedModels.PublishedStory) {
-	if story == nil {
-		p.logger.Error("Attempted to send push notification for nil PublishedStory (setup pending)")
+	payload, err := notifications.BuildSetupPendingPushPayload(story)
+	if err != nil {
+		p.logger.Error("Failed to build push notification payload for setup pending", zap.Error(err))
 		return
 	}
 
-	var title, body string
-	if story.Title != nil {
-		title = fmt.Sprintf("История \"%s\" почти готова...", *story.Title)
-	} else {
-		title = "Ваша история почти готова..."
-	}
-	if story.Description != nil {
-		body = *story.Description
-	} else {
-		body = "Скоро можно будет начать игру!"
-	}
-
-	payload := PushNotificationPayload{
-		UserID: story.UserID, // UserID уже uuid.UUID
-		Notification: PushNotification{
-			Title: title,
-			Body:  body,
-		},
-		Data: map[string]string{
-			"publishedStoryId": story.ID.String(),
-			"eventType":        string(sharedModels.StatusFirstScenePending), // Используем этот статус
-		},
-	}
-
-	if err := p.pushPub.PublishPushNotification(ctx, payload); err != nil {
+	if err := p.pushPub.PublishPushNotification(ctx, *payload); err != nil {
 		p.logger.Error("Failed to publish push notification event for setup pending",
 			zap.String("userID", payload.UserID.String()),
 			zap.String("publishedStoryID", story.ID.String()),
@@ -495,8 +439,6 @@ func (p *NotificationProcessor) publishPushNotificationForSetupPending(ctx conte
 		)
 	}
 }
-
-// <<< КОНЕЦ: Новая функция для отправки Push уведомлений для готового Setup >>>
 
 // extractJsonContent пытается извлечь первый валидный JSON блок из строки,
 // игнорируя возможный текст до и после.

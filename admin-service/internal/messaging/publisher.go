@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
+
+	sharedModels "novel-server/shared/models"
 )
 
 // PushNotificationPayload - структура сообщения для отправки push-уведомления.
@@ -67,7 +69,7 @@ func NewRabbitMQPushPublisher(conn *amqp.Connection, queueName string, logger *z
 	}, nil
 }
 
-func (p *rabbitMQPushPublisher) PublishPushNotification(ctx context.Context, payload PushNotificationPayload) error {
+func (p *rabbitMQPushPublisher) PublishPushNotification(ctx context.Context, payload sharedModels.PushNotificationPayload) error {
 	if p.channel == nil {
 		p.logger.Error("Канал RabbitMQ не инициализирован (nil)")
 		return errors.New("канал RabbitMQ не инициализирован")
@@ -147,9 +149,9 @@ func (p *rabbitMQPushPublisher) PublishPushEvent(ctx context.Context, event inte
 	}
 
 	// Создаем payload для старого метода, используя fallback значения
-	payload := PushNotificationPayload{
+	payload := sharedModels.PushNotificationPayload{
 		UserID: userID,
-		Notification: PushNotification{
+		Notification: sharedModels.PushNotification{
 			Title: fallbackTitle,
 			Body:  fallbackBody,
 		},

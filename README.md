@@ -884,10 +884,10 @@
 Бэкенд (`notification-service`) теперь отправляет **только data-only** push-уведомления. Это значит, что стандартные поля `notification.title` и `notification.body` **не отправляются**. Вместо этого весь необходимый контент передается в специальном `data` payload, который включает:
 
 *   `loc_key`: Ключ строки локализации (например, `notification_scene_ready`). Используйте константу `constants.PushLocKey` для самого ключа (`"loc_key"`).
-*   `loc_arg_*`: Аргументы, которые нужно подставить в строку локализации (например, `loc_arg_storyTitle`). Используйте константы `constants.PushLocArg*`.
+*   `loc_arg_*`: Аргументы, которые нужно подставить в строку локализации (например, `loc_arg_story_title`). Используйте константы `constants.PushLocArg*`.
 *   `fallback_title`: Запасной заголовок на случай, если локализация не удалась.
 *   `fallback_body`: Запасное тело сообщения.
-*   Другие необходимые данные (`storyConfigId`, `publishedStoryId` и т.д.).
+*   Другие необходимые данные (`story_config_id`, `published_story_id` и т.д.).
 
 **Задача клиента:**
 
@@ -908,12 +908,27 @@
     *   `data`:
         ```json
         {
-          "story_config_id": "uuid-string", // camelCase -> snake_case
-          "event_type": "draft", // camelCase -> snake_case
+          "story_config_id": "uuid-string",
+          "event_type": "draft_ready", // Обновлено
           "loc_key": "notification_draft_ready",
-          "loc_arg_story_title": "Название Черновика", // Изменено с storyTitle
+          "loc_arg_story_title": "Название Черновика", // Исправлено на snake_case
           "fallback_title": "Черновик готов!",
-          "fallback_body": "Ваш черновик \"Название Черновика\" готов к настройке."
+          "fallback_body": "Ваш черновик \"Название Черновика\" готов к настройке.",
+          "title": "Название Черновика" // Добавлено для консистентности
+        }
+        ```
+*   **Setup готов (ожидание первой сцены):**
+    *   `loc_key`: `notification_setup_ready` (константа `constants.PushLocKeySetupReady`)
+    *   `data`:
+        ```json
+        {
+          "published_story_id": "uuid-string",
+          "event_type": "setup_pending", // Обновлено
+          "loc_key": "notification_setup_ready",
+          "loc_arg_story_title": "Название Истории", // Исправлено на snake_case
+          "fallback_title": "История \"Название Истории\" почти готова...",
+          "fallback_body": "Скоро можно будет начать играть!",
+          "title": "Название Истории" // Добавлено для консистентности
         }
         ```
 *   **История готова к игре:** (После генерации Setup, первой сцены и всех изображений)
@@ -921,49 +936,49 @@
     *   `data`:
         ```json
         {
-          "published_story_id": "uuid-string", // camelCase -> snake_case
-          "event_type": "ready", // camelCase -> snake_case
+          "published_story_id": "uuid-string",
+          "event_type": "story_ready", // Обновлено
           "loc_key": "notification_story_ready",
-          "loc_arg_story_title": "Название Истории", // Изменено с storyTitle
+          "loc_arg_story_title": "Название Истории", // Исправлено на snake_case
           "fallback_title": "История готова!",
           "fallback_body": "Ваша история \"Название Истории\" готова к игре!",
           "title": "Название Истории",
-          "author_name": "Имя Автора" // camelCase -> snake_case
+          "author_name": "Имя Автора" // Уже было snake_case
         }
         ```
-*   **Новая сцена готова:**
+*   **Новая сцена готова:** (Пример основан на предположении, т.к. функция не найдена)
     *   `loc_key`: `notification_scene_ready` (константа `constants.PushLocKeySceneReady`)
     *   `data`:
         ```json
         {
-          "published_story_id": "uuid-string", // camelCase -> snake_case
-          "game_state_id": "uuid-string", // camelCase -> snake_case
-          "scene_id": "uuid-string", // camelCase -> snake_case
-          "event_type": "scene_ready", // Уточнено значение
+          "published_story_id": "uuid-string",
+          "game_state_id": "uuid-string", // snake_case
+          "scene_id": "uuid-string", // snake_case
+          "event_type": "scene_ready", // Обновлено
           "loc_key": "notification_scene_ready",
-          "loc_arg_story_title": "Название Истории", // Изменено с storyTitle
-          "fallback_title": "Новая сцена готова!", // Изменено для ясности
-          "fallback_body": "Новая сцена в истории \"Название Истории\" готова!", // Изменено для ясности
-          "title": "Название Истории",
-          "author_name": "Имя Автора" // camelCase -> snake_case
+          "loc_arg_story_title": "Название Истории", // Исправлено на snake_case
+          "fallback_title": "Новая сцена готова!",
+          "fallback_body": "Новая сцена в истории \"Название Истории\" готова!",
+          "title": "Название Истории" // Добавлено для консистентности
+          // "author_name": "Имя Автора" // Возможно, тоже нужно? Зависит от реализации BuildSceneReadyPushPayload
         }
         ```
-*   **Игра завершена (Game Over):**
+*   **Игра завершена (Game Over):** (Пример основан на предположении)
     *   `loc_key`: `notification_game_over` (константа `constants.PushLocKeyGameOver`)
     *   `data`:
         ```json
         {
-          "published_story_id": "uuid-string", // camelCase -> snake_case
-          "game_state_id": "uuid-string", // camelCase -> snake_case
-          "scene_id": "uuid-string", // camelCase -> snake_case
-          "event_type": "completed", // camelCase -> snake_case
+          "published_story_id": "uuid-string",
+          "game_state_id": "uuid-string", // snake_case
+          "scene_id": "uuid-string", // ID сцены с концовкой (snake_case)
+          "event_type": "game_over", // Обновлено
           "loc_key": "notification_game_over",
-          "loc_arg_story_title": "Название Истории", // Изменено с storyTitle
-          "loc_arg_ending_text": "Текст концовки...", // Изменено с endingText
+          "loc_arg_story_title": "Название Истории", // Исправлено на snake_case
+          "loc_arg_ending_text": "Текст концовки...", // snake_case
           "fallback_title": "Игра завершена!",
           "fallback_body": "История \"Название Истории\" завершена.",
-          "title": "Название Истории",
-          "author_name": "Имя Автора" // camelCase -> snake_case
+          "title": "Название Истории" // Добавлено для консистентности
+          // "author_name": "Имя Автора" // Возможно, тоже нужно?
         }
         ```
 
