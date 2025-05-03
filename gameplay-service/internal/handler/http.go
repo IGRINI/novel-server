@@ -30,7 +30,7 @@ type StoryConfigSummary struct {
 // StoryConfigDetail представляет детальную информацию о StoryConfig для ответа.
 type StoryConfigDetail struct {
 	ID        string          `json:"id"`
-	CreatedAt time.Time       `json:"createdAt"`
+	CreatedAt time.Time       `json:"created_at"`
 	Status    string          `json:"status"`
 	Config    json.RawMessage `json:"config,omitempty"` // Может быть nil, omitempty скроет если так
 }

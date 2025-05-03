@@ -33,7 +33,7 @@ type UserUpdatePayload struct {
 	Email       *string  `json:"email,omitempty"`
 	DisplayName *string  `json:"display_name,omitempty"`
 	Roles       []string `json:"roles,omitempty"`
-	IsBanned    *bool    `json:"isBanned,omitempty"`
+	IsBanned    *bool    `json:"is_banned,omitempty"`
 }
 
 // --- Структура ответа от auth-service ---

@@ -23,9 +23,9 @@ type GameStateSummaryDTO struct {
 // Used for displaying stat information in story details.
 type CoreStatDTO struct {
 	Description  string `json:"description"`
-	InitialValue int    `json:"initialValue"`
-	GameOverMin  bool   `json:"gameOverMin"` // Game Over when Min is reached?
-	GameOverMax  bool   `json:"gameOverMax"` // Game Over when Max is reached?
+	InitialValue int    `json:"initial_value"`
+	GameOverMin  bool   `json:"game_over_min"`
+	GameOverMax  bool   `json:"game_over_max"`
 	Icon         string `json:"icon,omitempty"`
 }
 
@@ -35,5 +35,5 @@ type CharacterDTO struct {
 	Name           string `json:"name"`
 	Description    string `json:"description"`
 	Personality    string `json:"personality,omitempty"`
-	ImageReference string `json:"imageReference,omitempty"` // Reference for image generation/retrieval
+	ImageReference string `json:"image_reference,omitempty"`
 }

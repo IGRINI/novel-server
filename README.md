@@ -117,8 +117,8 @@
     *   Ответ при успехе (`200 OK`):
         ```json
         {
-          \"access_token\": \"string (jwt)\",
-          \"refresh_token\": \"string (jwt)\"
+          "access_token": "string (jwt)",
+          "refresh_token": "string (jwt)"
         }
         ```
     *   Ответ при ошибке:
@@ -132,14 +132,14 @@
     *   Тело запроса (`application/json`):
         ```json
         {
-          \"refresh_token\": \"string (jwt)\"
+          "refresh_token": "string (jwt)"
         }
         ```
     *   Ответ при успехе (`200 OK`):
         ```json
         {
-          \"access_token\": \"string (jwt)\",
-          \"refresh_token\": \"string (jwt)\"
+          "access_token": "string (jwt)",
+          "refresh_token": "string (jwt)"
         }
         ```
     *   Ответ при ошибке:
@@ -153,13 +153,13 @@
     *   Тело запроса (`application/json`):
         ```json
         {
-          \"refresh_token\": \"string (jwt)\" // Токен, который нужно отозвать
+          "refresh_token": "string (jwt)" // Токен, который нужно отозвать
         }
         ```
     *   Ответ при успехе (`200 OK`):
         ```json
         {
-          \"message\": \"Successfully logged out\"
+          "message": "Successfully logged out"
         }
         ```
     *   Ответ при ошибке:
@@ -173,15 +173,15 @@
     *   Тело запроса (`application/json`):
         ```json
         {
-          \"token\": \"string (jwt)\"
+          "token": "string (jwt)"
         }
         ```
     *   Ответ при успехе (`200 OK`):
         ```json
         {
-          \"valid\": true,
-          \"user_id\": \"uuid-string\",
-          \"access_uuid\": \"uuid-string\" // UUID самого токена
+          "valid": true,
+          "user_id": "uuid-string",
+          "access_uuid": "uuid-string" // UUID самого токена
           // ... другие клеймы токена при необходимости
         }
         ```
@@ -199,12 +199,12 @@
     *   Ответ при успехе (`200 OK`):
         ```json
         {
-          \"id\": \"uuid-string\", // UUID пользователя
-          \"username\": \"string\",
-          \"displayName\": \"string\", // Отображаемое имя, может совпадать с username
-          \"email\": \"string\",
-          \"roles\": [\"user\", \"...\"], // Список ролей
-          \"isBanned\": false
+          "id": "uuid-string", // UUID пользователя
+          "username": "string",
+          "display_name": "string", // Отображаемое имя, может совпадать с username
+          "email": "string",
+          "roles": ["user", "..."], // Список ролей
+          "is_banned": false
         }
         ```
     *   Ответ при ошибке:
@@ -218,14 +218,14 @@
     *   Тело запроса (`application/json`):
         ```json
         {
-          \"token\": \"string (device token)\",  // Токен, полученный от FCM/APNS
-          \"platform\": \"string (ios|android)\" // Платформа устройства ('ios' или 'android')
+          "token": "string (device token)",  // Токен, полученный от FCM/APNS
+          "platform": "string (ios|android)" // Платформа устройства ('ios' или 'android')
         }
         ```
     *   Ответ при успехе (`200 OK`):
         ```json
         {
-          \"message\": \"Device token registered successfully\"
+          "message": "Device token registered successfully"
         }
         ```
     *   Ответ при ошибке:
@@ -239,13 +239,13 @@
     *   Тело запроса (`application/json`):
         ```json
         {
-          \"token\": \"string (device token)\" // Токен, который нужно удалить
+          "token": "string (device token)" // Токен, который нужно удалить
         }
         ```
     *   Ответ при успехе (`200 OK`):
         ```json
         {
-          \"message\": \"Device token unregistered successfully\"
+          "message": "Device token unregistered successfully"
         }
         ```
     *   Ответ при ошибке:
@@ -300,7 +300,7 @@
               "id": "uuid-string",
               "title": "string", // Может быть пустым, если генерация еще идет
               "description": "string", // Может быть user_input, если генерация еще идет
-              "createdAt": "timestamp",
+              "created_at": "timestamp",
               "status": "generating | draft | error"
             }
             /* ... */
@@ -322,7 +322,7 @@
             ```json
             {
               "id": "uuid-string",
-              "createdAt": "timestamp",
+              "created_at": "timestamp",
               "status": "generating | error",
               "config": null // Поле config будет null
             }
@@ -331,20 +331,20 @@
             ```json
             {
               "title": "string",
-              "shortDescription": "string",
+              "short_description": "string",
               "franchise": "string | null",
               "genre": "string",
               "language": "string",
-              "isAdultContent": false,
-              "playerName": "string",
-              "playerDescription": "string",
-              "worldContext": "string",
-              "storySummary": "string",
-              "coreStats": { // Словарь статов
+              "is_adult_content": false,
+              "player_name": "string",
+              "player_description": "string",
+              "world_context": "string",
+              "story_summary": "string",
+              "core_stats": { // Словарь статов
                 "stat_key_1": {
                   "description": "string",
-                  "initialValue": 10,
-                  "gameOverConditions": {
+                  "initial_value": 10,
+                  "game_over_conditions": {
                     "min": false, // true, если Game Over при мин. значении
                     "max": false  // true, если Game Over при макс. значении
                   }
@@ -516,25 +516,25 @@
           "language": "ru",
           "player_name": "Сыщик", // camelCase -> snake_case
           "core_stats": { // camelCase -> snake_case
-            "sanity": { "description": "Рассудок", "initialValue": 10, "gameOverMin": true, "gameOverMax": false, "icon": "brain" },
-            "clues": { "description": "Улики", "initialValue": 0, "gameOverMin": false, "gameOverMax": false, "icon": "magnifying-glass" }
+            "sanity": { "description": "Рассудок", "initial_value": 10, "game_over_min": true, "game_over_max": false, "icon": "brain" },
+            "clues": { "description": "Улики", "initial_value": 0, "game_over_min": false, "game_over_max": false, "icon": "magnifying-glass" }
           },
           "characters": [
-            { "name": "Дворецкий", "description": "Верный слуга... или нет?", "personality": "Загадочный", "imageReference": "ch_butler_ref_123" }
+            { "name": "Дворецкий", "description": "Верный слуга... или нет?", "personality": "Загадочный", "image_reference": "ch_butler_ref_123" }
           ],
           "cover_image_url": "https://crion.space/generated-images/history_preview_...jpg | null", // Имя поля и snake_case
           "game_states": [ // camelCase -> snake_case
             {
               "id": "game-state-uuid-1",
-              "lastActivityAt": "2024-04-20T10:30:00Z",
-              "sceneIndex": 5,
-              "currentSceneSummary": "Вы стоите перед туманными воротами..."
+              "last_activity_at": "2024-04-20T10:30:00Z",
+              "scene_index": 5,
+              "current_scene_summary": "Вы стоите перед туманными воротами..."
             },
             {
               "id": "game-state-uuid-2",
-              "lastActivityAt": "2024-04-19T15:00:00Z",
-              "sceneIndex": 2,
-              "currentSceneSummary": "Внутри таверны пахнет элем и..."
+              "last_activity_at": "2024-04-19T15:00:00Z",
+              "scene_index": 2,
+              "current_scene_summary": "Внутри таверны пахнет элем и..."
             }
           ]
         }
@@ -911,7 +911,7 @@
           "story_config_id": "uuid-string", // camelCase -> snake_case
           "event_type": "draft", // camelCase -> snake_case
           "loc_key": "notification_draft_ready",
-          "loc_arg_storyTitle": "Название Черновика",
+          "loc_arg_story_title": "Название Черновика", // Изменено с storyTitle
           "fallback_title": "Черновик готов!",
           "fallback_body": "Ваш черновик \"Название Черновика\" готов к настройке."
         }
@@ -924,7 +924,7 @@
           "published_story_id": "uuid-string", // camelCase -> snake_case
           "event_type": "ready", // camelCase -> snake_case
           "loc_key": "notification_story_ready",
-          "loc_arg_storyTitle": "Название Истории",
+          "loc_arg_story_title": "Название Истории", // Изменено с storyTitle
           "fallback_title": "История готова!",
           "fallback_body": "Ваша история \"Название Истории\" готова к игре!",
           "title": "Название Истории",
@@ -939,11 +939,11 @@
           "published_story_id": "uuid-string", // camelCase -> snake_case
           "game_state_id": "uuid-string", // camelCase -> snake_case
           "scene_id": "uuid-string", // camelCase -> snake_case
-          "event_type": "playing", // Или scene_ready? (camelCase -> snake_case)
+          "event_type": "scene_ready", // Уточнено значение
           "loc_key": "notification_scene_ready",
-          "loc_arg_storyTitle": "Название Истории",
-          "fallback_title": "Название Истории", // Может лучше "Новая сцена"?
-          "fallback_body": "Новая сцена готова!",
+          "loc_arg_story_title": "Название Истории", // Изменено с storyTitle
+          "fallback_title": "Новая сцена готова!", // Изменено для ясности
+          "fallback_body": "Новая сцена в истории \"Название Истории\" готова!", // Изменено для ясности
           "title": "Название Истории",
           "author_name": "Имя Автора" // camelCase -> snake_case
         }
@@ -958,8 +958,8 @@
           "scene_id": "uuid-string", // camelCase -> snake_case
           "event_type": "completed", // camelCase -> snake_case
           "loc_key": "notification_game_over",
-          "loc_arg_storyTitle": "Название Истории",
-          "loc_arg_endingText": "Текст концовки...",
+          "loc_arg_story_title": "Название Истории", // Изменено с storyTitle
+          "loc_arg_ending_text": "Текст концовки...", // Изменено с endingText
           "fallback_title": "Игра завершена!",
           "fallback_body": "История \"Название Истории\" завершена.",
           "title": "Название Истории",
@@ -967,7 +967,7 @@
         }
         ```
 
-**Примечание:** Ключи аргументов (`loc_arg_storyTitle`, `loc_arg_endingText`), ключи fallback (`fallback_title`, `fallback_body`) и основной ключ `loc_key`
+**Примечание:** Ключи аргументов (`loc_arg_story_title`, `loc_arg_ending_text`), ключи fallback (`fallback_title`, `fallback_body`) и основной ключ `loc_key` теперь должны быть консистентными.
 
 ---
 
@@ -984,16 +984,16 @@
         {
           "id": "new-game-state-uuid", // ID созданного состояния
           // ... другие поля PlayerGameState ...
-          "playerStatus": "generating_scene | playing" // Статус
+          "player_status": "generating_scene | playing" // Статус
         }
         ```
-    *   Клиент **сохраняет** полученный `id` (это `gameStateID` для дальнейших запросов).
-    *   **Важно:** Если `playerStatus` равен `generating_scene`, клиент должен подождать WebSocket-события `scene_generated`, прежде чем запрашивать сцену. Если статус `playing`, можно сразу переходить к шагу 2.
+    *   Клиент **сохраняет** полученный `id` (это `game_state_id` для дальнейших запросов).
+    *   **Важно:** Если `player_status` равен `generating_scene`, клиент должен подождать WebSocket-события `scene_generated`, прежде чем запрашивать сцену. Если статус `playing`, можно сразу переходить к шагу 2.
 
 2.  **Запрос текущей сцены:**
-    *   Клиент использует сохраненный `gameStateID` и отправляет запрос:
+    *   Клиент использует сохраненный `game_state_id` и отправляет запрос:
         *   `GET /api/published-stories/:story_id/gamestates/:game_state_id/scene`
-    *   Сервер возвращает текущую сцену (`200 OK`, см. описание DTO `GameSceneResponseDTO` выше) или ошибку:
+    *   Сервер возвращает текущую сцену (`200 OK`, см. описание DTO `GameSceneResponseDTO` выше, теперь полностью в `snake_case`) или ошибку:
         *   `409 Conflict`: Если сцена или концовка еще генерируется (`generating_scene` или `game_over_pending`). Клиент должен подождать WebSocket-события.
         *   `404 Not Found`: Состояние игры не найдено (маловероятно, если ID был только что получен).
         *   `5xx`: Внутренняя ошибка.
@@ -1001,31 +1001,31 @@
 3.  **Отображение сцены и выбор игрока:**
     *   Клиент парсит полученный `GameSceneResponseDTO`.
     *   Если есть поле `choices`, отображает текст (`description`) и варианты (`options[].text`).
-    *   Если есть поле `endingText`, отображает текст концовки.
+    *   Если есть поле `ending_text`, отображает текст концовки.
     *   Если есть поле `continuation`, обрабатывает переход к новому персонажу.
     *   Пользователь делает выбор (нажимает на один из вариантов в блоке `choices`). Клиент запоминает индекс(ы) выбранного варианта (например, `[0]` или `[1]`, если выбор был во втором блоке `choices`).
 
 4.  **Отправка выбора:**
     *   Клиент отправляет сделанный выбор на сервер:
         *   `POST /api/published-stories/:story_id/gamestates/:game_state_id/choice`
-        *   Тело запроса: `{"selected_option_indices": [ index1, index2, ...]}`
+        *   Тело запроса: `{"selected_option_indices": [ index1, index2, ...]}` (поле уже в `snake_case`)
     *   Сервер принимает выбор (`200 OK`), обновляет внутреннее состояние прогресса и **асинхронно** запускает задачу на генерацию следующей сцены или концовки.
 
 5.  **Ожидание следующей сцены/концовки (WebSocket):**
     *   Клиент **обязательно** должен слушать WebSocket-события после отправки выбора.
     *   **Успешная генерация сцены:**
         *   Событие: `scene_generated`
-        *   Payload: `{"published_story_id": "...", "scene_id": "...", "state_hash": "..."}`
-        *   Действие клиента: Генерация завершена. **Перейти к шагу 2** (Запрос текущей сцены с тем же `gameStateID`).
+        *   Payload: `{"published_story_id": "...", "game_state_id": "...", "scene_id": "..."}` (поля в `snake_case`)
+        *   Действие клиента: Генерация завершена. **Перейти к шагу 2** (Запрос текущей сцены с тем же `game_state_id`).
     *   **Успешная генерация концовки:**
         *   Событие: `game_over_generated`
-        *   Payload: `{"published_story_id": "...", "scene_id": "..."}`
-        *   Действие клиента: Генерация концовки завершена. **Перейти к шагу 2** (Запрос текущей сцены с тем же `gameStateID`, которая теперь будет содержать `endingText`).
+        *   Payload: `{"published_story_id": "...", "scene_id": "..."}` (поля в `snake_case`)
+        *   Действие клиента: Генерация концовки завершена. **Перейти к шагу 2** (Запрос текущей сцены с тем же `game_state_id`, которая теперь будет содержать `ending_text`).
     *   **Ошибка генерации сцены/концовки:**
         *   Событие: `scene_error` или `game_over_error`
-        *   Payload: `{"published_story_id": "...", "error": "..."}` (Payload может содержать `state_hash` для `scene_error`)
+        *   Payload: `{"published_story_id": "...", "game_state_id": "...", "error": "..."}` (для `scene_error`) или `{"published_story_id": "...", "error": "..."}` (для `game_over_error`) (поля в `snake_case`)
         *   Действие клиента: Показать пользователю сообщение об ошибке. Можно предложить кнопку "Попробовать снова", которая вызовет:
             *   `POST /api/published-stories/:story_id/gamestates/:game_state_id/retry`
             После успешного ответа `202 Accepted` на ретрай, клиент снова **переходит к шагу 5** (Ожидание WebSocket).
 
-6.  **Цикл:** Шаги 2-5 повторяются, пока не будет получена сцена с `endingText`.
+6.  **Цикл:** Шаги 2-5 повторяются, пока не будет получена сцена с `ending_text`.

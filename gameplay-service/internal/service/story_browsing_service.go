@@ -58,7 +58,7 @@ type PublishedStorySummaryDTO struct {
 	IsAdultContent    bool                     `json:"is_adult_content"`
 	LikesCount        int                      `json:"likes_count"`
 	IsLiked           bool                     `json:"is_liked"`
-	HasPlayerProgress bool                     `json:"hasPlayerProgress"`
+	HasPlayerProgress bool                     `json:"has_player_progress"`
 	IsPublic          bool                     `json:"is_public"`
 	Status            sharedModels.StoryStatus `json:"status"`
 }

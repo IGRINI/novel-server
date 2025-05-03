@@ -33,7 +33,7 @@ type meResponse struct {
 	DisplayName string   `json:"display_name"`
 	Email       string   `json:"email"`
 	Roles       []string `json:"roles,omitempty"`
-	IsBanned    bool     `json:"isBanned"`
+	IsBanned    bool     `json:"is_banned"`
 }
 
 type updateUserRequest struct {
@@ -59,10 +59,10 @@ type BatchGetUsersInfoRequest struct {
 type UserInfoForBatch struct {
 	ID          string   `json:"id"`
 	Username    string   `json:"username"`
-	DisplayName *string  `json:"displayName"`
+	DisplayName *string  `json:"display_name"`
 	Email       *string  `json:"email"`
 	Roles       []string `json:"roles"`
-	IsBanned    bool     `json:"isBanned"`
+	IsBanned    bool     `json:"is_banned"`
 }
 
 // BatchGetUsersInfoResponse - структура ответа для пакетного получения информации о пользователях.
