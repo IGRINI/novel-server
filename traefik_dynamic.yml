@@ -36,18 +36,21 @@ http:
       entryPoints:
         - "web"
       # Matches paths NOT starting with known API/service prefixes
-      rule: "!PathPrefix(`/api`, `/admin`, `/login`, `/ws`)"
+      rule: "!PathPrefix(`/api`, `/admin`, `/login`, `/ws`, `/auth`)"
       service: "landing-page-service"
       priority: 1 # Low priority ensures API routes match first
 
-    # --- Auth Service (Single Router for all /api/*) ---
+    # --- Auth Service (Router for /auth/* AND /api/v1/*) ---
     auth-router:
       entryPoints:
         - "web"
-      rule: "PathPrefix(`/api/v1`)" # <<< ИЗМЕНЕНО: Правило теперь для /api/v1
+      # <<< UPDATED RULE to match both prefixes >>>
+      rule: "PathPrefix(`/auth`) || PathPrefix(`/api/v1`)"
       service: "auth-service"
       middlewares:
-        - "auth-v1-stripprefix" # <<< ИЗМЕНЕНО: Используем новый middleware
+        # <<< Apply middleware only if path is /api/v1? Or handle in service? >>>
+        # For now, keep it simple. The middleware only strips /api/v1, so it's okay.
+        - "auth-v1-stripprefix"
       priority: 10
 
     # --- Gameplay Service ---

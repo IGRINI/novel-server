@@ -9,11 +9,12 @@ import (
 	"novel-server/gameplay-service/internal/service"
 	"novel-server/shared/authutils"
 	interfaces "novel-server/shared/interfaces"
-	sharedMiddleware "novel-server/shared/middleware"
 	sharedModels "novel-server/shared/models"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
@@ -79,6 +80,8 @@ type GameplayHandler struct {
 	publishedStoryRepo        interfaces.PublishedStoryRepository
 	config                    *config.Config
 	supportedLanguagesMap     map[string]struct{}
+	jwtSecret                 string
+	interServiceSecret        string
 }
 
 // NewGameplayHandler создает новый GameplayHandler.
@@ -93,13 +96,11 @@ func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret
 		logger.Fatal("Failed to create Inter-Service JWT Verifier", zap.Error(err))
 	}
 
-	// <<< ВОССТАНАВЛИВАЕМ: Создание карты поддерживаемых языков из конфига >>>
 	langMap := make(map[string]struct{}, len(cfg.SupportedLanguages))
 	for _, lang := range cfg.SupportedLanguages {
 		langMap[lang] = struct{}{}
 	}
 	logger.Debug("Initialized supported languages map from config", zap.Int("count", len(langMap)))
-	// <<< КОНЕЦ ВОССТАНОВЛЕНИЯ >>>
 
 	return &GameplayHandler{
 		service:                   s,
@@ -109,98 +110,87 @@ func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret
 		storyConfigRepo:           storyConfigRepo,
 		publishedStoryRepo:        publishedStoryRepo,
 		config:                    cfg,
-		supportedLanguagesMap:     langMap, // <<< ВОССТАНАВЛИВАЕМ: Сохраняем карту
+		supportedLanguagesMap:     langMap,
+		jwtSecret:                 jwtSecret,
+		interServiceSecret:        interServiceSecret,
 	}
 }
 
 // RegisterRoutes регистрирует маршруты для gameplay сервиса в Gin.
-func (h *GameplayHandler) RegisterRoutes(router gin.IRouter) {
-	// Middleware для проверки токена пользователя (используем Gin middleware)
-	authMiddleware := sharedMiddleware.AuthMiddleware(h.userTokenVerifier.VerifyToken, h.logger)
+// <<< Corrected signature and added rate limiter application >>>
+func (h *GameplayHandler) RegisterRoutes(router gin.IRouter, generalRL, generationRL gin.HandlerFunc) {
 
-	// --- Маршруты для черновиков историй (API для пользователей) ---
-	// Используем router.Group и синтаксис Gin
-	storiesGroup := router.Group("/stories")
-	storiesGroup.Use(authMiddleware) // Применяем middleware к группе
+	// <<< REMOVED router.Group("/api/v1") >>>
+	// Apply general IP-based rate limiter and auth middleware directly to the router or specific groups below
+	// Middleware applied here will affect /internal routes too unless group structure is used carefully.
+
+	// Example applying middleware to user-facing routes only:
+	userApiGroup := router.Group("") // Group without a path prefix
+	userApiGroup.Use(generalRL)
+	userApiGroup.Use(h.AuthMiddleware())
 	{
-		storiesGroup.POST("/generate", h.generateInitialStory)
-		storiesGroup.GET("", h.listStoryConfigs)
-		storiesGroup.GET("/:id", h.getStoryConfig)
-		storiesGroup.POST("/:id/revise", h.reviseStoryConfig)
-		storiesGroup.POST("/:id/publish", h.publishStoryDraft)
-		storiesGroup.POST("/drafts/:draft_id/retry", h.retryDraftGeneration)
-		storiesGroup.DELETE("/:id", h.deleteDraft)
-	}
-
-	// --- Маршруты для опубликованных историй (API для пользователей) ---
-	// Используем префикс /published-stories
-	pubGroup := router.Group("/published-stories")
-	pubGroup.Use(authMiddleware)
-	{
-		pubGroup.GET("/me", h.listMyPublishedStories)         // Список своих опубликованных
-		pubGroup.GET("/public", h.listPublicPublishedStories) // Список публичных
-
-		// Операции с конкретной историей (используем :story_id)
-		storySpecific := pubGroup.Group("/:story_id")
+		// --- Drafts --- (/stories)
+		storiesGroup := userApiGroup.Group("/stories") // Registering directly on userApiGroup
 		{
-			storySpecific.GET("", h.getPublishedStoryDetails)             // Детали истории
-			storySpecific.POST("/like", h.likeStory)                      // Лайкнуть историю
-			storySpecific.DELETE("/like", h.unlikeStory)                  // Убрать лайк
-			storySpecific.DELETE("", h.deletePublishedStory)              // Удалить свою историю
-			storySpecific.PATCH("/visibility", h.setStoryVisibility)      // Изменить видимость
-			storySpecific.POST("/retry", h.retryPublishedStoryGeneration) // Повторить генерацию (если ошибка)
+			storiesGroup.POST("/generate", generationRL, h.generateInitialStory) // Path: /stories/generate
+			storiesGroup.GET("", h.listStoryConfigs)                             // Path: /stories
+			storiesGroup.GET("/:id", h.getStoryConfig)
+			storiesGroup.POST("/:id/revise", generationRL, h.reviseStoryConfig)
+			storiesGroup.POST("/:id/publish", h.publishStoryDraft)
+			storiesGroup.POST("/drafts/:draft_id/retry", generationRL, h.retryDraftGeneration)
+			storiesGroup.DELETE("/:id", h.deleteDraft)
+		}
 
-			// --- Операции с СОХРАНЕНИЯМИ (GameStates) для этой истории ---
-			gameStatesGroup := storySpecific.Group("/gamestates")
+		// --- Published --- (/published-stories)
+		pubGroup := userApiGroup.Group("/published-stories") // Registering directly on userApiGroup
+		{
+			pubGroup.GET("/me", h.listMyPublishedStories) // Path: /published-stories/me
+			pubGroup.GET("/public", h.listPublicPublishedStories)
+
+			storySpecific := pubGroup.Group("/:story_id")
 			{
-				// Коллекция сохранений
-				gameStatesGroup.GET("", h.listPlayerGameStates)   // Получить список сохранений
-				gameStatesGroup.POST("", h.createPlayerGameState) // Создать новое сохранение (начать игру)
+				storySpecific.GET("", h.getPublishedStoryDetails)
+				storySpecific.POST("/like", h.likeStory)
+				storySpecific.DELETE("/like", h.unlikeStory)
+				storySpecific.DELETE("", h.deletePublishedStory)
+				storySpecific.PATCH("/visibility", h.setStoryVisibility)
+				storySpecific.POST("/retry", generationRL, h.retryPublishedStoryGeneration)
 
-				// Операции с КОНКРЕТНЫМ сохранением (используем :game_state_id)
-				gameStateSpecific := gameStatesGroup.Group("/:game_state_id")
+				gameStatesGroup := storySpecific.Group("/gamestates")
 				{
-					gameStateSpecific.GET("/scene", h.getPublishedStoryScene)    // Получить текущую сцену
-					gameStateSpecific.POST("/choice", h.makeChoice)              // Сделать выбор
-					gameStateSpecific.DELETE("", h.deletePlayerGameStateHandler) // Удалить это сохранение
-					// <<< ДОБАВЛЕНО: Маршрут для ретрая конкретного состояния игры >>>
-					gameStateSpecific.POST("/retry", h.retrySpecificGameStateGeneration)
+					gameStatesGroup.GET("", h.listGameStates)
+					gameStatesGroup.POST("", generationRL, h.createGameState)
+
+					gameStateSpecific := gameStatesGroup.Group("/:game_state_id")
+					{
+						gameStateSpecific.GET("/scene", h.getPublishedStoryScene)
+						gameStateSpecific.POST("/choice", generationRL, h.makeChoice)
+						gameStateSpecific.DELETE("", h.deleteGameState)
+						gameStateSpecific.POST("/retry", generationRL, h.retrySpecificGameStateGeneration)
+					}
 				}
 			}
+			pubGroup.GET("/liked", h.listLikedStories)
 		}
 	}
 
 	// --- Маршруты для внутреннего API (межсервисное взаимодействие) ---
-	// Middleware для проверки межсервисного токена
-	interServiceAuthMiddleware := sharedMiddleware.InterServiceAuthMiddlewareGin(h.interServiceTokenVerifier, h.logger)
-
+	// Register internal routes directly on the main router, NOT inside userApiGroup
 	internalGroup := router.Group("/internal")
-	internalGroup.Use(interServiceAuthMiddleware)
+	internalGroup.Use(h.InternalAuthMiddleware())
 	{
-		// Маршруты для чтения данных админкой (ПОЛЬЗОВАТЕЛЬСКИЕ ДАННЫЕ)
-		internalGroup.GET("/users/:user_id/drafts", h.listUserDraftsInternal)   // GET /internal/users/{id}/drafts
-		internalGroup.GET("/users/:user_id/stories", h.listUserStoriesInternal) // GET /internal/users/{id}/stories
-		// Старые, неверные маршруты для деталей/сцен, закомментированы или удалены
-		// internalGroup.GET("/users/:user_id/stories/:story_id", h.getPublishedStoryDetailsInternal) // УДАЛЕНО/ЗАМЕНЕНО
-		// internalGroup.GET("/users/:user_id/stories/:story_id/scenes", h.listStoryScenesInternal) // УДАЛЕНО/ЗАМЕНЕНО
-
-		// Маршруты для чтения данных админкой (ПО ID СУЩНОСТЕЙ) - Соответствуют клиенту
-		internalGroup.GET("/drafts/:draft_id", h.getDraftDetailsInternal)               // GET /internal/drafts/{id} - НОВЫЙ
-		internalGroup.GET("/stories/:story_id", h.getPublishedStoryDetailsInternal)     // GET /internal/stories/{id} - НОВЫЙ
-		internalGroup.GET("/stories/:story_id/scenes", h.listStoryScenesInternal)       // GET /internal/stories/{id}/scenes - НОВЫЙ
-		internalGroup.GET("/stories/:story_id/players", h.listStoryPlayersInternal)     // GET /internal/stories/{id}/players
-		internalGroup.GET("/player-progress/:progress_id", h.getPlayerProgressInternal) // GET /internal/player-progress/{id}
-
-		// Обновление данных
-		internalGroup.POST("/drafts/:draft_id", h.updateDraftInternal)                     // POST /internal/drafts/{id}
-		internalGroup.POST("/stories/:story_id", h.updateStoryInternal)                    // POST /internal/stories/{id}
-		internalGroup.POST("/scenes/:scene_id", h.updateSceneInternal)                     // POST /internal/scenes/{id}
-		internalGroup.PUT("/player-progress/:progress_id", h.updatePlayerProgressInternal) // PUT /internal/player-progress/{id} - РАСКОММЕНТИРОВАНО И ДОБАВЛЕН ОБРАБОТЧИК
-
-		// Удаление данных
-		internalGroup.DELETE("/scenes/:scene_id", h.deleteSceneInternal) // DELETE /internal/scenes/{id}
-
-		// <<< ДОБАВЛЕНО: Эндпоинт для получения количества активных историй >>>
+		internalGroup.GET("/users/:user_id/drafts", h.listUserDraftsInternal)
+		internalGroup.GET("/users/:user_id/stories", h.listUserStoriesInternal)
+		internalGroup.GET("/drafts/:draft_id", h.getDraftDetailsInternal)
+		internalGroup.GET("/stories/:story_id", h.getPublishedStoryDetailsInternal)
+		internalGroup.GET("/stories/:story_id/scenes", h.listStoryScenesInternal)
+		internalGroup.GET("/stories/:story_id/players", h.listStoryPlayersInternal)
+		internalGroup.GET("/player-progress/:progress_id", h.getPlayerProgressInternal)
+		internalGroup.PUT("/drafts/:draft_id", h.updateDraftInternal)
+		internalGroup.PUT("/stories/:story_id", h.updateStoryInternal)
+		internalGroup.PUT("/scenes/:scene_id", h.updateSceneInternal)
+		internalGroup.PUT("/player-progress/:progress_id", h.updatePlayerProgressInternal)
+		internalGroup.DELETE("/scenes/:scene_id", h.deleteSceneInternal)
 		internalGroup.GET("/stories/active/count", h.getActiveStoryCountInternal)
 	}
 }
@@ -210,7 +200,7 @@ func (h *GameplayHandler) RegisterRoutes(router gin.IRouter) {
 // getUserIDFromContext извлекает userID как uuid.UUID из *gin.Context.
 func getUserIDFromContext(c *gin.Context) (uuid.UUID, error) {
 	// Используем ключ из shared/middleware
-	userIDVal, exists := c.Get(sharedMiddleware.GinUserContextKey)
+	userIDVal, exists := c.Get(string(sharedModels.UserContextKey))
 	if !exists {
 		return uuid.Nil, fmt.Errorf("user_id не найден в контексте Gin")
 	}
@@ -238,6 +228,12 @@ func handleServiceError(c *gin.Context, err error, logger *zap.Logger) {
 	case errors.Is(err, sharedModels.ErrUnauthorized):
 		statusCode = http.StatusUnauthorized
 		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeUnauthorized, Message: "Unauthorized"}
+	case errors.Is(err, sharedModels.ErrTokenExpired):
+		statusCode = http.StatusUnauthorized
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeTokenExpired, Message: err.Error()}
+	case errors.Is(err, sharedModels.ErrTokenInvalid):
+		statusCode = http.StatusUnauthorized
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeTokenInvalid, Message: err.Error()}
 	case errors.Is(err, sharedModels.ErrForbidden):
 		statusCode = http.StatusForbidden
 		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeForbidden, Message: "Forbidden"}
@@ -492,44 +488,9 @@ func (h *GameplayHandler) getActiveStoryCountInternal(c *gin.Context) {
 	})
 }
 
-// <<< ИЗМЕНЕНО: Обработчик для получения списка состояний игры (сохранений) >>>
-// GET /published-stories/:story_id/gamestates
-func (h *GameplayHandler) listPlayerGameStates(c *gin.Context) {
-	storyIDStr := c.Param("story_id") // Используем :story_id
-	storyID, err := uuid.Parse(storyIDStr)
-	if err != nil {
-		h.logger.Warn("Invalid story ID format for list game states", zap.String("storyID", storyIDStr), zap.Error(err))
-		c.JSON(http.StatusBadRequest, APIError{Message: "Invalid story ID format"})
-		return
-	}
-
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		handleServiceError(c, sharedModels.ErrUnauthorized, h.logger)
-		return
-	}
-
-	h.logger.Info("listPlayerGameStates called", zap.String("storyID", storyID.String()), zap.String("userID", userID.String()))
-
-	// Вызываем метод сервиса
-	gameStates, err := h.service.ListGameStates(c.Request.Context(), userID, storyID)
-	if err != nil {
-		// Обрабатываем ошибки от сервиса
-		handleServiceError(c, err, h.logger)
-		return
-	}
-
-	// Возвращаем результат напрямую от сервиса
-	if gameStates == nil { // Гарантируем пустой массив, а не null
-		gameStates = make([]*sharedModels.PlayerGameState, 0)
-	}
-
-	c.JSON(http.StatusOK, gameStates) // Возвращаем []*sharedModels.PlayerGameState
-}
-
 // <<< ИЗМЕНЕНО: Обработчик для удаления конкретного состояния игры (save slot) >>>
 // DELETE /published-stories/:story_id/gamestates/:game_state_id
-func (h *GameplayHandler) deletePlayerGameStateHandler(c *gin.Context) {
+func (h *GameplayHandler) deleteGameState(c *gin.Context) {
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
 		return // Ошибка уже обработана
@@ -552,7 +513,7 @@ func (h *GameplayHandler) deletePlayerGameStateHandler(c *gin.Context) {
 		return
 	}
 
-	h.logger.Info("deletePlayerGameStateHandler called", zap.Stringer("userID", userID), zap.Stringer("storyID", storyID), zap.Stringer("gameStateID", gameStateID))
+	h.logger.Info("deleteGameState called", zap.Stringer("userID", userID), zap.Stringer("storyID", storyID), zap.Stringer("gameStateID", gameStateID))
 
 	// Вызываем метод сервиса для удаления КОНКРЕТНОГО game state
 	// Передаем storyID тоже, хотя сервис может его не использовать, но это для полноты
@@ -569,7 +530,7 @@ func (h *GameplayHandler) deletePlayerGameStateHandler(c *gin.Context) {
 
 // <<< ДОБАВЛЕНО: Обработчик для создания первого (и единственного) состояния игры >>>
 // POST /published-stories/:story_id/gamestates
-func (h *GameplayHandler) createPlayerGameState(c *gin.Context) {
+func (h *GameplayHandler) createGameState(c *gin.Context) {
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
 		return // Ошибка уже обработана
@@ -578,13 +539,13 @@ func (h *GameplayHandler) createPlayerGameState(c *gin.Context) {
 	storyIdStr := c.Param("story_id") // Получаем ID истории из пути (:story_id)
 	storyID, err := uuid.Parse(storyIdStr)
 	if err != nil {
-		h.logger.Warn("Invalid story ID format in createPlayerGameState", zap.String("story_id", storyIdStr), zap.Error(err))
+		h.logger.Warn("Invalid story ID format in createGameState", zap.String("story_id", storyIdStr), zap.Error(err))
 		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
 		return
 	}
 
 	log := h.logger.With(zap.Stringer("userID", userID), zap.Stringer("storyID", storyID))
-	log.Info("createPlayerGameState called (attempting to start game)")
+	log.Info("createGameState called (attempting to start game)")
 
 	// Вызываем метод сервиса CreateNewGameState, который теперь должен проверять лимит
 	newGameState, err := h.service.CreateNewGameState(c.Request.Context(), userID, storyID)
@@ -597,4 +558,86 @@ func (h *GameplayHandler) createPlayerGameState(c *gin.Context) {
 	// Возвращаем созданное состояние (клиент возьмет из него ID для запроса сцены)
 	log.Info("New game state created successfully", zap.Stringer("gameStateID", newGameState.ID))
 	c.JSON(http.StatusCreated, newGameState) // Возвращаем 201 Created и созданный объект
+}
+
+// --- Local Middleware Implementations (Restored) ---
+
+// AuthMiddleware validates the JWT token from the Authorization header.
+func (h *GameplayHandler) AuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tokenString := c.GetHeader("Authorization")
+		if tokenString == "" || !strings.HasPrefix(tokenString, "Bearer ") {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, sharedModels.ErrorResponse{Code: sharedModels.ErrCodeUnauthorized, Message: "Authorization header is missing or invalid"})
+			return
+		}
+		tokenString = strings.TrimPrefix(tokenString, "Bearer ")
+
+		claims, err := h.parseAndValidateTokenLocally(tokenString) // Use local parsing helper
+		if err != nil {
+			handleServiceError(c, err, h.logger) // Maps token errors (invalid, expired)
+			return
+		}
+
+		// <<< ДОБАВЛЕНО: Логирование перед установкой контекста >>>
+		h.logger.Debug("AuthMiddleware: Setting user context",
+			zap.String("key", string(sharedModels.UserContextKey)),
+			zap.Stringer("userID", claims.UserID)) // Логируем UserID
+
+		// Optional: Add ban check here by calling auth service if needed
+		// userInfo, err := h.authServiceClient.GetUserInfo(c.Request.Context(), claims.UserID)
+		// if err != nil || userInfo.IsBanned { ... handle ... }
+
+		c.Set(string(sharedModels.UserContextKey), claims.UserID)
+
+		// <<< ПЕРЕМЕЩЕНО и ДОПОЛНЕНО: Логирование СРАЗУ ПОСЛЕ установки и перед c.Next() >>>
+		userIDVal, exists := c.Get(string(sharedModels.UserContextKey))
+		h.logger.Debug("AuthMiddleware: Immediately after c.Set",
+			zap.String("key", string(sharedModels.UserContextKey)),
+			zap.Stringer("set_userID", claims.UserID),
+			zap.Bool("get_exists", exists),
+			zap.Any("get_value", userIDVal)) // Попробуем получить и залогировать сразу
+
+		c.Next() // Передаем управление дальше
+
+		// <<< ДОБАВЛЕНО: Логирование ПОСЛЕ c.Next() >>>
+		h.logger.Debug("AuthMiddleware: After c.Next() called")
+	}
+}
+
+// InternalAuthMiddleware validates the X-Internal-Service-Token.
+func (h *GameplayHandler) InternalAuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := c.GetHeader("X-Internal-Service-Token")
+		// <<< Use h.interServiceSecret stored in handler >>>
+		if token == "" || token != h.interServiceSecret {
+			c.AbortWithStatusJSON(http.StatusForbidden, sharedModels.ErrorResponse{Code: sharedModels.ErrCodeForbidden, Message: "Invalid or missing internal service token"})
+			return
+		}
+		c.Next()
+	}
+}
+
+// parseAndValidateTokenLocally helper parses and validates JWT locally.
+func (h *GameplayHandler) parseAndValidateTokenLocally(tokenString string) (*sharedModels.Claims, error) {
+	claims := &sharedModels.Claims{}
+	// <<< Use h.jwtSecret stored in handler >>>
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return []byte(h.jwtSecret), nil
+	})
+
+	if err != nil {
+		if errors.Is(err, jwt.ErrTokenExpired) {
+			return nil, sharedModels.ErrTokenExpired
+		}
+		return nil, sharedModels.ErrTokenInvalid // Covers malformed, signature invalid, etc.
+	}
+
+	if !token.Valid {
+		return nil, sharedModels.ErrTokenInvalid
+	}
+
+	return claims, nil
 }

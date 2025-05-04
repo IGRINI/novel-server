@@ -35,6 +35,9 @@ import (
 
 	// Добавляем импорт для Prometheus
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	// <<< Rate Limit Imports >>>
+	rateli "github.com/JGLTechnologies/gin-rate-limit"
 )
 
 // <<< Начинаем определение кастомного рендерера >>>
@@ -432,6 +435,32 @@ func main() {
 	}()
 	// <<< КОНЕЦ БЛОКА ПОЛУЧЕНИЯ ТОКЕНА >>>
 
+	// <<< Rate Limiter Middleware Setup >>>
+	// Rate: 5 requests per minute per IP for login
+	loginRateLimitStore := rateli.InMemoryStore(&rateli.InMemoryOptions{
+		Rate:  time.Minute,
+		Limit: 5,
+	})
+	loginRateLimitMiddleware := rateli.RateLimiter(loginRateLimitStore, &rateli.Options{
+		ErrorHandler: func(c *gin.Context, info rateli.Info) {
+			logger.Warn("Login rate limit exceeded",
+				zap.String("clientIP", c.ClientIP()),
+				zap.Time("resetTime", info.ResetTime),
+			)
+			// For HTML forms, redirecting back with an error might be better
+			// Or just show a simple error page/message
+			c.HTML(http.StatusTooManyRequests, "login.html", gin.H{
+				"PageTitle": "Login",
+				"Error":     fmt.Sprintf("Слишком много попыток входа. Попробуйте снова через %s", time.Until(info.ResetTime).Round(time.Second).String()),
+			})
+		},
+		KeyFunc: func(c *gin.Context) string {
+			return c.ClientIP()
+		},
+	})
+	sugar.Info("Rate limiter middleware for login initialized")
+	// <<< End Rate Limiter Setup >>>
+
 	// --- Создание обработчика HTTP ---
 	adminHandler := handler.NewAdminHandler(
 		cfg, // Передаем конфиг
@@ -538,7 +567,7 @@ func main() {
 	sugar.Info("Настроена раздача статических файлов")
 
 	// --- Регистрация маршрутов --- (Передаем router)
-	adminHandler.RegisterRoutes(router) // Маршруты админки
+	adminHandler.RegisterRoutes(router, loginRateLimitMiddleware) // <<< Pass middleware >>>
 	sugar.Info("Маршруты AdminHandler зарегистрированы")
 
 	// Регистрация маршрутов API (если ApiHandler инициализирован)

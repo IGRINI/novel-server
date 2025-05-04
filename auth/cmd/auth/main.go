@@ -21,8 +21,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rabbitmq/amqp091-go"
-	"github.com/redis/go-redis/v9"
+	redis "github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+
+	// <<< Rate Limit Imports >>>
+	rateli "github.com/JGLTechnologies/gin-rate-limit"
 
 	// Импорт для метрик Prometheus
 	// "github.com/prometheus/client_golang/prometheus/promhttp"
@@ -85,6 +88,34 @@ func main() {
 	deviceTokenRepo := repository.NewDeviceTokenRepository(pgPool, logger.Named("PgDeviceTokenRepo"))
 	deviceTokenService := service.NewDeviceTokenService(deviceTokenRepo, logger.Named("DeviceTokenService"))
 	authSvc := service.NewAuthService(userRepo, tokenRepo, cfg, logger.Named("AuthService"))
+
+	// <<< Rate Limiter Middleware Setup >>>
+	// Initialize Redis store for rate limiter
+	// Rate: 10 requests per minute per IP
+	rateLimitStore := rateli.RedisStore(&rateli.RedisOptions{
+		RedisClient: redisClient, // Pass the existing client
+		Rate:        time.Minute,
+		Limit:       10,
+		// Prefix:    "rate_limit:auth:", // Prefix seems not supported by RedisStore factory
+	})
+
+	// Create rate limit middleware using the store
+	rateLimitMiddleware := rateli.RateLimiter(rateLimitStore, &rateli.Options{
+		ErrorHandler: func(c *gin.Context, info rateli.Info) {
+			zap.L().Warn("Rate limit exceeded",
+				zap.String("clientIP", c.ClientIP()),
+				zap.Time("resetTime", info.ResetTime),
+				zap.String("path", c.Request.URL.Path),
+			)
+			c.String(http.StatusTooManyRequests, "Too many requests. Try again in "+time.Until(info.ResetTime).String())
+		},
+		KeyFunc: func(c *gin.Context) string {
+			return c.ClientIP() // Use client IP as the key
+		},
+	})
+	zap.L().Info("Rate limiter middleware initialized")
+	// <<< End Rate Limiter Setup >>>
+
 	authHandler := handler.NewAuthHandler(authSvc, userRepo, deviceTokenService, cfg)
 
 	// <<< Инициализация Consumer'а >>>
@@ -132,7 +163,7 @@ func main() {
 	router.HEAD("/health", healthHandler)
 
 	// Register Application Routes
-	authHandler.RegisterRoutes(router)
+	authHandler.RegisterRoutes(router, rateLimitMiddleware)
 
 	// <<< ПРИМЕНЯЕМ Prometheus Middleware ПОСЛЕ регистрации роутов >>>
 	p.Use(router)

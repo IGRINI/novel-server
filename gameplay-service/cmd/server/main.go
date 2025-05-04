@@ -12,10 +12,8 @@ import (
 	sharedDatabase "novel-server/shared/database"     // Импорт для репозиториев
 	sharedInterfaces "novel-server/shared/interfaces" // <<< Добавляем импорт shared/interfaces
 	sharedLogger "novel-server/shared/logger"         // <<< Добавляем импорт shared/logger
-
-	// <<< ИЗМЕНЕНО: Добавляем алиас для shared/messaging >>>
-
 	sharedMiddleware "novel-server/shared/middleware" // <<< Импортируем shared/middleware
+	sharedModels "novel-server/shared/models"         // <<< ADDED: Import shared models for rate limiter >>>
 	"os"
 	"os/signal"
 	"syscall"
@@ -28,10 +26,14 @@ import (
 
 	"github.com/gin-contrib/cors" // <<< Импортируем Gin CORS
 	"github.com/gin-gonic/gin"    // <<< Импортируем Gin
+	"github.com/google/uuid"      // <<< ADDED: Import UUID for rate limiter KeyFunc >>>
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap" // Импорт zap
+
+	// <<< Rate Limit Imports >>>
+	rateli "github.com/JGLTechnologies/gin-rate-limit"
 )
 
 func main() {
@@ -143,6 +145,59 @@ func main() {
 		cfg,
 		configService,
 	)
+
+	// <<< Rate Limiter Middleware Setup >>>
+	// General IP-based rate limiter (100 req/min)
+	generalStore := rateli.InMemoryStore(&rateli.InMemoryOptions{
+		Rate:  time.Minute,
+		Limit: 100,
+	})
+	generalRateLimitMiddleware := rateli.RateLimiter(generalStore, &rateli.Options{
+		ErrorHandler: func(c *gin.Context, info rateli.Info) {
+			logger.Warn("General rate limit exceeded", zap.String("clientIP", c.ClientIP()), zap.Time("resetTime", info.ResetTime), zap.String("path", c.Request.URL.Path))
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, sharedModels.ErrorResponse{
+				Code:    "RATE_LIMIT_EXCEEDED", // Define a proper code if needed
+				Message: "Too many requests (general limit). Try again in " + time.Until(info.ResetTime).Round(time.Second).String(),
+			})
+		},
+		KeyFunc: func(c *gin.Context) string {
+			return c.ClientIP()
+		},
+	})
+	logger.Info("General IP rate limiter middleware initialized (100 req/min)")
+
+	// User-based rate limiter for generation endpoints (20 req/min)
+	// IMPORTANT: This KeyFunc requires the userID to be set in the context by a preceding AuthMiddleware
+	generationStore := rateli.InMemoryStore(&rateli.InMemoryOptions{
+		Rate:  time.Minute,
+		Limit: 20,
+	})
+	generationRateLimitMiddleware := rateli.RateLimiter(generationStore, &rateli.Options{
+		ErrorHandler: func(c *gin.Context, info rateli.Info) {
+			userID, _ := c.Get(string(sharedModels.UserContextKey))
+			logger.Warn("Generation rate limit exceeded", zap.Any("userID", userID), zap.String("clientIP", c.ClientIP()), zap.Time("resetTime", info.ResetTime), zap.String("path", c.Request.URL.Path))
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, sharedModels.ErrorResponse{
+				Code:    "RATE_LIMIT_EXCEEDED",
+				Message: "Too many generation requests (user limit). Try again in " + time.Until(info.ResetTime).Round(time.Second).String(),
+			})
+		},
+		KeyFunc: func(c *gin.Context) string {
+			userIDAny, exists := c.Get(string(sharedModels.UserContextKey))
+			if !exists {
+				// Fallback to IP if userID is not set (should not happen after auth middleware)
+				logger.Warn("UserID not found in context for generation rate limiter, falling back to IP")
+				return c.ClientIP()
+			}
+			userID, ok := userIDAny.(uuid.UUID)
+			if !ok {
+				logger.Error("Invalid UserID type in context for generation rate limiter", zap.Any("value", userIDAny))
+				return c.ClientIP() // Fallback to IP
+			}
+			return userID.String() // Use UserID as the key
+		},
+	})
+	logger.Info("Generation user rate limiter middleware initialized (20 req/min)")
+	// <<< End Rate Limiter Setup >>>
 
 	// --- Инициализация хендлеров --- //
 	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret, storyConfigRepo, publishedRepo, cfg)
@@ -280,8 +335,39 @@ func main() {
 	corsConfig.MaxAge = 12 * time.Hour
 	router.Use(cors.New(corsConfig))
 
+	// Apply general rate limiter globally (or to /api/v1 group)
+	// router.Use(generalRateLimitMiddleware) // Option 1: Global
+
 	// --- Регистрация маршрутов --- //
-	gameplayHandler.RegisterRoutes(router) // Передаем Gin роутер
+	// Мы будем применять middleware непосредственно к группам, а не передавать в RegisterRoutes
+	gameplayHandler.RegisterRoutes(router, generalRateLimitMiddleware, generationRateLimitMiddleware) // <<< Pass middleware again >>>
+
+	// Apply rate limiters within RegisterRoutes is better for clarity
+	// If RegisterRoutes cannot be modified, apply here:
+	/*
+		apiV1 := router.Group("/api/v1")
+		apiV1.Use(generalRateLimitMiddleware) // General IP limit
+		apiV1.Use(gameplayHandler.AuthMiddleware()) // Auth must run before user-based rate limit
+		{
+			// Apply generation limiter to specific routes
+			apiV1.POST("/stories/generate", generationRateLimitMiddleware, gameplayHandler.generateInitialStory)
+			apiV1.POST("/stories/:id/revise", generationRateLimitMiddleware, gameplayHandler.reviseStoryConfig)
+			apiV1.POST("/stories/drafts/:draft_id/retry", generationRateLimitMiddleware, gameplayHandler.retryDraftGeneration)
+			apiV1.POST("/published-stories/:story_id/gamestates/:game_state_id/choice", generationRateLimitMiddleware, gameplayHandler.makeChoice)
+			apiV1.POST("/published-stories/:story_id/retry", generationRateLimitMiddleware, gameplayHandler.retryPublishedStoryGeneration)
+			apiV1.POST("/published-stories/:story_id/gamestates/:game_state_id/retry", generationRateLimitMiddleware, gameplayHandler.retrySpecificGameStateGeneration)
+
+			// ... other routes without generation limit ...
+			apiV1.GET("/stories", gameplayHandler.listStoryConfigs)
+			// etc.
+		}
+		// Internal routes usually don't need these limits
+		internal := router.Group("/internal")
+		internal.Use(gameplayHandler.InternalAuthMiddleware())
+		{
+			// ... internal routes ...
+		}
+	*/
 
 	// --- Регистрация healthcheck эндпоинта для Gin --- //
 	healthHandler := func(c *gin.Context) { // <<< Используем gin.Context

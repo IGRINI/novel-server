@@ -85,13 +85,24 @@ func (h *AdminHandler) handleBanUser(c *gin.Context) {
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		h.logger.Warn("Invalid user ID format for ban", zap.String("rawID", userIDStr), zap.Error(err))
-		c.String(http.StatusBadRequest, "Неверный ID пользователя.")
-		c.Abort()
+		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 	adminUserID, _ := getUserIDFromContext(c)
-	h.logger.Info("Admin attempting to ban user", zap.String("adminUserID", adminUserID.String()), zap.String("targetUserID", userID.String()))
-	err = h.authClient.BanUser(c.Request.Context(), userID)
+
+	// <<< Get Admin Token from Cookie >>>
+	adminToken, err := c.Cookie("admin_session")
+	if err != nil {
+		h.logger.Error("Failed to get admin_session cookie for ban user action", zap.Error(err), zap.String("targetUserID", userID.String()))
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Внутренняя ошибка сервера (не удалось получить сессию)"})
+		return
+	}
+
+	h.logger.Info("Admin attempting to ban user",
+		zap.String("adminUserID", adminUserID.String()),
+		zap.String("targetUserID", userID.String()),
+	)
+	err = h.authClient.BanUser(c.Request.Context(), userID, adminToken)
 	if err != nil {
 		h.logger.Error("Failed to ban user via auth client", zap.String("targetUserID", userID.String()), zap.Error(err))
 		userFacingError := "Не удалось забанить пользователя."
@@ -113,13 +124,24 @@ func (h *AdminHandler) handleUnbanUser(c *gin.Context) {
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		h.logger.Warn("Invalid user ID format for unban", zap.String("rawID", userIDStr), zap.Error(err))
-		c.String(http.StatusBadRequest, "Неверный ID пользователя.")
-		c.Abort()
+		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 	adminUserID, _ := getUserIDFromContext(c)
-	h.logger.Info("Admin attempting to unban user", zap.String("adminUserID", adminUserID.String()), zap.String("targetUserID", userID.String()))
-	err = h.authClient.UnbanUser(c.Request.Context(), userID)
+
+	// <<< Get Admin Token from Cookie >>>
+	adminToken, err := c.Cookie("admin_session")
+	if err != nil {
+		h.logger.Error("Failed to get admin_session cookie for unban user action", zap.Error(err), zap.String("targetUserID", userID.String()))
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Внутренняя ошибка сервера (не удалось получить сессию)"})
+		return
+	}
+
+	h.logger.Info("Admin attempting to unban user",
+		zap.String("adminUserID", adminUserID.String()),
+		zap.String("targetUserID", userID.String()),
+	)
+	err = h.authClient.UnbanUser(c.Request.Context(), userID, adminToken)
 	if err != nil {
 		h.logger.Error("Failed to unban user via auth client", zap.String("targetUserID", userID.String()), zap.Error(err))
 		userFacingError := "Не удалось разбанить пользователя."
@@ -186,6 +208,15 @@ func (h *AdminHandler) handleUserUpdate(c *gin.Context) {
 		return
 	}
 	adminUserID, _ := getUserIDFromContext(c)
+
+	// <<< Get Admin Token from Cookie >>>
+	adminToken, err := c.Cookie("admin_session")
+	if err != nil {
+		h.logger.Error("Failed to get admin_session cookie for user update action", zap.Error(err), zap.String("targetUserID", userID.String()))
+		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/admin/users/%s/edit?error=internal_error", userIDStr))
+		return
+	}
+
 	h.logger.Info("Admin attempting to update user",
 		zap.String("adminUserID", adminUserID.String()),
 		zap.String("targetUserID", userID.String()),
@@ -224,7 +255,7 @@ func (h *AdminHandler) handleUserUpdate(c *gin.Context) {
 		Roles:       rolesSlice,
 		IsBanned:    &isBanned,
 	}
-	err = h.authClient.UpdateUser(c.Request.Context(), userID, updatePayload)
+	err = h.authClient.UpdateUser(c.Request.Context(), userID, updatePayload, adminToken)
 	if err != nil {
 		h.logger.Error("Failed to update user via auth client", zap.String("targetUserID", userID.String()), zap.Error(err))
 		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/admin/users/%s/edit?error=update_failed", userIDStr))
@@ -243,11 +274,20 @@ func (h *AdminHandler) handleResetPassword(c *gin.Context) {
 		return
 	}
 	adminUserID, _ := getUserIDFromContext(c)
+
+	// <<< Get Admin Token from Cookie >>>
+	adminToken, err := c.Cookie("admin_session")
+	if err != nil {
+		h.logger.Error("Failed to get admin_session cookie for password reset action", zap.Error(err), zap.String("targetUserID", userID.String()))
+		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/admin/users/%s/edit?error=internal_error", userIDStr))
+		return
+	}
+
 	h.logger.Info("Admin attempting to reset password for user",
 		zap.String("adminUserID", adminUserID.String()),
 		zap.String("targetUserID", userID.String()),
 	)
-	_, err = h.authClient.ResetPassword(c.Request.Context(), userID)
+	_, err = h.authClient.ResetPassword(c.Request.Context(), userID, adminToken)
 	if err != nil {
 		h.logger.Error("Failed to reset password via auth-service", zap.String("targetUserID", userID.String()), zap.Error(err))
 		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/admin/users/%s/edit?error=password_reset_failed", userIDStr))

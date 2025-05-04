@@ -66,10 +66,12 @@ func NewAdminHandler(
 	}
 }
 
-func (h *AdminHandler) RegisterRoutes(router *gin.Engine) {
+// RegisterRoutes sets up the routing for the admin service.
+// It now accepts a rate limiter middleware for the login route.
+func (h *AdminHandler) RegisterRoutes(router *gin.Engine, loginRateLimiter gin.HandlerFunc) {
 	// Публичные роуты (без middleware)
 	router.GET("/login", h.showLoginPage)
-	router.POST("/login", h.handleLogin)
+	router.POST("/login", loginRateLimiter, h.handleLogin)
 
 	// Группа для защищенных роутов админки (префикс /admin удаляется Traefik)
 	adminGroup := router.Group("/", h.AuthMiddleware) // <<< ВОЗВРАЩАЕМ: Базовый путь теперь "/"

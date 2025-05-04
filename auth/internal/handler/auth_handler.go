@@ -35,11 +35,11 @@ func NewAuthHandler(
 	}
 }
 
-func (h *AuthHandler) RegisterRoutes(router *gin.Engine) {
+func (h *AuthHandler) RegisterRoutes(router *gin.Engine, rateLimiter gin.HandlerFunc) {
 	baseAuthGroup := router.Group("/auth")
 	{
-		baseAuthGroup.POST("/register", h.register)
-		baseAuthGroup.POST("/login", h.login)
+		baseAuthGroup.POST("/register", rateLimiter, h.register)
+		baseAuthGroup.POST("/login", rateLimiter, h.login)
 		baseAuthGroup.POST("/refresh", h.refresh)
 		baseAuthGroup.POST("/token/verify", h.verify)
 	}
@@ -71,20 +71,27 @@ func (h *AuthHandler) RegisterRoutes(router *gin.Engine) {
 	internalAuthGroupStandalone.POST("/token/validate", h.validateToken)
 
 	internalAuthGroup := router.Group("/internal/auth")
-	internalAuthGroup.Use(h.InternalAuthMiddleware()) // Применяется к ОСТАЛЬНЫМ внутренним роутам
+	internalAuthGroup.Use(h.InternalAuthMiddleware()) // Middleware for service-to-service auth
 	{
+		// Routes ONLY requiring service-to-service auth (NO admin role check)
 		internalAuthGroup.POST("/token/generate", h.generateInterServiceToken)
 		internalAuthGroup.POST("/token/verify", h.verifyInterServiceToken)
 		internalAuthGroup.POST("/users/batch-info", h.handleBatchGetUsersInfo)
-		internalAuthGroup.GET("/users/count", h.getUserCount)
-		internalAuthGroup.GET("/users", h.listUsers)
-		internalAuthGroup.POST("/users/:user_id/ban", h.banUser)
-		internalAuthGroup.DELETE("/users/:user_id/ban", h.unbanUser)
-		internalAuthGroup.GET("/users/:user_id", h.getUserDetails)
-		internalAuthGroup.PUT("/users/:user_id", h.updateUser)
-		internalAuthGroup.PUT("/users/:user_id/password", h.updatePassword)
-		internalAuthGroup.POST("/token/refresh/admin", h.refreshAdminToken)
-		internalAuthGroup.GET("/users/:user_id/device-tokens", h.getDeviceTokensForUser)
+
+		// Routes requiring BOTH service-to-service auth AND admin role
+		adminRequiredGroup := internalAuthGroup.Group("")
+		adminRequiredGroup.Use(h.RequireAdminRoleMiddleware()) // <<< Apply admin role check
+		{
+			adminRequiredGroup.GET("/users/count", h.getUserCount)
+			adminRequiredGroup.GET("/users", h.listUsers)
+			adminRequiredGroup.POST("/users/:user_id/ban", h.banUser)
+			adminRequiredGroup.DELETE("/users/:user_id/ban", h.unbanUser)
+			adminRequiredGroup.GET("/users/:user_id", h.getUserDetails)
+			adminRequiredGroup.PUT("/users/:user_id", h.updateUser)
+			adminRequiredGroup.PUT("/users/:user_id/password", h.updatePassword)
+			adminRequiredGroup.POST("/token/refresh/admin", h.refreshAdminToken)
+			adminRequiredGroup.GET("/users/:user_id/device-tokens", h.getDeviceTokensForUser)
+		}
 	}
 }
 

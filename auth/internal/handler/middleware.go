@@ -81,3 +81,54 @@ func (h *AuthHandler) InternalAuthMiddleware() gin.HandlerFunc {
 		}
 	}
 }
+
+// RequireAdminRoleMiddleware checks for the X-Admin-Authorization header,
+// verifies the contained JWT using AuthService, and ensures the user has the admin role.
+// This middleware should run AFTER InternalAuthMiddleware.
+func (h *AuthHandler) RequireAdminRoleMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		adminAuthHeader := c.GetHeader("X-Admin-Authorization")
+		if adminAuthHeader == "" {
+			zap.L().Warn("RequireAdminRoleMiddleware: Missing X-Admin-Authorization header")
+			c.AbortWithStatusJSON(http.StatusForbidden, models.ErrorResponse{
+				Code:    models.ErrCodeForbidden,
+				Message: "Admin privileges required (missing header)",
+			})
+			return
+		}
+
+		parts := strings.Split(adminAuthHeader, " ")
+		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+			zap.L().Warn("RequireAdminRoleMiddleware: Invalid X-Admin-Authorization header format")
+			c.AbortWithStatusJSON(http.StatusForbidden, models.ErrorResponse{
+				Code:    models.ErrCodeForbidden,
+				Message: "Admin privileges required (invalid header format)",
+			})
+			return
+		}
+
+		adminTokenString := parts[1]
+		claims, err := h.authService.VerifyAccessToken(c.Request.Context(), adminTokenString)
+		if err != nil {
+			zap.L().Warn("RequireAdminRoleMiddleware: Admin access token verification failed", zap.Error(err))
+			// Use the specific error from verification if possible (e.g., expired, invalid)
+			handleServiceError(c, err) // Use existing error handler which maps token errors
+			return
+		}
+
+		// Check for admin role
+		if !models.HasRole(claims.Roles, models.RoleAdmin) {
+			zap.L().Warn("RequireAdminRoleMiddleware: User does not have admin role", zap.String("userID", claims.UserID.String()), zap.Strings("roles", claims.Roles))
+			c.AbortWithStatusJSON(http.StatusForbidden, models.ErrorResponse{
+				Code:    models.ErrCodeForbidden,
+				Message: "Admin privileges required",
+			})
+			return
+		}
+
+		// Store admin user ID in context for potential logging/auditing in handlers
+		c.Set("admin_user_id", claims.UserID)
+		zap.L().Debug("RequireAdminRoleMiddleware: Admin access verified", zap.String("adminUserID", claims.UserID.String()))
+		c.Next()
+	}
+}

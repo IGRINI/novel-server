@@ -360,215 +360,64 @@ func (c *authClient) GenerateInterServiceToken(ctx context.Context, serviceName 
 	return resp.InterServiceToken, nil
 }
 
-// BanUser sends a request to ban a user.
-func (c *authClient) BanUser(ctx context.Context, userID uuid.UUID) error {
-	banURL := fmt.Sprintf("%s/internal/auth/users/%s/ban", c.baseURL, userID.String())
-	log := c.logger.With(zap.String("url", banURL), zap.String("userID", userID.String()))
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, banURL, nil)
-	if err != nil {
-		log.Error("Failed to create ban user HTTP request", zap.Error(err))
-		return fmt.Errorf("internal error creating request: %w", err)
-	}
-	httpReq.Header.Set("Accept", "application/json")
-
-	// Используем универсальный метод для выполнения запроса
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
-	if err != nil {
-		log.Error("HTTP request for ban user failed", zap.Error(err))
-		if errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("request to auth service timed out: %w", err)
-		}
-		return fmt.Errorf("failed to communicate with auth service: %w", err)
-	}
-	defer httpResp.Body.Close()
-
-	if httpResp.StatusCode == http.StatusNoContent {
-		log.Info("User banned successfully")
-		return nil
-	}
-
-	respBodyBytes, _ := io.ReadAll(httpResp.Body)
-	log.Warn("Received non-204 status for ban user", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
-	if httpResp.StatusCode == http.StatusNotFound {
-		return models.ErrUserNotFound
-	}
-	return fmt.Errorf("received unexpected status %d from auth service for ban user", httpResp.StatusCode)
-}
-
-// UnbanUser sends a request to unban a user.
-func (c *authClient) UnbanUser(ctx context.Context, userID uuid.UUID) error {
-	unbanURL := fmt.Sprintf("%s/internal/auth/users/%s/ban", c.baseURL, userID.String())
-	log := c.logger.With(zap.String("url", unbanURL), zap.String("userID", userID.String()))
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, unbanURL, nil)
-	if err != nil {
-		log.Error("Failed to create unban user HTTP request", zap.Error(err))
-		return fmt.Errorf("internal error creating request: %w", err)
-	}
-	httpReq.Header.Set("Accept", "application/json")
-
-	// Используем универсальный метод для выполнения запроса
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
-	if err != nil {
-		log.Error("HTTP request for unban user failed", zap.Error(err))
-		if errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("request to auth service timed out: %w", err)
-		}
-		return fmt.Errorf("failed to communicate with auth service: %w", err)
-	}
-	defer httpResp.Body.Close()
-
-	if httpResp.StatusCode == http.StatusNoContent {
-		log.Info("User unbanned successfully")
-		return nil
-	}
-
-	respBodyBytes, _ := io.ReadAll(httpResp.Body)
-	log.Warn("Received non-204 status for unban user", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
-	if httpResp.StatusCode == http.StatusNotFound {
-		return models.ErrUserNotFound
-	}
-	return fmt.Errorf("received unexpected status %d from auth service for unban user", httpResp.StatusCode)
-}
-
-// ValidateAdminToken sends a token to auth-service for full validation.
-type validateTokenRequest struct {
-	Token string `json:"token"`
-}
-
-func (c *authClient) ValidateAdminToken(ctx context.Context, token string) (*models.Claims, error) {
-	validateURL := c.baseURL + "/internal/auth/token/validate"
-	log := c.logger.With(zap.String("url", validateURL))
-
-	reqPayload := validateTokenRequest{Token: token}
-	reqBody, err := json.Marshal(reqPayload)
-	if err != nil {
-		log.Error("Failed to marshal validate token request payload", zap.Error(err))
-		return nil, fmt.Errorf("internal error marshalling request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, validateURL, bytes.NewBuffer(reqBody))
-	if err != nil {
-		log.Error("Failed to create validate token HTTP request", zap.Error(err))
-		return nil, fmt.Errorf("internal error creating request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json")
-
-	// Используем универсальный метод для выполнения запроса
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
-	if err != nil {
-		log.Error("HTTP request for token validation failed", zap.Error(err))
-		if errors.Is(err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("request to auth service timed out: %w", err)
-		}
-		return nil, fmt.Errorf("failed to communicate with auth service: %w", err)
-	}
-	defer httpResp.Body.Close()
-
-	respBodyBytes, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		log.Error("Failed to read token validation response body", zap.Int("status", httpResp.StatusCode), zap.Error(err))
-		return nil, fmt.Errorf("failed to read auth service response: %w", err)
-	}
-
-	if httpResp.StatusCode == http.StatusOK {
-		var claims models.Claims
-		if err := json.Unmarshal(respBodyBytes, &claims); err != nil {
-			log.Error("Failed to unmarshal successful token validation response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes), zap.Error(err))
-			return nil, fmt.Errorf("invalid success response format from auth service: %w", err)
-		}
-		log.Debug("Token validation successful via auth-service")
-		return &claims, nil
-	}
-
-	log.Warn("Received error response from auth-service for token validation", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
-
-	if httpResp.StatusCode == http.StatusUnauthorized {
-		type authErrorResponse struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		}
-		var errResp authErrorResponse
-		if err := json.Unmarshal(respBodyBytes, &errResp); err == nil && errResp.Code == 40103 {
-			return nil, models.ErrTokenExpired
-		}
-		return nil, models.ErrTokenInvalid
-	}
-
-	return nil, fmt.Errorf("auth service validation returned status %d", httpResp.StatusCode)
-}
-
 // SetInterServiceToken устанавливает JWT токен для последующих запросов.
 func (c *authClient) SetInterServiceToken(token string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	c.logger.Info("Inter-service token has been set")
 	c.interServiceToken = token
+	c.logger.Debug("Inter-service token updated in client")
 }
 
 // UpdateUser отправляет запрос на обновление пользователя в auth-service.
-func (c *authClient) UpdateUser(ctx context.Context, userID uuid.UUID, payload UserUpdatePayload) error {
+func (c *authClient) UpdateUser(ctx context.Context, userID uuid.UUID, payload UserUpdatePayload, adminAccessToken string) error {
 	updateURL := fmt.Sprintf("%s/internal/auth/users/%s", c.baseURL, userID.String())
 	log := c.logger.With(zap.String("url", updateURL), zap.String("userID", userID.String()))
 
-	reqBody, err := json.Marshal(payload)
+	reqBodyBytes, err := json.Marshal(payload)
 	if err != nil {
-		log.Error("Failed to marshal user update payload", zap.Error(err))
+		log.Error("Failed to marshal update user request payload", zap.Error(err))
 		return fmt.Errorf("internal error marshalling request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, updateURL, bytes.NewBuffer(reqBody))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, updateURL, bytes.NewBuffer(reqBodyBytes))
 	if err != nil {
-		log.Error("Failed to create user update HTTP request", zap.Error(err))
+		log.Error("Failed to create update user HTTP request", zap.Error(err))
 		return fmt.Errorf("internal error creating request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json")
 
-	// Используем универсальный метод для выполнения запроса
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	// Use the admin request helper
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
-		log.Error("HTTP request for user update failed", zap.Error(err))
 		if errors.Is(err, context.DeadlineExceeded) {
 			return fmt.Errorf("request to auth service timed out: %w", err)
 		}
-		return fmt.Errorf("failed to communicate with auth service: %w", err)
+		return fmt.Errorf("failed to execute update user request: %w", err)
 	}
 	defer httpResp.Body.Close()
 
 	if httpResp.StatusCode == http.StatusNoContent {
-		log.Info("User updated successfully")
-		return nil
+		log.Info("User updated successfully via auth-service")
+		return nil // Success
 	}
 
-	respBodyBytes, readErr := io.ReadAll(httpResp.Body)
-	if readErr != nil {
-		log.Error("Failed to read error response body for user update", zap.Int("status", httpResp.StatusCode), zap.Error(readErr))
-		return fmt.Errorf("received unexpected status %d and failed to read body from auth service for user update", httpResp.StatusCode)
-	}
+	// Handle errors
+	respBodyBytes, _ := io.ReadAll(httpResp.Body)
+	log.Warn("Received non-OK status for update user", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
 
-	log.Warn("Received non-204 status for user update", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
-
-	type authErrorResponse struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	}
-	var errResp authErrorResponse
+	var errResp models.ErrorResponse
 	if err := json.Unmarshal(respBodyBytes, &errResp); err == nil {
-		if httpResp.StatusCode == http.StatusUnauthorized || httpResp.StatusCode == http.StatusNotFound {
-			return fmt.Errorf("%w: %s (code: %d)", models.ErrInvalidCredentials, errResp.Message, errResp.Code)
+		switch errResp.Code {
+		case models.ErrCodeNotFound:
+			return models.ErrUserNotFound
+		case models.ErrCodeValidation:
+			return fmt.Errorf("%w: %s", models.ErrInvalidInput, errResp.Message)
+		default:
+			return fmt.Errorf("auth service error (%s): %s", errResp.Code, errResp.Message)
 		}
-		return fmt.Errorf("auth service error: %s (status: %d, code: %d)", errResp.Message, httpResp.StatusCode, errResp.Code)
 	}
 
-	if httpResp.StatusCode == http.StatusUnauthorized || httpResp.StatusCode == http.StatusNotFound {
-		return models.ErrInvalidCredentials
-	}
-
-	return fmt.Errorf("received unexpected status %d from auth service for user update", httpResp.StatusCode)
+	return fmt.Errorf("received unexpected status %d from auth service for update user", httpResp.StatusCode)
 }
 
 // --- Генерация случайного пароля ---
@@ -595,58 +444,63 @@ type updatePasswordRequestClient struct {
 	NewPassword string `json:"new_password"`
 }
 
-// ResetPassword генерирует новый пароль и отправляет запрос на его установку в auth-service.
-func (c *authClient) ResetPassword(ctx context.Context, userID uuid.UUID) (string, error) {
-	log := c.logger.With(zap.String("userID", userID.String()))
+// ResetPassword отправляет запрос на сброс пароля пользователя и генерацию нового.
+func (c *authClient) ResetPassword(ctx context.Context, userID uuid.UUID, adminAccessToken string) (string, error) {
+	resetURL := fmt.Sprintf("%s/internal/auth/users/%s/password", c.baseURL, userID.String())
+	log := c.logger.With(zap.String("url", resetURL), zap.String("userID", userID.String()))
 
-	// 1. Генерируем новый случайный пароль
-	newPassword, err := generateRandomPassword(passwordLength)
+	// Генерируем новый пароль на стороне клиента (admin-service)
+	// В реальном приложении пароль должен генерироваться и возвращаться auth-service,
+	// но для примера сделаем так.
+	newPassword, err := generateRandomPassword(12) // 12 characters long
 	if err != nil {
-		log.Error("Failed to generate random password", zap.Error(err))
+		log.Error("Failed to generate random password locally", zap.Error(err))
 		return "", fmt.Errorf("internal error generating password: %w", err)
 	}
-	log.Debug("Generated new random password for reset")
-
-	// 2. Отправляем запрос на обновление пароля в auth-service
-	resetURL := fmt.Sprintf("%s/internal/auth/users/%s/password", c.baseURL, userID.String())
-	log = log.With(zap.String("url", resetURL))
 
 	reqPayload := updatePasswordRequestClient{NewPassword: newPassword}
-	reqBody, err := json.Marshal(reqPayload)
+	reqBodyBytes, err := json.Marshal(reqPayload)
 	if err != nil {
 		log.Error("Failed to marshal reset password request payload", zap.Error(err))
 		return "", fmt.Errorf("internal error marshalling request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, resetURL, bytes.NewBuffer(reqBody))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, resetURL, bytes.NewBuffer(reqBodyBytes))
 	if err != nil {
 		log.Error("Failed to create reset password HTTP request", zap.Error(err))
 		return "", fmt.Errorf("internal error creating request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json")
 
-	// Используем универсальный метод для выполнения запроса
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	// Use the admin request helper
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
-		log.Error("HTTP request for reset password failed", zap.Error(err))
 		if errors.Is(err, context.DeadlineExceeded) {
 			return "", fmt.Errorf("request to auth service timed out: %w", err)
 		}
-		return "", fmt.Errorf("failed to communicate with auth service: %w", err)
+		return "", fmt.Errorf("failed to execute reset password request: %w", err)
 	}
 	defer httpResp.Body.Close()
 
 	if httpResp.StatusCode == http.StatusNoContent {
 		log.Info("Password reset successfully via auth-service")
+		// Возвращаем сгенерированный пароль ТОЛЬКО при успехе
+		// В реальном приложении, auth-service мог бы вернуть что-то другое или ничего.
 		return newPassword, nil
 	}
 
+	// Handle errors
 	respBodyBytes, _ := io.ReadAll(httpResp.Body)
-	log.Warn("Received non-204 status for reset password", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
-	if httpResp.StatusCode == http.StatusNotFound {
-		return "", models.ErrUserNotFound
+	log.Warn("Received non-OK status for reset password", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+
+	var errResp models.ErrorResponse
+	if err := json.Unmarshal(respBodyBytes, &errResp); err == nil {
+		if errResp.Code == models.ErrCodeNotFound {
+			return "", models.ErrUserNotFound
+		}
+		return "", fmt.Errorf("auth service error (%d): %s", errResp.Code, errResp.Message)
 	}
+
 	return "", fmt.Errorf("received unexpected status %d from auth service for reset password", httpResp.StatusCode)
 }
 
@@ -893,3 +747,174 @@ func (c *authClient) VerifyToken(ctx context.Context, tokenString string) (*mode
 }
 
 // <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
+
+// <<< NEW: Helper function for requests requiring admin privilege verification >>>
+func (c *authClient) doAdminRequest(ctx context.Context, req *http.Request, adminAccessToken string) (*http.Response, error) {
+	// Add admin token header
+	if adminAccessToken == "" {
+		c.logger.Error("Admin access token is empty for admin-required request", zap.String("url", req.URL.String()))
+		return nil, errors.New("admin access token is required but missing")
+	}
+	req.Header.Set("X-Admin-Authorization", "Bearer "+adminAccessToken)
+
+	// Use the existing logic for inter-service token and potential refresh
+	return c.doRequestWithTokenRefresh(ctx, req)
+}
+
+// BanUser - вызывает эндпоинт POST /internal/auth/users/{userID}/ban
+func (c *authClient) BanUser(ctx context.Context, userID uuid.UUID, adminAccessToken string) error {
+	banURL := fmt.Sprintf("%s/internal/auth/users/%s/ban", c.baseURL, userID.String())
+	log := c.logger.With(zap.String("url", banURL), zap.String("userID", userID.String()))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, banURL, nil)
+	if err != nil {
+		log.Error("Failed to create ban user HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+	// NO BODY for ban request
+
+	// Use the new admin request helper
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
+	if err != nil {
+		// Error already logged by doAdminRequest or doRequestWithTokenRefresh
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("request to auth service timed out: %w", err)
+		}
+		// Check for specific auth errors if needed, otherwise return generic
+		return fmt.Errorf("failed to execute ban request: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode == http.StatusNoContent {
+		log.Info("User banned successfully via auth-service")
+		return nil // Success
+	}
+
+	// Handle errors
+	respBodyBytes, _ := io.ReadAll(httpResp.Body)
+	log.Warn("Received non-OK status for ban user", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+
+	// Try to parse error response
+	var errResp models.ErrorResponse
+	if err := json.Unmarshal(respBodyBytes, &errResp); err == nil {
+		switch errResp.Code {
+		case models.ErrCodeNotFound:
+			return models.ErrUserNotFound
+		case models.ErrCodeForbidden:
+			return models.ErrForbidden // Maybe auth-service denies banning certain users?
+		default:
+			return fmt.Errorf("auth service error (%d): %s", errResp.Code, errResp.Message)
+		}
+	}
+
+	return fmt.Errorf("received unexpected status %d from auth service for ban user", httpResp.StatusCode)
+}
+
+// UnbanUser - вызывает эндпоинт DELETE /internal/auth/users/{userID}/ban
+func (c *authClient) UnbanUser(ctx context.Context, userID uuid.UUID, adminAccessToken string) error {
+	unbanURL := fmt.Sprintf("%s/internal/auth/users/%s/ban", c.baseURL, userID.String())
+	log := c.logger.With(zap.String("url", unbanURL), zap.String("userID", userID.String()))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, unbanURL, nil)
+	if err != nil {
+		log.Error("Failed to create unban user HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+
+	// Use the admin request helper
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("request to auth service timed out: %w", err)
+		}
+		return fmt.Errorf("failed to execute unban request: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode == http.StatusNoContent {
+		log.Info("User unbanned successfully via auth-service")
+		return nil // Success
+	}
+
+	// Handle errors
+	respBodyBytes, _ := io.ReadAll(httpResp.Body)
+	log.Warn("Received non-OK status for unban user", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+
+	var errResp models.ErrorResponse
+	if err := json.Unmarshal(respBodyBytes, &errResp); err == nil {
+		if errResp.Code == models.ErrCodeNotFound {
+			return models.ErrUserNotFound
+		}
+		return fmt.Errorf("auth service error (%d): %s", errResp.Code, errResp.Message)
+	}
+
+	return fmt.Errorf("received unexpected status %d from auth service for unban user", httpResp.StatusCode)
+}
+
+// ValidateAdminToken sends a token to auth-service for full validation.
+type validateTokenRequest struct {
+	Token string `json:"token"`
+}
+
+func (c *authClient) ValidateAdminToken(ctx context.Context, token string) (*models.Claims, error) {
+	validateURL := c.baseURL + "/internal/auth/token/validate"
+	log := c.logger.With(zap.String("url", validateURL))
+
+	reqPayload := validateTokenRequest{Token: token}
+	reqBody, err := json.Marshal(reqPayload)
+	if err != nil {
+		log.Error("Failed to marshal validate token request payload", zap.Error(err))
+		return nil, fmt.Errorf("internal error marshalling request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, validateURL, bytes.NewBuffer(reqBody))
+	if err != nil {
+		log.Error("Failed to create validate token HTTP request", zap.Error(err))
+		return nil, fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
+	// Используем универсальный метод для выполнения запроса
+	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	if err != nil {
+		log.Error("HTTP request for token validation failed", zap.Error(err))
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("request to auth service timed out: %w", err)
+		}
+		return nil, fmt.Errorf("failed to communicate with auth service: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	respBodyBytes, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		log.Error("Failed to read token validation response body", zap.Int("status", httpResp.StatusCode), zap.Error(err))
+		return nil, fmt.Errorf("failed to read auth service response: %w", err)
+	}
+
+	if httpResp.StatusCode == http.StatusOK {
+		var claims models.Claims
+		if err := json.Unmarshal(respBodyBytes, &claims); err != nil {
+			log.Error("Failed to unmarshal successful token validation response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes), zap.Error(err))
+			return nil, fmt.Errorf("invalid success response format from auth service: %w", err)
+		}
+		log.Debug("Token validation successful via auth-service")
+		return &claims, nil
+	}
+
+	log.Warn("Received error response from auth-service for token validation", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes))
+
+	if httpResp.StatusCode == http.StatusUnauthorized {
+		type authErrorResponse struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		}
+		var errResp authErrorResponse
+		if err := json.Unmarshal(respBodyBytes, &errResp); err == nil && errResp.Code == 40103 {
+			return nil, models.ErrTokenExpired
+		}
+		return nil, models.ErrTokenInvalid
+	}
+
+	return nil, fmt.Errorf("auth service validation returned status %d", httpResp.StatusCode)
+}

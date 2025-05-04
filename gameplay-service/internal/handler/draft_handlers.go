@@ -239,9 +239,16 @@ func (h *GameplayHandler) publishStoryDraft(c *gin.Context) { // <<< *gin.Contex
 
 // listStoryConfigs получает список черновиков пользователя с пагинацией.
 func (h *GameplayHandler) listStoryConfigs(c *gin.Context) { // <<< *gin.Context
+	h.logger.Debug(">>> Entered listStoryConfigs <<<") // <<< НОВЫЙ ЛОГ В САМОМ НАЧАЛЕ
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		return
+		// <<< ИСПРАВЛЕНО: Обработка ошибки контекста >>>
+		h.logger.Error("Failed to get valid userID from context in listStoryConfigs", zap.Error(err))
+		c.AbortWithStatusJSON(http.StatusInternalServerError, sharedModels.ErrorResponse{
+			Code:    sharedModels.ErrCodeInternal,
+			Message: "Internal error processing user context: " + err.Error(), // Добавим текст ошибки
+		})
+		return // Оставляем return после Abort
 	}
 
 	// Используем c.Query для Gin
@@ -269,6 +276,16 @@ func (h *GameplayHandler) listStoryConfigs(c *gin.Context) { // <<< *gin.Context
 	)
 
 	drafts, nextCursor, err := h.service.ListUserDrafts(c.Request.Context(), userID, cursor, limit)
+	// <<< ДОБАВЛЕНО: Логирование результата сервисного метода >>>
+	if err != nil {
+		h.logger.Error("Error listing story drafts from service", zap.String("userID", userID.String()), zap.Error(err))
+	} else {
+		h.logger.Debug("Service ListUserDrafts returned",
+			zap.String("userID", userID.String()),
+			zap.Int("draft_count", len(drafts)),
+			zap.Stringp("next_cursor", &nextCursor)) // Логируем указатель на nextCursor
+	}
+
 	if err != nil {
 		h.logger.Error("Error listing story drafts", zap.String("userID", userID.String()), zap.Error(err))
 		handleServiceError(c, err, h.logger)
@@ -296,6 +313,10 @@ func (h *GameplayHandler) listStoryConfigs(c *gin.Context) { // <<< *gin.Context
 		zap.Int("count", len(draftSummaries)),
 		zap.Bool("hasNext", nextCursor != ""),
 	)
+
+	// <<< ДОБАВЛЕНО: Логирование перед отправкой ответа >>>
+	h.logger.Debug("Data prepared for JSON response in listStoryConfigs",
+		zap.Any("response_data", resp))
 
 	c.JSON(http.StatusOK, resp)
 }

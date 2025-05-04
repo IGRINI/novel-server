@@ -57,8 +57,14 @@ type SetStoryVisibilityRequest struct {
 
 // listMyPublishedStories получает список опубликованных историй текущего пользователя.
 func (h *GameplayHandler) listMyPublishedStories(c *gin.Context) {
+	h.logger.Debug(">>> Entered listMyPublishedStories <<<") // <<< НОВЫЙ ЛОГ В САМОМ НАЧАЛЕ
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
+		h.logger.Error("Failed to get valid userID from context in listMyPublishedStories", zap.Error(err))
+		c.AbortWithStatusJSON(http.StatusInternalServerError, sharedModels.ErrorResponse{
+			Code:    sharedModels.ErrCodeInternal,
+			Message: "Internal error processing user context: " + err.Error(),
+		})
 		return
 	}
 
@@ -89,10 +95,15 @@ func (h *GameplayHandler) listMyPublishedStories(c *gin.Context) {
 	// Вызываем метод сервиса, который возвращает []*PublishedStoryDetailWithProgressDTO
 	storiesDTO, nextCursor, err := h.service.ListMyPublishedStories(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
-		log.Error("Error listing my published stories", zap.Error(err))
+		log.Error("Error listing my published stories from service", zap.Error(err))
 		handleServiceError(c, err, h.logger)
 		return
 	}
+
+	log.Debug("Service ListMyPublishedStories returned",
+		zap.Int("dto_count", len(storiesDTO)),
+		zap.Stringp("next_cursor", &nextCursor), // Логируем указатель на nextCursor
+	)
 
 	// <<< ДОБАВЛЕНО: Конвертация из DTO сервиса в sharedModels >>>
 	storySummaries := make([]sharedModels.PublishedStorySummaryWithProgress, len(storiesDTO))
@@ -131,6 +142,11 @@ func (h *GameplayHandler) listMyPublishedStories(c *gin.Context) {
 		zap.Int("count", len(storySummaries)),
 		zap.Bool("hasNext", nextCursor != ""),
 	)
+
+	// <<< ДОБАВЛЕНО: Логирование перед отправкой ответа >>>
+	h.logger.Debug("Data prepared for JSON response in listMyPublishedStories",
+		zap.Any("response_data", resp))
+
 	c.JSON(http.StatusOK, resp)
 }
 
