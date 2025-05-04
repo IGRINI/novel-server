@@ -811,6 +811,7 @@
     *   Query параметры:
         *   `limit` (опционально, int, default=10, max=100).
         *   `cursor` (опционально, string).
+        *   `filter_adult` (опционально, boolean, default=false): Если true, исключает истории с контентом 18+.
     *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`. Структура ответа **аналогична** `GET /api/v1/published-stories/me`, но содержит только истории, где у пользователя есть сохранения.
         ```json
         {

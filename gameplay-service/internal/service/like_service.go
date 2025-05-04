@@ -25,7 +25,7 @@ type LikedStoryDetailDTO struct {
 type LikeService interface {
 	LikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
 	UnlikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
-	ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStorySummaryWithProgress, string, error)
+	ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.PublishedStorySummaryWithProgress, string, error)
 }
 
 type likeServiceImpl struct {
@@ -111,7 +111,7 @@ func (s *likeServiceImpl) UnlikeStory(ctx context.Context, userID uuid.UUID, pub
 }
 
 // ListLikedStories retrieves a paginated list of stories liked by a user, with progress flag.
-func (s *likeServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStorySummaryWithProgress, string, error) {
+func (s *likeServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.PublishedStorySummaryWithProgress, string, error) {
 	log := s.logger.With(zap.String("method", "ListLikedStories"), zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
 	log.Debug("Listing liked stories for user (single query)")
 

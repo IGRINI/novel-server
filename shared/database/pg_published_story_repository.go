@@ -1368,74 +1368,99 @@ func (r *pgPublishedStoryRepository) GetSummaryWithDetails(ctx context.Context, 
 	return result, nil
 }
 
-// ListUserSummariesOnlyWithProgress получает список историй пользователя ТОЛЬКО с прогрессом.
-func (r *pgPublishedStoryRepository) ListUserSummariesOnlyWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]models.PublishedStorySummaryWithProgress, string, error) {
+// ListUserSummariesOnlyWithProgress получает список историй, в которых у пользователя есть прогресс,
+// сортируя их по времени последней активности (сначала новые).
+func (r *pgPublishedStoryRepository) ListUserSummariesOnlyWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummaryWithProgress, string, error) {
 	if limit <= 0 {
 		limit = 10 // Default limit
 	}
 	fetchLimit := limit + 1
 
-	lastActivityTime, cursorID, err := utils.DecodeCursor(cursor)
+	// Сортируем по last_activity_at DESC, затем по ps.id DESC
+	lastActivityTime, cursorID, err := utils.DecodeCursor(cursor) // <<< ИЗМЕНЕНО: Используем DecodeCursor
 	if err != nil {
 		if cursor != "" {
 			r.logger.Warn("Invalid cursor provided for ListUserSummariesOnlyWithProgress", zap.String("cursor", cursor), zap.Stringer("userID", userID), zap.Error(err))
-			return nil, "", fmt.Errorf("invalid cursor: %w", err)
 		}
-		err = nil
-		lastActivityTime = time.Time{}
+		// Proceed without cursor if it's invalid or empty
+		cursor = ""                    // Ensure cursor is empty if invalid
+		lastActivityTime = time.Time{} // Zero time
 		cursorID = uuid.Nil
 	}
 
-	var queryBuilder strings.Builder
-	args := []interface{}{userID} // $1
-	paramIndex := 2
-
-	queryBuilder.WriteString(`
-        WITH LatestProgress AS (
-            SELECT
-                pgs.published_story_id,
-                MAX(pgs.last_activity_at) as last_activity_at
-            FROM player_game_states pgs
-            WHERE pgs.player_id = $1 AND pgs.player_progress_id IS NOT NULL
-            GROUP BY pgs.published_story_id
-        )
-        SELECT DISTINCT ON (ps.id)
-            ps.id,
-            ps.title,
-            ps.description,
-            ps.user_id,     -- author_id
-            COALESCE(u.display_name, '[unknown]') AS author_name,
-            ps.created_at,  -- published_at (оставляем для информации)
-            ps.is_adult_content,
-            ps.likes_count,
-            ps.status,
-            ir.image_url AS cover_image_url,
-            ps.is_public,
-            lp.last_activity_at, -- Время для курсора
-            EXISTS (SELECT 1 FROM story_likes sl WHERE sl.published_story_id = ps.id AND sl.user_id = $1) AS is_liked
-        FROM published_stories ps
-        JOIN LatestProgress lp ON ps.id = lp.published_story_id
-        LEFT JOIN users u ON u.id = ps.user_id
-        LEFT JOIN image_references ir ON ir.reference = 'history_preview_' || ps.id::text
-        WHERE ps.user_id = $1
-    `)
-
-	if cursor != "" {
-		queryBuilder.WriteString(fmt.Sprintf(" AND (lp.last_activity_at, ps.id) < ($%d, $%d)", paramIndex, paramIndex+1))
-		args = append(args, lastActivityTime, cursorID)
-		paramIndex += 2
-	}
-
-	queryBuilder.WriteString(fmt.Sprintf(" ORDER BY lp.last_activity_at DESC, ps.id DESC LIMIT $%d", paramIndex))
-	args = append(args, fetchLimit)
-
-	query := queryBuilder.String()
 	logFields := []zap.Field{
 		zap.Stringer("userID", userID),
 		zap.String("cursor", cursor),
 		zap.Int("limit", limit),
 	}
 	r.logger.Debug("Listing user story summaries ONLY with progress", logFields...)
+
+	args := make([]interface{}, 0, 5) // Estimate initial capacity
+	args = append(args, userID)       // $1 = userID (used in CTE, CASE, maybe WHERE)
+
+	paramIndex := 2 // Start param indexing from $2
+
+	var queryBuilder strings.Builder
+
+	// <<< ИЗМЕНЕНО: Используем CTE для корректной сортировки и DISTINCT >>>
+	queryBuilder.WriteString(`
+    WITH LatestPlayerStates AS (
+        SELECT DISTINCT ON (published_story_id)
+            published_story_id,
+            last_activity_at
+        FROM player_game_states
+        WHERE player_id = $1 -- User ID parameter
+        ORDER BY published_story_id, last_activity_at DESC
+    )
+    SELECT
+        ps.id,                  -- PublishedStorySummary.ID
+        ps.title,               -- PublishedStorySummary.Title
+        ps.description,         -- PublishedStorySummary.ShortDescription (use NullString)
+        ps.user_id,             -- PublishedStorySummary.AuthorID
+        COALESCE(u.display_name, '[unknown]') AS author_name, -- PublishedStorySummary.AuthorName
+        ps.created_at,          -- PublishedStorySummary.PublishedAt
+        ps.is_adult_content,    -- PublishedStorySummary.IsAdultContent
+        ps.likes_count,         -- PublishedStorySummary.LikesCount
+        ps.status,              -- PublishedStorySummary.Status
+        ir.image_url AS cover_image_url, -- <<< ИЗМЕНЕНО: Получаем из image_references >>>
+        ps.is_public,           -- PublishedStorySummaryWithProgress.IsPublic
+        lps.last_activity_at,   -- For sorting and cursor (from CTE)
+        (CASE WHEN $1::uuid IS NOT NULL THEN EXISTS (
+            SELECT 1 FROM story_likes sl WHERE sl.published_story_id = ps.id AND sl.user_id = $1
+        ) ELSE FALSE END) AS is_liked -- is_liked requires userID ($1)
+    FROM
+        published_stories ps
+    JOIN
+        LatestPlayerStates lps ON ps.id = lps.published_story_id -- Join with CTE
+    LEFT JOIN
+        users u ON ps.user_id = u.id -- Join to get author name
+    LEFT JOIN -- <<< ДОБАВЛЕНО: JOIN для получения обложки >>>
+        image_references ir ON ir.reference = 'history_preview_' || ps.id::text
+    WHERE ps.status = $`)
+	queryBuilder.WriteString(fmt.Sprintf("%d", paramIndex)) // Status param index ($2)
+	args = append(args, models.StatusReady)
+	paramIndex++
+
+	if filterAdult {
+		queryBuilder.WriteString(fmt.Sprintf(" AND ps.is_adult_content = $%d", paramIndex))
+		args = append(args, false)
+		paramIndex++
+	}
+
+	if cursor != "" {
+		// Курсор теперь основан на времени последней активности (из CTE) и ID истории
+		queryBuilder.WriteString(fmt.Sprintf(" AND (lps.last_activity_at, ps.id) < ($%d, $%d)", paramIndex, paramIndex+1))
+		args = append(args, lastActivityTime, cursorID)
+		paramIndex += 2
+	}
+
+	// Сортировка по last_activity_at из CTE
+	queryBuilder.WriteString(fmt.Sprintf(" ORDER BY lps.last_activity_at DESC, ps.id DESC LIMIT $%d", paramIndex))
+	args = append(args, fetchLimit)
+
+	query := queryBuilder.String()
+
+	r.logger.Debug("Executing SQL for ListUserSummariesOnlyWithProgress", append(logFields, zap.String("query", query), zap.Any("args", args))...)
 
 	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
@@ -1445,61 +1470,66 @@ func (r *pgPublishedStoryRepository) ListUserSummariesOnlyWithProgress(ctx conte
 	defer rows.Close()
 
 	summaries := make([]models.PublishedStorySummaryWithProgress, 0, limit)
-	var lastActivityCursor time.Time // <<< ВОССТАНОВЛЕНО
-	var lastIDCursor uuid.UUID       // <<< ВОССТАНОВЛЕНО
+	var lastActivityCursor time.Time // Для сохранения последнего значения для курсора
+	var lastIDCursor uuid.UUID       // Для сохранения последнего значения для курсора
 
 	for rows.Next() {
 		var s models.PublishedStorySummaryWithProgress
 		var description sql.NullString
 		var coverImageUrl sql.NullString
-		var currentLastActivity time.Time
+		var currentLastActivity time.Time // <<< Переменная для сканирования lps.last_activity_at
 
 		if err := rows.Scan(
-			&s.ID,
-			&s.Title,
+			&s.PublishedStorySummary.ID,
+			&s.PublishedStorySummary.Title,
 			&description,
-			&s.AuthorID,
-			&s.AuthorName,
-			&currentLastActivity,
-			&s.LikesCount,
-			&s.Status,
+			&s.PublishedStorySummary.AuthorID,
+			&s.PublishedStorySummary.AuthorName,
+			&s.PublishedStorySummary.PublishedAt,
+			&s.PublishedStorySummary.IsAdultContent,
+			&s.PublishedStorySummary.LikesCount,
+			&s.PublishedStorySummary.Status,
 			&coverImageUrl,
-			&s.IsPublic,
-			&currentLastActivity,
-			&s.IsLiked,
+			&s.IsPublic,          // Сканируем IsPublic
+			&currentLastActivity, // <<< Сканируем lps.last_activity_at
+			&s.PublishedStorySummary.IsLiked,
 		); err != nil {
 			r.logger.Error("Failed to scan user story summary only with progress row", append(logFields, zap.Error(err))...)
+			// Важно не прерывать весь процесс, если одна строка битая
 			continue
 		}
 
-		if description.Valid {
-			s.ShortDescription = description.String
-		}
+		// Обработка NullString
+		s.PublishedStorySummary.ShortDescription = description.String
 		if coverImageUrl.Valid {
-			urlStr := coverImageUrl.String
-			s.CoverImageURL = &urlStr
+			s.PublishedStorySummary.CoverImageURL = &coverImageUrl.String // <<< ИЗМЕНЕНО: Присваиваем указатель
 		} else {
-			s.CoverImageURL = nil
+			s.PublishedStorySummary.CoverImageURL = nil
 		}
+
+		// Устанавливаем флаг прогресса (всегда true из-за INNER JOIN с LatestPlayerStates)
 		s.HasPlayerProgress = true
 
 		summaries = append(summaries, s)
+
+		// Обновляем переменные для следующего курсора
 		lastActivityCursor = currentLastActivity
-		lastIDCursor = s.ID
+		lastIDCursor = s.PublishedStorySummary.ID
 	}
 
 	if err := rows.Err(); err != nil {
-		r.logger.Error("Error iterating user story summary only with progress rows", append(logFields, zap.Error(err))...)
-		return nil, "", fmt.Errorf("ошибка итерации по результатам историй пользователя с прогрессом: %w", err)
+		r.logger.Error("Error iterating over user story summaries only with progress rows", append(logFields, zap.Error(err))...)
+		return nil, "", fmt.Errorf("ошибка чтения строк историй пользователя с прогрессом: %w", err)
 	}
 
 	var nextCursor string
 	if len(summaries) == fetchLimit {
-		summaries = summaries[:limit]
-		nextCursor = utils.EncodeCursor(lastActivityCursor, lastIDCursor)
+		summaries = summaries[:limit] // Убираем лишний элемент
+		// Генерируем курсор на основе последнего элемента
+		nextCursor = utils.EncodeCursor(lastActivityCursor, lastIDCursor) // <<< ИЗМЕНЕНО: Используем EncodeCursor
 	}
 
-	r.logger.Debug("User story summaries only with progress listed successfully", append(logFields, zap.Int("count", len(summaries)), zap.Bool("hasNext", nextCursor != ""))...)
+	r.logger.Debug("User story summaries ONLY with progress listed successfully", append(logFields, zap.Int("count", len(summaries)), zap.Bool("hasNext", nextCursor != ""))...)
 	return summaries, nextCursor, nil
 }
 

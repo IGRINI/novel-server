@@ -10,6 +10,22 @@ DROP TRIGGER IF EXISTS update_player_progress_updated_at ON player_progress;
 DROP TRIGGER IF EXISTS update_story_scenes_updated_at ON story_scenes;
 DROP TRIGGER IF EXISTS update_published_stories_updated_at ON published_stories;
 DROP TRIGGER IF EXISTS set_story_configs_timestamp ON story_configs;
+DROP TRIGGER IF EXISTS trg_update_published_story_fts ON published_stories;
+
+-- === Drop Functions ===
+DROP FUNCTION IF EXISTS update_published_story_fts();
+-- DROP FUNCTION IF EXISTS update_updated_at_column(); -- Assuming shared/pre-existing
+-- DROP FUNCTION IF EXISTS trigger_set_timestamp();  -- Assuming shared/pre-existing
+
+-- === Drop Indexes (Consolidated from 000006, 000007, 000008) ===
+-- Note: Indexes on tables being dropped are implicitly dropped, but explicit drops are safer for clarity/partial rollbacks.
+DROP INDEX IF EXISTS idx_player_progress_user_story;
+DROP INDEX IF EXISTS idx_player_game_states_player_story;
+DROP INDEX IF EXISTS idx_story_likes_user;
+DROP INDEX IF EXISTS idx_story_likes_published_story_id;
+DROP INDEX IF EXISTS idx_player_progress_published_story_id;
+DROP INDEX IF EXISTS idx_published_stories_fts_document;
+-- Other indexes are dropped when tables are dropped below
 
 -- === Drop Tables (in reverse order of dependencies) ===
 DROP TABLE IF EXISTS player_game_states;
@@ -29,10 +45,6 @@ DROP TABLE IF EXISTS users;
 DROP TYPE IF EXISTS player_game_status;
 DROP TYPE IF EXISTS story_status;
 DROP TYPE IF EXISTS generation_status;
-
--- === Drop Functions (Skipped - assumed shared/pre-existing) ===
--- DROP FUNCTION IF EXISTS update_updated_at_column();
--- DROP FUNCTION IF EXISTS trigger_set_timestamp();
 
 -- === Drop Extensions ===
 -- DROP EXTENSION IF EXISTS "uuid-ossp"; -- Usually kept unless strictly part of this migration's features

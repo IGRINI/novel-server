@@ -42,7 +42,9 @@ CREATE TYPE story_status AS ENUM (
     'ready',                 -- 000017: Ready to be played
     'error',                 -- 000017: Error during generation
     'setup_pending',         -- 000017: Added for setup generation phase
-    'image_generation_pending' -- 000031: Added for separate image generation step
+    'image_generation_pending', -- 000031: Added for separate image generation step
+    'first_scene_pending',   -- <<< CONSOLIDATED from 000002 >>>
+    'generating'             -- <<< CONSOLIDATED from 000003 >>> -- Note: 'generating' from 000003 might conflict/be redundant with 'initial_generation', review usage. Assuming keep for now.
     -- 'generating_scene' WAS HERE (000016, obsolete)
     -- 'setup_generating' WAS HERE (000017, removed)
     -- 'game_over_pending' WAS HERE (000022, obsolete)
@@ -129,7 +131,7 @@ COMMENT ON COLUMN story_configs.updated_at IS 'Время последнего �
 COMMENT ON CONSTRAINT fk_user ON story_configs IS 'Внешний ключ, связывающий с таблицей users.';
 COMMENT ON TYPE generation_status IS 'Перечисление возможных статусов генерации конфигурации истории.';
 
--- Published Stories Table (user_id changed to UUID in 000011, likes added in 000013, flags added in 000025)
+-- Published Stories Table (user_id changed to UUID in 000011, likes added in 000013, flags added in 000025, language from 000005, FTS from 000008)
 CREATE TABLE published_stories (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL,                           -- Changed from BIGINT
@@ -144,12 +146,20 @@ CREATE TABLE published_stories (
     description TEXT,
     error_details TEXT,
     likes_count BIGINT NOT NULL DEFAULT 0,           -- Added in 000013
+    language VARCHAR(10) NOT NULL DEFAULT 'en',      -- <<< CONSOLIDATED from 000005 >>>
+    search_author_name TEXT,                         -- <<< CONSOLIDATED from 000008 >>>
+    search_genre TEXT,                               -- <<< CONSOLIDATED from 000008 >>>
+    search_franchise TEXT,                           -- <<< CONSOLIDATED from 000008 >>>
+    search_themes TEXT,                              -- <<< CONSOLIDATED from 000008 >>>
+    search_characters TEXT,                          -- <<< CONSOLIDATED from 000008 >>>
+    fts_document TSVECTOR,                           -- <<< CONSOLIDATED from 000008 >>>
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT published_stories_user_id_fkey FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 COMMENT ON COLUMN published_stories.is_first_scene_pending IS 'Флаг: True, если генерация первой сцены ожидается или идет.';
 COMMENT ON COLUMN published_stories.are_images_pending IS 'Флаг: True, если генерация превью или изображений персонажей ожидается или идет.';
+COMMENT ON COLUMN published_stories.language IS 'Язык опубликованной истории (копируется из конфига при публикации).';
 
 -- Story Scenes Table (updated_at added in 000018)
 CREATE TABLE story_scenes (
@@ -161,7 +171,7 @@ CREATE TABLE story_scenes (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW() -- Added in 000018
 );
 
--- Player Progress Table (Refactored in 000022: added id PK, FKs nullable; scene_index added in 000020; last_* added in 000021; created_at added in 000026)
+-- Player Progress Table (Refactored in 000022: added id PK, FKs nullable; scene_index added in 000020; last_* added in 000021; created_at added in 000026; summary from 000004)
 CREATE TABLE player_progress (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),             -- Added in 000022
     user_id UUID NULL REFERENCES users(id) ON DELETE CASCADE, -- Changed from BIGINT NOT NULL (FK is defined inline)
@@ -174,6 +184,7 @@ CREATE TABLE player_progress (
     last_story_summary TEXT NULL,                            -- Added in 000021
     last_future_direction TEXT NULL,                         -- Added in 000021
     last_var_impact_summary TEXT NULL,                       -- Added in 000021
+    current_scene_summary TEXT NULL,                         -- <<< CONSOLIDATED from 000004 >>>
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),           -- Added in 000026
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     -- CONSTRAINT player_progress_user_id_fkey FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE, -- Removed as redundant (inline FK exists)
@@ -184,6 +195,7 @@ CREATE TABLE player_progress (
 COMMENT ON COLUMN player_progress.last_story_summary IS 'Последнее краткое изложение сюжета для этого прогресса';
 COMMENT ON COLUMN player_progress.last_future_direction IS 'Последнее направление развития сюжета';
 COMMENT ON COLUMN player_progress.last_var_impact_summary IS 'Последнее описание влияния переменных';
+COMMENT ON COLUMN player_progress.current_scene_summary IS 'Summary of the scene associated with this progress state';
 
 -- Story Likes Table (Added in 000013)
 CREATE TABLE story_likes (
@@ -272,6 +284,7 @@ CREATE INDEX IF NOT EXISTS idx_story_configs_status ON story_configs (status);
 CREATE INDEX IF NOT EXISTS idx_published_stories_user_id ON published_stories(user_id); -- Type changed to UUID
 CREATE INDEX IF NOT EXISTS idx_published_stories_status ON published_stories(status);
 CREATE INDEX IF NOT EXISTS idx_published_stories_is_public ON published_stories(is_public);
+CREATE INDEX IF NOT EXISTS idx_published_stories_fts_document ON published_stories USING GIN(fts_document); -- <<< CONSOLIDATED from 000008 >>>
 
 -- story_scenes
 CREATE INDEX IF NOT EXISTS idx_story_scenes_published_story_id ON story_scenes(published_story_id);
@@ -281,9 +294,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_story_scenes_story_hash ON story_scenes(pu
 -- player_progress
 CREATE INDEX IF NOT EXISTS idx_player_progress_state_hash ON player_progress(current_state_hash);
 -- CREATE UNIQUE INDEX IF NOT EXISTS idx_player_progress_user_story ON player_progress (user_id, published_story_id); -- Removed in 000028
+CREATE INDEX IF NOT EXISTS idx_player_progress_user_story ON player_progress (user_id, published_story_id); -- <<< CONSOLIDATED from 000006 >>>
+CREATE INDEX IF NOT EXISTS idx_player_progress_published_story_id ON player_progress (published_story_id); -- <<< CONSOLIDATED from 000007 >>>
+
 
 -- story_likes
-CREATE INDEX IF NOT EXISTS idx_story_likes_published_story_id ON story_likes(published_story_id); -- Added in 000013
+CREATE INDEX IF NOT EXISTS idx_story_likes_published_story_id ON story_likes(published_story_id); -- Added in 000013, also CONSOLIDATED from 000007
+CREATE INDEX IF NOT EXISTS idx_story_likes_user ON story_likes (user_id); -- <<< CONSOLIDATED from 000006 >>>
 
 -- user_device_tokens
 CREATE INDEX IF NOT EXISTS idx_user_device_tokens_user_id ON user_device_tokens(user_id); -- Added in 000014
@@ -295,6 +312,7 @@ CREATE INDEX IF NOT EXISTS idx_player_game_states_published_story_id ON player_g
 CREATE INDEX IF NOT EXISTS idx_player_game_states_last_activity ON player_game_states(last_activity_at); -- Added in 000022
 CREATE INDEX IF NOT EXISTS idx_player_game_states_player_progress_id ON player_game_states(player_progress_id); -- Added in 000022
 -- CREATE UNIQUE INDEX IF NOT EXISTS unique_player_story_game_state ON player_game_states (player_id, published_story_id); -- Removed in 000028
+CREATE INDEX IF NOT EXISTS idx_player_game_states_player_story ON player_game_states (player_id, published_story_id); -- <<< CONSOLIDATED from 000006 >>>
 
 -- prompts
 CREATE INDEX IF NOT EXISTS idx_prompts_key_language ON prompts (key, language); -- Added in 000029
@@ -348,5 +366,59 @@ CREATE TRIGGER update_dynamic_configs_updated_at
 BEFORE UPDATE ON dynamic_configs
 FOR EACH ROW
 EXECUTE FUNCTION update_updated_at_column(); -- Added in 000030
+
+
+-- <<< FTS Trigger Function and Trigger CONSOLIDATED from 000008 >>>
+CREATE OR REPLACE FUNCTION update_published_story_fts() RETURNS TRIGGER AS $$
+DECLARE
+    v_author_name TEXT;
+    v_genre TEXT;
+    v_franchise TEXT;
+    v_themes TEXT;
+    v_char_details TEXT;
+    v_config JSONB;
+    v_setup JSONB;
+BEGIN
+    -- Get config and setup as JSONB for easier parsing
+    v_config := NEW.config::jsonb;
+    v_setup := NEW.setup::jsonb;
+
+    -- Get author name
+    SELECT display_name INTO v_author_name FROM users WHERE id = NEW.user_id;
+    NEW.search_author_name := COALESCE(v_author_name, '');
+
+    -- Extract data from config JSONB
+    v_genre := COALESCE(v_config->>'gn', '');
+    v_franchise := COALESCE(v_config->>'fr', '');
+    SELECT string_agg(theme, ' ') INTO v_themes FROM jsonb_array_elements_text(v_config->'pp'->'th');
+    NEW.search_genre := v_genre;
+    NEW.search_franchise := v_franchise;
+    NEW.search_themes := COALESCE(v_themes, '');
+
+    -- Extract data from setup JSONB (characters)
+    SELECT string_agg(COALESCE(c->>'n', '') || ' ' || COALESCE(c->>'d', '') || ' ' || COALESCE(c->>'p', ''), ' ')
+    INTO v_char_details
+    FROM jsonb_array_elements(v_setup->'chars');
+    NEW.search_characters := COALESCE(v_char_details, '');
+
+    -- Update the tsvector column. Use 'russian' config if applicable, otherwise 'simple' might be safer.
+    -- Coalesce prevents errors if fields are NULL.
+    -- Assign different weights (A, B, C, D) to prioritize fields.
+    NEW.fts_document := setweight(to_tsvector('russian', COALESCE(NEW.title, '')), 'A') ||
+                        setweight(to_tsvector('russian', COALESCE(NEW.description, '')), 'B') ||
+                        setweight(to_tsvector('russian', NEW.search_author_name), 'C') ||
+                        setweight(to_tsvector('russian', NEW.search_genre), 'B') ||
+                        setweight(to_tsvector('russian', NEW.search_franchise), 'C') ||
+                        setweight(to_tsvector('russian', NEW.search_themes), 'D') ||
+                        setweight(to_tsvector('russian', NEW.search_characters), 'D');
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_update_published_story_fts ON published_stories; -- Drop just in case if exists from previous attempts
+CREATE TRIGGER trg_update_published_story_fts
+BEFORE INSERT OR UPDATE ON published_stories
+FOR EACH ROW EXECUTE FUNCTION update_published_story_fts();
+
 
 -- +migrate StatementEnd 

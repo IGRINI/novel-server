@@ -84,17 +84,16 @@ type PublishedStoryRepository interface {
 	// ListByUserIDOffset retrieves a paginated list of stories created by a specific user using cursor pagination with offset.
 	// ListByUserIDOffset(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.PublishedStory, error)
 
-	// ListPublicSummaries получает список публичных историй с пагинацией.
-	ListPublicSummaries(ctx context.Context, userID *uuid.UUID, cursor string, limit int, sortBy string, filterAdult bool) ([]models.PublishedStorySummary, string, error)
-
-	// ListUserSummaries получает список историй пользователя с пагинацией.
-	// ListUserSummaries(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error)
-
-	// ListUserSummariesWithProgress получает список историй пользователя с прогрессом.
+	// ListUserSummariesWithProgress retrieves a paginated list of stories created by a specific user,
+	// including a flag indicating if the current user has progress in that story.
 	ListUserSummariesWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummaryWithProgress, string, error)
 
-	// ListUserSummariesOnlyWithProgress получает список историй пользователя ТОЛЬКО с прогрессом.
-	ListUserSummariesOnlyWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]models.PublishedStorySummaryWithProgress, string, error)
+	// ListUserSummariesOnlyWithProgress retrieves a paginated list of stories where the user has progress,
+	// sorted by last activity time.
+	ListUserSummariesOnlyWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummaryWithProgress, string, error)
+
+	// ListPublicSummaries retrieves a paginated list of public stories.
+	ListPublicSummaries(ctx context.Context, userID *uuid.UUID, cursor string, limit int, sortBy string, filterAdult bool) ([]models.PublishedStorySummary, string, error)
 
 	// CheckInitialGenerationStatus проверяет, готовы ли Setup и Первая сцена.
 	CheckInitialGenerationStatus(ctx context.Context, id uuid.UUID) (bool, error)

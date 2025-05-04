@@ -518,10 +518,6 @@ func (h *GameplayHandler) listLikedStories(c *gin.Context) {
 	// <<< ОСТАВЛЯЕМ ПРЕОБРАЗОВАНИЕ, т.к. сервис возвращает другой тип DTO >>>
 	storySummaries := make([]sharedModels.PublishedStorySummaryWithProgress, len(likedStoriesDetails))
 	for i, detail := range likedStoriesDetails {
-		if detail == nil { // Safety check
-			log.Warn("Received nil LikedStoryDetailDTO in listLikedStories")
-			continue
-		}
 		title := detail.Title                  // Используем поле из PublishedStorySummary
 		description := detail.ShortDescription // Используем поле из PublishedStorySummary
 		storySummaries[i] = sharedModels.PublishedStorySummaryWithProgress{
@@ -805,68 +801,51 @@ func (h *GameplayHandler) retrySpecificGameStateGeneration(c *gin.Context) {
 }
 
 // <<< НАЧАЛО НОВОГО ОБРАБОТЧИКА >>>
-// listMyStoriesWithProgress получает список ОПУБЛИКОВАННЫХ историй текущего пользователя ТОЛЬКО С ПРОГРЕССОМ.
+// listMyStoriesWithProgress возвращает список опубликованных историй пользователя, в которых есть прогресс.
+// GET /api/v1/published-stories/me/progress?limit=10&cursor=...[&filter_adult=true]
 func (h *GameplayHandler) listMyStoriesWithProgress(c *gin.Context) {
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		// Ошибка уже обработана
+		return // Error handled in helper
+	}
+
+	limitStr := c.DefaultQuery("limit", "10")
+	cursor := c.Query("cursor")
+	filterAdultStr := c.DefaultQuery("filter_adult", "false") // <<< ДОБАВЛЕНО: Читаем filter_adult
+
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 || limit > 100 {
+		h.logger.Warn("Invalid limit parameter for listMyStoriesWithProgress", zap.String("limit", limitStr), zap.Stringer("userID", userID))
+		handleServiceError(c, fmt.Errorf("%w: invalid limit parameter", sharedModels.ErrBadRequest), h.logger)
 		return
 	}
 
-	limitStr := c.Query("limit")
-	cursor := c.Query("cursor")
-
-	limit := 10
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err != nil || parsedLimit <= 0 {
-			h.logger.Warn("Invalid limit parameter received in listMyStoriesWithProgress", zap.String("limit", limitStr), zap.Error(err))
-			handleServiceError(c, fmt.Errorf("%w: invalid 'limit' parameter", sharedModels.ErrBadRequest), h.logger)
-			return
-		}
-		if parsedLimit > 100 {
-			parsedLimit = 100
-		}
-		limit = parsedLimit
+	filterAdult, err := strconv.ParseBool(filterAdultStr) // <<< ДОБАВЛЕНО: Парсим filter_adult
+	if err != nil {
+		h.logger.Warn("Invalid filter_adult parameter for listMyStoriesWithProgress", zap.String("filter_adult", filterAdultStr), zap.Stringer("userID", userID))
+		handleServiceError(c, fmt.Errorf("%w: invalid filter_adult parameter", sharedModels.ErrBadRequest), h.logger)
+		return
 	}
 
-	log := h.logger.With(
-		zap.String("userID", userID.String()),
-		zap.Int("limit", limit),
-		zap.String("cursor", cursor),
-	)
+	log := h.logger.With(zap.Stringer("userID", userID), zap.Int("limit", limit), zap.String("cursor", cursor), zap.Bool("filterAdult", filterAdult)) // <<< ДОБАВЛЕНО: filterAdult в лог
 	log.Debug("Fetching my published stories with progress")
 
-	// <<< ИЗМЕНЕНО: Вызываем новый метод сервиса >>>
-	storiesDTO, nextCursor, err := h.service.ListMyStoriesWithProgress(c.Request.Context(), userID, cursor, limit)
-	if err != nil {
-		log.Error("Error listing my published stories with progress from service", zap.Error(err))
-		handleServiceError(c, err, h.logger)
+	// Вызываем метод сервиса
+	// <<< ИЗМЕНЕНО: Передаем filterAdult в сервис >>>
+	stories, nextCursor, serviceErr := h.service.ListMyStoriesWithProgress(c.Request.Context(), userID, cursor, limit, filterAdult)
+	if serviceErr != nil {
+		log.Error("Error listing my published stories with progress from service", zap.Error(serviceErr))
+		handleServiceError(c, serviceErr, h.logger)
 		return
 	}
 
-	log.Debug("Service ListMyStoriesWithProgress returned",
-		zap.Int("dto_count", len(storiesDTO)),
-		zap.Stringp("next_cursor", &nextCursor),
-	)
-
-	// Конвертация из DTO сервиса в sharedModels для ответа (если необходимо, но DTO уже подходит)
-	// В данном случае PublishedStorySummaryDTO подходит для ответа, конвертация не нужна.
-
-	resp := PaginatedResponse{
-		Data:       storiesDTO, // <<< Используем DTO из сервиса напрямую >>>
+	response := PaginatedResponse{
+		Data:       stories,
 		NextCursor: nextCursor,
 	}
 
-	log.Debug("Successfully fetched my published stories with progress",
-		zap.Int("count", len(storiesDTO)),
-		zap.Bool("hasNext", nextCursor != ""),
-	)
-
-	h.logger.Debug("Data prepared for JSON response in listMyStoriesWithProgress",
-		zap.Any("response_data", resp))
-
-	c.JSON(http.StatusOK, resp)
+	log.Info("My published stories with progress listed successfully", zap.Int("count", len(stories)), zap.Bool("hasNext", nextCursor != ""))
+	c.JSON(http.StatusOK, response)
 }
 
 // <<< КОНЕЦ НОВОГО ОБРАБОТЧИКА >>>
