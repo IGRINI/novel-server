@@ -389,6 +389,17 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	// 11. Handle Game Over
 	if isGameOver {
 		s.logger.Info("Handling Game Over state update")
+
+		// <<< DEBUG LOGGING START >>>
+		s.logger.Debug("Data before calculateStateHash (Game Over)",
+			zap.String("gameStateID", gameStateID.String()),
+			zap.String("previousHash", currentProgress.CurrentStateHash),
+			zap.Any("coreStats", nextProgress.CoreStats),
+			zap.Any("storyVars", nextProgress.StoryVariables),
+			zap.Strings("globalFlags", nextProgress.GlobalFlags),
+		)
+		// <<< DEBUG LOGGING END >>>
+
 		finalStateHash, hashErr := calculateStateHash(currentProgress.CurrentStateHash, nextProgress.CoreStats, nextProgress.StoryVariables, nextProgress.GlobalFlags)
 		if hashErr != nil {
 			s.logger.Error("Failed to calculate final state hash before game over", append(logFields, zap.Error(hashErr))...)
@@ -496,21 +507,31 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		return nil
 	}
 
-	// 12. Not Game Over (implies all choices were made): Calculate next state hash
-	newStateHash, errHash := calculateStateHash(currentProgress.CurrentStateHash, nextProgress.CoreStats, nextProgress.StoryVariables, nextProgress.GlobalFlags)
-	if errHash != nil {
-		s.logger.Error("Failed to calculate new state hash", append(logFields, zap.Error(errHash))...)
+	// 12. Calculate next state hash
+	// <<< DEBUG LOGGING START >>>
+	s.logger.Debug("Data before calculateStateHash (Normal Flow)",
+		zap.String("gameStateID", gameStateID.String()),
+		zap.String("previousHash", currentProgress.CurrentStateHash),
+		zap.Any("coreStats", nextProgress.CoreStats),
+		zap.Any("storyVars", nextProgress.StoryVariables),
+		zap.Strings("globalFlags", nextProgress.GlobalFlags),
+	)
+	// <<< DEBUG LOGGING END >>>
+	nextStateHash, hashErr := calculateStateHash(currentProgress.CurrentStateHash, nextProgress.CoreStats, nextProgress.StoryVariables, nextProgress.GlobalFlags)
+	if hashErr != nil {
+		s.logger.Error("Failed to calculate next state hash", append(logFields, zap.Error(hashErr))...)
 		return sharedModels.ErrInternalServer
 	}
-	logFields = append(logFields, zap.String("newStateHash", newStateHash))
-	s.logger.Debug("New state hash calculated", logFields...)
+	nextProgress.CurrentStateHash = nextStateHash
+	logFields = append(logFields, zap.String("nextStateHash", nextStateHash))
+	s.logger.Debug("Calculated next state hash", logFields...)
 
-	// 13. Find or Create the NEXT PlayerProgress node based on the new hash
+	// 13. Find or Create the next PlayerProgress node
 	//    This is crucial for branching and reusing progress nodes.
 	var nextNodeProgress *sharedModels.PlayerProgress
 	var nextNodeProgressID uuid.UUID
 
-	existingNodeByHash, errFindNode := s.playerProgressRepo.GetByStoryIDAndHash(ctx, gameState.PublishedStoryID, newStateHash)
+	existingNodeByHash, errFindNode := s.playerProgressRepo.GetByStoryIDAndHash(ctx, gameState.PublishedStoryID, nextStateHash)
 	if errFindNode == nil {
 		// Node with this hash already exists
 		nextNodeProgress = existingNodeByHash
@@ -521,8 +542,8 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		s.logger.Info("Creating new PlayerProgress node for the new state hash", logFields...)
 
 		// Prepare the node for saving (clear transient state)
-		nextProgress.CurrentStateHash = newStateHash // Set the calculated hash
-		nextProgress.UserID = gameState.PlayerID     // Set the correct player ID
+		nextProgress.CurrentStateHash = nextStateHash // Set the calculated hash
+		nextProgress.UserID = gameState.PlayerID      // Set the correct player ID
 		nextProgress.PublishedStoryID = gameState.PublishedStoryID
 		nextProgress.StoryVariables = make(map[string]interface{})               // Clear transient vars
 		nextProgress.GlobalFlags = clearTransientFlags(nextProgress.GlobalFlags) // Clear transient flags
@@ -544,7 +565,7 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 
 	// 14. Find the next Scene associated with the new state hash
 	var nextSceneID *uuid.UUID
-	nextScene, errScene := s.sceneRepo.FindByStoryAndHash(ctx, gameState.PublishedStoryID, newStateHash) // Ищем сцену по новому хэшу
+	nextScene, errScene := s.sceneRepo.FindByStoryAndHash(ctx, gameState.PublishedStoryID, nextStateHash) // Ищем сцену по новому хэшу
 
 	if errScene == nil {
 		// Scene already exists
@@ -597,7 +618,7 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 			nextNodeProgress, // <<< ИСПОЛЬЗУЕМ nextNodeProgress >>>
 			gameState,        // <<< ПЕРЕДАЕМ gameState >>>
 			madeChoicesInfo,
-			newStateHash,
+			nextStateHash,
 		)
 		if errGenPayload != nil {
 			s.logger.Error("Failed to create generation payload", append(logFields, zap.Error(errGenPayload))...)

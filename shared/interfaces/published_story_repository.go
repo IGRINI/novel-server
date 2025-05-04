@@ -26,30 +26,30 @@ type PublishedStoryRepository interface {
 
 	// SetPublic updates the is_public flag for a story.
 	// Requires userID for ownership check.
-	SetPublic(ctx context.Context, id uuid.UUID, userID uuid.UUID, isPublic bool) error
+	// SetPublic(ctx context.Context, id uuid.UUID, userID uuid.UUID, isPublic bool) error
 
 	// ListPublic retrieves a paginated list of public, non-adult stories using cursor pagination.
-	ListPublic(ctx context.Context, cursor string, limit int) ([]*models.PublishedStory, string, error)
+	// ListPublic(ctx context.Context, cursor string, limit int) ([]*models.PublishedStory, string, error)
 
 	// ListByUserID retrieves a paginated list of stories created by a specific user using cursor pagination.
 	ListByUserID(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*models.PublishedStory, string, error)
 
 	// IncrementLikesCount атомарно увеличивает счетчик лайков для истории.
-	IncrementLikesCount(ctx context.Context, id uuid.UUID) error
+	// IncrementLikesCount(ctx context.Context, id uuid.UUID) error
 
 	// DecrementLikesCount атомарно уменьшает счетчик лайков для истории.
 	// Реализация должна убедиться, что счетчик не уходит ниже нуля.
-	DecrementLikesCount(ctx context.Context, id uuid.UUID) error
+	// DecrementLikesCount(ctx context.Context, id uuid.UUID) error
 
 	// UpdateVisibility updates the visibility of a story.
 	// It ensures the operation is performed by the owner and potentially checks status.
 	UpdateVisibility(ctx context.Context, storyID, userID uuid.UUID, isPublic bool, requiredStatus models.StoryStatus) error
 
 	// ListByIDs retrieves a list of published stories based on their IDs.
-	ListByIDs(ctx context.Context, ids []uuid.UUID) ([]*models.PublishedStory, error)
+	// ListByIDs(ctx context.Context, ids []uuid.UUID) ([]*models.PublishedStory, error)
 
 	// UpdateConfigAndSetup updates the config and setup of a story.
-	UpdateConfigAndSetup(ctx context.Context, id uuid.UUID, config, setup []byte) error
+	// UpdateConfigAndSetup(ctx context.Context, id uuid.UUID, config, setup []byte) error
 
 	// UpdateConfigAndSetupAndStatus updates config, setup and status for a published story.
 	UpdateConfigAndSetupAndStatus(ctx context.Context, id uuid.UUID, config, setup json.RawMessage, status models.StoryStatus) error
@@ -64,14 +64,12 @@ type PublishedStoryRepository interface {
 	MarkStoryAsUnliked(ctx context.Context, storyID uuid.UUID, userID uuid.UUID) error
 
 	// IsStoryLikedByUser checks if a story is liked by a user.
-	IsStoryLikedByUser(ctx context.Context, storyID uuid.UUID, userID uuid.UUID) (bool, error)
+	// IsStoryLikedByUser(ctx context.Context, storyID uuid.UUID, userID uuid.UUID) (bool, error)
 
 	// ListLikedByUser retrieves a paginated list of stories liked by a specific user using cursor pagination.
-	// Returns summaries with progress information.
-	ListLikedByUser(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*models.PublishedStorySummaryWithProgress, string, error)
+	ListLikedByUser(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]models.PublishedStorySummaryWithProgress, string, error)
 
 	// Delete удаляет опубликованную историю и все связанные с ней данные (сцены, прогресс, лайки).
-	// Требует ID истории и ID пользователя для проверки владения.
 	Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
 
 	// CheckLike checks if a story is liked by a user.
@@ -84,16 +82,19 @@ type PublishedStoryRepository interface {
 	CountByStatus(ctx context.Context, status models.StoryStatus) (int, error)
 
 	// ListByUserIDOffset retrieves a paginated list of stories created by a specific user using cursor pagination with offset.
-	ListByUserIDOffset(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.PublishedStory, error)
+	// ListByUserIDOffset(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.PublishedStory, error)
 
 	// ListPublicSummaries получает список публичных историй с пагинацией.
 	ListPublicSummaries(ctx context.Context, userID *uuid.UUID, cursor string, limit int, sortBy string, filterAdult bool) ([]models.PublishedStorySummary, string, error)
 
 	// ListUserSummaries получает список историй пользователя с пагинацией.
-	ListUserSummaries(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error)
+	// ListUserSummaries(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error)
 
 	// ListUserSummariesWithProgress получает список историй пользователя с прогрессом.
 	ListUserSummariesWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummaryWithProgress, string, error)
+
+	// ListUserSummariesOnlyWithProgress получает список историй пользователя ТОЛЬКО с прогрессом.
+	ListUserSummariesOnlyWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]models.PublishedStorySummaryWithProgress, string, error)
 
 	// CheckInitialGenerationStatus проверяет, готовы ли Setup и Первая сцена.
 	CheckInitialGenerationStatus(ctx context.Context, id uuid.UUID) (bool, error)

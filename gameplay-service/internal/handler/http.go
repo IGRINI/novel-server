@@ -145,6 +145,7 @@ func (h *GameplayHandler) RegisterRoutes(router gin.IRouter, generalRL, generati
 		pubGroup := userApiGroup.Group("/published-stories") // Registering directly on userApiGroup
 		{
 			pubGroup.GET("/me", h.listMyPublishedStories) // Path: /published-stories/me
+			pubGroup.GET("/me/progress", h.listMyStoriesWithProgress)
 			pubGroup.GET("/public", h.listPublicPublishedStories)
 
 			storySpecific := pubGroup.Group("/:story_id")

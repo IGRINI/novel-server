@@ -70,7 +70,7 @@ type GameplayService interface {
 	ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStorySummaryDTO, string, error)
 	ListPublicStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStorySummaryDTO, string, error)
 	GetPublishedStoryDetails(ctx context.Context, storyID, userID uuid.UUID) (*PublishedStoryParsedDetailDTO, error)
-	ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, bool, error)
+	ListUserPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error)
 	GetPublishedStoryDetailsWithProgress(ctx context.Context, userID, publishedStoryID uuid.UUID) (*PublishedStorySummaryDTO, error)
 
 	// Core Gameplay methods
@@ -112,6 +112,9 @@ type GameplayService interface {
 
 	// <<< Новый метод для получения историй с прогрессом >>>
 	GetStoriesWithProgress(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]sharedModels.PublishedStorySummaryWithProgress, string, error)
+
+	// <<< НОВЫЙ МЕТОД >>>
+	ListMyStoriesWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStorySummaryDTO, string, error)
 
 	// <<< ДОБАВЛЕНО: Метод для получения прогресса игрока >>>
 	GetPlayerProgress(ctx context.Context, userID, storyID uuid.UUID) (*sharedModels.PlayerProgress, error)
@@ -304,8 +307,8 @@ func (s *gameplayServiceImpl) GetPublishedStoryDetails(ctx context.Context, stor
 }
 
 // ListUserPublishedStories delegates to StoryBrowsingService.
-func (s *gameplayServiceImpl) ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, bool, error) {
-	return s.storyBrowsingService.ListUserPublishedStories(ctx, userID, limit, offset)
+func (s *gameplayServiceImpl) ListUserPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error) {
+	return s.storyBrowsingService.ListUserPublishedStories(ctx, userID, cursor, limit)
 }
 
 // GetPublishedStoryDetailsWithProgress delegates to StoryBrowsingService.
@@ -504,4 +507,10 @@ func (s *gameplayServiceImpl) GetActiveStoryCount(ctx context.Context) (int, err
 		return 0, fmt.Errorf("internal error: story browsing service not available")
 	}
 	return s.storyBrowsingService.GetActiveStoryCount(ctx)
+}
+
+// <<< НОВАЯ РЕАЛИЗАЦИЯ >>>
+// ListMyStoriesWithProgress delegates to StoryBrowsingService.
+func (s *gameplayServiceImpl) ListMyStoriesWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStorySummaryDTO, string, error) {
+	return s.storyBrowsingService.ListMyStoriesWithProgress(ctx, userID, cursor, limit)
 }

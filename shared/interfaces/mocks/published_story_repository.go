@@ -93,24 +93,6 @@ func (_m *PublishedStoryRepository) Create(ctx context.Context, story *models.Pu
 	return r0
 }
 
-// DecrementLikesCount provides a mock function with given fields: ctx, id
-func (_m *PublishedStoryRepository) DecrementLikesCount(ctx context.Context, id uuid.UUID) error {
-	ret := _m.Called(ctx, id)
-
-	if len(ret) == 0 {
-		panic("no return value specified for DecrementLikesCount")
-	}
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID) error); ok {
-		r0 = rf(ctx, id)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
 // Delete provides a mock function with given fields: ctx, id, userID
 func (_m *PublishedStoryRepository) Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
 	ret := _m.Called(ctx, id, userID)
@@ -212,64 +194,6 @@ func (_m *PublishedStoryRepository) IncrementLikesCount(ctx context.Context, id 
 	}
 
 	return r0
-}
-
-// IsStoryLikedByUser provides a mock function with given fields: ctx, storyID, userID
-func (_m *PublishedStoryRepository) IsStoryLikedByUser(ctx context.Context, storyID uuid.UUID, userID uuid.UUID) (bool, error) {
-	ret := _m.Called(ctx, storyID, userID)
-
-	if len(ret) == 0 {
-		panic("no return value specified for IsStoryLikedByUser")
-	}
-
-	var r0 bool
-	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uuid.UUID) (bool, error)); ok {
-		return rf(ctx, storyID, userID)
-	}
-	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uuid.UUID) bool); ok {
-		r0 = rf(ctx, storyID, userID)
-	} else {
-		r0 = ret.Get(0).(bool)
-	}
-
-	if rf, ok := ret.Get(1).(func(context.Context, uuid.UUID, uuid.UUID) error); ok {
-		r1 = rf(ctx, storyID, userID)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
-}
-
-// ListByIDs provides a mock function with given fields: ctx, ids
-func (_m *PublishedStoryRepository) ListByIDs(ctx context.Context, ids []uuid.UUID) ([]*models.PublishedStory, error) {
-	ret := _m.Called(ctx, ids)
-
-	if len(ret) == 0 {
-		panic("no return value specified for ListByIDs")
-	}
-
-	var r0 []*models.PublishedStory
-	var r1 error
-	if rf, ok := ret.Get(0).(func(context.Context, []uuid.UUID) ([]*models.PublishedStory, error)); ok {
-		return rf(ctx, ids)
-	}
-	if rf, ok := ret.Get(0).(func(context.Context, []uuid.UUID) []*models.PublishedStory); ok {
-		r0 = rf(ctx, ids)
-	} else {
-		if ret.Get(0) != nil {
-			r0 = ret.Get(0).([]*models.PublishedStory)
-		}
-	}
-
-	if rf, ok := ret.Get(1).(func(context.Context, []uuid.UUID) error); ok {
-		r1 = rf(ctx, ids)
-	} else {
-		r1 = ret.Error(1)
-	}
-
-	return r0, r1
 }
 
 // ListByUserID provides a mock function with given fields: ctx, userID, cursor, limit
@@ -430,24 +354,6 @@ func (_m *PublishedStoryRepository) SetPublic(ctx context.Context, id uuid.UUID,
 	var r0 error
 	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, uuid.UUID, bool) error); ok {
 		r0 = rf(ctx, id, userID, isPublic)
-	} else {
-		r0 = ret.Error(0)
-	}
-
-	return r0
-}
-
-// UpdateConfigAndSetup provides a mock function with given fields: ctx, id, config, setup
-func (_m *PublishedStoryRepository) UpdateConfigAndSetup(ctx context.Context, id uuid.UUID, config []byte, setup []byte) error {
-	ret := _m.Called(ctx, id, config, setup)
-
-	if len(ret) == 0 {
-		panic("no return value specified for UpdateConfigAndSetup")
-	}
-
-	var r0 error
-	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, []byte, []byte) error); ok {
-		r0 = rf(ctx, id, config, setup)
 	} else {
 		r0 = ret.Error(0)
 	}

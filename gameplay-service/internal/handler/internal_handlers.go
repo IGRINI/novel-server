@@ -66,61 +66,47 @@ func (h *GameplayHandler) listUserDraftsInternal(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// listUserStoriesInternal возвращает список опубликованных историй пользователя (для админки).
-func (h *GameplayHandler) listUserStoriesInternal(c *gin.Context) {
-	log := h.logger.With(zap.String("handler", "listUserStoriesInternal"))
+// -- Internal Handlers --
 
+// listUserStoriesInternal обрабатывает внутренний запрос на получение списка историй пользователя.
+// <<< ИЗМЕНЕНО: Использует курсорную пагинацию >>>
+func (h *GameplayHandler) listUserStoriesInternal(c *gin.Context) {
 	userIDStr := c.Param("user_id")
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		log.Warn("Invalid user ID format", zap.String("user_id", userIDStr), zap.Error(err))
-		c.JSON(http.StatusBadRequest, sharedModels.ErrorResponse{Message: "Invalid user ID format"})
+		h.logger.Warn("Invalid userID in listUserStoriesInternal", zap.String("userID", userIDStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid user ID", sharedModels.ErrBadRequest), h.logger)
 		return
 	}
 
+	// <<< ИЗМЕНЕНО: Получаем cursor и limit >>>
 	limitStr := c.Query("limit")
-	offsetStr := c.Query("offset")
-
-	limit := 20 // Значение по умолчанию
+	cursor := c.Query("cursor")
+	limit := 10
 	if limitStr != "" {
-		if l, parseErr := strconv.Atoi(limitStr); parseErr == nil && l > 0 {
-			limit = l
+		parsedLimit, err := strconv.Atoi(limitStr)
+		if err == nil && parsedLimit > 0 && parsedLimit <= 100 {
+			limit = parsedLimit
 		} else {
-			log.Warn("Invalid limit parameter received, using default", zap.String("limit", limitStr), zap.Error(parseErr))
-		}
-	}
-	offset := 0
-	if offsetStr != "" {
-		if o, parseErr := strconv.Atoi(offsetStr); parseErr == nil && o >= 0 {
-			offset = o
-		} else {
-			log.Warn("Invalid offset parameter received, using default", zap.String("offset", offsetStr), zap.Error(parseErr))
+			h.logger.Warn("Invalid limit in listUserStoriesInternal", zap.String("limit", limitStr))
+			// Продолжаем с лимитом по умолчанию
 		}
 	}
 
-	log = log.With(zap.Stringer("userID", userID), zap.Int("limit", limit), zap.Int("offset", offset))
-	log.Info("Internal request for user published stories")
-
-	stories, hasMore, err := h.service.ListUserPublishedStories(c.Request.Context(), userID, limit, offset)
+	// <<< ИЗМЕНЕНО: Вызываем обновленный метод сервиса >>>
+	stories, nextCursor, err := h.service.ListUserPublishedStories(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
-		log.Error("Failed to list user published stories internally", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, sharedModels.ErrorResponse{Message: "Failed to retrieve published stories"})
+		h.logger.Error("Error listing user stories internally", zap.String("userID", userID.String()), zap.Error(err))
+		handleServiceError(c, err, h.logger)
 		return
 	}
 
-	// Отдаем только данные, без курсора. Клиент должен сам определить пагинацию.
-	// Можно было бы создать отдельную DTO для этого ответа.
-	type InternalListResponse struct {
-		Data    interface{} `json:"data"`
-		HasMore bool        `json:"has_more"`
+	// <<< ИЗМЕНЕНО: Используем PaginatedResponse >>>
+	resp := PaginatedResponse{
+		Data:       stories,
+		NextCursor: nextCursor,
 	}
-
-	response := InternalListResponse{
-		Data:    stories, // Сервис возвращает []*PublishedStory
-		HasMore: hasMore,
-	}
-
-	c.JSON(http.StatusOK, response)
+	c.JSON(http.StatusOK, resp)
 }
 
 // <<< ДОБАВЛЕНО: Обработчик для обновления черновика >>>

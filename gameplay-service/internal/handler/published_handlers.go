@@ -803,3 +803,70 @@ func (h *GameplayHandler) retrySpecificGameStateGeneration(c *gin.Context) {
 	log.Info("Specific game state generation retry request accepted")
 	c.Status(http.StatusAccepted)
 }
+
+// <<< НАЧАЛО НОВОГО ОБРАБОТЧИКА >>>
+// listMyStoriesWithProgress получает список ОПУБЛИКОВАННЫХ историй текущего пользователя ТОЛЬКО С ПРОГРЕССОМ.
+func (h *GameplayHandler) listMyStoriesWithProgress(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		// Ошибка уже обработана
+		return
+	}
+
+	limitStr := c.Query("limit")
+	cursor := c.Query("cursor")
+
+	limit := 10
+	if limitStr != "" {
+		parsedLimit, err := strconv.Atoi(limitStr)
+		if err != nil || parsedLimit <= 0 {
+			h.logger.Warn("Invalid limit parameter received in listMyStoriesWithProgress", zap.String("limit", limitStr), zap.Error(err))
+			handleServiceError(c, fmt.Errorf("%w: invalid 'limit' parameter", sharedModels.ErrBadRequest), h.logger)
+			return
+		}
+		if parsedLimit > 100 {
+			parsedLimit = 100
+		}
+		limit = parsedLimit
+	}
+
+	log := h.logger.With(
+		zap.String("userID", userID.String()),
+		zap.Int("limit", limit),
+		zap.String("cursor", cursor),
+	)
+	log.Debug("Fetching my published stories with progress")
+
+	// <<< ИЗМЕНЕНО: Вызываем новый метод сервиса >>>
+	storiesDTO, nextCursor, err := h.service.ListMyStoriesWithProgress(c.Request.Context(), userID, cursor, limit)
+	if err != nil {
+		log.Error("Error listing my published stories with progress from service", zap.Error(err))
+		handleServiceError(c, err, h.logger)
+		return
+	}
+
+	log.Debug("Service ListMyStoriesWithProgress returned",
+		zap.Int("dto_count", len(storiesDTO)),
+		zap.Stringp("next_cursor", &nextCursor),
+	)
+
+	// Конвертация из DTO сервиса в sharedModels для ответа (если необходимо, но DTO уже подходит)
+	// В данном случае PublishedStorySummaryDTO подходит для ответа, конвертация не нужна.
+
+	resp := PaginatedResponse{
+		Data:       storiesDTO, // <<< Используем DTO из сервиса напрямую >>>
+		NextCursor: nextCursor,
+	}
+
+	log.Debug("Successfully fetched my published stories with progress",
+		zap.Int("count", len(storiesDTO)),
+		zap.Bool("hasNext", nextCursor != ""),
+	)
+
+	h.logger.Debug("Data prepared for JSON response in listMyStoriesWithProgress",
+		zap.Any("response_data", resp))
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// <<< КОНЕЦ НОВОГО ОБРАБОТЧИКА >>>

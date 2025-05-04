@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"novel-server/shared/constants"
@@ -71,16 +72,35 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 		}
 
 		if parseErr == nil {
-			jsonToParse := utils.ExtractJsonContent(rawGeneratedText)
-			if jsonToParse == "" {
+			// Улучшенная обработка JSON: извлечение и тщательная валидация
+			jsonToParse, extractErr := extractAndCleanJSON(rawGeneratedText)
+			if extractErr != nil {
+				logWithState.Error("SCENE PARSING ERROR: Failed to extract valid JSON from Scene/GameOver text",
+					zap.String("raw_text_snippet", utils.StringShort(rawGeneratedText, 100)),
+					zap.Error(extractErr),
+				)
+				parseErr = fmt.Errorf("failed to extract valid JSON block: %w", extractErr)
+			} else if jsonToParse == "" {
 				logWithState.Error("SCENE PARSING ERROR: Could not extract JSON from Scene/GameOver text (fetched)",
 					zap.String("raw_text_snippet", utils.StringShort(rawGeneratedText, 100)),
 				)
 				parseErr = errors.New("failed to extract JSON block from Scene/GameOver text")
 			} else {
+				// Добавляем логирование для проверки содержимого JSON перед парсингом
+				logWithState.Debug("JSON to parse (length)", zap.Int("json_length", len(jsonToParse)))
+				if len(jsonToParse) < 500 {
+					logWithState.Debug("JSON to parse (full)", zap.String("json", jsonToParse))
+				} else {
+					logWithState.Debug("JSON to parse (trimmed)",
+						zap.String("json_start", jsonToParse[0:200]),
+						zap.String("json_end", jsonToParse[len(jsonToParse)-200:]),
+					)
+				}
+
 				sceneContentJSON := json.RawMessage(jsonToParse)
 				var endingText *string
 
+				// Глубокая валидация структуры JSON перед сохранением сцены
 				var tempSceneContentData interface{}
 				if err := json.Unmarshal(sceneContentJSON, &tempSceneContentData); err != nil {
 					logWithState.Error("INVALID SCENE JSON: Failed to parse Scene/GameOver JSON content before saving (fetched)",
@@ -98,242 +118,309 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 						)
 						parseErr = errors.New("parsed scene JSON is not an object")
 					} else {
-						choicesData, keyExists := contentMap["ch"]
-						if !keyExists {
-							logWithState.Error("SCENE STRUCTURE ERROR: Missing 'ch' key in scene JSON",
-								zap.Any("parsed_keys", utils.GetMapKeys(contentMap)),
-							)
-							parseErr = errors.New("missing 'ch' key in scene JSON")
-						} else {
-							_, isArray := choicesData.([]interface{})
-							if !isArray {
-								logWithState.Error("SCENE STRUCTURE ERROR: Value for 'ch' key is not an array",
-									zap.String("type_found", fmt.Sprintf("%T", choicesData)),
-								)
-								parseErr = errors.New("value for 'ch' key is not an array")
-							} else {
-								logWithState.Info("Scene JSON structure validated successfully (contains 'ch' array)")
+						// Выводим в лог все ключи для отладки
+						keys := utils.GetMapKeys(contentMap)
+						logWithState.Debug("Parsed JSON keys", zap.Strings("keys", keys))
 
-								if notification.PromptType == sharedModels.PromptTypeNovelGameOverCreator {
-									var endingContent struct {
-										EndingText string `json:"et"`
+						// Проверка наличия необходимых полей в зависимости от типа сцены
+						if notification.PromptType == sharedModels.PromptTypeNovelGameOverCreator {
+							// Для Game Over необходимо проверить наличие "et" (ending text)
+							etData, etExists := contentMap["et"]
+							if !etExists {
+								// Для game over отсутствие ch допустимо, если есть et
+								logWithState.Warn("Game Over JSON missing 'et' field, but might have 'ch' instead",
+									zap.Any("parsed_keys", keys),
+								)
+
+								// Проверим наличие "ch" как альтернативы
+								choicesData, keyExists := contentMap["ch"]
+								if !keyExists {
+									logWithState.Error("SCENE STRUCTURE ERROR: Game Over JSON missing both 'et' and 'ch' keys",
+										zap.Any("parsed_keys", keys),
+									)
+									parseErr = errors.New("missing required keys in game over JSON")
+								} else {
+									_, isArray := choicesData.([]interface{})
+									if !isArray {
+										logWithState.Error("SCENE STRUCTURE ERROR: Value for 'ch' key is not an array",
+											zap.String("type_found", fmt.Sprintf("%T", choicesData)),
+										)
+										parseErr = errors.New("value for 'ch' key is not an array")
+									} else {
+										logWithState.Info("Game Over JSON structure validated successfully (contains 'ch' array)")
 									}
-									if err := json.Unmarshal([]byte(jsonToParse), &endingContent); err != nil {
-										p.logger.Error("Failed to parse EndingText from game over JSON (optional field)",
+								}
+							} else {
+								// Проверка типа "et"
+								_, isString := etData.(string)
+								if !isString {
+									logWithState.Warn("Game Over 'et' field is not a string",
+										zap.String("type_found", fmt.Sprintf("%T", etData)),
+									)
+								} else {
+									logWithState.Info("Game Over JSON structure validated successfully (contains 'et' field)")
+								}
+							}
+						} else {
+							// Для обычной сцены (не game over) необходимо проверить наличие "ch"
+							choicesData, keyExists := contentMap["ch"]
+							if !keyExists {
+								logWithState.Error("SCENE STRUCTURE ERROR: Missing 'ch' key in scene JSON",
+									zap.Any("parsed_keys", utils.GetMapKeys(contentMap)),
+								)
+
+								// Дополнительная проверка - посмотрим, может быть есть другие ключи с похожими именами
+								similarKeys := []string{}
+								for key := range contentMap {
+									if strings.Contains(key, "ch") || strings.Contains(key, "choice") ||
+										strings.Contains(key, "choices") || strings.Contains(key, "blocks") {
+										similarKeys = append(similarKeys, key)
+									}
+								}
+								if len(similarKeys) > 0 {
+									logWithState.Warn("Found similar keys that might contain choices",
+										zap.Strings("similar_keys", similarKeys))
+
+									// Можно попробовать исправить JSON, переименовав ключ (более продвинутая логика)
+									// Это было бы здесь, если требуется
+								}
+
+								parseErr = errors.New("missing 'ch' key in scene JSON")
+							} else {
+								_, isArray := choicesData.([]interface{})
+								if !isArray {
+									logWithState.Error("SCENE STRUCTURE ERROR: Value for 'ch' key is not an array",
+										zap.String("type_found", fmt.Sprintf("%T", choicesData)),
+									)
+									parseErr = errors.New("value for 'ch' key is not an array")
+								} else {
+									logWithState.Info("Scene JSON structure validated successfully (contains 'ch' array)")
+								}
+							}
+						}
+
+						// Извлечение endingText для game over
+						if notification.PromptType == sharedModels.PromptTypeNovelGameOverCreator && parseErr == nil {
+							var endingContent struct {
+								EndingText string `json:"et"`
+							}
+							if err := json.Unmarshal([]byte(jsonToParse), &endingContent); err != nil {
+								p.logger.Error("Failed to parse EndingText from game over JSON (optional field)",
+									zap.String("task_id", taskID),
+									zap.String("published_story_id", publishedStoryID.String()),
+									zap.Error(err),
+									zap.String("json_to_parse", jsonToParse),
+								)
+							} else {
+								endingText = &endingContent.EndingText
+								p.logger.Info("Extracted EndingText", zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()))
+							}
+						}
+
+						// Продолжение обработки, если нет ошибок
+						if parseErr == nil {
+							scene := &sharedModels.StoryScene{
+								ID:               uuid.New(),
+								PublishedStoryID: publishedStoryID,
+								StateHash:        notification.StateHash,
+								Content:          sceneContentJSON,
+								CreatedAt:        time.Now().UTC(),
+							}
+
+							upsertErr := p.sceneRepo.Upsert(dbCtx, scene)
+							if upsertErr != nil {
+								p.logger.Error("CRITICAL ERROR: Failed to upsert scene",
+									zap.String("task_id", taskID),
+									zap.String("published_story_id", publishedStoryID.String()),
+									zap.String("state_hash", notification.StateHash),
+									zap.Error(upsertErr),
+								)
+								parseErr = fmt.Errorf("error upserting scene for PublishedStory %s, Hash %s: %w", publishedStoryID, notification.StateHash, upsertErr)
+							} else {
+								p.logger.Info("Scene upserted successfully",
+									zap.String("task_id", taskID),
+									zap.String("published_story_id", publishedStoryID.String()),
+									zap.String("state_hash", notification.StateHash),
+									zap.String("scene_id", scene.ID.String()),
+								)
+
+								var finalStatusToSet *sharedModels.StoryStatus
+								var currentStoryState *sharedModels.PublishedStory
+								setIsFirstScenePendingToFalse := false
+
+								if notification.StateHash == sharedModels.InitialStateHash {
+									p.logger.Info("Processing result for the FIRST scene", zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()))
+									setIsFirstScenePendingToFalse = true
+
+									var errState error
+									currentStoryState, errState = p.publishedRepo.GetByID(dbCtx, publishedStoryID)
+									if errState != nil {
+										p.logger.Error("CRITICAL ERROR: Failed to get current story state after first scene generation", zap.Error(errState), zap.String("publishedStoryID", publishedStoryID.String()))
+									} else {
+										p.logger.Info("Current story state before final check",
+											zap.String("publishedStoryID", publishedStoryID.String()),
+											zap.Bool("is_first_scene_pending", currentStoryState.IsFirstScenePending),
+											zap.Bool("are_images_pending", currentStoryState.AreImagesPending),
+										)
+										if !currentStoryState.AreImagesPending {
+											p.logger.Info("First scene generated AND images are ready (or not needed). Setting status to Ready.", zap.String("publishedStoryID", publishedStoryID.String()))
+											readyStatus := sharedModels.StatusReady
+											finalStatusToSet = &readyStatus
+
+											// <<< НАЧАЛО: Отправка Push уведомления о готовности истории >>>
+											p.publishPushNotificationForStoryReady(ctx, currentStoryState)
+											// <<< КОНЕЦ: Отправка Push уведомления о готовности истории >>>
+										} else {
+											p.logger.Info("First scene generated, but images are still pending. Status remains unchanged for now.", zap.String("publishedStoryID", publishedStoryID.String()))
+										}
+									}
+								}
+
+								if finalStatusToSet != nil || setIsFirstScenePendingToFalse {
+									statusToUpdate := sharedModels.StatusReady // По умолчанию Ready, если finalStatusToSet установлен
+									if setIsFirstScenePendingToFalse && finalStatusToSet == nil {
+										// Первая сцена сгенерирована, но картинки еще ожидаются.
+										// Всегда ставим FirstScenePending в этом случае
+										statusToUpdate = sharedModels.StatusFirstScenePending
+										p.logger.Info("First scene done, images pending. Setting status to FirstScenePending.", zap.String("publishedStoryID", publishedStoryID.String()))
+									} else if finalStatusToSet != nil {
+										statusToUpdate = *finalStatusToSet
+									}
+
+									currentAreImagesPending := true // Знаем, что картинки еще ожидаются, если finalStatusToSet == nil
+									if finalStatusToSet != nil {    // Если finalStatusToSet != nil, значит картинки готовы
+										currentAreImagesPending = false
+									}
+
+									errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, statusToUpdate, false, currentAreImagesPending, nil) // isFirstScenePending всегда false здесь
+									if errUpdate != nil {
+										p.logger.Error("CRITICAL ERROR (Data Inconsistency!): Scene upserted, but failed to update PublishedStory status/flags",
 											zap.String("task_id", taskID),
 											zap.String("published_story_id", publishedStoryID.String()),
-											zap.Error(err),
-											zap.String("json_to_parse", jsonToParse),
+											zap.String("state_hash", notification.StateHash),
+											zap.String("scene_id", scene.ID.String()),
+											zap.Error(errUpdate),
 										)
 									} else {
-										endingText = &endingContent.EndingText
-										p.logger.Info("Extracted EndingText", zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()))
+										p.logger.Info("PublishedStory status/flags updated after scene generation",
+											zap.String("task_id", taskID),
+											zap.String("published_story_id", publishedStoryID.String()),
+											zap.String("updated_status", string(statusToUpdate)),
+											zap.Bool("is_first_scene_pending", false),
+											zap.Bool("are_images_pending", currentAreImagesPending),
+										)
 									}
 								}
 
-								scene := &sharedModels.StoryScene{
-									ID:               uuid.New(),
-									PublishedStoryID: publishedStoryID,
-									StateHash:        notification.StateHash,
-									Content:          sceneContentJSON,
-									CreatedAt:        time.Now().UTC(),
-								}
-
-								upsertErr := p.sceneRepo.Upsert(dbCtx, scene)
-								if upsertErr != nil {
-									p.logger.Error("CRITICAL ERROR: Failed to upsert scene",
-										zap.String("task_id", taskID),
-										zap.String("published_story_id", publishedStoryID.String()),
-										zap.String("state_hash", notification.StateHash),
-										zap.Error(upsertErr),
-									)
-									parseErr = fmt.Errorf("error upserting scene for PublishedStory %s, Hash %s: %w", publishedStoryID, notification.StateHash, upsertErr)
-								} else {
-									p.logger.Info("Scene upserted successfully",
-										zap.String("task_id", taskID),
-										zap.String("published_story_id", publishedStoryID.String()),
-										zap.String("state_hash", notification.StateHash),
-										zap.String("scene_id", scene.ID.String()),
-									)
-
-									var finalStatusToSet *sharedModels.StoryStatus
-									var currentStoryState *sharedModels.PublishedStory
-									setIsFirstScenePendingToFalse := false
-
-									if notification.StateHash == sharedModels.InitialStateHash {
-										p.logger.Info("Processing result for the FIRST scene", zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()))
-										setIsFirstScenePendingToFalse = true
-
-										var errState error
-										currentStoryState, errState = p.publishedRepo.GetByID(dbCtx, publishedStoryID)
-										if errState != nil {
-											p.logger.Error("CRITICAL ERROR: Failed to get current story state after first scene generation", zap.Error(errState), zap.String("publishedStoryID", publishedStoryID.String()))
-										} else {
-											p.logger.Info("Current story state before final check",
-												zap.String("publishedStoryID", publishedStoryID.String()),
-												zap.Bool("is_first_scene_pending", currentStoryState.IsFirstScenePending),
-												zap.Bool("are_images_pending", currentStoryState.AreImagesPending),
-											)
-											if !currentStoryState.AreImagesPending {
-												p.logger.Info("First scene generated AND images are ready (or not needed). Setting status to Ready.", zap.String("publishedStoryID", publishedStoryID.String()))
-												readyStatus := sharedModels.StatusReady
-												finalStatusToSet = &readyStatus
-
-												// <<< НАЧАЛО: Отправка Push уведомления о готовности истории >>>
-												p.publishPushNotificationForStoryReady(ctx, currentStoryState)
-												// <<< КОНЕЦ: Отправка Push уведомления о готовности истории >>>
-											} else {
-												p.logger.Info("First scene generated, but images are still pending. Status remains unchanged for now.", zap.String("publishedStoryID", publishedStoryID.String()))
-											}
-										}
-									}
-
-									if finalStatusToSet != nil || setIsFirstScenePendingToFalse {
-										statusToUpdate := sharedModels.StatusReady // По умолчанию Ready, если finalStatusToSet установлен
-										if setIsFirstScenePendingToFalse && finalStatusToSet == nil {
-											// Первая сцена сгенерирована, но картинки еще ожидаются.
-											// Всегда ставим FirstScenePending в этом случае
-											statusToUpdate = sharedModels.StatusFirstScenePending
-											p.logger.Info("First scene done, images pending. Setting status to FirstScenePending.", zap.String("publishedStoryID", publishedStoryID.String()))
-										} else if finalStatusToSet != nil {
-											statusToUpdate = *finalStatusToSet
-										}
-
-										currentAreImagesPending := true // Знаем, что картинки еще ожидаются, если finalStatusToSet == nil
-										if finalStatusToSet != nil {    // Если finalStatusToSet != nil, значит картинки готовы
-											currentAreImagesPending = false
-										}
-
-										errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, statusToUpdate, false, currentAreImagesPending, nil) // isFirstScenePending всегда false здесь
-										if errUpdate != nil {
-											p.logger.Error("CRITICAL ERROR (Data Inconsistency!): Scene upserted, but failed to update PublishedStory status/flags",
-												zap.String("task_id", taskID),
-												zap.String("published_story_id", publishedStoryID.String()),
-												zap.String("state_hash", notification.StateHash),
-												zap.String("scene_id", scene.ID.String()),
-												zap.Error(errUpdate),
-											)
-										} else {
-											p.logger.Info("PublishedStory status/flags updated after scene generation",
-												zap.String("task_id", taskID),
-												zap.String("published_story_id", publishedStoryID.String()),
-												zap.String("updated_status", string(statusToUpdate)),
-												zap.Bool("is_first_scene_pending", false),
-												zap.Bool("are_images_pending", currentAreImagesPending),
-											)
-										}
-									}
-
-									if notification.GameStateID != "" {
-										gameStateID, errParse := uuid.Parse(notification.GameStateID)
-										if errParse != nil {
-											p.logger.Error("ERROR: Failed to parse GameStateID from notification",
+								if notification.GameStateID != "" {
+									gameStateID, errParse := uuid.Parse(notification.GameStateID)
+									if errParse != nil {
+										p.logger.Error("ERROR: Failed to parse GameStateID from notification",
+											zap.String("task_id", taskID),
+											zap.String("game_state_id", notification.GameStateID),
+											zap.Error(errParse),
+										)
+									} else {
+										gameState, errGetState := p.playerGameStateRepo.GetByID(ctx, gameStateID)
+										if errGetState != nil {
+											p.logger.Error("ERROR: Failed to get PlayerGameState by ID",
 												zap.String("task_id", taskID),
 												zap.String("game_state_id", notification.GameStateID),
-												zap.Error(errParse),
+												zap.Error(errGetState),
 											)
 										} else {
-											gameState, errGetState := p.playerGameStateRepo.GetByID(ctx, gameStateID)
-											if errGetState != nil {
-												p.logger.Error("ERROR: Failed to get PlayerGameState by ID",
+											if notification.PromptType == sharedModels.PromptTypeNovelGameOverCreator {
+												gameState.PlayerStatus = sharedModels.PlayerStatusCompleted
+												gameState.EndingText = endingText
+												now := time.Now().UTC()
+												gameState.CompletedAt = sql.NullTime{Time: now, Valid: true}
+												gameState.CurrentSceneID = uuid.NullUUID{UUID: scene.ID, Valid: true}
+											} else {
+												gameState.PlayerStatus = sharedModels.PlayerStatusPlaying
+												gameState.CurrentSceneID = uuid.NullUUID{UUID: scene.ID, Valid: true}
+											}
+											gameState.ErrorDetails = nil
+											gameState.LastActivityAt = time.Now().UTC()
+
+											if _, errSaveState := p.playerGameStateRepo.Save(ctx, gameState); errSaveState != nil {
+												p.logger.Error("ERROR: Failed to save updated PlayerGameState",
 													zap.String("task_id", taskID),
 													zap.String("game_state_id", notification.GameStateID),
-													zap.Error(errGetState),
+													zap.Error(errSaveState),
 												)
 											} else {
-												if notification.PromptType == sharedModels.PromptTypeNovelGameOverCreator {
-													gameState.PlayerStatus = sharedModels.PlayerStatusCompleted
-													gameState.EndingText = endingText
-													now := time.Now().UTC()
-													gameState.CompletedAt = sql.NullTime{Time: now, Valid: true}
-													gameState.CurrentSceneID = uuid.NullUUID{UUID: scene.ID, Valid: true}
-												} else {
-													gameState.PlayerStatus = sharedModels.PlayerStatusPlaying
-													gameState.CurrentSceneID = uuid.NullUUID{UUID: scene.ID, Valid: true}
-												}
-												gameState.ErrorDetails = nil
-												gameState.LastActivityAt = time.Now().UTC()
+												p.logger.Info("PlayerGameState updated successfully",
+													zap.String("task_id", taskID),
+													zap.String("game_state_id", notification.GameStateID),
+													zap.String("new_player_status", string(gameState.PlayerStatus)),
+												)
 
-												if _, errSaveState := p.playerGameStateRepo.Save(ctx, gameState); errSaveState != nil {
-													p.logger.Error("ERROR: Failed to save updated PlayerGameState",
-														zap.String("task_id", taskID),
-														zap.String("game_state_id", notification.GameStateID),
-														zap.Error(errSaveState),
-													)
-												} else {
-													p.logger.Info("PlayerGameState updated successfully",
-														zap.String("task_id", taskID),
-														zap.String("game_state_id", notification.GameStateID),
-														zap.String("new_player_status", string(gameState.PlayerStatus)),
-													)
-
-													// Обновляем current_scene_summary в PlayerProgress
-													if gameState.PlayerProgressID != uuid.Nil {
-														progressID := gameState.PlayerProgressID
-														var sceneSummaryContent struct {
-															Summary *string `json:"ss"`
+												// Обновляем current_scene_summary в PlayerProgress
+												if gameState.PlayerProgressID != uuid.Nil {
+													progressID := gameState.PlayerProgressID
+													var sceneSummaryContent struct {
+														Summary *string `json:"ss"`
+													}
+													if errUnmarshal := json.Unmarshal(sceneContentJSON, &sceneSummaryContent); errUnmarshal != nil {
+														p.logger.Warn("Failed to unmarshal scene JSON to extract summary (ss field)",
+															zap.String("task_id", taskID),
+															zap.String("game_state_id", notification.GameStateID),
+															zap.Error(errUnmarshal),
+														)
+													} else if sceneSummaryContent.Summary != nil {
+														updates := map[string]interface{}{
+															"current_scene_summary": *sceneSummaryContent.Summary,
 														}
-														if errUnmarshal := json.Unmarshal(sceneContentJSON, &sceneSummaryContent); errUnmarshal != nil {
-															p.logger.Warn("Failed to unmarshal scene JSON to extract summary (ss field)",
+														if errUpdateProgress := p.playerProgressRepo.UpdateFields(ctx, progressID, updates); errUpdateProgress != nil {
+															p.logger.Error("ERROR: Failed to update current_scene_summary in PlayerProgress",
 																zap.String("task_id", taskID),
-																zap.String("game_state_id", notification.GameStateID),
-																zap.Error(errUnmarshal),
+																zap.String("progress_id", progressID.String()),
+																zap.Error(errUpdateProgress),
 															)
-														} else if sceneSummaryContent.Summary != nil {
-															updates := map[string]interface{}{
-																"current_scene_summary": *sceneSummaryContent.Summary,
-															}
-															if errUpdateProgress := p.playerProgressRepo.UpdateFields(ctx, progressID, updates); errUpdateProgress != nil {
-																p.logger.Error("ERROR: Failed to update current_scene_summary in PlayerProgress",
-																	zap.String("task_id", taskID),
-																	zap.String("progress_id", progressID.String()),
-																	zap.Error(errUpdateProgress),
-																)
-															} else {
-																p.logger.Info("PlayerProgress current_scene_summary updated successfully",
-																	zap.String("task_id", taskID),
-																	zap.String("progress_id", progressID.String()),
-																)
-															}
-														}
-													}
-
-													// <<< ПРАВИЛЬНОЕ МЕСТО для отправки WebSocket и Push >>>
-													// Получаем актуальное состояние истории для WebSocket
-													finalPubStory, errGetStory := p.publishedRepo.GetByID(dbCtx, publishedStoryID)
-													if errGetStory != nil {
-														p.logger.Error("Failed to get PublishedStory for WebSocket update after success", zap.String("task_id", taskID), zap.Error(errGetStory))
-													} else {
-														// Отправляем WebSocket уведомление
-														wsEvent := sharedModels.ClientStoryUpdate{
-															ID:         publishedStoryID.String(),
-															UserID:     finalPubStory.UserID.String(),
-															UpdateType: sharedModels.UpdateTypeStory,
-															Status:     string(finalPubStory.Status),
-															SceneID:    stringRef(scene.ID.String()),
-															StateHash:  notification.StateHash,
-															EndingText: endingText,
-														}
-														wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
-														if errWs := p.clientPub.PublishClientUpdate(wsCtx, wsEvent); errWs != nil {
-															p.logger.Error("Error sending ClientStoryUpdate (Scene Success)", zap.String("task_id", taskID), zap.Error(errWs))
 														} else {
-															p.logger.Info("ClientStoryUpdate sent (Scene Success)", zap.String("task_id", taskID), zap.String("story_id", publishedStoryID.String()), zap.String("status", wsEvent.Status))
+															p.logger.Info("PlayerProgress current_scene_summary updated successfully",
+																zap.String("task_id", taskID),
+																zap.String("progress_id", progressID.String()),
+															)
 														}
-														wsCancel() // Закрываем контекст для WebSocket
 													}
-
-													// Отправляем Push уведомление (используя gameState, который мы обновили)
-													p.publishPushNotificationForScene(ctx, gameState, scene, publishedStoryID)
 												}
+
+												// <<< ПРАВИЛЬНОЕ МЕСТО для отправки WebSocket и Push >>>
+												// Получаем актуальное состояние истории для WebSocket
+												finalPubStory, errGetStory := p.publishedRepo.GetByID(dbCtx, publishedStoryID)
+												if errGetStory != nil {
+													p.logger.Error("Failed to get PublishedStory for WebSocket update after success", zap.String("task_id", taskID), zap.Error(errGetStory))
+												} else {
+													// Отправляем WebSocket уведомление
+													wsEvent := sharedModels.ClientStoryUpdate{
+														ID:         publishedStoryID.String(),
+														UserID:     finalPubStory.UserID.String(),
+														UpdateType: sharedModels.UpdateTypeStory,
+														Status:     string(finalPubStory.Status),
+														SceneID:    stringRef(scene.ID.String()),
+														StateHash:  notification.StateHash,
+														EndingText: endingText,
+													}
+													wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+													if errWs := p.clientPub.PublishClientUpdate(wsCtx, wsEvent); errWs != nil {
+														p.logger.Error("Error sending ClientStoryUpdate (Scene Success)", zap.String("task_id", taskID), zap.Error(errWs))
+													} else {
+														p.logger.Info("ClientStoryUpdate sent (Scene Success)", zap.String("task_id", taskID), zap.String("story_id", publishedStoryID.String()), zap.String("status", wsEvent.Status))
+													}
+													wsCancel() // Закрываем контекст для WebSocket
+												}
+
+												// Отправляем Push уведомление (используя gameState, который мы обновили)
+												p.publishPushNotificationForScene(ctx, gameState, scene, publishedStoryID)
 											}
 										}
-									} else {
-										p.logger.Warn("GameStateID missing in notification, player status not updated.",
-											zap.String("task_id", taskID),
-											zap.String("prompt_type", string(notification.PromptType)),
-										)
 									}
+								} else {
+									p.logger.Warn("GameStateID missing in notification, player status not updated.",
+										zap.String("task_id", taskID),
+										zap.String("prompt_type", string(notification.PromptType)),
+									)
 								}
 							}
 						}
@@ -736,3 +823,42 @@ func (p *NotificationProcessor) publishPushNotificationForStoryReady(ctx context
 }
 
 // <<< КОНЕЦ: Новая функция для отправки Push уведомлений о готовности истории >>>
+
+// extractAndCleanJSON извлекает валидный JSON из текста и проверяет его структуру
+func extractAndCleanJSON(rawText string) (string, error) {
+	// Сначала используем встроенную функцию ExtractJsonContent
+	jsonStr := utils.ExtractJsonContent(rawText)
+	if jsonStr == "" {
+		return "", errors.New("no JSON structure found in generated text")
+	}
+
+	// Проверяем, что извлеченный JSON валидный
+	var testParse interface{}
+	if err := json.Unmarshal([]byte(jsonStr), &testParse); err != nil {
+		return "", fmt.Errorf("extracted JSON is not valid: %w", err)
+	}
+
+	// Проверяем, что это объект
+	contentMap, isMap := testParse.(map[string]interface{})
+	if !isMap {
+		return "", errors.New("extracted JSON is not an object")
+	}
+
+	// Базовая проверка на правильность структуры
+	requiredKeys := []string{"sssf", "fd", "vis"}
+	missingKeys := []string{}
+
+	for _, key := range requiredKeys {
+		if _, exists := contentMap[key]; !exists {
+			missingKeys = append(missingKeys, key)
+		}
+	}
+
+	if len(missingKeys) > 0 {
+		// Используем zap logger вместо стандартного log
+		zap.L().Warn("JSON missing some recommended keys", zap.Strings("missing_keys", missingKeys))
+	}
+
+	// Возвращаем валидный JSON
+	return jsonStr, nil
+}

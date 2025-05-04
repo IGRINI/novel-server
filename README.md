@@ -454,10 +454,10 @@
     *   Query параметры:
         *   `limit` (опционально, int, default=10, max=100).
         *   `cursor` (опционально, string).
-    *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`.
+    *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`. Структура ответа **аналогична** `GET /api/v1/published-stories/me`, но содержит только истории, где у пользователя есть сохранения.
         ```json
         {
-          "data": [ // (обязательно, array) Массив может быть пустым []
+          "data": [ // (обязательно, array)
             {
               "id": "uuid-string", // (обязательно, string, UUID)
               "title": "string", // (обязательно, string)
@@ -467,11 +467,11 @@
               "published_at": "timestamp-string", // (обязательно, string, timestamp)
               "is_adult_content": false, // (обязательно, boolean)
               "likes_count": 123, // (обязательно, integer >= 0)
-              "is_liked": true, // (обязательно, boolean) Лайкнул ли *текущий* пользователь
-              "has_player_progress": false, // (обязательно, boolean) Есть ли у *текущего* пользователя сохранения
-              "status": "ready | error | setup_pending | generating_scene | ...", // (обязательно, string) Текущий статус истории
+              "is_liked": true, // (обязательно, boolean)
+              "has_player_progress": true, // (обязательно, boolean) Всегда true для этого эндпоинта
+              "status": "ready | error | ...", // (обязательно, string)
               "is_public": true, // (обязательно, boolean)
-              "cover_image_url": "https://.../history_preview_...jpg | null" // (опционально, string URL или null) Поле может отсутствовать, если null (`omitempty`)
+              "cover_image_url": "https://... | null" // (опционально, string URL или null, поле может отсутствовать)
             }
             /* ... */
           ],
@@ -803,6 +803,76 @@
         *   `401 Unauthorized`: Невалидный токен.
         *   `404 Not Found`: Опубликованная история не найдена.
         *   `409 Conflict` (`{"code": "SAVE_SLOT_EXISTS", ...}` | `{"code": "STORY_NOT_READY", ...}`): Слот сохранения уже существует для этого пользователя/истории, или история еще не готова к игре.
+        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
+
+*   **`GET /api/v1/published-stories/me/progress`**
+    *   Описание: Получение списка **своих** опубликованных историй, **только тех, в которых есть прогресс** (т.е. существует хотя бы одно сохранение).
+    *   Аутентификация: **Требуется.**
+    *   Query параметры:
+        *   `limit` (опционально, int, default=10, max=100).
+        *   `cursor` (опционально, string).
+    *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`. Структура ответа **аналогична** `GET /api/v1/published-stories/me`, но содержит только истории, где у пользователя есть сохранения.
+        ```json
+        {
+          "data": [
+            {
+              "id": "uuid-string",
+              "title": "string",
+              "short_description": "string | null",
+              "author_id": "uuid-string",
+              "author_name": "string",
+              "published_at": "timestamp-string",
+              "is_adult_content": false,
+              "likes_count": 123,
+              "is_liked": true,
+              "has_player_progress": true, // Всегда true для этого эндпоинта
+              "status": "ready | error | ...",
+              "is_public": true,
+              "cover_image_url": "https://... | null"
+            }
+            /* ... */
+          ],
+          "next_cursor": "string | null"
+        }
+        ```
+    *   Ответ при ошибке:
+        *   `400 Bad Request`: Невалидный курсор или `limit`.
+        *   `401 Unauthorized`: Невалидный токен.
+        *   `500 Internal Server Error`: Внутренняя ошибка сервера.
+
+*   **`GET /api/v1/published-stories/me/liked`**
+    *   Описание: Получение списка опубликованных историй, которые **лайкнул текущий пользователь**. Поддерживает курсорную пагинацию. Истории отсортированы по времени добавления лайка (сначала самые недавние).
+    *   Аутентификация: **Требуется.**
+    *   Query параметры:
+        *   `limit` (опционально, int, default=10, max=100).
+        *   `cursor` (опционально, string).
+    *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`. Структура ответа **аналогична** `GET /api/v1/published-stories/me`.
+        ```json
+        {
+          "data": [
+            {
+              "id": "uuid-string",
+              "title": "string",
+              "short_description": "string | null",
+              "author_id": "uuid-string",
+              "author_name": "string",
+              "published_at": "timestamp-string",
+              "is_adult_content": false,
+              "likes_count": 123,
+              "is_liked": true, // Всегда true для этого эндпоинта
+              "has_player_progress": true,
+              "status": "ready | error | ...",
+              "is_public": true,
+              "cover_image_url": "https://... | null"
+            }
+            /* ... */
+          ],
+          "next_cursor": "string | null"
+        }
+        ```
+    *   Ответ при ошибке:
+        *   `400 Bad Request`: Невалидный курсор или `limit`.
+        *   `401 Unauthorized`: Невалидный токен.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 --- Конец секции Gameplay Service ---

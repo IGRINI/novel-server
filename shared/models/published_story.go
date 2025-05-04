@@ -136,10 +136,9 @@ type PublishedStorySummary struct {
 
 // PublishedStorySummaryWithProgress extends PublishedStorySummary with player progress info.
 type PublishedStorySummaryWithProgress struct {
-	PublishedStorySummary        // Вложенная структура с основными полями
-	AuthorName            string `json:"author_name" db:"author_name"`                 // <<< ИЗМЕНЕНО: json тег на snake_case >>>
-	HasPlayerProgress     bool   `json:"has_player_progress" db:"has_player_progress"` // <<< ИЗМЕНЕНО: json тег на snake_case >>>
-	IsPublic              bool   `json:"is_public" db:"is_public"`                     // <<< ИЗМЕНЕНО: json тег на snake_case >>>
+	PublishedStorySummary      // Вложенная структура с основными полями
+	HasPlayerProgress     bool `json:"has_player_progress" db:"has_player_progress"` // <<< ИЗМЕНЕНО: json тег на snake_case >>>
+	IsPublic              bool `json:"is_public" db:"is_public"`                     // <<< ИЗМЕНЕНО: json тег на snake_case >>>
 }
 
 // <<< НОВАЯ СТРУКТУРА ДЛЯ ОПТИМИЗИРОВАННОГО ЗАПРОСА >>>

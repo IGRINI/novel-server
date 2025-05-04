@@ -122,7 +122,7 @@ type StoryBrowsingService interface {
 	ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStorySummaryDTO, string, error)
 	ListPublicStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStorySummaryDTO, string, error)
 	GetPublishedStoryDetails(ctx context.Context, storyID, userID uuid.UUID) (*PublishedStoryParsedDetailDTO, error)
-	ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, bool, error)
+	ListUserPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error)
 	GetPublishedStoryDetailsInternal(ctx context.Context, storyID uuid.UUID) (*sharedModels.PublishedStory, error)
 	ListStoryScenesInternal(ctx context.Context, storyID uuid.UUID) ([]sharedModels.StoryScene, error)
 	UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON json.RawMessage, status sharedModels.StoryStatus) error
@@ -130,6 +130,7 @@ type StoryBrowsingService interface {
 	GetStoriesWithProgress(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]sharedModels.PublishedStorySummaryWithProgress, string, error)
 	GetParsedSetup(ctx context.Context, storyID uuid.UUID) (*sharedModels.NovelSetupContent, error)
 	GetActiveStoryCount(ctx context.Context) (int, error)
+	ListMyStoriesWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStorySummaryDTO, string, error)
 }
 
 type storyBrowsingServiceImpl struct {
@@ -371,32 +372,22 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 	return dto, nil
 }
 
-func (s *storyBrowsingServiceImpl) ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*sharedModels.PublishedStory, bool, error) {
-	log := s.logger.With(zap.String("userID", userID.String()), zap.Int("limit", limit), zap.Int("offset", offset))
-	log.Info("ListUserPublishedStories called (offset-based)")
+func (s *storyBrowsingServiceImpl) ListUserPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*sharedModels.PublishedStory, string, error) {
+	log := s.logger.With(zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
+	log.Info("ListUserPublishedStories called (cursor-based)")
 
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	if offset < 0 {
-		offset = 0
-	}
 
-	fetchLimit := limit + 1
-
-	stories, err := s.publishedRepo.ListByUserIDOffset(ctx, userID, fetchLimit, offset)
+	stories, nextCursor, err := s.publishedRepo.ListByUserID(ctx, userID, cursor, limit)
 	if err != nil {
-		log.Error("Error listing user published stories from repository (offset-based)", zap.Error(err))
-		return nil, false, fmt.Errorf("repository error fetching stories: %w", err)
+		log.Error("Error listing user published stories from repository (cursor-based)", zap.Error(err))
+		return nil, "", fmt.Errorf("repository error fetching stories: %w", err)
 	}
 
-	hasMore := len(stories) == fetchLimit
-	if hasMore {
-		stories = stories[:limit]
-	}
-
-	log.Info("Successfully listed user published stories (offset-based)", zap.Int("count", len(stories)), zap.Bool("hasMore", hasMore))
-	return stories, hasMore, nil
+	log.Info("Successfully listed user published stories (cursor-based)", zap.Int("count", len(stories)), zap.Bool("hasNext", nextCursor != ""))
+	return stories, nextCursor, nil
 }
 
 func (s *storyBrowsingServiceImpl) GetPublishedStoryDetailsInternal(ctx context.Context, storyID uuid.UUID) (*sharedModels.PublishedStory, error) {
@@ -594,4 +585,40 @@ func (s *storyBrowsingServiceImpl) GetActiveStoryCount(ctx context.Context) (int
 
 	log.Info("Successfully counted active stories", zap.Int("count", count))
 	return count, nil
+}
+
+func (s *storyBrowsingServiceImpl) ListMyStoriesWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*PublishedStorySummaryDTO, string, error) {
+	log := s.logger.With(zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
+	log.Info("ListMyStoriesWithProgress called (service layer)")
+
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+
+	summaries, nextCursor, err := s.publishedRepo.ListUserSummariesOnlyWithProgress(ctx, userID, cursor, limit)
+	if err != nil {
+		log.Error("Failed to list user stories only with progress", zap.Error(err))
+		return nil, "", sharedModels.ErrInternalServer
+	}
+
+	results := make([]*PublishedStorySummaryDTO, 0, len(summaries))
+	for _, summary := range summaries {
+		results = append(results, &PublishedStorySummaryDTO{
+			ID:                summary.ID,
+			Title:             summary.Title,
+			ShortDescription:  summary.ShortDescription,
+			AuthorID:          summary.AuthorID,
+			AuthorName:        summary.AuthorName,
+			PublishedAt:       summary.PublishedAt,
+			IsAdultContent:    summary.IsAdultContent,
+			LikesCount:        int(summary.LikesCount),
+			IsLiked:           summary.IsLiked,
+			HasPlayerProgress: summary.HasPlayerProgress,
+			IsPublic:          summary.IsPublic,
+			Status:            summary.Status,
+		})
+	}
+
+	log.Info("Successfully listed user stories only with progress", zap.Int("count", len(results)), zap.Bool("hasNext", nextCursor != ""))
+	return results, nextCursor, nil
 }

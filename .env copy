@@ -104,3 +104,6 @@ CHARACTER_PROMPT_STYLE_SUFFIX=", a stylized portrait of a story character in moo
 
 # <<< ДОБАВЛЕНО: Строка, добавляемая к промпту для превью истории >>>
 STORY_PREVIEW_PROMPT_STYLE_SUFFIX=", a cinematic key art illustration for an interactive story, moody and atmospheric lighting, strong silhouette or central figure, minimal background detail, glowing accents, dark color palette with story-themed elements, dramatic composition, highly detailed digital painting"
+
+
+#psql -U postgres -d novel_db

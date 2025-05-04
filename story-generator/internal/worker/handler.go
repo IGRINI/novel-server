@@ -219,10 +219,6 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 				log.Printf("[TaskID: %s] Ожидание %v перед следующей попыткой...", payload.TaskID, waitDuration)
 				time.Sleep(waitDuration)
 			}
-
-			if processingErr == nil {
-				aiResponse = aiResponse
-			}
 		}
 	} // <<< Конец блока else (обработка после успешного получения промпта задачи) >>>
 
@@ -285,7 +281,6 @@ func (h *TaskHandler) saveResultAndNotify(
 	execErr error,
 	usage service.UsageInfo,
 ) error {
-
 	result := &sharedModels.GenerationResult{
 		ID:               payload.TaskID,
 		UserID:           payload.UserID,
@@ -337,14 +332,12 @@ func (h *TaskHandler) saveResultAndNotify(
 				errorDetails = execErr.Error()
 			} else {
 				// Создаем объект сцены
-				// ПРЕДПОЛАГАЕМ, что generatedText - это валидный JSON для SceneContent
 				scene := &sharedModels.StoryScene{
-					// ID будет сгенерирован базой данных при использовании Upsert
+					ID:               uuid.New(),
 					PublishedStoryID: storyUUID,
 					StateHash:        payload.StateHash,
 					Content:          json.RawMessage(generatedText),
-					// ImagePrompt НЕ сохраняем!
-					// CreatedAt будет установлен базой данных
+					CreatedAt:        time.Now().UTC(),
 				}
 
 				// Используем Upsert, т.к. задача может быть перезапущена
@@ -450,12 +443,4 @@ func (h *TaskHandler) notify(ctx context.Context, payload messaging.GenerationTa
 // float64Ptr возвращает указатель на float64
 func float64Ptr(f float64) *float64 {
 	return &f
-}
-
-// safeDerefString разыменовывает указатель на строку или возвращает пустую строку, если указатель nil.
-func safeDerefString(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }
