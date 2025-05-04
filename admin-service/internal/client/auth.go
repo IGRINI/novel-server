@@ -13,11 +13,11 @@ type AuthServiceHttpClient interface {
 	GenerateInterServiceToken(ctx context.Context, serviceName string) (string, error)
 	SetInterServiceToken(token string)
 	ValidateAdminToken(ctx context.Context, token string) (*models.Claims, error)
-	GetUserCount(ctx context.Context) (int, error)
+	GetUserCount(ctx context.Context, adminAccessToken string) (int, error)
 	// ListUsers получает список пользователей с пагинацией.
 	// afterCursor - это идентификатор (или другой курсор), после которого нужно начать выборку.
 	// Возвращает список пользователей, следующий курсор (nextCursor) и ошибку.
-	ListUsers(ctx context.Context, limit int, afterCursor string) ([]models.User, string, error)
+	ListUsers(ctx context.Context, limit int, afterCursor string, adminAccessToken string) ([]models.User, string, error)
 	BanUser(ctx context.Context, userID uuid.UUID, adminAccessToken string) error
 	UnbanUser(ctx context.Context, userID uuid.UUID, adminAccessToken string) error
 	UpdateUser(ctx context.Context, userID uuid.UUID, payload UserUpdatePayload, adminAccessToken string) error
@@ -25,7 +25,7 @@ type AuthServiceHttpClient interface {
 	// RefreshAdminToken обновляет Access и Refresh токены, используя предоставленный Refresh Token.
 	// Возвращает новые TokenDetails, Claims и ошибку.
 	RefreshAdminToken(ctx context.Context, refreshToken string) (*models.TokenDetails, *models.Claims, error)
-	GetUserInfo(ctx context.Context, userID uuid.UUID) (*models.User, error)
+	GetUserInfo(ctx context.Context, userID uuid.UUID, adminAccessToken string) (*models.User, error)
 }
 
 // UserUpdatePayload defines the structure for updating user data via the auth service.

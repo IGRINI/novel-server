@@ -178,16 +178,23 @@ func (h *AdminHandler) GetDashboardData(c *gin.Context) {
 	var userInfo *sharedModels.User // <<< ИСПОЛЬЗУЕМ models.User >>>
 	var userFetchErr error
 	if userOK {
-		userInfo, userFetchErr = h.authClient.GetUserInfo(c.Request.Context(), userID) // Вызываем новый метод клиента
-		if userFetchErr != nil {
-			h.logger.Error("Failed to get user info for dashboard greeting", zap.Error(userFetchErr))
-			welcomeMessage = fmt.Sprintf("Добро пожаловать, User %s! (Ошибка получения имени)", userID.String())
-		} else if userInfo != nil {
-			// <<< ПРЕДПОЛАГАЕМ поле Username, т.к. структуру User не видели >>>
-			// Если есть DisplayName, использовать его: userInfo.DisplayName
-			welcomeMessage = fmt.Sprintf("Добро пожаловать, %s!", userInfo.Username)
+		// Получаем админский токен из cookie для GetUserInfo
+		adminToken, cookieErr := c.Cookie("admin_session")
+		if cookieErr != nil {
+			h.logger.Error("Failed to get admin_session cookie for GetUserInfo", zap.Error(cookieErr))
+			welcomeMessage = fmt.Sprintf("Добро пожаловать, User %s! (Ошибка получения сессии)", userID.String())
 		} else {
-			welcomeMessage = fmt.Sprintf("Добро пожаловать, User %s!", userID.String()) // На случай, если userInfo nil без ошибки
+			userInfo, userFetchErr = h.authClient.GetUserInfo(c.Request.Context(), userID, adminToken) // Передаем токен администратора
+			if userFetchErr != nil {
+				h.logger.Error("Failed to get user info for dashboard greeting", zap.Error(userFetchErr))
+				welcomeMessage = fmt.Sprintf("Добро пожаловать, User %s! (Ошибка получения имени)", userID.String())
+			} else if userInfo != nil {
+				// <<< ПРЕДПОЛАГАЕМ поле Username, т.к. структуру User не видели >>>
+				// Если есть DisplayName, использовать его: userInfo.DisplayName
+				welcomeMessage = fmt.Sprintf("Добро пожаловать, %s!", userInfo.Username)
+			} else {
+				welcomeMessage = fmt.Sprintf("Добро пожаловать, User %s!", userID.String()) // На случай, если userInfo nil без ошибки
+			}
 		}
 	} else {
 		welcomeMessage = "Добро пожаловать! (Не удалось определить пользователя)"
@@ -195,8 +202,28 @@ func (h *AdminHandler) GetDashboardData(c *gin.Context) {
 
 	h.logger.Debug("Attempting to get user count via auth-service")
 	startTime := time.Now()
-	// Используем c.Request.Context()
-	userCount, err := h.authClient.GetUserCount(c.Request.Context())
+
+	// Получаем админский токен из cookie
+	adminToken, err := c.Cookie("admin_session")
+	if err != nil {
+		h.logger.Error("Failed to get admin_session cookie for GetUserCount", zap.Error(err))
+		c.HTML(http.StatusOK, "dashboard.html", gin.H{
+			"PageTitle":      "Дашборд",
+			"WelcomeMessage": welcomeMessage,
+			"UserRoles":      roles,
+			"Stats": map[string]int{
+				"totalUsers":    -1,
+				"activeStories": -1,
+			},
+			"UserCountError": true,
+			"IsLoggedIn":     true,
+			"Error":          "Ошибка получения сессии администратора",
+		})
+		return
+	}
+
+	// Используем c.Request.Context() и передаем админский токен
+	userCount, err := h.authClient.GetUserCount(c.Request.Context(), adminToken)
 	duration := time.Since(startTime)
 	h.logger.Debug("Finished getting user count via auth-service", zap.Duration("duration", duration), zap.Error(err))
 	if err != nil {
@@ -207,7 +234,7 @@ func (h *AdminHandler) GetDashboardData(c *gin.Context) {
 	// <<< ИЗМЕНЕНО: Получаем количество активных историй >>>
 	h.logger.Debug("Attempting to get active story count via gameplay-service")
 	activeStoriesStartTime := time.Now()
-	activeStories, activeStoriesErr := h.gameplayClient.GetActiveStoryCount(c.Request.Context())
+	activeStories, activeStoriesErr := h.gameplayClient.GetActiveStoryCount(c.Request.Context(), adminToken)
 	activeStoriesDuration := time.Since(activeStoriesStartTime)
 	h.logger.Debug("Finished getting active story count via gameplay-service", zap.Duration("duration", activeStoriesDuration), zap.Error(activeStoriesErr))
 

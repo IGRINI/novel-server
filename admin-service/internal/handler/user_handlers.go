@@ -51,8 +51,21 @@ func (h *AdminHandler) listUsers(c *gin.Context) {
 	}
 	log = log.With(zap.Int("limit", limit))
 	log.Debug("Fetching user list with pagination")
+
+	// Получаем токен администратора из cookie
+	adminToken, err := c.Cookie("admin_session")
+	if err != nil {
+		log.Error("Failed to get admin_session cookie for listUsers", zap.Error(err))
+		c.HTML(http.StatusInternalServerError, "users.html", gin.H{
+			"PageTitle":  "Управление пользователями",
+			"Error":      "Не удалось получить токен администратора: " + err.Error(),
+			"IsLoggedIn": true,
+		})
+		return
+	}
+
 	after := c.Query("after")
-	users, nextCursor, err := h.authClient.ListUsers(c.Request.Context(), limit, after)
+	users, nextCursor, err := h.authClient.ListUsers(c.Request.Context(), limit, after, adminToken)
 	userFacingError := ""
 	if err != nil {
 		log.Error("Failed to get user list from auth-service", zap.Error(err))
@@ -166,8 +179,17 @@ func (h *AdminHandler) showUserEditPage(c *gin.Context) {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
+
+	// Получаем токен администратора из cookie
+	adminToken, err := c.Cookie("admin_session")
+	if err != nil {
+		h.logger.Error("Failed to get admin_session cookie for showUserEditPage", zap.Error(err))
+		c.Redirect(http.StatusSeeOther, "/admin/users?error=session_error")
+		return
+	}
+
 	h.logger.Info("Showing edit page for user", zap.String("userID", userID.String()))
-	users, _, err := h.authClient.ListUsers(c.Request.Context(), 1, fmt.Sprintf("id:%s", userID.String()))
+	users, _, err := h.authClient.ListUsers(c.Request.Context(), 1, fmt.Sprintf("id:%s", userID.String()), adminToken)
 	if err != nil {
 		h.logger.Error("Failed to get user details for editing (via ListUsers)", zap.String("userID", userID.String()), zap.Error(err))
 		c.Redirect(http.StatusSeeOther, "/admin/users?error=fetch_failed")

@@ -607,12 +607,32 @@ func (h *GameplayHandler) AuthMiddleware() gin.HandlerFunc {
 // InternalAuthMiddleware validates the X-Internal-Service-Token.
 func (h *GameplayHandler) InternalAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		token := c.GetHeader("X-Internal-Service-Token")
-		// <<< Use h.interServiceSecret stored in handler >>>
-		if token == "" || token != h.interServiceSecret {
-			c.AbortWithStatusJSON(http.StatusForbidden, sharedModels.ErrorResponse{Code: sharedModels.ErrCodeForbidden, Message: "Invalid or missing internal service token"})
+		tokenString := c.GetHeader("X-Internal-Service-Token")
+		if tokenString == "" {
+			h.logger.Warn("InternalAuthMiddleware: Missing X-Internal-Service-Token header")
+			c.AbortWithStatusJSON(http.StatusUnauthorized, sharedModels.ErrorResponse{Code: sharedModels.ErrCodeTokenInvalid, Message: "Missing internal service token"})
 			return
 		}
+
+		// Используем JWTVerifier для проверки МЕЖСЕРВИСНОГО токена
+		claims, err := h.interServiceTokenVerifier.VerifyInterServiceToken(c.Request.Context(), tokenString)
+		if err != nil {
+			h.logger.Warn("InternalAuthMiddleware: Inter-service token verification failed", zap.Error(err))
+			// Определяем код ошибки (401 или 403)
+			statusCode := http.StatusForbidden
+			if errors.Is(err, sharedModels.ErrTokenExpired) || errors.Is(err, sharedModels.ErrTokenInvalid) || errors.Is(err, sharedModels.ErrTokenMalformed) {
+				statusCode = http.StatusUnauthorized
+			}
+			c.AbortWithStatusJSON(statusCode, sharedModels.ErrorResponse{Code: sharedModels.ErrCodeForbidden, Message: "Invalid or expired internal service token"})
+			return
+		}
+
+		// Опционально: можно добавить проверку claims.Subject, если нужно знать, какой сервис сделал запрос
+		h.logger.Debug("InternalAuthMiddleware: Inter-service token verified successfully", zap.String("subject", claims.Subject))
+
+		// Добавляем claims в контекст, если это необходимо для последующих обработчиков
+		// c.Set("inter_service_claims", claims)
+
 		c.Next()
 	}
 }

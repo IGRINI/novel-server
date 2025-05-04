@@ -16,17 +16,6 @@ import (
 	"novel-server/shared/utils"
 )
 
-const (
-	consumeConcurrencyNarrator = 5
-	retryCount                 = 3
-	retryDelay                 = 5 * time.Second
-	maxGeneratedImageCount     = 10
-	maxSceneImageCount         = 4
-	maxSetupImageCount         = 4
-
-	DefaultImagePrompt = "fantasy art, ((masterpiece)), illustration, epic composition, high quality, detailed, BREAK Cinematic, dramatic lighting, vibrant colors, perfect anatomy, beautiful face"
-)
-
 func (p *NotificationProcessor) publishClientDraftUpdate(ctx context.Context, storyConfig *sharedModels.StoryConfig, errorMsg *string) {
 	if storyConfig == nil {
 		p.logger.Error("publishClientDraftUpdate called with nil StoryConfig")

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	io "io"
 	"net/http"
@@ -103,6 +104,61 @@ func (c *gameplayClient) doRequestWithTokenRefresh(ctx context.Context, req *htt
 	return resp, nil
 }
 
+// doAdminRequest выполняет HTTP запрос с добавлением заголовка X-Admin-Authorization
+func (c *gameplayClient) doAdminRequest(ctx context.Context, req *http.Request, adminAccessToken string) (*http.Response, error) {
+	// Добавляем админский токен в заголовок
+	if adminAccessToken == "" {
+		c.logger.Error("Admin access token is empty for admin-required request", zap.String("url", req.URL.String()))
+		return nil, errors.New("admin access token is required but missing")
+	}
+	req.Header.Set("X-Admin-Authorization", "Bearer "+adminAccessToken)
+
+	// Добавляем межсервисный токен в заголовок
+	c.mu.RLock()
+	token := c.interServiceToken
+	c.mu.RUnlock()
+
+	if token != "" {
+		req.Header.Set("X-Internal-Service-Token", token)
+	} else {
+		c.logger.Warn("Inter-service token is not set for admin request, request might fail", zap.String("url", req.URL.String()))
+	}
+
+	// Выполняем запрос
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Если получили 401 или 403, пробуем обновить токен и повторить запрос
+	if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+		resp.Body.Close() // Закрываем тело первого ответа
+
+		// Пробуем получить новый токен через authClient
+		c.logger.Warn("Received 401/403 status, trying to refresh inter-service token",
+			zap.Int("statusCode", resp.StatusCode),
+			zap.String("url", req.URL.String()))
+
+		newToken, err := c.authClient.GenerateInterServiceToken(ctx, "admin-service")
+		if err != nil {
+			return nil, fmt.Errorf("failed to refresh inter-service token: %w", err)
+		}
+
+		// Устанавливаем новый токен
+		c.SetInterServiceToken(newToken)
+
+		// Создаем новый запрос с тем же контекстом и телом
+		newReq := req.Clone(ctx)
+		newReq.Header.Set("X-Admin-Authorization", "Bearer "+adminAccessToken)
+		newReq.Header.Set("X-Internal-Service-Token", newToken)
+
+		// Повторяем запрос с новым токеном
+		return c.httpClient.Do(newReq)
+	}
+
+	return resp, err
+}
+
 // --- Реализация методов интерфейса --- //
 
 // DTO для ответа /internal/users/{user_id}/drafts
@@ -112,7 +168,7 @@ type listDraftsResponse struct {
 }
 
 // ListUserDrafts получает список черновиков пользователя.
-func (c *gameplayClient) ListUserDrafts(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]models.StoryConfig, string, error) {
+func (c *gameplayClient) ListUserDrafts(ctx context.Context, userID uuid.UUID, limit int, cursor string, adminAccessToken string) ([]models.StoryConfig, string, error) {
 	listURL := fmt.Sprintf("%s/internal/users/%s/drafts", c.baseURL, userID.String())
 	log := c.logger.With(zap.String("url", listURL), zap.String("userID", userID.String()), zap.Int("limit", limit), zap.String("cursor", cursor))
 
@@ -137,7 +193,7 @@ func (c *gameplayClient) ListUserDrafts(ctx context.Context, userID uuid.UUID, l
 	httpReq.Header.Set("Accept", "application/json")
 
 	log.Debug("Sending list drafts request to gameplay-service")
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
 		log.Error("HTTP request for list drafts failed", zap.Error(err))
 		return nil, "", fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -172,7 +228,7 @@ type listStoriesResponse struct {
 }
 
 // ListUserPublishedStories получает список опубликованных историй пользователя.
-func (c *gameplayClient) ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.PublishedStory, bool, error) {
+func (c *gameplayClient) ListUserPublishedStories(ctx context.Context, userID uuid.UUID, limit, offset int, adminAccessToken string) ([]*models.PublishedStory, bool, error) {
 	listURL := fmt.Sprintf("%s/internal/users/%s/stories", c.baseURL, userID.String())
 	log := c.logger.With(zap.String("url", listURL), zap.String("userID", userID.String()), zap.Int("limit", limit), zap.Int("offset", offset))
 
@@ -195,7 +251,7 @@ func (c *gameplayClient) ListUserPublishedStories(ctx context.Context, userID uu
 	httpReq.Header.Set("Accept", "application/json")
 
 	log.Debug("Sending list stories request to gameplay-service")
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
 		log.Error("HTTP request for list stories failed", zap.Error(err))
 		return nil, false, fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -224,7 +280,7 @@ func (c *gameplayClient) ListUserPublishedStories(ctx context.Context, userID uu
 }
 
 // GetDraftDetailsInternal получает детали черновика.
-func (c *gameplayClient) GetDraftDetailsInternal(ctx context.Context, draftID uuid.UUID) (*models.StoryConfig, error) {
+func (c *gameplayClient) GetDraftDetailsInternal(ctx context.Context, draftID uuid.UUID, adminAccessToken string) (*models.StoryConfig, error) {
 	detailURL := fmt.Sprintf("%s/internal/drafts/%s", c.baseURL, draftID.String())
 	log := c.logger.With(zap.String("url", detailURL), zap.String("draftID", draftID.String()))
 
@@ -236,7 +292,7 @@ func (c *gameplayClient) GetDraftDetailsInternal(ctx context.Context, draftID uu
 	httpReq.Header.Set("Accept", "application/json")
 
 	log.Debug("Sending get draft details internal request to gameplay-service")
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
 		log.Error("HTTP request for get draft details internal failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -268,7 +324,7 @@ func (c *gameplayClient) GetDraftDetailsInternal(ctx context.Context, draftID uu
 }
 
 // GetPublishedStoryDetailsInternal получает детали опубликованной истории.
-func (c *gameplayClient) GetPublishedStoryDetailsInternal(ctx context.Context, storyID uuid.UUID) (*models.PublishedStory, error) {
+func (c *gameplayClient) GetPublishedStoryDetailsInternal(ctx context.Context, storyID uuid.UUID, adminAccessToken string) (*models.PublishedStory, error) {
 	detailURL := fmt.Sprintf("%s/internal/stories/%s", c.baseURL, storyID.String())
 	log := c.logger.With(zap.String("url", detailURL), zap.String("storyID", storyID.String()))
 
@@ -280,7 +336,7 @@ func (c *gameplayClient) GetPublishedStoryDetailsInternal(ctx context.Context, s
 	httpReq.Header.Set("Accept", "application/json")
 
 	log.Debug("Sending get published story details internal request to gameplay-service")
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
 		log.Error("HTTP request for get published story details internal failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -312,7 +368,7 @@ func (c *gameplayClient) GetPublishedStoryDetailsInternal(ctx context.Context, s
 }
 
 // ListStoryScenesInternal получает список сцен истории.
-func (c *gameplayClient) ListStoryScenesInternal(ctx context.Context, storyID uuid.UUID) ([]models.StoryScene, error) {
+func (c *gameplayClient) ListStoryScenesInternal(ctx context.Context, storyID uuid.UUID, adminAccessToken string) ([]models.StoryScene, error) {
 	scenesURL := fmt.Sprintf("%s/internal/stories/%s/scenes", c.baseURL, storyID.String())
 	log := c.logger.With(zap.String("url", scenesURL), zap.String("storyID", storyID.String()))
 
@@ -324,7 +380,7 @@ func (c *gameplayClient) ListStoryScenesInternal(ctx context.Context, storyID uu
 	httpReq.Header.Set("Accept", "application/json")
 
 	log.Debug("Sending list story scenes internal request to gameplay-service")
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
 		log.Error("HTTP request for list story scenes internal failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -357,7 +413,7 @@ func (c *gameplayClient) ListStoryScenesInternal(ctx context.Context, storyID uu
 }
 
 // UpdateDraftInternal обновляет черновик.
-func (c *gameplayClient) UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string, status models.StoryStatus) error {
+func (c *gameplayClient) UpdateDraftInternal(ctx context.Context, draftID uuid.UUID, configJSON, userInputJSON string, status models.StoryStatus, adminAccessToken string) error {
 	updateURL := fmt.Sprintf("%s/internal/drafts/%s", c.baseURL, draftID.String())
 	log := c.logger.With(zap.String("url", updateURL), zap.String("draftID", draftID.String()), zap.String("status", string(status)))
 
@@ -374,16 +430,16 @@ func (c *gameplayClient) UpdateDraftInternal(ctx context.Context, draftID uuid.U
 	}
 	bodyReader := bytes.NewReader(bodyBytes)
 
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, updateURL, bodyReader)
+	if err != nil {
+		log.Error("Failed to create update draft internal HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
 	log.Debug("Sending update draft internal request to gameplay-service")
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, &http.Request{
-		Method: http.MethodPost,
-		URL:    &url.URL{Path: updateURL},
-		Body:   io.NopCloser(bodyReader),
-		Header: http.Header{
-			"Content-Type": []string{"application/json"},
-			"Accept":       []string{"application/json"},
-		},
-	})
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
 		log.Error("HTTP request for update draft internal failed", zap.Error(err))
 		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -401,7 +457,7 @@ func (c *gameplayClient) UpdateDraftInternal(ctx context.Context, draftID uuid.U
 }
 
 // UpdateStoryInternal обновляет историю.
-func (c *gameplayClient) UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON string, status models.StoryStatus) error {
+func (c *gameplayClient) UpdateStoryInternal(ctx context.Context, storyID uuid.UUID, configJSON, setupJSON string, status models.StoryStatus, adminAccessToken string) error {
 	updateURL := fmt.Sprintf("%s/internal/stories/%s", c.baseURL, storyID.String())
 	log := c.logger.With(zap.String("url", updateURL), zap.String("storyID", storyID.String()), zap.String("status", string(status)))
 
@@ -438,16 +494,16 @@ func (c *gameplayClient) UpdateStoryInternal(ctx context.Context, storyID uuid.U
 	}
 	bodyReader := bytes.NewReader(bodyBytes)
 
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, updateURL, bodyReader)
+	if err != nil {
+		log.Error("Failed to create update story internal HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
 	log.Debug("Sending update story internal request to gameplay-service")
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, &http.Request{
-		Method: http.MethodPost,
-		URL:    &url.URL{Path: updateURL},
-		Body:   io.NopCloser(bodyReader),
-		Header: http.Header{
-			"Content-Type": []string{"application/json"},
-			"Accept":       []string{"application/json"},
-		},
-	})
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
 		log.Error("HTTP request for update story internal failed", zap.Error(err))
 		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -465,7 +521,7 @@ func (c *gameplayClient) UpdateStoryInternal(ctx context.Context, storyID uuid.U
 }
 
 // UpdateSceneInternal обновляет сцену.
-func (c *gameplayClient) UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error {
+func (c *gameplayClient) UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string, adminAccessToken string) error {
 	updateURL := fmt.Sprintf("%s/internal/scenes/%s", c.baseURL, sceneID.String())
 	log := c.logger.With(zap.String("url", updateURL), zap.String("sceneID", sceneID.String()))
 
@@ -480,16 +536,16 @@ func (c *gameplayClient) UpdateSceneInternal(ctx context.Context, sceneID uuid.U
 	}
 	bodyReader := bytes.NewReader(bodyBytes)
 
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, updateURL, bodyReader)
+	if err != nil {
+		log.Error("Failed to create update scene internal HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
 	log.Debug("Sending update scene internal request to gameplay-service")
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, &http.Request{
-		Method: http.MethodPost,
-		URL:    &url.URL{Path: updateURL},
-		Body:   io.NopCloser(bodyReader),
-		Header: http.Header{
-			"Content-Type": []string{"application/json"},
-			"Accept":       []string{"application/json"},
-		},
-	})
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
 		log.Error("HTTP request for update scene internal failed", zap.Error(err))
 		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -507,7 +563,7 @@ func (c *gameplayClient) UpdateSceneInternal(ctx context.Context, sceneID uuid.U
 }
 
 // DeleteSceneInternal удаляет сцену по ее ID.
-func (c *gameplayClient) DeleteSceneInternal(ctx context.Context, sceneID uuid.UUID) error {
+func (c *gameplayClient) DeleteSceneInternal(ctx context.Context, sceneID uuid.UUID, adminAccessToken string) error {
 	deleteURL := fmt.Sprintf("%s/internal/scenes/%s", c.baseURL, sceneID.String())
 	log := c.logger.With(zap.String("url", deleteURL), zap.String("sceneID", sceneID.String()))
 
@@ -520,7 +576,7 @@ func (c *gameplayClient) DeleteSceneInternal(ctx context.Context, sceneID uuid.U
 	httpReq.Header.Set("Accept", "application/json")
 
 	log.Debug("Sending delete scene request to gameplay-service")
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
 		log.Error("HTTP request for delete scene failed", zap.Error(err))
 		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -543,7 +599,7 @@ func (c *gameplayClient) DeleteSceneInternal(ctx context.Context, sceneID uuid.U
 }
 
 // ListStoryPlayersInternal получает список состояний игроков для данной истории.
-func (c *gameplayClient) ListStoryPlayersInternal(ctx context.Context, storyID uuid.UUID) ([]models.PlayerGameState, error) {
+func (c *gameplayClient) ListStoryPlayersInternal(ctx context.Context, storyID uuid.UUID, adminAccessToken string) ([]models.PlayerGameState, error) {
 	listURL := fmt.Sprintf("%s/internal/stories/%s/players", c.baseURL, storyID.String())
 	log := c.logger.With(zap.String("url", listURL), zap.String("storyID", storyID.String()))
 
@@ -555,7 +611,7 @@ func (c *gameplayClient) ListStoryPlayersInternal(ctx context.Context, storyID u
 	httpReq.Header.Set("Accept", "application/json")
 
 	log.Debug("Sending list story players internal request to gameplay-service")
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
 		log.Error("HTTP request for list story players internal failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -590,7 +646,7 @@ func (c *gameplayClient) ListStoryPlayersInternal(ctx context.Context, storyID u
 }
 
 // GetPlayerProgressInternal получает детали прогресса игрока.
-func (c *gameplayClient) GetPlayerProgressInternal(ctx context.Context, progressID uuid.UUID) (*models.PlayerProgress, error) {
+func (c *gameplayClient) GetPlayerProgressInternal(ctx context.Context, progressID uuid.UUID, adminAccessToken string) (*models.PlayerProgress, error) {
 	detailURL := fmt.Sprintf("%s/internal/player-progress/%s", c.baseURL, progressID.String())
 	log := c.logger.With(zap.String("url", detailURL), zap.String("progressID", progressID.String()))
 
@@ -602,7 +658,7 @@ func (c *gameplayClient) GetPlayerProgressInternal(ctx context.Context, progress
 	httpReq.Header.Set("Accept", "application/json")
 
 	log.Debug("Sending get player progress internal request to gameplay-service")
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
 		log.Error("HTTP request for get player progress internal failed", zap.Error(err))
 		return nil, fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -634,7 +690,7 @@ func (c *gameplayClient) GetPlayerProgressInternal(ctx context.Context, progress
 }
 
 // UpdatePlayerProgressInternal обновляет детали прогресса игрока.
-func (c *gameplayClient) UpdatePlayerProgressInternal(ctx context.Context, progressID uuid.UUID, progressData map[string]interface{}) error {
+func (c *gameplayClient) UpdatePlayerProgressInternal(ctx context.Context, progressID uuid.UUID, progressData map[string]interface{}, adminAccessToken string) error {
 	updateURL := fmt.Sprintf("%s/internal/player-progress/%s", c.baseURL, progressID.String())
 	log := c.logger.With(zap.String("url", updateURL), zap.String("progressID", progressID.String()))
 
@@ -656,7 +712,7 @@ func (c *gameplayClient) UpdatePlayerProgressInternal(ctx context.Context, progr
 	httpReq.Header.Set("Accept", "application/json")
 
 	log.Debug("Sending update player progress internal request to gameplay-service")
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
 		log.Error("HTTP request for update player progress internal failed", zap.Error(err))
 		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -689,7 +745,7 @@ func (c *gameplayClient) UpdatePlayerProgressInternal(ctx context.Context, progr
 }
 
 // GetActiveStoryCount получает количество активных (готовых к игре) историй из gameplay-service.
-func (c *gameplayClient) GetActiveStoryCount(ctx context.Context) (int, error) {
+func (c *gameplayClient) GetActiveStoryCount(ctx context.Context, adminAccessToken string) (int, error) {
 	countURL := fmt.Sprintf("%s/internal/stories/active/count", c.baseURL)
 	log := c.logger.With(zap.String("url", countURL))
 
@@ -701,7 +757,7 @@ func (c *gameplayClient) GetActiveStoryCount(ctx context.Context) (int, error) {
 	httpReq.Header.Set("Accept", "application/json")
 
 	log.Debug("Sending get active story count request to gameplay-service")
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
 		log.Error("HTTP request for get active story count failed", zap.Error(err))
 		return 0, fmt.Errorf("failed to communicate with gameplay service: %w", err)
@@ -767,7 +823,7 @@ func (c *gameplayClient) DeleteDraft(ctx context.Context, userID, draftID uuid.U
 		return fmt.Errorf("received unexpected status %d from gameplay service for delete draft", httpResp.StatusCode)
 	}
 
-	log.Info("Draft deleted successfully via gameplay-service")
+	log.Info("Draft deleted successfully")
 	return nil
 }
 

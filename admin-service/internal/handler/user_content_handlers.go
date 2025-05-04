@@ -35,20 +35,28 @@ func (h *AdminHandler) listUserDrafts(c *gin.Context) {
 	cursor := c.Query("cursor")
 	var targetUser *sharedModels.User
 	var userErr error
-	users, _, listUsersErr := h.authClient.ListUsers(ctx, 1, fmt.Sprintf("id:%s", targetUserID.String()))
-	if listUsersErr != nil {
-		userErr = fmt.Errorf("failed to list users to find target: %w", listUsersErr)
-		log.Error("Failed to get target user details via ListUsers", zap.Error(userErr))
-	} else if len(users) == 0 {
-		userErr = sharedModels.ErrUserNotFound
+
+	// Получаем токен администратора из cookie
+	adminToken, cookieErr := c.Cookie("admin_session")
+	if cookieErr != nil {
+		log.Error("Failed to get admin_session cookie", zap.Error(cookieErr))
+		userErr = fmt.Errorf("failed to get admin session: %w", cookieErr)
 	} else {
-		targetUser = &users[0]
+		users, _, listUsersErr := h.authClient.ListUsers(ctx, 1, fmt.Sprintf("id:%s", targetUserID.String()), adminToken)
+		if listUsersErr != nil {
+			userErr = fmt.Errorf("failed to list users to find target: %w", listUsersErr)
+			log.Error("Failed to get target user details via ListUsers", zap.Error(userErr))
+		} else if len(users) == 0 {
+			userErr = sharedModels.ErrUserNotFound
+		} else {
+			targetUser = &users[0]
+		}
 	}
 	var drafts []sharedModels.StoryConfig
 	var nextCursor string
 	var listErr error
 	if userErr == nil {
-		drafts, nextCursor, listErr = h.gameplayClient.ListUserDrafts(ctx, targetUserID, limit, cursor)
+		drafts, nextCursor, listErr = h.gameplayClient.ListUserDrafts(ctx, targetUserID, limit, cursor, adminToken)
 		if listErr != nil {
 			log.Error("Failed to get user drafts from gameplay service", zap.Error(listErr))
 		}
@@ -104,21 +112,33 @@ func (h *AdminHandler) showDraftDetailsPage(c *gin.Context) {
 	// Получаем информацию о пользователе (опционально, для заголовка)
 	var targetUser *sharedModels.User
 	var userErr error
-	users, _, listUsersErr := h.authClient.ListUsers(ctx, 1, fmt.Sprintf("id:%s", targetUserID.String()))
-	if listUsersErr != nil {
-		userErr = fmt.Errorf("failed to list users to find target: %w", listUsersErr)
-		log.Error("Failed to get target user details via ListUsers", zap.Error(userErr))
-	} else if len(users) == 0 {
-		userErr = sharedModels.ErrUserNotFound
+
+	// Получаем токен администратора из cookie
+	adminToken, cookieErr := c.Cookie("admin_session")
+	if cookieErr != nil {
+		log.Error("Failed to get admin_session cookie", zap.Error(cookieErr))
+		userErr = fmt.Errorf("failed to get admin session: %w", cookieErr)
 	} else {
-		targetUser = &users[0]
+		users, _, listUsersErr := h.authClient.ListUsers(ctx, 1, fmt.Sprintf("id:%s", targetUserID.String()), adminToken)
+		if listUsersErr != nil {
+			userErr = fmt.Errorf("failed to list users to find target: %w", listUsersErr)
+			log.Error("Failed to get target user details via ListUsers", zap.Error(userErr))
+		} else if len(users) == 0 {
+			userErr = sharedModels.ErrUserNotFound
+		} else {
+			targetUser = &users[0]
+		}
 	}
 
 	// Получаем детали черновика
-	draft, draftErr := h.gameplayClient.GetDraftDetailsInternal(ctx, draftID)
-	if draftErr != nil {
-		log.Error("Failed to get draft details from gameplay service", zap.Error(draftErr))
-		// Не прерываем, просто покажем ошибку на странице
+	var draft *sharedModels.StoryConfig
+	var draftErr error
+	if userErr == nil {
+		draft, draftErr = h.gameplayClient.GetDraftDetailsInternal(ctx, draftID, adminToken)
+		if draftErr != nil {
+			log.Error("Failed to get draft details from gameplay service", zap.Error(draftErr))
+			// Не прерываем, просто покажем ошибку на странице
+		}
 	}
 
 	// Определяем доступные статусы для черновика
@@ -191,20 +211,28 @@ func (h *AdminHandler) listUserStories(c *gin.Context) {
 	}
 	var targetUser *sharedModels.User
 	var userErr error
-	users, _, listUsersErr := h.authClient.ListUsers(ctx, 1, fmt.Sprintf("id:%s", targetUserID.String()))
-	if listUsersErr != nil {
-		userErr = fmt.Errorf("failed to list users: %w", listUsersErr)
-		log.Error("Failed to get target user details via ListUsers", zap.Error(userErr))
-	} else if len(users) == 0 {
-		userErr = sharedModels.ErrUserNotFound
+
+	// Получаем токен администратора из cookie
+	adminToken, cookieErr := c.Cookie("admin_session")
+	if cookieErr != nil {
+		log.Error("Failed to get admin_session cookie", zap.Error(cookieErr))
+		userErr = fmt.Errorf("failed to get admin session: %w", cookieErr)
 	} else {
-		targetUser = &users[0]
+		users, _, listUsersErr := h.authClient.ListUsers(ctx, 1, fmt.Sprintf("id:%s", targetUserID.String()), adminToken)
+		if listUsersErr != nil {
+			userErr = fmt.Errorf("failed to list users: %w", listUsersErr)
+			log.Error("Failed to get target user details via ListUsers", zap.Error(userErr))
+		} else if len(users) == 0 {
+			userErr = sharedModels.ErrUserNotFound
+		} else {
+			targetUser = &users[0]
+		}
 	}
 	var stories []*sharedModels.PublishedStory
 	var hasMore bool
 	var listErr error
 	if userErr == nil {
-		stories, hasMore, listErr = h.gameplayClient.ListUserPublishedStories(ctx, targetUserID, limit, offset)
+		stories, hasMore, listErr = h.gameplayClient.ListUserPublishedStories(ctx, targetUserID, limit, offset, adminToken)
 		if listErr != nil {
 			log.Error("Failed to get user published stories from gameplay service", zap.Error(listErr))
 		}
@@ -256,18 +284,26 @@ func (h *AdminHandler) showPublishedStoryDetailsPage(c *gin.Context) {
 	// Получаем информацию о пользователе (опционально, для заголовка)
 	var targetUser *sharedModels.User
 	var userErr error
-	users, _, listUsersErr := h.authClient.ListUsers(ctx, 1, fmt.Sprintf("id:%s", targetUserID.String()))
-	if listUsersErr != nil {
-		userErr = fmt.Errorf("failed to list users: %w", listUsersErr)
-		log.Error("Failed to get target user details via ListUsers", zap.Error(userErr))
-	} else if len(users) == 0 {
-		userErr = sharedModels.ErrUserNotFound
+
+	// Получаем токен администратора из cookie
+	adminToken, cookieErr := c.Cookie("admin_session")
+	if cookieErr != nil {
+		log.Error("Failed to get admin_session cookie", zap.Error(cookieErr))
+		userErr = fmt.Errorf("failed to get admin session: %w", cookieErr)
 	} else {
-		targetUser = &users[0]
+		users, _, listUsersErr := h.authClient.ListUsers(ctx, 1, fmt.Sprintf("id:%s", targetUserID.String()), adminToken)
+		if listUsersErr != nil {
+			userErr = fmt.Errorf("failed to list users: %w", listUsersErr)
+			log.Error("Failed to get target user details via ListUsers", zap.Error(userErr))
+		} else if len(users) == 0 {
+			userErr = sharedModels.ErrUserNotFound
+		} else {
+			targetUser = &users[0]
+		}
 	}
 
 	// Получаем детали истории
-	story, storyErr := h.gameplayClient.GetPublishedStoryDetailsInternal(ctx, storyID)
+	story, storyErr := h.gameplayClient.GetPublishedStoryDetailsInternal(ctx, storyID, adminToken)
 	if storyErr != nil {
 		log.Error("Failed to get published story details from gameplay service", zap.Error(storyErr))
 		// Не прерываем
@@ -277,7 +313,7 @@ func (h *AdminHandler) showPublishedStoryDetailsPage(c *gin.Context) {
 	var scenes []sharedModels.StoryScene
 	var scenesErr error
 	if storyErr == nil {
-		scenes, scenesErr = h.gameplayClient.ListStoryScenesInternal(ctx, storyID)
+		scenes, scenesErr = h.gameplayClient.ListStoryScenesInternal(ctx, storyID, adminToken)
 		if scenesErr != nil {
 			log.Warn("Failed to get story scenes", zap.Error(scenesErr))
 			// Не прерываем, просто покажем предупреждение
@@ -288,7 +324,7 @@ func (h *AdminHandler) showPublishedStoryDetailsPage(c *gin.Context) {
 	var playerStates []sharedModels.PlayerGameState
 	var playerStatesErr error
 	if storyErr == nil { // Запрашиваем, только если история найдена
-		playerStates, playerStatesErr = h.gameplayClient.ListStoryPlayersInternal(ctx, storyID)
+		playerStates, playerStatesErr = h.gameplayClient.ListStoryPlayersInternal(ctx, storyID, adminToken)
 		if playerStatesErr != nil {
 			log.Warn("Failed to get player states for story", zap.Error(playerStatesErr))
 			// Не прерываем, покажем ошибку в шаблоне
@@ -399,8 +435,16 @@ func (h *AdminHandler) handleUpdateDraft(c *gin.Context) {
 	}
 	log = log.With(zap.String("newStatus", string(status)))
 
+	// Получаем токен администратора
+	adminToken, err := c.Cookie("admin_session")
+	if err != nil {
+		log.Error("Failed to get admin token from cookie", zap.Error(err))
+		c.Redirect(http.StatusSeeOther, c.Request.Referer())
+		return
+	}
+
 	// Вызываем Gameplay Service для обновления
-	err = h.gameplayClient.UpdateDraftInternal(ctx, draftID, configJsonStr, userInputJsonStr, status)
+	err = h.gameplayClient.UpdateDraftInternal(ctx, draftID, configJsonStr, userInputJsonStr, status, adminToken)
 	if err != nil {
 		log.Error("Failed to update draft via gameplay service", zap.Error(err))
 	} else {
@@ -458,8 +502,16 @@ func (h *AdminHandler) handleUpdateStory(c *gin.Context) {
 	}
 	log = log.With(zap.String("newStatus", string(status)))
 
+	// Получаем токен администратора
+	adminToken, err := c.Cookie("admin_session")
+	if err != nil {
+		log.Error("Failed to get admin token from cookie", zap.Error(err))
+		c.Redirect(http.StatusSeeOther, c.Request.Referer())
+		return
+	}
+
 	// Вызываем Gameplay Service для обновления
-	err = h.gameplayClient.UpdateStoryInternal(ctx, storyID, configJsonStr, setupJsonStr, status)
+	err = h.gameplayClient.UpdateStoryInternal(ctx, storyID, configJsonStr, setupJsonStr, status, adminToken)
 
 	// Добавляем параметры к редиректу
 	redirectURL := c.Request.Referer() // Базовый URL для редиректа
@@ -532,8 +584,19 @@ func (h *AdminHandler) handleUpdateScene(c *gin.Context) {
 
 	log.Info("Attempting to update scene via gameplay service")
 
+	// Получаем токен администратора
+	adminToken, err := c.Cookie("admin_session")
+	if err != nil {
+		log.Error("Failed to get admin token from cookie", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"error":   "Не удалось получить токен администратора",
+		})
+		return
+	}
+
 	// Вызов метода gameplayClient
-	err = h.gameplayClient.UpdateSceneInternal(ctx, sceneID, contentJson)
+	err = h.gameplayClient.UpdateSceneInternal(ctx, sceneID, contentJson, adminToken)
 
 	// Обработка ошибки клиента и возврат JSON
 	if err != nil {
@@ -559,8 +622,8 @@ func (h *AdminHandler) handleDeleteScene(c *gin.Context) {
 	log := h.logger.With(zap.String("handler", "handleDeleteScene"))
 
 	// Получаем ID пользователя, истории и сцены из URL
-	targetUserIDStr := c.Param("user_id") // Хотя user_id не нужен для удаления, он часть URL
-	storyIDStr := c.Param("story_id")     // и story_id тоже
+	targetUserIDStr := c.Param("user_id")
+	storyIDStr := c.Param("story_id")
 	sceneIDStr := c.Param("scene_id")
 	sceneID, err := uuid.Parse(sceneIDStr)
 	if err != nil {
@@ -572,8 +635,16 @@ func (h *AdminHandler) handleDeleteScene(c *gin.Context) {
 	}
 	log = log.With(zap.String("sceneID", sceneID.String()))
 
+	// Получаем токен администратора
+	adminToken, err := c.Cookie("admin_session")
+	if err != nil {
+		log.Error("Failed to get admin token from cookie", zap.Error(err))
+		c.Redirect(http.StatusSeeOther, fmt.Sprintf("/users/%s/stories/%s?error=admin_token", targetUserIDStr, storyIDStr))
+		return
+	}
+
 	// Вызов метода gameplayClient для удаления сцены
-	err = h.gameplayClient.DeleteSceneInternal(ctx, sceneID)
+	err = h.gameplayClient.DeleteSceneInternal(ctx, sceneID, adminToken)
 
 	// Формируем URL для редиректа (обратно на страницу деталей истории)
 	redirectURL := fmt.Sprintf("/admin/users/%s/stories/%s", targetUserIDStr, storyIDStr)
@@ -613,37 +684,57 @@ func (h *AdminHandler) showEditPlayerProgressPage(c *gin.Context) {
 	}
 	log = log.With(zap.String("progressID", progressID.String()))
 
+	// Получаем токен администратора
+	adminToken, err := c.Cookie("admin_session")
+	if err != nil {
+		log.Error("Failed to get admin token from cookie", zap.Error(err))
+		c.HTML(http.StatusInternalServerError, "error.html", gin.H{
+			"Error":      "Ошибка проверки сессии",
+			"Message":    err.Error(),
+			"IsLoggedIn": true,
+		})
+		return
+	}
+
 	// Получаем детали прогресса
-	progress, progressErr := h.gameplayClient.GetPlayerProgressInternal(ctx, progressID)
+	progress, progressErr := h.gameplayClient.GetPlayerProgressInternal(ctx, progressID, adminToken)
 	if progressErr != nil {
 		log.Error("Failed to get player progress details", zap.Error(progressErr))
 		// Можно показать ошибку на странице или редиректнуть
 		// Пока просто передадим ошибку в шаблон
 	}
 
-	// Опционально: получить User и Story для контекста (можно пропустить для упрощения)
-	// ... (код для получения targetUser и story по targetUserIDStr и storyIDStr, если нужно) ...
+	// Формируем JSON для отображения в редакторе
+	var progressJSON string
+	if progress != nil {
+		// Предполагаем, что в PlayerProgress есть поле ProgressData для игрового прогресса
+		jsonBytes, err := json.MarshalIndent(progress, "", "  ")
+		if err != nil {
+			log.Error("Failed to marshal progress to JSON", zap.Error(err))
+			progressJSON = "Error marshaling JSON: " + err.Error()
+		} else {
+			progressJSON = string(jsonBytes)
+		}
+	} else {
+		// Не удалось получить прогресс
+		progressJSON = ""
+	}
 
-	// Готовим данные для шаблона
-	pageTitle := fmt.Sprintf("Редактирование прогресса %s", progressID.String())
-	// if targetUser != nil && story != nil { ... добавить ID игрока и название истории ... }
+	// Формируем заголовок страницы
+	pageTitle := "Редактирование прогресса игрока"
 
 	data := gin.H{
-		"PageTitle":  pageTitle,
-		"Progress":   progress, // Передаем полученный прогресс
-		"UserID":     targetUserIDStr,
-		"StoryID":    storyIDStr,
-		"IsLoggedIn": true,
-	}
-	if progressErr != nil {
-		if errors.Is(progressErr, sharedModels.ErrPlayerProgressNotFound) {
-			data["ProgressError"] = "Прогресс игрока не найден."
-		} else {
-			data["ProgressError"] = "Не удалось загрузить прогресс игрока: " + progressErr.Error()
-		}
+		"PageTitle":     pageTitle,
+		"ProgressID":    progressID.String(),
+		"UserID":        targetUserIDStr,
+		"StoryID":       storyIDStr,
+		"Progress":      progress,
+		"ProgressError": progressErr,
+		"ProgressJSON":  progressJSON,
+		"IsLoggedIn":    true,
+		"AdminToken":    adminToken, // Добавляем токен в контекст для использования в JavaScript
 	}
 
-	// Рендерим новый шаблон
 	c.HTML(http.StatusOK, "edit_player_progress.html", data)
 }
 
@@ -665,6 +756,15 @@ func (h *AdminHandler) handleUpdatePlayerProgress(c *gin.Context) {
 		return
 	}
 	log = log.With(zap.String("progressID", progressID.String()))
+
+	// Получаем токен администратора
+	adminToken, err := c.Cookie("admin_session")
+	if err != nil {
+		log.Error("Failed to get admin token from cookie", zap.Error(err))
+		redirectURLBase := fmt.Sprintf("/users/%s/stories/%s", targetUserIDStr, storyIDStr)
+		c.Redirect(http.StatusSeeOther, redirectURLBase+"?error=admin_token")
+		return
+	}
 
 	// Формируем URL для редиректа в случае успеха или ошибки
 	redirectURLBase := fmt.Sprintf("/admin/users/%s/stories/%s/progress/%s/edit", targetUserIDStr, storyIDStr, progressIDStr)
@@ -739,7 +839,7 @@ func (h *AdminHandler) handleUpdatePlayerProgress(c *gin.Context) {
 	log.Debug("Attempting to update player progress", zap.Any("data", updateData))
 
 	// Вызов метода клиента
-	err = h.gameplayClient.UpdatePlayerProgressInternal(ctx, progressID, updateData)
+	err = h.gameplayClient.UpdatePlayerProgressInternal(ctx, progressID, updateData, adminToken)
 	if err != nil {
 		log.Error("Failed to update player progress via gameplay service", zap.Error(err))
 		errorMsg := "Не удалось обновить прогресс"

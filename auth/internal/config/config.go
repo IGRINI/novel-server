@@ -50,7 +50,8 @@ type Config struct {
 	PasswordPepper string
 
 	// Inter-service communication
-	InterServiceSecret string `envconfig:"INTER_SERVICE_SECRET" default:""`
+	// Удаляем тег envconfig, секрет будет грузиться только из файла
+	InterServiceSecret string
 	// <<< Добавляем InterServiceTokenTTL >>>
 	InterServiceTokenTTL time.Duration `envconfig:"INTER_SERVICE_TOKEN_TTL" default:"1h"`
 
@@ -107,13 +108,11 @@ func LoadConfig(envFilePath ...string) (*Config, error) {
 		return nil, loadErr
 	}
 
-	// <<< Возвращаем старую логику для опционального INTER_SERVICE_SECRET >>>
+	// <<< Убираем старую логику для опционального INTER_SERVICE_SECRET >>>
+	// <<< Делаем InterServiceSecret обязательным секретом из файла >>>
 	cfg.InterServiceSecret, loadErr = utils.ReadSecret("inter_service_secret")
 	if loadErr != nil {
-		// Если INTER_SERVICE_SECRET не найден, это не фатальная ошибка,
-		// но может потребоваться для работы InternalAuthMiddleware.
-		// Оставляем значение по умолчанию из envconfig.
-		log.Printf("Warning: Could not read optional secret 'inter_service_secret': %v. Using default/env value: '%s'", loadErr, cfg.InterServiceSecret)
+		return nil, fmt.Errorf("failed to read required secret 'inter_service_secret': %w", loadErr)
 	}
 
 	// Convert Redis DB from string if needed (env var might be string)
@@ -149,7 +148,8 @@ func LoadConfig(envFilePath ...string) (*Config, error) {
 	fmt.Printf("  REFRESH_TOKEN_TTL: %v\n", cfg.RefreshTokenTTL)
 	fmt.Printf("  JWT_SECRET: [LOADED]\n")
 	fmt.Printf("  PASSWORD_PEPPER: [LOADED]\n") // Используем Pepper
-	fmt.Printf("  INTER_SERVICE_SECRET: %s\n", maskSecret(cfg.InterServiceSecret))
+	// <<< Обновляем логирование для обязательного секрета >>>
+	fmt.Printf("  INTER_SERVICE_SECRET: [LOADED]\n")
 	fmt.Printf("  INTER_SERVICE_TOKEN_TTL: %v\n", cfg.InterServiceTokenTTL)
 	fmt.Printf("  CORS_ALLOWED_ORIGINS: %s\n", cfg.CORSAllowedOrigins)
 

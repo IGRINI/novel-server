@@ -142,7 +142,7 @@ func (c *authClient) Login(ctx context.Context, username, password string) (*mod
 // --- Новые методы ---
 
 // GetUserCount - вызывает эндпоинт /internal/auth/users/count в auth-service
-func (c *authClient) GetUserCount(ctx context.Context) (int, error) {
+func (c *authClient) GetUserCount(ctx context.Context, adminAccessToken string) (int, error) {
 	countURL := c.baseURL + "/internal/auth/users/count"
 	log := c.logger.With(zap.String("url", countURL))
 
@@ -153,8 +153,8 @@ func (c *authClient) GetUserCount(ctx context.Context) (int, error) {
 	}
 	httpReq.Header.Set("Accept", "application/json")
 
-	// Используем универсальный метод для выполнения запроса
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	// Используем метод doAdminRequest для передачи админ-токена
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
 		log.Error("HTTP request for user count failed", zap.Error(err))
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -189,7 +189,7 @@ func (c *authClient) GetUserCount(ctx context.Context) (int, error) {
 }
 
 // ListUsers - вызывает эндпоинт /internal/auth/users в auth-service с параметрами пагинации.
-func (c *authClient) ListUsers(ctx context.Context, limit int, afterCursor string) ([]models.User, string, error) {
+func (c *authClient) ListUsers(ctx context.Context, limit int, afterCursor string, adminAccessToken string) ([]models.User, string, error) {
 	listURL := c.baseURL + "/internal/auth/users"
 	log := c.logger.With(zap.String("url", listURL), zap.Int("limit", limit), zap.String("after", afterCursor))
 
@@ -214,8 +214,8 @@ func (c *authClient) ListUsers(ctx context.Context, limit int, afterCursor strin
 	}
 	httpReq.Header.Set("Accept", "application/json")
 
-	// Используем универсальный метод для выполнения запроса
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	// Используем метод doAdminRequest для передачи админ-токена
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
 		log.Error("HTTP request for user list failed", zap.Error(err))
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -236,14 +236,20 @@ func (c *authClient) ListUsers(ctx context.Context, limit int, afterCursor strin
 		return nil, "", fmt.Errorf("received unexpected status %d from auth service for user list", httpResp.StatusCode)
 	}
 
-	var users []models.User
-	if err := json.Unmarshal(respBodyBytes, &users); err != nil {
+	// Структура для десериализации ответа с пагинацией
+	type paginatedUsersResponse struct {
+		Data       []models.User `json:"data"`
+		NextCursor string        `json:"next_cursor"`
+	}
+
+	var response paginatedUsersResponse
+	if err := json.Unmarshal(respBodyBytes, &response); err != nil {
 		log.Error("Failed to unmarshal user list response", zap.Int("status", httpResp.StatusCode), zap.ByteString("body", respBodyBytes), zap.Error(err))
 		return nil, "", fmt.Errorf("invalid user list response format from auth service: %w", err)
 	}
 
-	log.Info("User list retrieved successfully", zap.Int("userCount", len(users)))
-	return users, "", nil
+	log.Info("User list retrieved successfully", zap.Int("userCount", len(response.Data)))
+	return response.Data, response.NextCursor, nil
 }
 
 // doRequestWithTokenRefresh выполняет HTTP запрос с автоматическим обновлением токена при получении 401
@@ -581,7 +587,7 @@ func (c *authClient) RefreshAdminToken(ctx context.Context, refreshToken string)
 // <<< Конец нового метода >>>
 
 // GetUserInfo - вызывает эндпоинт /internal/auth/users/{user_id} для получения данных одного пользователя
-func (c *authClient) GetUserInfo(ctx context.Context, userID uuid.UUID) (*models.User, error) {
+func (c *authClient) GetUserInfo(ctx context.Context, userID uuid.UUID, adminAccessToken string) (*models.User, error) {
 	userInfoURL := fmt.Sprintf("%s/internal/auth/users/%s", c.baseURL, userID.String())
 	log := c.logger.With(zap.String("url", userInfoURL), zap.String("userID", userID.String()))
 
@@ -592,8 +598,8 @@ func (c *authClient) GetUserInfo(ctx context.Context, userID uuid.UUID) (*models
 	}
 	httpReq.Header.Set("Accept", "application/json")
 
-	// Используем универсальный метод для выполнения запроса
-	httpResp, err := c.doRequestWithTokenRefresh(ctx, httpReq)
+	// Используем метод doAdminRequest для передачи админ-токена
+	httpResp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
 	if err != nil {
 		log.Error("HTTP request for user info failed", zap.Error(err))
 		if errors.Is(err, context.DeadlineExceeded) {
