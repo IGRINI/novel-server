@@ -206,6 +206,7 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 						gameState, errGetState := p.playerGameStateRepo.GetByID(ctx, gameStateIDSuccess)
 						if errGetState != nil {
 							logWithState.Error("ERROR: Failed to get PlayerGameState by ID after successful Scene Upsert", zap.Error(errGetState))
+							return fmt.Errorf("failed to get PlayerGameState %s: %w", gameStateIDSuccess, errGetState)
 						} else {
 							if notification.PromptType == sharedModels.PromptTypeNovelGameOverCreator {
 								gameState.PlayerStatus = sharedModels.PlayerStatusCompleted
@@ -222,6 +223,7 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 
 							if _, errSaveState := p.playerGameStateRepo.Save(ctx, gameState); errSaveState != nil {
 								logWithState.Error("ERROR: Failed to save updated PlayerGameState after successful Scene Upsert", zap.Error(errSaveState))
+								return fmt.Errorf("failed to save PlayerGameState %s: %w", gameStateIDSuccess, errSaveState)
 							} else {
 								logWithState.Info("PlayerGameState updated successfully after successful Scene Upsert", zap.String("new_player_status", string(gameState.PlayerStatus)))
 

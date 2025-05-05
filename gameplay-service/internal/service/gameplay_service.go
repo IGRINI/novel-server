@@ -456,11 +456,13 @@ func (s *gameplayServiceImpl) ListPublishedStoriesPublic(ctx context.Context, us
 			IsAdultContent:   dto.IsAdultContent,
 			LikesCount:       int64(dto.LikesCount), // Cast dto.LikesCount to int64
 			IsLiked:          dto.IsLiked,
+			Status:           dto.Status,
 		}
 
 		results = append(results, sharedModels.PublishedStorySummaryWithProgress{
 			PublishedStorySummary: summary,
 			HasPlayerProgress:     dto.HasPlayerProgress,
+			IsPublic:              dto.IsPublic,
 		})
 	}
 

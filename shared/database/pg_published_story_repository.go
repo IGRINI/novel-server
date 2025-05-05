@@ -996,112 +996,157 @@ func (r *pgPublishedStoryRepository) GetConfigAndSetup(ctx context.Context, id u
 	return config, setup, nil
 }
 
+// --- Вспомогательная функция для логирования UUID (может быть nil) ---
+func uuidToStringPtrLog(id *uuid.UUID) string {
+	if id == nil {
+		return "<nil>"
+	}
+	return id.String()
+}
+
 // ListPublicSummaries получает список публичных историй с пагинацией.
-func (r *pgPublishedStoryRepository) ListPublicSummaries(ctx context.Context, userID *uuid.UUID, cursor string, limit int, sortBy string, filterAdult bool) ([]models.PublishedStorySummary, string, error) {
+// Возвращает PublishedStorySummaryWithProgress, чтобы включать is_liked, is_public и has_player_progress.
+func (r *pgPublishedStoryRepository) ListPublicSummaries(ctx context.Context, userID *uuid.UUID, cursor string, limit int, sortBy string, filterAdult bool) ([]models.PublishedStorySummaryWithProgress, string, error) {
 	if limit <= 0 {
-		limit = 10 // Default limit
+		limit = 20 // Default limit
 	}
 	fetchLimit := limit + 1
 
-	// Определяем поле и направление сортировки
-	orderByField := "created_at"
+	// Определение поля сортировки и типа данных для курсора
+	orderByField := "ps.created_at" // По умолчанию сортируем по дате создания
 	orderByDir := "DESC"
-	isLikesSort := false // <<< ДОБАВЛЕНО: Флаг для типа сортировки
-	sortBy = strings.ToLower(sortBy)
-	if sortBy == "likes" {
-		orderByField = "likes_count"
-		isLikesSort = true // <<< ДОБАВЛЕНО
-	} else if sortBy == "newest" {
-		orderByField = "created_at"
-	} // Добавить другие варианты сортировки при необходимости
+	isTimeSort := true // По умолчанию сортировка по времени
+	switch sortBy {
+	case "likes":
+		orderByField = "ps.likes_count"
+		isTimeSort = false
+	case "newest": // Уже по умолчанию
+		orderByField = "ps.created_at"
+		isTimeSort = true
+	case "oldest":
+		orderByField = "ps.created_at"
+		orderByDir = "ASC"
+		isTimeSort = true
+	}
 
-	// Декодируем курсор в зависимости от поля сортировки
+	// Декодируем курсор в зависимости от типа сортировки
 	var cursorValue interface{}
 	var cursorID uuid.UUID
 	var err error
-	if isLikesSort { // <<< ИЗМЕНЕНО: Проверка флага
-		var likes int64
-		likes, cursorID, err = utils.DecodeIntCursor(cursor) // <<< ИЗМЕНЕНО: Используем DecodeIntCursor
-		cursorValue = likes
-	} else { // По умолчанию сортировка по created_at
-		var createdTime time.Time
-		createdTime, cursorID, err = utils.DecodeCursor(cursor)
-		cursorValue = createdTime
-	}
-	if err != nil {
-		// Не возвращаем ошибку, если курсор просто пустой
-		if cursor != "" {
-			r.logger.Warn("Invalid cursor provided for ListPublicSummaries", zap.String("cursor", cursor), zap.String("sortBy", sortBy), zap.Error(err))
-			return nil, "", fmt.Errorf("invalid cursor: %w", err)
-		}
-		// Если курсор пустой, ошибки нет, продолжаем без курсора
-		err = nil // Сбрасываем ошибку
-		if isLikesSort {
-			cursorValue = int64(0) // Устанавливаем значение по умолчанию для пустого курсора
+	decodeAttempted := false
+
+	if cursor != "" {
+		decodeAttempted = true
+		if isTimeSort {
+			var decodedTime time.Time
+			decodedTime, cursorID, err = utils.DecodeCursor(cursor)
+			if err == nil {
+				cursorValue = decodedTime
+			}
 		} else {
-			cursorValue = time.Time{}
+			var decodedInt int64
+			decodedInt, cursorID, err = utils.DecodeIntCursor(cursor)
+			if err == nil {
+				cursorValue = decodedInt
+			}
 		}
+	}
+
+	// Обработка ошибки декодирования
+	if decodeAttempted && err != nil {
+		r.logger.Warn("Invalid cursor provided for ListPublicSummaries",
+			zap.String("cursor", cursor),
+			zap.String("sortBy", sortBy),
+			zap.Error(err))
+		return nil, "", fmt.Errorf("invalid cursor: %w", err)
+	}
+
+	// Если курсор пустой или декодирование прошло успешно, но без значения (e.g., DecodeCursor вернул Zero time),
+	// устанавливаем cursorValue в nil, чтобы не добавлять условие WHERE для курсора.
+	if cursor == "" || (err == nil && (isTimeSort && cursorValue.(time.Time).IsZero() || !isTimeSort && cursorValue.(int64) == 0)) {
+		cursorValue = nil // Не используем курсор в запросе
 		cursorID = uuid.Nil
 	}
 
 	// Строим запрос
 	var queryBuilder strings.Builder
-	args := []interface{}{}
-	paramIndex := 1
+	args := []interface{}{} // Аргументы запроса
+	paramIndex := 1         // Начинаем нумерацию плейсхолдеров с $1
 
 	queryBuilder.WriteString(`
-        SELECT DISTINCT ON (ps.id)
+        SELECT
             ps.id,
             ps.title,
-            ps.description, -- Используем полное описание, если short нет
-            ps.user_id,     -- author_id
-            COALESCE(u.display_name, '[unknown]') AS author_name, -- <<< ИЗМЕНЕНО: Получаем имя из users >>>
-            ps.created_at,
+            ps.description AS short_description,
+            ps.user_id AS author_id,
+            COALESCE(u.display_name, '[unknown]') AS author_name,
+            ps.created_at AS published_at,
             ps.is_adult_content,
             ps.likes_count,
             ps.status,
-            ps.cover_image_url,
-            (CASE WHEN $`)
-	queryBuilder.WriteString(fmt.Sprintf("%d", paramIndex)) // Динамический индекс для userID в CASE
-	args = append(args, userID)                             // Добавляем userID в аргументы ($1)
+            ir.image_url AS cover_image_url,
+            ps.is_public, -- Добавлено is_public
+            CASE WHEN $`)
+	queryBuilder.WriteString(fmt.Sprintf("%d", paramIndex))
+	args = append(args, userID) // $1 = userID (может быть nil)
 	paramIndex++
-	queryBuilder.WriteString(`::uuid IS NOT NULL THEN EXISTS (
-                SELECT 1 FROM story_likes sl WHERE sl.published_story_id = ps.id AND sl.user_id = $1 -- Используем $1 снова
-            ) ELSE FALSE END) AS is_liked
+	queryBuilder.WriteString(`::UUID IS NOT NULL THEN EXISTS (
+                SELECT 1 FROM story_likes sl WHERE sl.published_story_id = ps.id AND sl.user_id = $1
+            ) ELSE FALSE END AS is_liked, -- Вычисляем is_liked только если userID не NULL
+			CASE WHEN $1::UUID IS NOT NULL THEN EXISTS (
+				SELECT 1 FROM player_progress pp WHERE pp.published_story_id = ps.id AND pp.user_id = $1
+			) ELSE FALSE END AS has_player_progress -- Вычисляем has_player_progress только если userID не NULL
+		`) // --- КОНЕЦ SELECT ---
+
+	queryBuilder.WriteString(`
         FROM published_stories ps
-        LEFT JOIN users u ON ps.user_id = u.id -- <<< ДОБАВЛЕНО: JOIN с users >>>
-        WHERE ps.is_public = TRUE AND ps.status = $`)
-	queryBuilder.WriteString(fmt.Sprintf("%d", paramIndex)) // ($2)
-	args = append(args, models.StatusReady)
+        LEFT JOIN users u ON ps.user_id = u.id
+        LEFT JOIN image_references ir ON ir.reference = 'history_preview_' || ps.id::text
+        WHERE ps.status = $`)
+	queryBuilder.WriteString(fmt.Sprintf("%d", paramIndex))
+	args = append(args, models.StatusReady) // $2 = status
+	paramIndex++
+
+	queryBuilder.WriteString(` AND ps.is_public = $`)
+	queryBuilder.WriteString(fmt.Sprintf("%d", paramIndex))
+	args = append(args, true) // $3 = is_public
 	paramIndex++
 
 	if filterAdult {
-		queryBuilder.WriteString(" AND ps.is_adult_content = FALSE")
+		queryBuilder.WriteString(` AND ps.is_adult_content = $`)
+		queryBuilder.WriteString(fmt.Sprintf("%d", paramIndex))
+		args = append(args, false) // $4 = is_adult_content
+		paramIndex++
 	}
 
-	// Добавляем условие курсора, если он был предоставлен
-	if cursor != "" {
-		comparisonOperator := "<" // Для DESC сортировки
-		// NOTE: Для ASC сортировки нужно будет поменять оператор
-		queryBuilder.WriteString(fmt.Sprintf(" AND (ps.%s, ps.id) %s ($%d, $%d)", orderByField, comparisonOperator, paramIndex, paramIndex+1))
+	// Добавляем условие курсора, если он есть (cursorValue не nil)
+	if cursorValue != nil && cursorID != uuid.Nil {
+		var operator string
+		if orderByDir == "DESC" {
+			operator = "<"
+		} else {
+			operator = ">"
+		}
+
+		queryBuilder.WriteString(fmt.Sprintf(" AND (%s, ps.id) %s ($%d, $%d)", orderByField, operator, paramIndex, paramIndex+1))
 		args = append(args, cursorValue, cursorID)
 		paramIndex += 2
 	}
 
-	// Добавляем сортировку и лимит
-	// <<< ИЗМЕНЕНО: Сначала сортируем по ps.id для DISTINCT ON, затем по основному полю >>>
-	queryBuilder.WriteString(fmt.Sprintf(" ORDER BY ps.id, ps.%s %s, ps.id %s LIMIT $%d", orderByField, orderByDir, orderByDir, paramIndex))
+	// Добавляем ORDER BY и LIMIT
+	queryBuilder.WriteString(fmt.Sprintf(" ORDER BY %s %s, ps.id %s LIMIT $%d", orderByField, orderByDir, orderByDir, paramIndex))
 	args = append(args, fetchLimit)
 
 	query := queryBuilder.String()
 	logFields := []zap.Field{
-		zap.Stringer("userID", userID),
+		zap.String("userID", uuidToStringPtrLog(userID)), // Используем хелпер для логирования
 		zap.String("cursor", cursor),
 		zap.Int("limit", limit),
+		zap.String("sortBy", sortBy),
 		zap.Bool("filterAdult", filterAdult),
 		// zap.String("query", query), // Debug
 	}
-	r.logger.Debug("Listing public story summaries", logFields...)
+	r.logger.Debug("Listing public story summaries (returning WithProgress)", logFields...)
 
 	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
@@ -1110,45 +1155,82 @@ func (r *pgPublishedStoryRepository) ListPublicSummaries(ctx context.Context, us
 	}
 	defer rows.Close()
 
-	summaries := make([]models.PublishedStorySummary, 0, limit)
-	var lastCreatedAt time.Time // <<< ДОБАВЛЕНО: Переменная для created_at курсора
-	var lastID uuid.UUID        // <<< ДОБАВЛЕНО: Переменная для ID курсора
+	summaries := make([]models.PublishedStorySummaryWithProgress, 0, limit)
+	var lastSortValue interface{} // Для курсора (может быть time.Time или int64)
+	var lastID uuid.UUID
 
 	for rows.Next() {
-		var s models.PublishedStorySummary
-		var description sql.NullString
-		var coverImageUrl sql.NullString
-		var currentLastActivity time.Time
+		var summary models.PublishedStorySummaryWithProgress
+		var title, shortDescription, authorNameSql, statusSql sql.NullString // Используем NullString для полей, которые могут быть NULL или для безопасного сканирования ENUM/TEXT
+		var coverImageURL sql.NullString
+		var publishedAt time.Time
+		var likesCount int64
 
 		if err := rows.Scan(
-			&s.ID,
-			&s.Title,
-			&description,
-			&s.AuthorID,
-			&s.AuthorName,
-			&currentLastActivity,
-			&s.LikesCount,
-			&s.Status,
-			&coverImageUrl,
-			&s.IsLiked,
+			&summary.ID,
+			&title,
+			&shortDescription,
+			&summary.AuthorID,
+			&authorNameSql, // Сканируем author_name в NullString
+			&publishedAt,
+			&summary.IsAdultContent,
+			&likesCount,
+			&statusSql, // Сканируем status в NullString
+			&coverImageURL,
+			&summary.IsPublic,
+			&summary.IsLiked,
+			&summary.HasPlayerProgress,
 		); err != nil {
-			r.logger.Error("Failed to scan public story summary row", append(logFields, zap.Error(err))...)
-			continue
+			r.logger.Error("Error scanning public story summary row", append(logFields, zap.Error(err))...)
+			// Важно вернуть ошибку, если сканирование не удалось, иначе данные будут неполными
+			return nil, "", fmt.Errorf("ошибка сканирования строки публичной истории: %w", err)
 		}
 
-		if description.Valid {
-			s.ShortDescription = description.String
-		}
-		if coverImageUrl.Valid {
-			urlStr := coverImageUrl.String
-			s.CoverImageURL = &urlStr
+		// Присваиваем значения из NullString и *string
+		if title.Valid {
+			summary.Title = title.String
 		} else {
-			s.CoverImageURL = nil
+			summary.Title = "" // Или другое значение по умолчанию
+		}
+		if shortDescription.Valid {
+			summary.ShortDescription = shortDescription.String
+		} else {
+			summary.ShortDescription = ""
+		}
+		// Присваиваем AuthorName
+		if authorNameSql.Valid {
+			summary.AuthorName = authorNameSql.String
+		} else {
+			summary.AuthorName = "[unknown]" // Значение по умолчанию, если COALESCE вдруг вернет NULL
+		}
+		// Присваиваем Status
+		if statusSql.Valid {
+			summary.Status = models.StoryStatus(statusSql.String) // Приводим тип string к models.StoryStatus
+		} else {
+			// Если статус NULL в БД (не должно быть для ready+public), логируем и ставим дефолт?
+			r.logger.Warn("Scanned NULL status for ready&public story", append(logFields, zap.String("storyID", summary.ID.String()))...)
+			summary.Status = "" // Оставляем пустым или ставим 'unknown'?
+		}
+		if coverImageURL.Valid {
+			urlStr := coverImageURL.String
+			summary.CoverImageURL = &urlStr
+		} else {
+			summary.CoverImageURL = nil
 		}
 
-		summaries = append(summaries, s)
-		lastCreatedAt = currentLastActivity
-		lastID = s.ID
+		// Устанавливаем остальные поля PublishedStorySummary
+		summary.PublishedAt = publishedAt
+		summary.LikesCount = likesCount
+
+		summaries = append(summaries, summary)
+
+		// Обновляем значения для курсора на основе поля сортировки
+		if isTimeSort {
+			lastSortValue = publishedAt
+		} else {
+			lastSortValue = likesCount
+		}
+		lastID = summary.ID
 	}
 
 	if err := rows.Err(); err != nil {
@@ -1159,11 +1241,20 @@ func (r *pgPublishedStoryRepository) ListPublicSummaries(ctx context.Context, us
 	var nextCursor string
 	if len(summaries) == fetchLimit {
 		summaries = summaries[:limit]
-		// Курсор теперь основан на времени создания истории (published_at) и ID истории
-		nextCursor = utils.EncodeCursor(lastCreatedAt, lastID) // <<< ИЗМЕНЕНО: Используем правильные переменные
+		// Кодируем курсор на основе последнего значения поля сортировки и ID
+		if lastID != uuid.Nil {
+			if timeVal, ok := lastSortValue.(time.Time); ok {
+				nextCursor = utils.EncodeCursor(timeVal, lastID)
+			} else if intVal, ok := lastSortValue.(int64); ok {
+				nextCursor = utils.EncodeIntCursor(intVal, lastID)
+			} else {
+				r.logger.Error("Failed to encode next cursor: unknown type for lastSortValue",
+					append(logFields, zap.Any("lastSortValue", lastSortValue), zap.Stringer("lastID", lastID))...)
+			}
+		}
 	}
 
-	r.logger.Debug("Public story summaries listed successfully", append(logFields, zap.Int("count", len(summaries)), zap.Bool("hasNext", nextCursor != ""))...)
+	r.logger.Debug("Public story summaries listed successfully (returning WithProgress)", append(logFields, zap.Int("count", len(summaries)), zap.Bool("hasNext", nextCursor != ""))...)
 	return summaries, nextCursor, nil
 }
 
@@ -1268,7 +1359,7 @@ func (r *pgPublishedStoryRepository) ListUserSummariesWithProgress(ctx context.C
 			&s.Title,          // 2: ps.title
 			&description,      // 3: ps.description
 			&s.AuthorID,       // 4: ps.user_id
-			&authorName,       // 5: author_name
+			&authorName,       // 5: author_name <-- Исправлено
 			&publishedAt,      // 6: ps.created_at
 			&s.IsAdultContent, // 7: ps.is_adult_content <<< ДОБАВЛЕНО
 			&s.LikesCount,     // 8: ps.likes_count

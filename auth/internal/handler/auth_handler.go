@@ -77,6 +77,7 @@ func (h *AuthHandler) RegisterRoutes(router *gin.Engine, rateLimiter gin.Handler
 		internalAuthGroup.POST("/token/generate", h.generateInterServiceToken)
 		internalAuthGroup.POST("/token/verify", h.verifyInterServiceToken)
 		internalAuthGroup.POST("/users/batch-info", h.handleBatchGetUsersInfo)
+		internalAuthGroup.GET("/users/:user_id/device-tokens", h.getDeviceTokensForUser)
 
 		// Routes requiring BOTH service-to-service auth AND admin role
 		adminRequiredGroup := internalAuthGroup.Group("")
@@ -90,7 +91,6 @@ func (h *AuthHandler) RegisterRoutes(router *gin.Engine, rateLimiter gin.Handler
 			adminRequiredGroup.PUT("/users/:user_id", h.updateUser)
 			adminRequiredGroup.PUT("/users/:user_id/password", h.updatePassword)
 			adminRequiredGroup.POST("/token/refresh/admin", h.refreshAdminToken)
-			adminRequiredGroup.GET("/users/:user_id/device-tokens", h.getDeviceTokensForUser)
 		}
 	}
 }

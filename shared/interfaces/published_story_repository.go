@@ -93,7 +93,7 @@ type PublishedStoryRepository interface {
 	ListUserSummariesOnlyWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummaryWithProgress, string, error)
 
 	// ListPublicSummaries retrieves a paginated list of public stories.
-	ListPublicSummaries(ctx context.Context, userID *uuid.UUID, cursor string, limit int, sortBy string, filterAdult bool) ([]models.PublishedStorySummary, string, error)
+	ListPublicSummaries(ctx context.Context, userID *uuid.UUID, cursor string, limit int, sortBy string, filterAdult bool) ([]models.PublishedStorySummaryWithProgress, string, error)
 
 	// CheckInitialGenerationStatus проверяет, готовы ли Setup и Первая сцена.
 	CheckInitialGenerationStatus(ctx context.Context, id uuid.UUID) (bool, error)

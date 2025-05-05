@@ -61,6 +61,7 @@ type PublishedStorySummaryDTO struct {
 	HasPlayerProgress bool                     `json:"has_player_progress"`
 	IsPublic          bool                     `json:"is_public"`
 	Status            sharedModels.StoryStatus `json:"status"`
+	CoverImageURL     *string                  `json:"cover_image_url,omitempty"`
 }
 
 type ParsedCharacterDTO struct {
@@ -209,9 +210,14 @@ func (s *storyBrowsingServiceImpl) ListPublicStories(ctx context.Context, userID
 		limit = 20
 	}
 
-	summaries, nextCursor, err := s.publishedRepo.ListUserSummariesWithProgress(ctx, userID, cursor, limit, true)
+	var requestingUserID *uuid.UUID
+	if userID != uuid.Nil {
+		requestingUserID = &userID
+	}
+
+	summaries, nextCursor, err := s.publishedRepo.ListPublicSummaries(ctx, requestingUserID, cursor, limit, "default", true)
 	if err != nil {
-		s.logger.Error("Failed to list public stories summaries with progress", zap.Error(err))
+		s.logger.Error("Failed to list public stories summaries", zap.Error(err))
 		return nil, "", sharedModels.ErrInternalServer
 	}
 
@@ -230,10 +236,11 @@ func (s *storyBrowsingServiceImpl) ListPublicStories(ctx context.Context, userID
 			HasPlayerProgress: summary.HasPlayerProgress,
 			IsPublic:          summary.IsPublic,
 			Status:            summary.Status,
+			CoverImageURL:     summary.CoverImageURL,
 		})
 	}
 
-	log.Debug("Successfully listed public stories summaries with progress", zap.Int("count", len(results)), zap.Bool("hasNext", nextCursor != ""))
+	log.Debug("Successfully listed public stories summaries", zap.Int("count", len(results)), zap.Bool("hasNext", nextCursor != ""))
 	return results, nextCursor, nil
 }
 
@@ -495,6 +502,7 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetailsWithProgress(ctx cont
 		HasPlayerProgress: details.HasPlayerProgress,
 		IsPublic:          details.IsPublic,
 		Status:            details.Status,
+		CoverImageURL:     details.CoverImageURL,
 	}
 
 	log.Info("Successfully retrieved published story summary with progress")

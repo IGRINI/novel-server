@@ -381,33 +381,60 @@ func (p *NotificationProcessor) handleInitialSceneGenerated(ctx context.Context,
 		}
 		log.Info("Finished updating game states", zap.Int("updatedCount", updatedCount))
 
-		// 2.5 Обновляем статус истории
-		currentStoryState, errStory := p.publishedRepo.GetByID(ctx, publishedStoryID)
+		// 2.5 Обновляем статус истории и отправляем уведомление, если нужно
+		// Получаем актуальное состояние ДО обновления статуса
+		storyBeforeUpdate, errStory := p.publishedRepo.GetByID(ctx, publishedStoryID)
 		if errStory != nil {
 			log.Error("Failed to get published story before final status update", zap.Error(errStory))
+			// Не критично для обновления статуса, но уведомление может не уйти
+		}
+
+		// Определяем новый статус (Ready, если не было ошибки) и обновляем флаги
+		newStatus := sharedModels.StatusReady
+		if storyBeforeUpdate != nil && storyBeforeUpdate.Status == sharedModels.StatusError {
+			newStatus = sharedModels.StatusError // Сохраняем Error, если он уже был
+		}
+		wasErrorBefore := storyBeforeUpdate != nil && storyBeforeUpdate.Status == sharedModels.StatusError
+		wasReadyBefore := storyBeforeUpdate != nil && storyBeforeUpdate.Status == sharedModels.StatusReady
+		wereImagesPendingBefore := storyBeforeUpdate != nil && storyBeforeUpdate.AreImagesPending
+
+		errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(ctx, publishedStoryID, newStatus,
+			false,                   // isFirstScenePending = false
+			wereImagesPendingBefore, // Сохраняем флаг AreImagesPending (он мог быть false, если картинки не требовались)
+			nil)                     // Сбрасываем ошибку
+		if errUpdate != nil {
+			log.Error("Failed to update published story flags/status after initial scene generated", zap.Error(errUpdate))
+			// Ошибка обновления статуса, уведомление не отправляем
 		} else {
-			currentStatus := currentStoryState.Status
-			if currentStatus != sharedModels.StatusError {
-				currentStatus = sharedModels.StatusReady
-			}
-			errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(ctx, publishedStoryID, currentStatus, false, currentStoryState.AreImagesPending, nil)
-			if errUpdate != nil {
-				log.Error("Failed to update published story flags after initial scene generated", zap.Error(errUpdate))
-			} else {
-				log.Info("Successfully updated published story flags (IsFirstScenePending=false)", zap.String("final_status", string(currentStatus)))
-				// Проверяем готовность и отправляем уведомления, если нужно
-				if shouldSetReady := !currentStoryState.IsFirstScenePending && !currentStoryState.AreImagesPending && currentStatus != sharedModels.StatusReady; shouldSetReady {
-					log.Info("Initial scene ready AND images ready, triggering notifications")
-					// <<< ДОБАВЛЕНО: Отправляем WebSocket уведомление о готовности истории >>>
-					go p.publishClientStoryUpdateOnReady(ctx, currentStoryState)
-					// Отправляем Push-уведомление (закомментировано, т.к. требует реальной функции)
-					p.logger.Warn("TODO: Call the actual publishPushNotificationForStoryReady method")
-					// go p.publishPushNotificationForStoryReady(ctx, currentStoryState)
-				} else if !currentStoryState.AreImagesPending {
-					log.Info("Initial scene ready, but story status was already Error or Ready.")
+			log.Info("Successfully updated published story status/flags",
+				zap.String("new_status", string(newStatus)),
+				zap.Bool("is_first_scene_pending", false),
+				zap.Bool("are_images_pending", wereImagesPendingBefore),
+			)
+
+			// Проверяем, НУЖНО ЛИ отправлять уведомление о готовности
+			// Отправляем, если:
+			// 1. Новый статус - Ready
+			// 2. Статус ДО этого НЕ был Ready и НЕ был Error
+			// 3. Флаг AreImagesPending (сохраненный) - false (т.е. картинки готовы ИЛИ не требовались)
+			shouldNotifyReady := newStatus == sharedModels.StatusReady && !wasReadyBefore && !wasErrorBefore && !wereImagesPendingBefore
+
+			if shouldNotifyReady {
+				log.Info("Story became Ready, triggering notifications")
+				// Используем storyBeforeUpdate, т.к. он содержит UserID
+				if storyBeforeUpdate != nil {
+					go p.publishClientStoryUpdateOnReady(ctx, storyBeforeUpdate) // Используем КОПИЮ storyBeforeUpdate!
+					go p.publishPushNotificationForStoryReady(ctx, storyBeforeUpdate)
 				} else {
-					log.Info("Initial scene ready, but images still pending.")
+					log.Warn("Cannot send Ready notifications because storyBeforeUpdate was nil")
 				}
+			} else {
+				log.Info("No 'Ready' notification needed",
+					zap.String("final_status", string(newStatus)),
+					zap.Bool("wasReadyBefore", wasReadyBefore),
+					zap.Bool("wasErrorBefore", wasErrorBefore),
+					zap.Bool("wereImagesPendingBefore", wereImagesPendingBefore),
+				)
 			}
 		}
 	}
