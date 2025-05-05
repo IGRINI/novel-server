@@ -46,8 +46,8 @@ const (
 		FROM published_stories ps
 		JOIN story_likes sl ON ps.id = sl.published_story_id
 		LEFT JOIN player_game_states pgs ON ps.id = pgs.published_story_id AND pgs.player_id = $1 -- Need player_id for progress
-		-- LEFT JOIN story_likes already joined (for is_liked calculation in fields)
-		WHERE sl.user_id = $1 AND ps.status = 'published'
+		LEFT JOIN users u ON ps.user_id = u.id
+		WHERE sl.user_id = $1 AND ps.status = 'ready'
 	` // Only published liked stories
 
 	// publishedStorySummaryFields должен быть доступен из основного файла
@@ -56,7 +56,8 @@ const (
 		FROM published_stories ps
 		LEFT JOIN player_game_states pgs ON ps.id = pgs.published_story_id AND pgs.player_id = $1 -- User ID for progress
 		LEFT JOIN story_likes sl ON ps.id = sl.published_story_id AND sl.user_id = $1       -- User ID for like status
-		WHERE ps.status = 'published'
+		LEFT JOIN users u ON ps.user_id = u.id
+		WHERE ps.status = 'ready'
 	`
 
 	// publishedStorySummaryWithProgressFields должен быть доступен из основного файла
@@ -65,15 +66,15 @@ const (
 		FROM published_stories ps
 		LEFT JOIN player_game_states pgs ON ps.id = pgs.published_story_id AND pgs.player_id = $1 -- User checking likes/progress
 		LEFT JOIN story_likes sl ON ps.id = sl.published_story_id AND sl.user_id = $1
+		LEFT JOIN users u ON ps.user_id = u.id
 		, websearch_to_tsquery('simple', $2) query
-		WHERE ps.status = 'published' AND search_vector @@ query
+		WHERE ps.status = 'ready' AND search_vector @@ query
 	`
-	countPublicQueryBase = `SELECT COUNT(*) FROM published_stories ps WHERE ps.status = 'published'`
+	// countPublicQueryBase = `SELECT COUNT(*) FROM published_stories ps WHERE ps.status = $1` // REMOVED - Query built dynamically
 
 	searchPublicCountQueryBase = `
-		SELECT COUNT(*)
-		FROM published_stories ps, websearch_to_tsquery('simple', $1) query
-		WHERE ps.status = 'published' AND search_vector @@ query
+		SELECT COUNT(*) FROM published_stories ps, websearch_to_tsquery('simple', $1) query
+		WHERE ps.status = 'ready' AND search_vector @@ query -- <<< CORRECTED STATUS
 	`
 )
 
@@ -184,21 +185,27 @@ func (r *pgPublishedStoryRepository) ListLikedByUser(ctx context.Context, userID
 	queryBuilder := strings.Builder{}
 	queryBuilder.WriteString(listLikedStoriesByUserQueryBase)
 
-	// Count Total
-	countQuery := fmt.Sprintf(`
+	// --- Count Total ---
+	countQueryBuilder := strings.Builder{}
+	countArgs := []interface{}{}
+	countQueryBuilder.WriteString(`
 		SELECT COUNT(*)
 		FROM published_stories ps
 		JOIN story_likes sl ON ps.id = sl.published_story_id
-		WHERE sl.user_id = $1 AND ps.status = 'published'
+		WHERE sl.user_id = $1 AND ps.status = $2
 	`)
+	countArgs = append(countArgs, userID, models.StatusReady) // Pass status as parameter $2
+	countQuery := countQueryBuilder.String()
+
 	var totalItems int64
-	err := r.db.QueryRow(ctx, countQuery, args...).Scan(&totalItems)
+	err := r.db.QueryRow(ctx, countQuery, countArgs...).Scan(&totalItems)
 	if err != nil {
-		r.logger.Error("Failed to count stories for ListLikedByUser", append(logFields, zap.Error(err))...)
+		countLogFields := append(logFields, zap.String("count_query", countQuery), zap.Any("count_args", countArgs), zap.Error(err))
+		r.logger.Error("Failed to count stories for ListLikedByUser", countLogFields...)
 		return nil, "", fmt.Errorf("ошибка подсчета лайкнутых историй: %w", err)
 	}
 
-	// Apply Sorting (Default)
+	// --- Apply Sorting ---
 	orderBy := "sl.created_at DESC"
 	/* // Sorting logic commented out
 	if pagination != nil && pagination.SortBy != "" {
@@ -281,32 +288,42 @@ func (r *pgPublishedStoryRepository) ListPublicSummaries(ctx context.Context, us
 	queryBuilder := strings.Builder{}
 	queryBuilder.WriteString(listPublicSummariesQueryBase)
 
-	// Add filters
+	// --- Filters for main query ---
+	filterConditions := []string{}
 	if filterAdult {
-		queryBuilder.WriteString(fmt.Sprintf(" AND ps.is_adult_content = $%d", paramIndex))
+		filterConditions = append(filterConditions, fmt.Sprintf("ps.is_adult_content = $%d", paramIndex))
 		args = append(args, false)
 		paramIndex++
 		logFields = append(logFields, zap.Bool("is_adult_content_filtered", true))
 	}
-
-	// Count Total (needs to include filters)
-	countQueryBuilder := strings.Builder{}
-	countQueryBuilder.WriteString("SELECT COUNT(*) FROM published_stories ps WHERE ps.status = 'published'")
-	countArgs := []interface{}{}
-	if filterAdult {
-		countQueryBuilder.WriteString(" AND ps.is_adult_content = $1")
-		countArgs = append(countArgs, false)
+	if len(filterConditions) > 0 {
+		// Append WHERE conditions (after the initial WHERE ps.status = 'published' in base query)
+		queryBuilder.WriteString(" AND ")
+		queryBuilder.WriteString(strings.Join(filterConditions, " AND "))
 	}
-	countQuery := countQueryBuilder.String()
+
+	// --- Count Total (needs to include the SAME filters) ---
+	countQueryBuilder := strings.Builder{}
+	countArgs := []interface{}{}
+	countParamIndex := 1
+	// Start count query
+	// <<< ADDED ::story_status cast >>>
+	countQueryBuilder.WriteString(fmt.Sprintf("SELECT COUNT(*) FROM published_stories ps WHERE ps.status = $%d::story_status", countParamIndex))
+	countArgs = append(countArgs, models.StatusReady) // <<< CORRECTED: Use StatusReady
+	countParamIndex++
+
+	// Add count filters
 
 	var totalItems int64
-	err := r.db.QueryRow(ctx, countQuery, countArgs...).Scan(&totalItems)
+	err := r.db.QueryRow(ctx, countQueryBuilder.String(), countArgs...).Scan(&totalItems)
 	if err != nil {
-		r.logger.Error("Failed to count stories for ListPublicSummaries", append(logFields, zap.Error(err))...)
+		// Add count query details to log
+		countLogFields := append(logFields, zap.String("count_query", countQueryBuilder.String()), zap.Any("count_args", countArgs), zap.Error(err))
+		r.logger.Error("Failed to count stories for ListPublicSummaries", countLogFields...)
 		return nil, "", fmt.Errorf("ошибка подсчета публичных историй: %w", err)
 	}
 
-	// Apply Sorting
+	// --- Apply Sorting ---
 	orderByClause := "ps.created_at DESC, ps.id DESC" // Default sort
 	orderByColumn := "created_at"
 	switch sortBy {
@@ -488,7 +505,6 @@ func (r *pgPublishedStoryRepository) SearchPublic(ctx context.Context, query str
 	// Scan Results
 	for rows.Next() {
 		var tempSummary models.PublishedStorySummaryWithProgress
-		var coverImageURL sql.NullString
 		var publishedAt sql.NullTime
 		var playerStatus sql.NullString
 		var gameStateID sql.NullString
@@ -504,7 +520,6 @@ func (r *pgPublishedStoryRepository) SearchPublic(ctx context.Context, query str
 			&tempSummary.IsAdultContent,
 			&tempSummary.LikesCount,
 			&tempSummary.Status,
-			&coverImageURL,
 			&tempSummary.IsPublic,
 			&tempSummary.IsLiked,
 			&tempSummary.HasPlayerProgress,
@@ -517,9 +532,6 @@ func (r *pgPublishedStoryRepository) SearchPublic(ctx context.Context, query str
 			return nil, nil, fmt.Errorf("ошибка сканирования строки результата поиска: %w", scanErr)
 		}
 
-		if coverImageURL.Valid {
-			tempSummary.CoverImageURL = &coverImageURL.String
-		}
 		if publishedAt.Valid {
 			tempSummary.PublishedAt = publishedAt.Time // Corrected assignment
 		}

@@ -16,13 +16,13 @@ import (
 // Порядок полей ДОЛЖЕН СООТВЕТСТВОВАТЬ константе publishedStoryFields в основном файле репозитория.
 func scanPublishedStory(row pgx.Row) (*models.PublishedStory, error) {
 	var story models.PublishedStory
-	var title, description, coverImageURL, errorDetails sql.NullString // Fields that are *string in the model
-	var configBytes, setupBytes []byte                                 // For json.RawMessage fields
+	var title, description, errorDetails sql.NullString // Fields that are *string in the model
+	var configBytes, setupBytes []byte                  // For json.RawMessage fields
 
 	// IMPORTANT: The order here MUST match the SELECT order in the query using this helper.
 	// Assuming order based on fields in PublishedStory struct for now:
 	// id, user_id, config, setup, status, language, is_public, is_adult_content,
-	// title, description, cover_image_url, error_details, likes_count, created_at, updated_at,
+	// title, description, error_details, likes_count, created_at, updated_at,
 	// is_first_scene_pending, are_images_pending
 	err := row.Scan(
 		&story.ID,
@@ -35,7 +35,6 @@ func scanPublishedStory(row pgx.Row) (*models.PublishedStory, error) {
 		&story.IsAdultContent, // Scan IsAdultContent
 		&title,                // Scan into NullString
 		&description,          // Scan into NullString
-		&coverImageURL,        // Scan into NullString
 		&errorDetails,         // Scan into NullString
 		&story.LikesCount,     // Scan LikesCount
 		&story.CreatedAt,
@@ -57,9 +56,6 @@ func scanPublishedStory(row pgx.Row) (*models.PublishedStory, error) {
 	}
 	if description.Valid {
 		story.Description = &description.String
-	}
-	if coverImageURL.Valid {
-		story.CoverImageURL = &coverImageURL.String
 	}
 	if errorDetails.Valid {
 		story.ErrorDetails = &errorDetails.String
@@ -86,27 +82,26 @@ func scanPublishedStory(row pgx.Row) (*models.PublishedStory, error) {
 // !! ВАЖНО: Этот хелпер НЕ сканирует поле 'rank' для поисковых запросов. !!
 func scanPublishedStorySummaryWithProgress(row pgx.Row) (*models.PublishedStorySummaryWithProgress, error) {
 	var summary models.PublishedStorySummaryWithProgress
-	var coverImageURL sql.NullString    // Handle nullable cover_image_url
 	var playerGameStatus sql.NullString // Handle nullable player_game_status
 
-	// Assuming order: ID, Title, ShortDescription, AuthorID, AuthorName, PublishedAt,
-	// IsAdultContent, LikesCount, Status, CoverImageURL, IsPublic, IsLiked,
+	// Assuming order based on updated publishedStorySummaryWithProgressFields:
+	// ID, Title, ShortDescription, AuthorID, AuthorName, PublishedAt,
+	// IsAdultContent, LikesCount, Status, /* REMOVED */ IsPublic, IsLiked,
 	// HasPlayerProgress, PlayerGameStatus
 	err := row.Scan(
 		&summary.ID,
 		&summary.Title,
-		&summary.ShortDescription, // Scan directly into ShortDescription (string)
-		&summary.AuthorID,
-		&summary.AuthorName,        // Scan directly into AuthorName (string)
-		&summary.PublishedAt,       // Scan directly into PublishedAt (time.Time)
-		&summary.IsAdultContent,    // Scan directly into IsAdultContent (bool)
-		&summary.LikesCount,        // Scan directly into LikesCount (int64)
-		&summary.Status,            // Scan directly into Status (StoryStatus -> string)
-		&coverImageURL,             // Scan into NullString
-		&summary.IsPublic,          // Scan directly into IsPublic (bool)
-		&summary.IsLiked,           // Scan directly into IsLiked (bool)
-		&summary.HasPlayerProgress, // Scan directly into HasPlayerProgress (bool)
-		&playerGameStatus,          // Scan into NullString
+		&summary.ShortDescription,  // Scan directly into ShortDescription (string) -> Maps to ps.description
+		&summary.AuthorID,          // -> Maps to ps.user_id
+		&summary.AuthorName,        // -> Maps to u.display_name
+		&summary.PublishedAt,       // -> Maps to ps.created_at
+		&summary.IsAdultContent,    // -> Maps to ps.is_adult_content
+		&summary.LikesCount,        // -> Maps to ps.likes_count
+		&summary.Status,            // -> Maps to ps.status
+		&summary.IsPublic,          // -> Maps to ps.is_public
+		&summary.IsLiked,           // -> Maps to (sl.user_id IS NOT NULL)
+		&summary.HasPlayerProgress, // -> Maps to (pgs.player_progress_id IS NOT NULL)
+		&playerGameStatus,          // -> Maps to pgs.player_status
 	)
 
 	if err != nil {
@@ -116,10 +111,6 @@ func scanPublishedStorySummaryWithProgress(row pgx.Row) (*models.PublishedStoryS
 		return nil, fmt.Errorf("ошибка сканирования строки PublishedStorySummaryWithProgress: %w", err)
 	}
 
-	// Assign scanned nullable values
-	if coverImageURL.Valid {
-		summary.CoverImageURL = &coverImageURL.String
-	}
 	if playerGameStatus.Valid {
 		summary.PlayerGameStatus = playerGameStatus.String
 	}

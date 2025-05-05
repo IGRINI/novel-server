@@ -462,10 +462,9 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 		return nil // Success
 	}
 
-	// 5. Both Setup and the Initial Scene TEXT exist. Check for the cover image.
-	if publishedStory.CoverImageURL == nil || *publishedStory.CoverImageURL == "" { // Correct check for *string
-		// <<< ИСПРАВЛЕНО: Используем initialSceneID вместо scene.ID >>>
-		log.Info("Initial scene text exists, but cover image is missing. Retrying image generation.", zap.String("sceneID", initialSceneID.String()))
+	// 5. Both Setup and the Initial Scene TEXT exist. Check if images are pending.
+	if publishedStory.AreImagesPending {
+		log.Info("Initial scene text exists, but AreImagesPending is true. Retrying image generation (cover and/or characters).", zap.String("sceneID", initialSceneID.String()))
 
 		// --- Reconstruct Cover Image Prompt --- START ---
 		var setupContent models.NovelSetupContent
@@ -553,28 +552,6 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 		log.Info("Published cover image retry task successfully", zap.String("taskID", coverTaskPayload.TaskID))
 		return nil // Success
 	}
-
-	// --- ADDED: Check for pending character images if cover exists --- START ---
-	// This condition is met if the code reached here (meaning Setup and Scene Text exist) AND the cover image URL is not empty.
-	if publishedStory.AreImagesPending {
-		log.Info("Cover image exists, but AreImagesPending flag is true. Checking and retrying character images asynchronously.")
-
-		// Check/Generate setup images (async, doesn't block retry)
-		go func(bgCtx context.Context, story *models.PublishedStory, setupBytes []byte, authorID uuid.UUID) {
-			_, errImages := s.checkAndGenerateSetupImages(bgCtx, story, setupBytes, authorID)
-			if errImages != nil {
-				// Log error from background task
-				s.logger.Error("Error during background checkAndGenerateSetupImages triggered by initial retry",
-					zap.String("publishedStoryID", story.ID.String()),
-					zap.Stringer("userID", authorID),
-					zap.Error(errImages))
-			}
-		}(context.WithoutCancel(ctx), publishedStory, publishedStory.Setup, userID) // Pass necessary data to goroutine
-
-		// We initiated the async check/retry for character images.
-		return nil // Success
-	}
-	// --- ADDED: Check for pending character images if cover exists --- END ---
 
 	// 6. Setup, Scene Text, and Cover Image all exist, and AreImagesPending is false. Nothing to retry initially.
 	log.Warn("Setup, initial scene text, cover image exist, and no images are pending. Nothing to retry via initial retry endpoint.")

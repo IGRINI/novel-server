@@ -27,23 +27,21 @@ const (
 
 // PublishedStory представляет опубликованную историю в базе данных.
 type PublishedStory struct {
-	ID     uuid.UUID       `json:"id" db:"id"`
-	UserID uuid.UUID       `json:"user_id" db:"user_id"`       // ID автора истории
-	Config json.RawMessage `json:"config" db:"config"`         // Изначальный конфиг из драфта
-	Setup  json.RawMessage `json:"setup,omitempty" db:"setup"` // Сгенерированный setup
-	Status StoryStatus     `json:"status" db:"status"`
-	// EndingText     *string         `json:"ending_text,omitempty" db:"ending_text"` // УДАЛЕНО: Концовка специфична для игрока
-	Language       string    `json:"language,omitempty" db:"language"` // <<< ДОБАВЛЕНО: Язык истории
-	IsPublic       bool      `json:"is_public" db:"is_public"`
-	IsAdultContent bool      `json:"is_adult_content" db:"is_adult_content"`
-	Title          *string   `json:"title,omitempty" db:"title"`             // Указатель, так как может быть NULL
-	Description    *string   `json:"description,omitempty" db:"description"` // Указатель, так как может быть NULL
-	CoverImageURL  *string   `json:"cover_image_url,omitempty" db:"cover_image_url"`
-	ErrorDetails   *string   `json:"error_details,omitempty" db:"error_details"` // Детали ошибки *первоначальной генерации*
-	LikesCount     int64     `json:"likes_count" db:"likes_count"`
-	CreatedAt      time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at" db:"updated_at"`
-	IsLiked        bool      `json:"is_liked" db:"-"` // Это поле заполняется на уровне запроса для конкретного пользователя
+	ID             uuid.UUID       `json:"id" db:"id"`
+	UserID         uuid.UUID       `json:"user_id" db:"user_id"`       // ID автора истории
+	Config         json.RawMessage `json:"config" db:"config"`         // Изначальный конфиг из драфта
+	Setup          json.RawMessage `json:"setup,omitempty" db:"setup"` // Сгенерированный setup
+	Status         StoryStatus     `json:"status" db:"status"`
+	Language       string          `json:"language,omitempty" db:"language"` // <<< ДОБАВЛЕНО: Язык истории
+	IsPublic       bool            `json:"is_public" db:"is_public"`
+	IsAdultContent bool            `json:"is_adult_content" db:"is_adult_content"`
+	Title          *string         `json:"title,omitempty" db:"title"`                 // Указатель, так как может быть NULL
+	Description    *string         `json:"description,omitempty" db:"description"`     // Указатель, так как может быть NULL
+	ErrorDetails   *string         `json:"error_details,omitempty" db:"error_details"` // Детали ошибки *первоначальной генерации*
+	LikesCount     int64           `json:"likes_count" db:"likes_count"`
+	CreatedAt      time.Time       `json:"created_at" db:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at" db:"updated_at"`
+	IsLiked        bool            `json:"is_liked" db:"-"` // Это поле заполняется на уровне запроса для конкретного пользователя
 
 	// --- Флаги для отслеживания параллельной генерации ---
 	IsFirstScenePending bool `json:"is_first_scene_pending" db:"is_first_scene_pending"` // True, если первая сцена еще не сгенерирована
@@ -128,10 +126,9 @@ type PublishedStorySummary struct {
 	AuthorName       string      `json:"author_name" db:"author_name"`
 	PublishedAt      time.Time   `json:"published_at" db:"created_at"`
 	IsAdultContent   bool        `json:"is_adult_content" db:"is_adult_content"`
-	LikesCount       int64       `json:"likes_count" db:"likes_count"`                   // Added LikesCount
-	IsLiked          bool        `json:"is_liked" db:"is_liked"`                         // Added IsLiked (specific to user context)
-	Status           StoryStatus `json:"status" db:"status"`                             // Added Status
-	CoverImageURL    *string     `json:"cover_image_url,omitempty" db:"cover_image_url"` // Добавлено для отображения в списке
+	LikesCount       int64       `json:"likes_count" db:"likes_count"` // Added LikesCount
+	IsLiked          bool        `json:"is_liked" db:"is_liked"`       // Added IsLiked (specific to user context)
+	Status           StoryStatus `json:"status" db:"status"`           // Added Status
 }
 
 // PublishedStorySummaryWithProgress extends PublishedStorySummary with player progress info.
@@ -154,7 +151,6 @@ type PublishedStoryDetailWithProgressAndLike struct {
 	IsAdultContent    bool        `db:"is_adult_content"`
 	LikesCount        int64       `db:"likes_count"`
 	Status            StoryStatus `db:"status"`
-	CoverImageURL     *string     `db:"cover_image_url"`
 	IsPublic          bool        `db:"is_public"`
 	IsLiked           bool        `db:"is_liked"`
 	HasPlayerProgress bool        `db:"has_player_progress"`

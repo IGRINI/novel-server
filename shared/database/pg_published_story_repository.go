@@ -13,13 +13,13 @@ const (
 	// Поля для полной структуры PublishedStory
 	publishedStoryFields = `
 		ps.id, ps.user_id, ps.config, ps.setup, ps.status, ps.language, ps.is_public, ps.is_adult_content,
-		ps.title, ps.description, ps.cover_image_url, ps.error_details, ps.likes_count, ps.created_at, ps.updated_at,
+		ps.title, ps.description, error_details, ps.likes_count, ps.created_at, ps.updated_at,
 		ps.is_first_scene_pending, ps.are_images_pending
 	`
 	// Поля для сводки (используются в PublishedStorySummary)
 	publishedStorySummaryFields = `
 		ps.id, ps.title, ps.description, ps.user_id, u.display_name as author_name, ps.created_at, ps.is_adult_content,
-		ps.likes_count, (sl.user_id IS NOT NULL) as is_liked, ps.status, ir.image_url as cover_image_url
+		ps.likes_count, (sl.user_id IS NOT NULL) as is_liked, ps.status
 	`
 	// Поля для сводки с прогрессом (используются в PublishedStorySummaryWithProgress)
 	publishedStorySummaryWithProgressFields = publishedStorySummaryFields + `,

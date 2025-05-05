@@ -27,12 +27,12 @@ const (
 	createPublishedStoryQuery = `
 		INSERT INTO published_stories (
 			id, user_id, title, description, status, language, -- Include id in insert
-			is_public, is_adult_content, cover_image_url, config, setup,
+			is_public, is_adult_content, /* cover_image_url REMOVED */ config, setup,
 			created_at, updated_at -- likes_count default to 0
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13 -- 13 args
+			$1, $2, $3, $4, $5, $6, $7, $8, /* $9 REMOVED */ $9, $10, $11, $12 -- 12 args now
 		)
-	` // Removed RETURNING id
+	`
 	// publishedStoryFields используется в GetByID, предполагается, что он доступен
 	getPublishedStoryByIDQuery = `SELECT ` + publishedStoryFields + ` FROM published_stories ps WHERE ps.id = $1`
 
@@ -44,9 +44,9 @@ const (
 			language = $5,
 			is_public = $6,
 			is_adult_content = $7,
-			cover_image_url = $8,
-			config = $9,
-			setup = $10,
+			-- cover_image_url = $8, -- REMOVED
+			config = $8, -- Index shifted
+			setup = $9,  -- Index shifted
 			updated_at = NOW()
 		WHERE id = $1
 		RETURNING updated_at
@@ -86,11 +86,10 @@ func (r *pgPublishedStoryRepository) Create(ctx context.Context, story *models.P
 		story.Language,       // $6
 		story.IsPublic,       // $7
 		story.IsAdultContent, // $8
-		story.CoverImageURL,  // $9 (*string)
-		story.Config,         // $10 (json.RawMessage)
-		story.Setup,          // $11 (json.RawMessage)
-		story.CreatedAt,      // $12
-		story.UpdatedAt,      // $13
+		story.Config,         // $9 (was $10)
+		story.Setup,          // $10 (was $11)
+		story.CreatedAt,      // $11 (was $12)
+		story.UpdatedAt,      // $12 (was $13)
 	)
 
 	if err != nil {
@@ -137,9 +136,8 @@ func (r *pgPublishedStoryRepository) Update(ctx context.Context, story *models.P
 		story.Language,       // $5
 		story.IsPublic,       // $6
 		story.IsAdultContent, // $7
-		story.CoverImageURL,  // $8 (*string)
-		story.Config,         // $9 (json.RawMessage)
-		story.Setup,          // $10 (json.RawMessage)
+		story.Config,         // $8 (was $9)
+		story.Setup,          // $9 (was $10)
 	).Scan(&updatedAt)
 
 	if err != nil {

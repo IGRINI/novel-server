@@ -74,7 +74,6 @@ type PublishedStoryParsedDetailDTO struct {
 	PlayerName       string                              `json:"player_name"`
 	CoreStats        map[string]sharedModels.CoreStatDTO `json:"core_stats"`
 	Characters       []sharedModels.CharacterDTO         `json:"characters"`
-	CoverImageURL    *string                             `json:"cover_image_url,omitempty"`
 
 	GameStates []*sharedModels.GameStateSummaryDTO `json:"game_states,omitempty"`
 }
@@ -286,7 +285,6 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 		PlayerName:       config.PlayerName,
 		CoreStats:        coreStatsDTO,
 		Characters:       charactersDTO,
-		CoverImageURL:    previewURL,
 		GameStates:       make([]*sharedModels.GameStateSummaryDTO, 0),
 	}
 

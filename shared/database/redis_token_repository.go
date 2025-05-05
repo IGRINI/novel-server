@@ -35,6 +35,8 @@ func NewRedisTokenRepository(client *redis.Client, logger *zap.Logger) interface
 // We store two key-value pairs for each token pair:
 // 1. AccessUUID -> UserID (with AccessTokenTTL)
 // 2. RefreshUUID -> UserID (with RefreshTokenTTL)
+// And add identifiers to a user-specific set:
+// user_tokens:{UserID} -> { "access:{AccessUUID}", "refresh:{RefreshUUID}" }
 func (r *redisTokenRepository) SetToken(ctx context.Context, userID uuid.UUID, td *models.TokenDetails) error {
 	at := time.Unix(td.AtExpires, 0) // Access Token expiration time
 	rt := time.Unix(td.RtExpires, 0) // Refresh Token expiration time

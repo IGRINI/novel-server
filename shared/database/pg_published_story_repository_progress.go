@@ -24,6 +24,7 @@ const (
 		FROM published_stories ps
 		JOIN player_game_states pgs ON ps.id = pgs.published_story_id
 		LEFT JOIN story_likes sl ON ps.id = sl.published_story_id AND sl.user_id = $1
+		LEFT JOIN users u ON ps.user_id = u.id
 		WHERE pgs.player_id = $1
 	`
 	listUserSummariesWithProgressQueryBase = `
@@ -31,19 +32,22 @@ const (
 		FROM published_stories ps
 		LEFT JOIN player_game_states pgs ON ps.id = pgs.published_story_id AND pgs.player_id = $1
 		LEFT JOIN story_likes sl ON ps.id = sl.published_story_id AND sl.user_id = $1
+		LEFT JOIN users u ON ps.user_id = u.id
 		WHERE ps.user_id = $1
 	`
 	listUserSummariesOnlyWithProgressQueryBase = `
-		SELECT ` + publishedStorySummaryWithProgressFields + `
+		SELECT ` + publishedStorySummaryWithProgressFields + `, pgs.last_activity_at
 		FROM published_stories ps
 		JOIN player_game_states pgs ON ps.id = pgs.published_story_id AND pgs.player_id = $1
 		LEFT JOIN story_likes sl ON ps.id = sl.published_story_id AND sl.user_id = $1
+		LEFT JOIN users u ON ps.user_id = u.id
 	` // User ID is $1
 	getSummaryWithDetailsQueryBase = `
 		SELECT ` + publishedStorySummaryWithProgressFields + `
 		FROM published_stories ps
 		LEFT JOIN player_game_states pgs ON ps.id = pgs.published_story_id AND pgs.player_id = $2 -- User ID is $2 here
 		LEFT JOIN story_likes sl ON ps.id = sl.published_story_id AND sl.user_id = $2
+		LEFT JOIN users u ON ps.user_id = u.id
 		WHERE ps.id = $1
 	`
 	// publishedStorySummaryWithProgressFields needs to be defined/accessible
@@ -271,18 +275,19 @@ func (r *pgPublishedStoryRepository) ListUserSummariesOnlyWithProgress(ctx conte
 	defer rows.Close()
 
 	summaries := make([]models.PublishedStorySummaryWithProgress, 0, limit)
-	var lastActivityTime time.Time
+	var lastActivityTime time.Time // Variable to store the last activity time for cursor
 	var lastStoryID uuid.UUID
 
 	for rows.Next() {
-		// Need to scan last_activity_at separately for cursor
+		// <<< RESTORED: Call the helper function >>>
 		summary, err := scanPublishedStorySummaryWithProgressAndActivity(rows, &lastActivityTime)
 		if err != nil {
 			r.logger.Error("Error scanning user summary only with progress row", append(logFields, zap.Error(err))...)
 			return nil, "", fmt.Errorf("ошибка сканирования строки сводки истории: %w", err)
 		}
-		summaries = append(summaries, *summary)
+		summaries = append(summaries, *summary) // Append value
 		lastStoryID = summary.ID
+		// lastActivityTime is updated by the helper via pointer
 	}
 
 	if err := rows.Err(); err != nil {
@@ -327,28 +332,26 @@ func (r *pgPublishedStoryRepository) GetSummaryWithDetails(ctx context.Context, 
 // scanPublishedStorySummaryWithProgressAndActivity scans a summary and the last activity time.
 func scanPublishedStorySummaryWithProgressAndActivity(row pgx.Row, lastActivityAt *time.Time) (*models.PublishedStorySummaryWithProgress, error) {
 	var summary models.PublishedStorySummaryWithProgress
-	var coverImageURL sql.NullString
 	var playerGameStatus sql.NullString
 	var publishedAt time.Time // published_at from stories table (mapped to summary.PublishedAt)
 
 	// Need to know the exact order from the query using this helper
 	// Assuming: summaryFields..., has_player_progress, is_public, player_status, last_activity_at
-	err := row.Scan(
-		&summary.ID,
-		&summary.Title,
-		&summary.ShortDescription,
-		&summary.AuthorID,
-		&summary.AuthorName,
-		&publishedAt, // Scan ps.created_at
-		&summary.IsAdultContent,
-		&summary.LikesCount,
-		&summary.IsLiked,
-		&summary.Status,
-		&coverImageURL,
-		&summary.HasPlayerProgress, // Scan calculated has_player_progress
-		&summary.IsPublic,          // Scan ps.is_public
-		&playerGameStatus,          // Scan pgs.player_status
-		lastActivityAt,             // Scan pgs.last_activity_at into the provided pointer
+	err := row.Scan( // Now expecting 14 destinations
+		&summary.ID,                // 1
+		&summary.Title,             // 2
+		&summary.ShortDescription,  // 3
+		&summary.AuthorID,          // 4
+		&summary.AuthorName,        // 5
+		&publishedAt,               // 6
+		&summary.IsAdultContent,    // 7
+		&summary.LikesCount,        // 8
+		&summary.IsLiked,           // 9
+		&summary.Status,            // 10
+		&summary.HasPlayerProgress, // 11 (was 12)
+		&summary.IsPublic,          // 12 (was 13)
+		&playerGameStatus,          // 13 (was 14)
+		lastActivityAt,             // 14 (was 15)
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -358,9 +361,6 @@ func scanPublishedStorySummaryWithProgressAndActivity(row pgx.Row, lastActivityA
 	}
 
 	summary.PublishedAt = publishedAt // Assign scanned time
-	if coverImageURL.Valid {
-		summary.CoverImageURL = &coverImageURL.String
-	}
 	if playerGameStatus.Valid {
 		summary.PlayerGameStatus = playerGameStatus.String
 	}

@@ -6,7 +6,7 @@ import (
 	"novel-server/shared/models"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+	// "github.com/jackc/pgx/v5/pgxpool" // No longer needed here
 	"go.uber.org/zap"
 )
 
@@ -32,26 +32,14 @@ const (
 )
 
 // MarkStoryAsLiked отмечает историю как лайкнутую пользователем.
+// ВНИМАНИЕ: Этот метод больше НЕ управляет транзакцией. Вызывающий код ДОЛЖЕН обернуть его в транзакцию.
 func (r *pgPublishedStoryRepository) MarkStoryAsLiked(ctx context.Context, storyID uuid.UUID, userID uuid.UUID) error {
 	logFields := []zap.Field{zap.String("storyID", storyID.String()), zap.String("userID", userID.String())}
-	r.logger.Debug("Marking story as liked", logFields...)
-
-	// Get pool from DBTX interface (use pointer assertion)
-	pool, ok := r.db.(*pgxpool.Pool)
-	if !ok {
-		r.logger.Error("r.db is not *pgxpool.Pool, cannot begin transaction for like", logFields...)
-		return fmt.Errorf("внутренняя ошибка: невозможно начать транзакцию (неверный тип DBTX)")
-	}
-
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		r.logger.Error("Failed to begin transaction for marking like", append(logFields, zap.Error(err))...)
-		return fmt.Errorf("ошибка начала транзакции для лайка: %w", err)
-	}
-	defer tx.Rollback(ctx) // Rollback by default, Commit overrides
+	r.logger.Debug("Attempting to mark story as liked (transaction managed externally)", logFields...)
 
 	// 1. Insert like record (ignore conflict)
-	result, err := tx.Exec(ctx, insertLikeQuery, userID, storyID)
+	// Используем r.db напрямую, так как транзакция управляется извне.
+	result, err := r.db.Exec(ctx, insertLikeQuery, userID, storyID)
 	if err != nil {
 		r.logger.Error("Failed to insert into story_likes", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка добавления лайка в story_likes: %w", err)
@@ -59,50 +47,35 @@ func (r *pgPublishedStoryRepository) MarkStoryAsLiked(ctx context.Context, story
 
 	// 2. If inserted (RowsAffected > 0), increment counter
 	if result.RowsAffected() > 0 {
-		incrementResult, err := tx.Exec(ctx, incrementLikesCountQuery, storyID)
+		incrementResult, err := r.db.Exec(ctx, incrementLikesCountQuery, storyID)
 		if err != nil {
 			r.logger.Error("Failed to increment likes count after inserting like", append(logFields, zap.Error(err))...)
+			// Не делаем rollback, так как транзакция внешняя
 			return fmt.Errorf("ошибка инкремента счетчика лайков: %w", err)
 		}
 		if incrementResult.RowsAffected() == 0 {
 			r.logger.Error("Story not found for incrementing likes count after inserting like record", logFields...)
-			return models.ErrNotFound // Story disappeared mid-transaction?
+			// Не делаем rollback
+			return models.ErrNotFound // Story disappeared mid-operation?
 		}
 		r.logger.Debug("Likes count incremented", logFields...)
 	} else {
 		r.logger.Debug("Like record already existed, likes count not incremented", logFields...)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		r.logger.Error("Failed to commit transaction for marking like", append(logFields, zap.Error(err))...)
-		return fmt.Errorf("ошибка коммита транзакции для лайка: %w", err)
-	}
-
-	r.logger.Info("Story marked as liked successfully (or already liked)", logFields...)
+	// Коммит или откат выполняется вызывающим кодом.
+	r.logger.Info("MarkStoryAsLiked operation completed within external transaction context", logFields...)
 	return nil
 }
 
 // MarkStoryAsUnliked отмечает историю как не лайкнутую пользователем.
+// ВНИМАНИЕ: Этот метод больше НЕ управляет транзакцией. Вызывающий код ДОЛЖЕН обернуть его в транзакцию.
 func (r *pgPublishedStoryRepository) MarkStoryAsUnliked(ctx context.Context, storyID uuid.UUID, userID uuid.UUID) error {
 	logFields := []zap.Field{zap.String("storyID", storyID.String()), zap.String("userID", userID.String())}
-	r.logger.Debug("Marking story as unliked", logFields...)
-
-	// Get pool from DBTX interface (use pointer assertion)
-	pool, ok := r.db.(*pgxpool.Pool)
-	if !ok {
-		r.logger.Error("r.db is not *pgxpool.Pool, cannot begin transaction for unlike", logFields...)
-		return fmt.Errorf("внутренняя ошибка: невозможно начать транзакцию (неверный тип DBTX)")
-	}
-
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		r.logger.Error("Failed to begin transaction for unmarking like", append(logFields, zap.Error(err))...)
-		return fmt.Errorf("ошибка начала транзакции для снятия лайка: %w", err)
-	}
-	defer tx.Rollback(ctx)
+	r.logger.Debug("Attempting to mark story as unliked (transaction managed externally)", logFields...)
 
 	// 1. Delete like record
-	result, err := tx.Exec(ctx, deleteLikeQuery, userID, storyID)
+	result, err := r.db.Exec(ctx, deleteLikeQuery, userID, storyID)
 	if err != nil {
 		r.logger.Error("Failed to delete from story_likes", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка удаления лайка из story_likes: %w", err)
@@ -110,26 +83,22 @@ func (r *pgPublishedStoryRepository) MarkStoryAsUnliked(ctx context.Context, sto
 
 	// 2. If deleted (RowsAffected > 0), decrement counter
 	if result.RowsAffected() > 0 {
-		decrementResult, err := tx.Exec(ctx, decrementLikesCountQuery, storyID)
+		decrementResult, err := r.db.Exec(ctx, decrementLikesCountQuery, storyID)
 		if err != nil {
 			r.logger.Error("Failed to decrement likes count after deleting like", append(logFields, zap.Error(err))...)
 			return fmt.Errorf("ошибка декремента счетчика лайков: %w", err)
 		}
 		if decrementResult.RowsAffected() == 0 {
 			r.logger.Error("Story not found for decrementing likes count after deleting like record", logFields...)
-			return models.ErrNotFound // Story disappeared mid-transaction?
+			return models.ErrNotFound // Story disappeared mid-operation?
 		}
 		r.logger.Debug("Likes count decremented", logFields...)
 	} else {
 		r.logger.Debug("Like record did not exist, likes count not decremented", logFields...)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		r.logger.Error("Failed to commit transaction for unmarking like", append(logFields, zap.Error(err))...)
-		return fmt.Errorf("ошибка коммита транзакции для снятия лайка: %w", err)
-	}
-
-	r.logger.Info("Story marked as unliked successfully (or was not liked)", logFields...)
+	// Коммит или откат выполняется вызывающим кодом.
+	r.logger.Info("MarkStoryAsUnliked operation completed within external transaction context", logFields...)
 	return nil
 }
 

@@ -49,7 +49,6 @@
 Конкретные URL формируются и используются следующим образом:
 
 *   **Превью опубликованной истории:**
-    *   **Получение URL:** Полный URL превью возвращается API в поле `coverImageUrl` (или аналогичном) в ответах эндпоинтов, возвращающих информацию об опубликованных историях (например, `GET /api/published-stories/me`, `GET /api/published-stories/public`, `GET /api/published-stories/:story_id`). Если превью еще не сгенерировано, значение поля будет `null`.
     *   Формат URL: `[Базовый URL изображений]/history_preview_{publishedStoryID}.jpg`
     *   Пример: `https://crion.space/generated-images/history_preview_a1b2c3d4-e5f6-7890-1234-567890abcdef.jpg`
     *   Где `{publishedStoryID}` - это UUID опубликованной истории.

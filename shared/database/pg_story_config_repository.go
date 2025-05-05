@@ -20,7 +20,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
 
@@ -119,9 +118,7 @@ func NewPgStoryConfigRepository(db interfaces.DBTX, logger *zap.Logger) interfac
 	}
 }
 
-// --- Helper Scan Function ---
-
-// scanStoryConfig scans a single row into a StoryConfig struct.
+// scanStoryConfig scans a row into a StoryConfig struct.
 // It handles json unmarshalling and potential ErrNoRows.
 func scanStoryConfig(row pgx.Row) (*sharedModels.StoryConfig, error) {
 	var config sharedModels.StoryConfig
@@ -606,29 +603,20 @@ func (r *pgStoryConfigRepository) UpdateStatus(ctx context.Context, id uuid.UUID
 }
 
 // AppendUserInput добавляет новый пользовательский ввод к существующему списку.
+// ВНИМАНИЕ: Этот метод больше НЕ управляет транзакцией. Вызывающий код ДОЛЖЕН обернуть его в транзакцию.
+// Запрос SELECT ... FOR UPDATE обеспечит блокировку строки в рамках внешней транзакции.
 func (r *pgStoryConfigRepository) AppendUserInput(ctx context.Context, id uuid.UUID, userInput string) error {
 	logFields := []zap.Field{
 		zap.String("storyConfigID", id.String()),
 	}
-	r.logger.Debug("Appending user input to story config", logFields...)
+	r.logger.Debug("Appending user input to story config (transaction managed externally)", logFields...)
 
-	// НАЧАЛО ТРАНЗАКЦИИ
-	// Используем хелпер или проверяем тип r.db, если нужно поддерживать и Pool, и Tx
-	pool, ok := r.db.(*pgxpool.Pool)
-	if !ok {
-		r.logger.Error("r.db is not *pgxpool.Pool, cannot begin transaction for AppendUserInput", logFields...)
-		return fmt.Errorf("внутренняя ошибка: невозможно начать транзакцию (неверный тип DBTX)")
-	}
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		r.logger.Error("Failed to begin transaction for appending user input", append(logFields, zap.Error(err))...)
-		return fmt.Errorf("ошибка начала транзакции: %w", err)
-	}
-	defer tx.Rollback(ctx) // Откат по умолчанию
+	// Транзакция управляется извне.
 
 	// 1. Получаем текущий user_input С БЛОКИРОВКОЙ
+	// Используем r.db напрямую.
 	var currentInputBytes []byte
-	err = tx.QueryRow(ctx, selectUserInputForUpdateQuery, id).Scan(&currentInputBytes)
+	err := r.db.QueryRow(ctx, selectUserInputForUpdateQuery, id).Scan(&currentInputBytes)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			r.logger.Warn("Story config not found for appending user input", logFields...)
@@ -659,23 +647,19 @@ func (r *pgStoryConfigRepository) AppendUserInput(ctx context.Context, id uuid.U
 	}
 
 	// 3. Обновляем запись
-	commandTag, err := tx.Exec(ctx, updateUserInputQuery, newInputBytes, id)
+	// Используем r.db напрямую.
+	commandTag, err := r.db.Exec(ctx, updateUserInputQuery, newInputBytes, id)
 	if err != nil {
 		r.logger.Error("Failed to update user_input", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка обновления user_input: %w", err)
 	}
 	if commandTag.RowsAffected() == 0 {
 		// Это не должно произойти, т.к. строка была заблокирована
-		r.logger.Error("Story config disappeared during AppendUserInput transaction", logFields...)
+		r.logger.Error("Story config disappeared during AppendUserInput operation", logFields...)
 		return models.ErrNotFound // Или другая ошибка несогласованности
 	}
 
-	// 4. Коммит транзакции
-	if err := tx.Commit(ctx); err != nil {
-		r.logger.Error("Failed to commit transaction for appending user input", append(logFields, zap.Error(err))...)
-		return fmt.Errorf("ошибка коммита транзакции: %w", err)
-	}
-
-	r.logger.Info("User input appended successfully to story config", logFields...)
+	// Коммит или откат выполняется вызывающим кодом.
+	r.logger.Info("User input append operation completed within external transaction context", logFields...)
 	return nil
 }
