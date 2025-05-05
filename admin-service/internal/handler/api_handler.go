@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"novel-server/admin-service/internal/service"
-	"novel-server/shared/database"
+	"novel-server/shared/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rs/zerolog/log"
@@ -63,7 +63,7 @@ func (h *ApiHandler) UpsertPrompt(c *gin.Context) {
 	prompt, err := h.promptService.UpsertPrompt(c.Request.Context(), req.Key, req.Language, req.Content)
 	if err != nil {
 		h.logger.Error("Failed to upsert prompt", zap.Error(err), zap.String("key", req.Key), zap.String("language", req.Language))
-		if errors.Is(err, database.ErrPromptAlreadyExists) {
+		if errors.Is(err, models.ErrAlreadyExists) {
 			c.JSON(http.StatusConflict, gin.H{"error": "Conflict during upsert (should not happen)"})
 		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save prompt"})
@@ -113,7 +113,7 @@ func (h *ApiHandler) GetPrompt(c *gin.Context) {
 	prompt, err := h.promptService.GetPrompt(c.Request.Context(), key, language)
 	if err != nil {
 		h.logger.Warn("Failed to get prompt", zap.Error(err), zap.String("key", key), zap.String("language", language))
-		if errors.Is(err, database.ErrPromptNotFound) {
+		if errors.Is(err, models.ErrNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get prompt"})

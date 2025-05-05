@@ -20,6 +20,20 @@ import (
 // Compile-time check to ensure pgUserRepository implements UserRepository
 var _ interfaces.UserRepository = (*pgUserRepository)(nil)
 
+// --- Constants for SQL Queries ---
+const (
+	createUserQuery             = `INSERT INTO users (username, email, password_hash, display_name) VALUES ($1, $2, $3, $4) RETURNING id`
+	getUserByUsernameQuery      = `SELECT id, username, display_name, email, password_hash, roles, is_banned FROM users WHERE username = $1`
+	getUserByEmailQuery         = `SELECT id, username, display_name, email, password_hash, roles, is_banned FROM users WHERE email = $1`
+	getUserByIDQuery            = `SELECT id, username, display_name, email, password_hash, roles, is_banned FROM users WHERE id = $1`
+	getUserCountQuery           = `SELECT COUNT(*) FROM users`
+	listUsersBaseQuery          = `SELECT id, username, display_name, email, roles, is_banned FROM users `
+	setUserBanStatusQuery       = `UPDATE users SET is_banned = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
+	updateUserFieldsBaseQuery   = `UPDATE users SET` // Base for dynamic update
+	updateUserPasswordHashQuery = `UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
+	getUsersByIDsQuery          = `SELECT id, username, display_name, email, roles, is_banned FROM users WHERE id = ANY($1)`
+)
+
 type pgUserRepository struct {
 	db     interfaces.DBTX
 	logger *zap.Logger
@@ -33,11 +47,59 @@ func NewPgUserRepository(db interfaces.DBTX, logger *zap.Logger) interfaces.User
 	}
 }
 
+// --- Helper Scan Function ---
+
+// scanUser scans a row into a User struct.
+// Assumes fields: id, username, display_name, email, password_hash, roles, is_banned
+func scanUser(row pgx.Row) (*models.User, error) {
+	var user models.User
+	err := row.Scan(
+		&user.ID,
+		&user.Username,
+		&user.DisplayName,
+		&user.Email,
+		&user.PasswordHash,
+		&user.Roles,
+		&user.IsBanned,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, models.ErrUserNotFound
+		}
+		// Log error in the caller
+		return nil, fmt.Errorf("failed to scan user row: %w", err)
+	}
+	return &user, nil
+}
+
+// scanUserSummary scans a row into a User struct, omitting password_hash.
+// Assumes fields: id, username, display_name, email, roles, is_banned
+func scanUserSummary(row pgx.Row) (*models.User, error) {
+	var user models.User
+	err := row.Scan(
+		&user.ID,
+		&user.Username,
+		&user.DisplayName,
+		&user.Email,
+		&user.Roles,
+		&user.IsBanned,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, models.ErrUserNotFound
+		}
+		// Log error in the caller
+		return nil, fmt.Errorf("failed to scan user summary row: %w", err)
+	}
+	return &user, nil
+}
+
+// --- Repository Methods ---
+
 // CreateUser inserts a new user into the database.
 func (r *pgUserRepository) CreateUser(ctx context.Context, user *models.User) error {
-	query := `INSERT INTO users (username, email, password_hash, display_name) VALUES ($1, $2, $3, $4) RETURNING id`
-	r.logger.Debug("Executing query", zap.String("query", query), zap.String("username", user.Username), zap.String("email", user.Email), zap.String("displayName", user.DisplayName))
-	err := r.db.QueryRow(ctx, query, user.Username, user.Email, user.PasswordHash, user.DisplayName).Scan(&user.ID)
+	r.logger.Debug("Executing query", zap.String("query", createUserQuery), zap.String("username", user.Username), zap.String("email", user.Email), zap.String("displayName", user.DisplayName))
+	err := r.db.QueryRow(ctx, createUserQuery, user.Username, user.Email, user.PasswordHash, user.DisplayName).Scan(&user.ID)
 
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -67,66 +129,69 @@ func (r *pgUserRepository) CreateUser(ctx context.Context, user *models.User) er
 
 // GetUserByUsername retrieves a user by their username.
 func (r *pgUserRepository) GetUserByUsername(ctx context.Context, username string) (*models.User, error) {
-	query := `SELECT id, username, display_name, email, password_hash, roles, is_banned FROM users WHERE username = $1`
-	user := &models.User{}
-	r.logger.Debug("Executing query", zap.String("query", query), zap.String("username", username))
-	err := r.db.QueryRow(ctx, query, username).Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.PasswordHash, &user.Roles, &user.IsBanned)
+	r.logger.Debug("Executing query", zap.String("query", getUserByUsernameQuery), zap.String("username", username))
+	row := r.db.QueryRow(ctx, getUserByUsernameQuery, username)
+	user, err := scanUser(row) // <<< CHANGED: Use helper
 
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if err == models.ErrUserNotFound { // <<< CHANGED: Check specific error
 			r.logger.Debug("User not found by username", zap.String("username", username))
-			return nil, models.ErrUserNotFound
+			// Return ErrUserNotFound directly
+		} else {
+			r.logger.Error("Failed to get user by username from postgres", zap.Error(err), zap.String("username", username))
+			// Wrap other errors
+			err = fmt.Errorf("failed to get user by username from postgres: %w", err)
 		}
-		r.logger.Error("Failed to get user by username from postgres", zap.Error(err), zap.String("username", username))
-		return nil, fmt.Errorf("failed to get user by username from postgres: %w", err)
+		return nil, err
 	}
 	return user, nil
 }
 
 // GetUserByEmail retrieves a user by their email.
 func (r *pgUserRepository) GetUserByEmail(ctx context.Context, email string) (*models.User, error) {
-	query := `SELECT id, username, display_name, email, password_hash, roles, is_banned FROM users WHERE email = $1`
-	user := &models.User{}
-	r.logger.Debug("Executing query", zap.String("query", query), zap.String("email", email))
-	err := r.db.QueryRow(ctx, query, email).Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.PasswordHash, &user.Roles, &user.IsBanned)
+	r.logger.Debug("Executing query", zap.String("query", getUserByEmailQuery), zap.String("email", email))
+	row := r.db.QueryRow(ctx, getUserByEmailQuery, email)
+	user, err := scanUser(row) // <<< CHANGED: Use helper
 
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if err == models.ErrUserNotFound { // <<< CHANGED: Check specific error
 			r.logger.Debug("User not found by email", zap.String("email", email))
-			// Важно: Возвращаем ErrUserNotFound, а не специфичную для email ошибку,
-			// чтобы вызывающий код мог унифицированно обрабатывать отсутствие пользователя.
-			return nil, models.ErrUserNotFound
+			// Return ErrUserNotFound directly
+		} else {
+			r.logger.Error("Failed to get user by email from postgres", zap.Error(err), zap.String("email", email))
+			// Wrap other errors
+			err = fmt.Errorf("failed to get user by email from postgres: %w", err)
 		}
-		r.logger.Error("Failed to get user by email from postgres", zap.Error(err), zap.String("email", email))
-		return nil, fmt.Errorf("failed to get user by email from postgres: %w", err)
+		return nil, err
 	}
 	return user, nil
 }
 
 // GetUserByID retrieves a user by their ID.
 func (r *pgUserRepository) GetUserByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
-	query := `SELECT id, username, display_name, email, password_hash, roles, is_banned FROM users WHERE id = $1`
-	user := &models.User{}
-	r.logger.Debug("Executing query", zap.String("query", query), zap.String("id", id.String()))
-	err := r.db.QueryRow(ctx, query, id).Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.PasswordHash, &user.Roles, &user.IsBanned)
+	r.logger.Debug("Executing query", zap.String("query", getUserByIDQuery), zap.String("id", id.String()))
+	row := r.db.QueryRow(ctx, getUserByIDQuery, id)
+	user, err := scanUser(row) // <<< CHANGED: Use helper
 
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if err == models.ErrUserNotFound { // <<< CHANGED: Check specific error
 			r.logger.Debug("User not found by ID", zap.String("id", id.String()))
-			return nil, models.ErrUserNotFound
+			// Return ErrUserNotFound directly
+		} else {
+			r.logger.Error("Failed to get user by id from postgres", zap.Error(err), zap.String("id", id.String()))
+			// Wrap other errors
+			err = fmt.Errorf("failed to get user by id from postgres: %w", err)
 		}
-		r.logger.Error("Failed to get user by id from postgres", zap.Error(err), zap.String("id", id.String()))
-		return nil, fmt.Errorf("failed to get user by id from postgres: %w", err)
+		return nil, err
 	}
 	return user, nil
 }
 
 // GetUserCount retrieves the total number of users.
 func (r *pgUserRepository) GetUserCount(ctx context.Context) (int64, error) {
-	query := `SELECT COUNT(*) FROM users`
 	var count int64
-	r.logger.Debug("Executing query", zap.String("query", query))
-	err := r.db.QueryRow(ctx, query).Scan(&count)
+	r.logger.Debug("Executing query", zap.String("query", getUserCountQuery))
+	err := r.db.QueryRow(ctx, getUserCountQuery).Scan(&count)
 	if err != nil {
 		r.logger.Error("Failed to get user count from postgres", zap.Error(err))
 		return 0, fmt.Errorf("failed to get user count: %w", err)
@@ -147,7 +212,7 @@ func (r *pgUserRepository) ListUsers(ctx context.Context, cursor string, limit i
 		return nil, "", fmt.Errorf("invalid cursor: %w", err)
 	}
 
-	query := `SELECT id, username, display_name, email, roles, is_banned FROM users `
+	query := listUsersBaseQuery // <<< CHANGED: Use constant
 	args := []interface{}{}
 	paramIndex := 1
 
@@ -178,14 +243,14 @@ func (r *pgUserRepository) ListUsers(ctx context.Context, cursor string, limit i
 	users := make([]models.User, 0, limit)
 	var lastUserID uuid.UUID
 	for rows.Next() {
-		var user models.User
-		if err := rows.Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Roles, &user.IsBanned); err != nil {
+		user, err := scanUserSummary(rows) // <<< CHANGED: Use summary helper (no password hash)
+		if err != nil {
 			r.logger.Error("Failed to scan user row", zap.Error(err))
 			// Продолжаем сканировать другие строки, но логируем ошибку
 			continue
 		}
-		users = append(users, user)
-		lastUserID = user.ID // Keep track of the last ID for cursor encoding
+		users = append(users, *user) // Append value
+		lastUserID = user.ID         // Keep track of the last ID for cursor encoding
 	}
 
 	if err = rows.Err(); err != nil {
@@ -234,10 +299,9 @@ func decodeUUIDCursor(cursor string) (uuid.UUID, error) {
 
 // SetUserBanStatus updates the is_banned status for a user.
 func (r *pgUserRepository) SetUserBanStatus(ctx context.Context, userID uuid.UUID, isBanned bool) error {
-	query := `UPDATE users SET is_banned = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
-	r.logger.Debug("Executing query", zap.String("query", query), zap.String("userID", userID.String()), zap.Bool("isBanned", isBanned))
+	r.logger.Debug("Executing query", zap.String("query", setUserBanStatusQuery), zap.String("userID", userID.String()), zap.Bool("isBanned", isBanned))
 
-	cmdTag, err := r.db.Exec(ctx, query, isBanned, userID)
+	cmdTag, err := r.db.Exec(ctx, setUserBanStatusQuery, isBanned, userID)
 	if err != nil {
 		r.logger.Error("Failed to update user ban status in postgres", zap.Error(err), zap.String("userID", userID.String()), zap.Bool("isBanned", isBanned))
 		return fmt.Errorf("failed to update user ban status: %w", err)
@@ -292,7 +356,8 @@ func (r *pgUserRepository) UpdateUserFields(ctx context.Context, userID uuid.UUI
 
 	args = append(args, userID)
 
-	query := fmt.Sprintf("UPDATE users SET %s WHERE id = $%d",
+	query := fmt.Sprintf("%s %s WHERE id = $%d", // <<< CHANGED: Use constant base
+		updateUserFieldsBaseQuery,
 		strings.Join(setClauses, ", "),
 		argID,
 	)
@@ -324,10 +389,9 @@ func (r *pgUserRepository) UpdateUserFields(ctx context.Context, userID uuid.UUI
 
 // UpdatePasswordHash обновляет хеш пароля пользователя.
 func (r *pgUserRepository) UpdatePasswordHash(ctx context.Context, userID uuid.UUID, passwordHash string) error {
-	query := `UPDATE users SET password_hash = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`
-	r.logger.Debug("Executing query", zap.String("query", query), zap.String("userID", userID.String()))
+	r.logger.Debug("Executing query", zap.String("query", updateUserPasswordHashQuery), zap.String("userID", userID.String()))
 
-	cmdTag, err := r.db.Exec(ctx, query, passwordHash, userID)
+	cmdTag, err := r.db.Exec(ctx, updateUserPasswordHashQuery, passwordHash, userID)
 	if err != nil {
 		r.logger.Error("Failed to update user password hash in postgres", zap.Error(err), zap.String("userID", userID.String()))
 		return fmt.Errorf("failed to update password hash: %w", err)
@@ -349,10 +413,9 @@ func (r *pgUserRepository) GetUsersByIDs(ctx context.Context, ids []uuid.UUID) (
 		return []models.User{}, nil
 	}
 
-	query := `SELECT id, username, display_name, email, roles, is_banned FROM users WHERE id = ANY($1)`
-	r.logger.Debug("Executing query", zap.String("query", query), zap.Any("ids", ids))
+	r.logger.Debug("Executing query", zap.String("query", getUsersByIDsQuery), zap.Any("ids", ids))
 
-	rows, err := r.db.Query(ctx, query, ids)
+	rows, err := r.db.Query(ctx, getUsersByIDsQuery, ids)
 	if err != nil {
 		r.logger.Error("Failed to query users by IDs from postgres", zap.Error(err), zap.Any("ids", ids))
 		return nil, fmt.Errorf("failed to query users by IDs: %w", err)
@@ -361,13 +424,13 @@ func (r *pgUserRepository) GetUsersByIDs(ctx context.Context, ids []uuid.UUID) (
 
 	users := make([]models.User, 0, len(ids)) // Предполагаем, что найдем всех
 	for rows.Next() {
-		var user models.User
-		if err := rows.Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Roles, &user.IsBanned); err != nil {
+		user, err := scanUserSummary(rows) // <<< CHANGED: Use summary helper (no password hash)
+		if err != nil {
 			r.logger.Error("Failed to scan user row in GetUsersByIDs", zap.Error(err))
 			// Не прерываем цикл, но логируем ошибку
 			continue
 		}
-		users = append(users, user)
+		users = append(users, *user) // Append value
 	}
 
 	if err = rows.Err(); err != nil {

@@ -4,8 +4,8 @@ import (
 	"novel-server/admin-service/internal/client"
 	"novel-server/admin-service/internal/config"
 	"novel-server/admin-service/internal/service"
-	"novel-server/shared/database"
 	"novel-server/shared/interfaces"
+	"novel-server/shared/models"
 	sharedModels "novel-server/shared/models"
 
 	"errors"
@@ -282,7 +282,7 @@ func (h *AdminHandler) handleUpsertPromptAPI(c *gin.Context) {
 	if err != nil {
 		h.logger.Error("Failed to upsert prompt via API", zap.Error(err), zap.String("key", req.Key), zap.String("language", req.Language))
 		// Ошибку конфликта не ожидаем при Upsert, но на всякий случай
-		if errors.Is(err, database.ErrPromptAlreadyExists) { // Используем errors.Is и database.ErrPromptAlreadyExists
+		if errors.Is(err, models.ErrAlreadyExists) { // Используем errors.Is и database.ErrPromptAlreadyExists
 			c.JSON(http.StatusConflict, gin.H{"error": "Conflict during upsert (unexpected)"})
 		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save prompt"})
@@ -347,7 +347,7 @@ func (h *AdminHandler) handleGetPromptAPI(c *gin.Context) {
 	prompt, err := h.promptService.GetPrompt(c.Request.Context(), key, language)
 	if err != nil {
 		// Ошибка "не найдено" - это ожидаемый сценарий для JS, возвращаем 404
-		if errors.Is(err, database.ErrPromptNotFound) {
+		if errors.Is(err, models.ErrNotFound) {
 			h.logger.Debug("Prompt not found for API get", zap.String("key", key), zap.String("language", language))
 			c.JSON(http.StatusNotFound, gin.H{"error": "Prompt not found"})
 		} else {

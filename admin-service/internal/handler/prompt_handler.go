@@ -6,12 +6,11 @@ import (
 	"net/http"
 	"novel-server/admin-service/internal/config"
 	"novel-server/admin-service/internal/service"
+	"novel-server/shared/models"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
-
-	"novel-server/shared/database"
 )
 
 // PromptHandler обрабатывает HTTP-запросы, связанные с промптами.
@@ -108,7 +107,7 @@ func (h *PromptHandler) CreatePrompt(c *gin.Context) {
 	if err != nil {
 		h.logger.Error("Failed to create prompt key via service", zap.Error(err), zap.String("key", form.Key))
 		errMsg := fmt.Sprintf("Failed to create prompt key: %v", err)
-		if errors.Is(err, database.ErrPromptKeyAlreadyExists) {
+		if errors.Is(err, models.ErrAlreadyExists) {
 			errMsg = fmt.Sprintf("Prompt key '%s' already exists.", form.Key)
 		}
 		_ = setFlashMsg(c, "error", errMsg, h.cfg)

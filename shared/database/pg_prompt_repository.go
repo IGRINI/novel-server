@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/georgysavva/scany/v2/pgxscan"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -66,11 +67,9 @@ func (r *PgPromptRepository) Create(ctx context.Context, prompt *models.Prompt) 
 
 func (r *PgPromptRepository) GetByKeyAndLanguage(ctx context.Context, key, language string) (*models.Prompt, error) {
 	var prompt models.Prompt
-	err := r.db.QueryRow(ctx, getPromptByKeyLangQuery, key, language).Scan(
-		&prompt.ID, &prompt.Key, &prompt.Language, &prompt.Content, &prompt.CreatedAt, &prompt.UpdatedAt,
-	)
+	err := pgxscan.Get(ctx, r.db, &prompt, getPromptByKeyLangQuery, key, language)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) || pgxscan.NotFound(err) {
 			return nil, models.ErrNotFound
 		}
 		log.Error().Err(err).Str("key", key).Str("language", language).Msg("Failed to get prompt by key and language")
@@ -132,29 +131,11 @@ func (r *PgPromptRepository) ListAll(ctx context.Context, language *string, key 
 	}
 	queryBuilder.WriteString(" ORDER BY key, language") // Consistent ordering
 
-	rows, err := r.db.Query(ctx, queryBuilder.String(), args...)
+	var prompts []*models.Prompt
+	err := pgxscan.Select(ctx, r.db, &prompts, queryBuilder.String(), args...)
 	if err != nil {
 		log.Error().Err(err).Interface("args", args).Msg("Failed to list prompts")
 		return nil, fmt.Errorf("failed to list prompts: %w", err)
-	}
-	defer rows.Close()
-
-	prompts := make([]*models.Prompt, 0)
-	for rows.Next() {
-		var prompt models.Prompt
-		err := rows.Scan(
-			&prompt.ID, &prompt.Key, &prompt.Language, &prompt.Content, &prompt.CreatedAt, &prompt.UpdatedAt,
-		)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to scan prompt row")
-			return nil, fmt.Errorf("failed to scan prompt row: %w", err)
-		}
-		prompts = append(prompts, &prompt)
-	}
-
-	if err = rows.Err(); err != nil {
-		log.Error().Err(err).Msg("Error during rows iteration for list prompts")
-		return nil, fmt.Errorf("error during rows iteration: %w", err)
 	}
 
 	return prompts, nil
@@ -166,26 +147,11 @@ func (r *PgPromptRepository) GetAll(ctx context.Context) ([]*models.Prompt, erro
 
 // ListKeys retrieves a list of unique prompt keys.
 func (r *PgPromptRepository) ListKeys(ctx context.Context) ([]string, error) {
-	rows, err := r.db.Query(ctx, listPromptKeysQuery)
+	var keys []string
+	err := pgxscan.Select(ctx, r.db, &keys, listPromptKeysQuery)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to list prompt keys")
 		return nil, fmt.Errorf("failed to list prompt keys: %w", err)
-	}
-	defer rows.Close()
-
-	keys := make([]string, 0)
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			log.Error().Err(err).Msg("Failed to scan prompt key row")
-			return nil, fmt.Errorf("failed to scan prompt key row: %w", err)
-		}
-		keys = append(keys, key)
-	}
-
-	if err = rows.Err(); err != nil {
-		log.Error().Err(err).Msg("Error during rows iteration for list keys")
-		return nil, fmt.Errorf("error during rows iteration for list keys: %w", err)
 	}
 
 	return keys, nil
@@ -194,30 +160,13 @@ func (r *PgPromptRepository) ListKeys(ctx context.Context) ([]string, error) {
 // GetAllPromptsByKey retrieves all language versions of a prompt by its key.
 // This is functionally the same as FindByKey in this implementation.
 func (r *PgPromptRepository) GetAllPromptsByKey(ctx context.Context, key string) ([]*models.Prompt, error) {
-	rows, err := r.db.Query(ctx, getAllPromptsByKeyQuery, key)
+	var prompts []*models.Prompt
+	err := pgxscan.Select(ctx, r.db, &prompts, getAllPromptsByKeyQuery, key)
 	if err != nil {
 		log.Error().Err(err).Str("key", key).Msg("Failed to get all prompts by key")
 		return nil, fmt.Errorf("failed to get all prompts by key %s: %w", key, err)
 	}
-	defer rows.Close()
 
-	prompts := make([]*models.Prompt, 0)
-	for rows.Next() {
-		var prompt models.Prompt
-		err := rows.Scan(
-			&prompt.ID, &prompt.Key, &prompt.Language, &prompt.Content, &prompt.CreatedAt, &prompt.UpdatedAt,
-		)
-		if err != nil {
-			log.Error().Err(err).Str("key", key).Msg("Failed to scan prompt row in GetAllPromptsByKey")
-			return nil, fmt.Errorf("failed to scan prompt row for key %s: %w", key, err)
-		}
-		prompts = append(prompts, &prompt)
-	}
-
-	if err = rows.Err(); err != nil {
-		log.Error().Err(err).Str("key", key).Msg("Error during rows iteration for get all prompts by key")
-		return nil, fmt.Errorf("error during rows iteration for get all prompts by key %s: %w", key, err)
-	}
 	return prompts, nil
 }
 
@@ -297,12 +246,9 @@ func (r *PgPromptRepository) DeleteByKey(ctx context.Context, key string) error 
 // GetByID retrieves a prompt by its unique ID.
 func (r *PgPromptRepository) GetByID(ctx context.Context, id int64) (*models.Prompt, error) {
 	var prompt models.Prompt
-	err := r.db.QueryRow(ctx, getPromptByIDQuery, id).Scan(
-		&prompt.ID, &prompt.Key, &prompt.Language, &prompt.Content, &prompt.CreatedAt, &prompt.UpdatedAt,
-	)
+	err := pgxscan.Get(ctx, r.db, &prompt, getPromptByIDQuery, id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// Используем общую ошибку ErrNotFound, определенную в этом пакете
+		if errors.Is(err, pgx.ErrNoRows) || pgxscan.NotFound(err) {
 			return nil, models.ErrNotFound
 		}
 		log.Error().Err(err).Int64("id", id).Msg("Failed to get prompt by ID")

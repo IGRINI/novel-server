@@ -18,6 +18,49 @@ import (
 // Compile-time check to ensure implementation satisfies the interface.
 var _ interfaces.StorySceneRepository = (*pgStorySceneRepository)(nil)
 
+// --- Constants for SQL Queries ---
+const (
+	createStorySceneQuery = `
+        INSERT INTO story_scenes (id, published_story_id, state_hash, scene_content, created_at)
+        VALUES ($1, $2, $3, $4, $5)
+    `
+	findStorySceneByHashQuery = `
+        SELECT id, published_story_id, state_hash, scene_content, created_at
+        FROM story_scenes
+        WHERE published_story_id = $1 AND state_hash = $2
+    `
+	getStorySceneByIDQuery = `
+        SELECT id, published_story_id, state_hash, scene_content, created_at
+        FROM story_scenes
+        WHERE id = $1
+    `
+	listStoryScenesByStoryIDQuery = `
+        SELECT id, published_story_id, state_hash, scene_content, created_at
+        FROM story_scenes
+        WHERE published_story_id = $1
+        ORDER BY created_at DESC
+    ` // Сортируем по убыванию даты создания
+	updateSceneContentQuery = `
+        UPDATE story_scenes
+        SET scene_content = $2, updated_at = NOW()
+        WHERE id = $1
+    `
+	upsertStorySceneQuery = `
+        INSERT INTO story_scenes (id, published_story_id, state_hash, scene_content, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, NOW())
+        ON CONFLICT (published_story_id, state_hash) DO UPDATE SET
+            scene_content = EXCLUDED.scene_content,
+            updated_at = NOW()
+        WHERE trim(story_scenes.scene_content) = '{}' OR trim(story_scenes.scene_content) = '[]'
+    `
+	deleteStorySceneQuery            = `DELETE FROM story_scenes WHERE id = $1`
+	getStorySceneByStoryAndHashQuery = `
+        SELECT id, published_story_id, state_hash, scene_content, created_at
+        FROM story_scenes
+        WHERE published_story_id = $1 AND state_hash = $2
+    `
+)
+
 type pgStorySceneRepository struct {
 	db     interfaces.DBTX
 	logger *zap.Logger
@@ -30,27 +73,29 @@ func NewPgStorySceneRepository(db interfaces.DBTX, logger *zap.Logger) interface
 	}
 }
 
-const createStorySceneQuery = `
-INSERT INTO story_scenes (id, published_story_id, state_hash, scene_content, created_at)
-VALUES ($1, $2, $3, $4, $5)`
+// --- Helper Scan Function ---
 
-const findStorySceneByHashQuery = `
-SELECT id, published_story_id, state_hash, scene_content, created_at
-FROM story_scenes
-WHERE published_story_id = $1 AND state_hash = $2`
+// scanStoryScene scans a single row into a StoryScene struct.
+func scanStoryScene(row pgx.Row) (*models.StoryScene, error) {
+	var scene models.StoryScene
+	err := row.Scan(
+		&scene.ID,
+		&scene.PublishedStoryID,
+		&scene.StateHash,
+		&scene.Content, // Scan directly into json.RawMessage
+		&scene.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, models.ErrNotFound
+		}
+		// Log error in caller
+		return nil, fmt.Errorf("error scanning story scene row: %w", err)
+	}
+	return &scene, nil
+}
 
-// Добавляем константу для запроса GetByID
-const getStorySceneByIDQuery = `
-SELECT id, published_story_id, state_hash, scene_content, created_at
-FROM story_scenes
-WHERE id = $1`
-
-// <<< ДОБАВЛЕНО: Константа для запроса ListByStoryID >>>
-const listStoryScenesByStoryIDQuery = `
-SELECT id, published_story_id, state_hash, scene_content, created_at
-FROM story_scenes
-WHERE published_story_id = $1
-ORDER BY created_at DESC` // Сортируем по убыванию даты создания
+// --- Repository Methods ---
 
 // Create inserts a new story scene record.
 func (r *pgStorySceneRepository) Create(ctx context.Context, scene *models.StoryScene) error {
@@ -78,25 +123,22 @@ func (r *pgStorySceneRepository) Create(ctx context.Context, scene *models.Story
 
 // FindByStoryAndHash attempts to find an existing scene for a given story and state hash.
 func (r *pgStorySceneRepository) FindByStoryAndHash(ctx context.Context, publishedStoryID uuid.UUID, stateHash string) (*models.StoryScene, error) {
-	scene := &models.StoryScene{}
 	logFields := []zap.Field{
 		zap.String("publishedStoryID", publishedStoryID.String()),
 		zap.String("stateHash", stateHash),
 	}
-	err := r.db.QueryRow(ctx, findStorySceneByHashQuery, publishedStoryID, stateHash).Scan(
-		&scene.ID,
-		&scene.PublishedStoryID,
-		&scene.StateHash,
-		&scene.Content, // Сканируем напрямую в json.RawMessage, имя колонки в SQL уже обновлено
-		&scene.CreatedAt,
-	)
+	row := r.db.QueryRow(ctx, findStorySceneByHashQuery, publishedStoryID, stateHash)
+	scene, err := scanStoryScene(row)
+
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if err == models.ErrNotFound {
 			r.logger.Debug("Story scene not found by hash", logFields...)
 			return nil, models.ErrNotFound
+		} else {
+			r.logger.Error("Failed to find story scene by hash", append(logFields, zap.Error(err))...)
+			err = fmt.Errorf("ошибка поиска сцены по хэшу: %w", err)
 		}
-		r.logger.Error("Failed to find story scene by hash", append(logFields, zap.Error(err))...)
-		return nil, fmt.Errorf("ошибка поиска сцены по хэшу: %w", err)
+		return nil, err
 	}
 	r.logger.Debug("Story scene found by hash", append(logFields, zap.String("sceneID", scene.ID.String()))...)
 	return scene, nil
@@ -104,31 +146,27 @@ func (r *pgStorySceneRepository) FindByStoryAndHash(ctx context.Context, publish
 
 // GetByID retrieves a story scene by its unique ID.
 func (r *pgStorySceneRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.StoryScene, error) {
-	scene := &models.StoryScene{}
 	logFields := []zap.Field{zap.String("sceneID", id.String())}
 
-	err := r.db.QueryRow(ctx, getStorySceneByIDQuery, id).Scan(
-		&scene.ID,
-		&scene.PublishedStoryID,
-		&scene.StateHash,
-		&scene.Content, // Сканируем напрямую в json.RawMessage, имя колонки в SQL уже обновлено
-		&scene.CreatedAt,
-	)
+	row := r.db.QueryRow(ctx, getStorySceneByIDQuery, id)
+	scene, err := scanStoryScene(row)
 
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if err == models.ErrNotFound {
 			r.logger.Warn("Story scene not found by ID", logFields...)
 			return nil, models.ErrNotFound
+		} else {
+			r.logger.Error("Failed to get story scene by ID", append(logFields, zap.Error(err))...)
+			err = fmt.Errorf("ошибка получения сцены по ID %s: %w", id, err)
 		}
-		r.logger.Error("Failed to get story scene by ID", append(logFields, zap.Error(err))...)
-		return nil, fmt.Errorf("ошибка получения сцены по ID %s: %w", id, err)
+		return nil, err
 	}
 
 	r.logger.Debug("Story scene retrieved successfully by ID", logFields...)
 	return scene, nil
 }
 
-// <<< ДОБАВЛЕНО: Реализация метода ListByStoryID >>>
+// ListByStoryID retrieves a list of story scenes for a given story ID.
 func (r *pgStorySceneRepository) ListByStoryID(ctx context.Context, publishedStoryID uuid.UUID) ([]models.StoryScene, error) {
 	rows, err := r.db.Query(ctx, listStoryScenesByStoryIDQuery, publishedStoryID)
 	if err != nil {
@@ -139,19 +177,12 @@ func (r *pgStorySceneRepository) ListByStoryID(ctx context.Context, publishedSto
 
 	scenes := make([]models.StoryScene, 0)
 	for rows.Next() {
-		var scene models.StoryScene
-		err := rows.Scan(
-			&scene.ID,
-			&scene.PublishedStoryID,
-			&scene.StateHash,
-			&scene.Content, // Сканируем напрямую в json.RawMessage, имя колонки в SQL уже обновлено
-			&scene.CreatedAt,
-		)
+		scene, err := scanStoryScene(rows)
 		if err != nil {
 			r.logger.Error("Failed to scan story scene row", zap.String("publishedStoryID", publishedStoryID.String()), zap.Error(err))
 			return nil, fmt.Errorf("ошибка сканирования строки сцены: %w", err)
 		}
-		scenes = append(scenes, scene)
+		scenes = append(scenes, *scene)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -159,17 +190,11 @@ func (r *pgStorySceneRepository) ListByStoryID(ctx context.Context, publishedSto
 		return nil, fmt.Errorf("ошибка итерации по строкам сцен: %w", err)
 	}
 
-	// Не возвращаем ErrNotFound, если список пуст, просто пустой слайс.
 	r.logger.Debug("Successfully listed story scenes by story ID", zap.String("publishedStoryID", publishedStoryID.String()), zap.Int("count", len(scenes)))
 	return scenes, nil
 }
 
-// <<< ДОБАВЛЕНО: Реализация UpdateContent >>>
-const updateSceneContentQuery = `
-UPDATE story_scenes
-SET scene_content = $2, updated_at = NOW()
-WHERE id = $1`
-
+// UpdateContent updates the content of a story scene.
 func (r *pgStorySceneRepository) UpdateContent(ctx context.Context, id uuid.UUID, content []byte) error {
 	logFields := []zap.Field{
 		zap.String("sceneID", id.String()),
@@ -192,15 +217,6 @@ func (r *pgStorySceneRepository) UpdateContent(ctx context.Context, id uuid.UUID
 	r.logger.Info("Story scene content updated successfully", logFields...)
 	return nil
 }
-
-// <<< ДОБАВЛЕНО: Запрос и реализация Upsert >>>
-const upsertStorySceneQuery = `
-INSERT INTO story_scenes (id, published_story_id, state_hash, scene_content, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, NOW())
-ON CONFLICT (published_story_id, state_hash) DO UPDATE SET
-    scene_content = EXCLUDED.scene_content,
-    updated_at = NOW()
-WHERE trim(story_scenes.scene_content) = '{}' OR trim(story_scenes.scene_content) = '[]';`
 
 // Upsert creates a new scene or updates an existing one based on storyID and stateHash.
 func (r *pgStorySceneRepository) Upsert(ctx context.Context, scene *models.StoryScene) error {
@@ -234,11 +250,9 @@ func (r *pgStorySceneRepository) Upsert(ctx context.Context, scene *models.Story
 	return nil
 }
 
-// Delete удаляет сцену по ID.
+// Delete deletes a story scene by its unique ID.
 func (r *pgStorySceneRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	query := `DELETE FROM story_scenes WHERE id = $1`
-
-	result, err := r.db.Exec(ctx, query, id)
+	result, err := r.db.Exec(ctx, deleteStorySceneQuery, id)
 	if err != nil {
 		return fmt.Errorf("error executing delete query for story scene %s: %w", id, err)
 	}
@@ -260,30 +274,18 @@ func (r *pgStorySceneRepository) Delete(ctx context.Context, id uuid.UUID) error
 	return nil
 }
 
-// GetByStoryIDAndStateHash получает сцену по ID истории и хешу состояния.
+// GetByStoryIDAndStateHash retrieves a story scene by its story ID and state hash.
 func (r *pgStorySceneRepository) GetByStoryIDAndStateHash(ctx context.Context, storyID uuid.UUID, stateHash string) (*models.StoryScene, error) {
-	query := `
-		SELECT id, published_story_id, state_hash, scene_content, created_at
-		FROM story_scenes
-		WHERE published_story_id = $1 AND state_hash = $2
-	`
-
-	row := r.db.QueryRow(ctx, query, storyID, stateHash)
-	scene := &models.StoryScene{}
-
-	err := row.Scan(
-		&scene.ID,
-		&scene.PublishedStoryID,
-		&scene.StateHash,
-		&scene.Content,
-		&scene.CreatedAt,
-	)
+	row := r.db.QueryRow(ctx, getStorySceneByStoryAndHashQuery, storyID, stateHash)
+	scene, err := scanStoryScene(row)
 
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if err == models.ErrNotFound {
 			return nil, models.ErrNotFound // Используем стандартную ошибку
+		} else {
+			err = fmt.Errorf("error scanning story scene row for story %s, hash %s: %w", storyID, stateHash, err)
 		}
-		return nil, fmt.Errorf("error scanning story scene row for story %s, hash %s: %w", storyID, stateHash, err)
+		return nil, err
 	}
 
 	return scene, nil

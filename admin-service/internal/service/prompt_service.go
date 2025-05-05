@@ -10,7 +10,6 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"novel-server/admin-service/internal/config"
-	"novel-server/shared/database"
 	"novel-server/shared/interfaces"
 	"novel-server/shared/models"
 )
@@ -113,7 +112,7 @@ func (s *PromptServiceImpl) GetPromptByID(ctx context.Context, id int64) (*model
 	prompt, err := s.repo.GetByID(ctx, id) // Предполагаем, что репозиторий имеет этот метод
 	if err != nil {
 		// Обработка ошибки "не найдено" может быть в репозитории или здесь
-		if errors.Is(err, database.ErrNotFound) { // Пример обработки ошибки NotFound
+		if errors.Is(err, models.ErrNotFound) { // Пример обработки ошибки NotFound
 			log.Warn().Int64("id", id).Msg("Prompt not found by ID")
 			return nil, fmt.Errorf("prompt with ID %d not found: %w", id, err)
 		}
@@ -152,7 +151,7 @@ func (s *PromptServiceImpl) CreatePromptKey(ctx context.Context, key string) err
 	err := s.repo.CreateBatch(ctx, promptsToCreate)
 	if err != nil {
 		// Ошибка ErrPromptKeyAlreadyExists обрабатывается в репозитории и логируется как Warn
-		if errors.Is(err, database.ErrPromptKeyAlreadyExists) {
+		if errors.Is(err, models.ErrAlreadyExists) {
 			return fmt.Errorf("prompt key '%s' already exists: %w", key, err)
 		}
 		return fmt.Errorf("failed to create prompt key '%s' in repo: %w", key, err)
@@ -232,7 +231,7 @@ func (s *PromptServiceImpl) DeletePromptByID(ctx context.Context, id int64) erro
 
 	err := s.repo.DeleteByID(ctx, id)
 	if err != nil {
-		if errors.Is(err, database.ErrNotFound) { // Пример обработки ошибки NotFound
+		if errors.Is(err, models.ErrNotFound) { // Пример обработки ошибки NotFound
 			log.Warn().Int64("id", id).Msg("Prompt not found for deletion by ID")
 			return fmt.Errorf("prompt with ID %d not found for deletion: %w", id, err)
 		}
@@ -253,7 +252,7 @@ func (s *PromptServiceImpl) DeletePromptByKeyAndLang(ctx context.Context, key, l
 	// Получаем промпт перед удалением, чтобы иметь данные для события
 	prompt, getErr := s.repo.GetByKeyAndLanguage(ctx, key, language)
 	if getErr != nil {
-		if errors.Is(getErr, database.ErrNotFound) {
+		if errors.Is(getErr, models.ErrNotFound) {
 			ctxLog.Warn().Msg("Prompt not found for deletion by key and language") // Контекст уже добавлен в ctxLog
 			// Если не найдено, считаем удаление успешным (или возвращаем ошибку, если это важно)
 			return nil // Или: return fmt.Errorf("prompt %s/%s not found: %w", key, language, getErr)
