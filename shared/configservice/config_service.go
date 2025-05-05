@@ -23,6 +23,7 @@ const (
 	ConfigKeyAIBaseURL        = "ai.base_url"                  // Exported
 	ConfigKeyAIClientType     = "ai.client_type"               // Exported
 	ConfigKeyAIAPIKey         = "ai.api_key"                   // Exported
+	ConfigKeyAITemperature    = "ai.temperature"               // Exported (Новый ключ)
 
 	DefaultAIMaxAttempts    = 3
 	DefaultAIBaseRetryDelay = 1 * time.Second
@@ -32,6 +33,7 @@ const (
 	DefaultAIModel          = "meta-llama/llama-4-scout:free" // Exported
 	DefaultAIBaseURL        = "https://openrouter.ai/api/v1"  // Exported
 	DefaultAIClientType     = "openai"                        // Exported
+	DefaultAITemperature    = 0.7                             // Exported (Новое значение по умолчанию)
 )
 
 // <<< КОНЕЦ ДОБАВЛЕНИЯ >>>

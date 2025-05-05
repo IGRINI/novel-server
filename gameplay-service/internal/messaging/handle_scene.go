@@ -65,18 +65,13 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 		}
 
 		if parseErr == nil {
-			jsonToParse, extractErr := extractAndCleanJSON(rawGeneratedText)
-			if extractErr != nil {
-				logWithState.Error("SCENE PARSING ERROR: Failed to extract valid JSON from Scene/GameOver text",
-					zap.String("raw_text_snippet", utils.StringShort(rawGeneratedText, 100)),
-					zap.Error(extractErr),
+			// Use rawGeneratedText directly
+			jsonToParse := rawGeneratedText
+			if jsonToParse == "" { // Check if the generator already determined it's empty/invalid
+				logWithState.Error("SCENE PARSING ERROR: Generator returned empty text for Scene/GameOver",
+					zap.String("raw_text_snippet", utils.StringShort(rawGeneratedText, 100)), // Still log snippet
 				)
-				parseErr = fmt.Errorf("failed to extract valid JSON block: %w", extractErr)
-			} else if jsonToParse == "" {
-				logWithState.Error("SCENE PARSING ERROR: Could not extract JSON from Scene/GameOver text (fetched)",
-					zap.String("raw_text_snippet", utils.StringShort(rawGeneratedText, 100)),
-				)
-				parseErr = errors.New("failed to extract JSON block from Scene/GameOver text")
+				parseErr = errors.New("generator returned empty text for scene")
 			} else {
 				logWithState.Debug("JSON to parse (length)", zap.Int("json_length", len(jsonToParse)))
 				if len(jsonToParse) < 500 {
@@ -572,56 +567,4 @@ func (p *NotificationProcessor) publishPushNotificationForStoryReady(ctx context
 			zap.String("publishedStoryID", story.ID.String()),
 		)
 	}
-}
-
-func extractAndCleanJSON(rawText string) (string, error) {
-	jsonStr := utils.ExtractJsonContent(rawText)
-	if jsonStr == "" {
-		return "", errors.New("no JSON structure found in generated text")
-	}
-
-	var testParse interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &testParse); err != nil {
-		return "", fmt.Errorf("extracted text is not valid JSON: %w. Raw text snippet: %s", err, utils.StringShort(rawText, 200))
-	}
-
-	_, isMap := testParse.(map[string]interface{})
-	if !isMap {
-		arr, isArr := testParse.([]interface{})
-		if isArr && len(arr) > 0 {
-			firstElemMap, isFirstElemMap := arr[0].(map[string]interface{})
-			if isFirstElemMap {
-				zap.L().Warn("Extracted JSON was an array, taking the first element.")
-				firstElemBytes, marshalErr := json.Marshal(firstElemMap)
-				if marshalErr != nil {
-					return "", fmt.Errorf("failed to marshal first element of JSON array: %w", marshalErr)
-				}
-				jsonStr = string(firstElemBytes)
-			} else {
-				return "", errors.New("extracted JSON is an array, but the first element is not an object")
-			}
-		} else {
-			return "", errors.New("extracted JSON is not an object or a non-empty array")
-		}
-	}
-
-	var contentMap map[string]interface{}
-	if err := json.Unmarshal([]byte(jsonStr), &contentMap); err != nil {
-		return "", fmt.Errorf("failed to re-unmarshal potentially modified JSON: %w", err)
-	}
-
-	requiredKeys := []string{"sssf", "fd"}
-	missingKeys := []string{}
-
-	for _, key := range requiredKeys {
-		if _, exists := contentMap[key]; !exists {
-			missingKeys = append(missingKeys, key)
-		}
-	}
-
-	if len(missingKeys) > 0 {
-		zap.L().Warn("JSON missing some recommended keys", zap.Strings("missing_keys", missingKeys))
-	}
-
-	return jsonStr, nil
 }

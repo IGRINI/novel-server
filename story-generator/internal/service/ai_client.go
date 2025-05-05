@@ -135,6 +135,17 @@ func (c *openAIClient) GenerateText(ctx context.Context, userID string, systemPr
 			Content: userInput,
 		})
 	}
+
+	// Определяем температуру: приоритет у params, иначе из конфига
+	var finalTemperature float32
+	if params.Temperature != nil {
+		finalTemperature = float32(*params.Temperature)
+		log.Printf("[DEBUG] Using temperature from params: %.2f (UserID: %s)", finalTemperature, userID)
+	} else {
+		finalTemperature = float32(c.configService.GetFloat(configservice.ConfigKeyAITemperature, configservice.DefaultAITemperature))
+		log.Printf("[DEBUG] Using temperature from config: %.2f (UserID: %s)", finalTemperature, userID)
+	}
+
 	startTime := time.Now()
 	log.Printf("Отправка запроса к %s: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes, UserID: %s",
 		c.provider, currentModel, len(systemPrompt), len(userInput), userID)
@@ -143,7 +154,7 @@ func (c *openAIClient) GenerateText(ctx context.Context, userID string, systemPr
 	request := openaigo.ChatCompletionRequest{
 		Model:       currentModel,
 		Messages:    messages,
-		Temperature: float32Val(params.Temperature),
+		Temperature: finalTemperature,
 		MaxTokens:   intVal(params.MaxTokens),
 		TopP:        float32Val(params.TopP),
 	}
@@ -218,11 +229,22 @@ func (c *openAIClient) GenerateTextStream(ctx context.Context, userID string, sy
 			Content: userInput,
 		})
 	}
+
+	// Определяем температуру: приоритет у params, иначе из конфига
+	var finalTemperature float32
+	if params.Temperature != nil {
+		finalTemperature = float32(*params.Temperature)
+		log.Printf("[DEBUG] Using stream temperature from params: %.2f (UserID: %s)", finalTemperature, userID)
+	} else {
+		finalTemperature = float32(c.configService.GetFloat(configservice.ConfigKeyAITemperature, configservice.DefaultAITemperature))
+		log.Printf("[DEBUG] Using stream temperature from config: %.2f (UserID: %s)", finalTemperature, userID)
+	}
+
 	request := openaigo.ChatCompletionRequest{
 		Model:       currentModel,
 		Messages:    messages,
 		Stream:      true,
-		Temperature: float32Val(params.Temperature),
+		Temperature: finalTemperature,
 		MaxTokens:   intVal(params.MaxTokens),
 		TopP:        float32Val(params.TopP),
 	}
@@ -375,67 +397,89 @@ func (c *ollamaClient) GenerateText(ctx context.Context, userID string, systemPr
 	if userInput != "" {
 		messages = append(messages, api.Message{Role: "user", Content: userInput})
 	}
+
+	// Определяем температуру: приоритет у params, иначе из конфига
+	var finalTemperature float64
+	if params.Temperature != nil {
+		finalTemperature = *params.Temperature
+		log.Printf("[DEBUG] Using Ollama temperature from params: %.2f (UserID: %s)", finalTemperature, userID)
+	} else {
+		finalTemperature = c.configService.GetFloat(configservice.ConfigKeyAITemperature, configservice.DefaultAITemperature)
+		log.Printf("[DEBUG] Using Ollama temperature from config: %.2f (UserID: %s)", finalTemperature, userID)
+	}
+
+	log.Printf("Sending request to Ollama: Model=%s, UserID: %s", currentModel, userID)
+	startTime := time.Now()
 	req := &api.ChatRequest{
 		Model:    currentModel,
 		Messages: messages,
 		Stream:   func(b bool) *bool { return &b }(false),
 		Options: map[string]interface{}{
-			"temperature": float32Val(params.Temperature),
-			"top_p":       float32Val(params.TopP),
+			"temperature": finalTemperature,
 			"num_predict": intVal(params.MaxTokens),
+			"top_p":       params.TopP,
 		},
 	}
+
 	requestCtx, cancel := context.WithTimeout(ctx, aiTimeout)
 	defer cancel()
-	startTime := time.Now()
-	log.Printf("Отправка запроса к Ollama: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes, UserID: %s",
-		currentModel, len(systemPrompt), len(userInput), userID)
-	jsonData, jsonErr := json.Marshal(req)
-	if jsonErr != nil {
-		log.Printf("[OLLAMA_DEBUG] Error marshalling request to JSON: %v", jsonErr)
-	} else {
-		log.Printf("[OLLAMA_DEBUG] Sending JSON request: %s", string(jsonData))
-	}
-	var resp api.ChatResponse
-	err := c.client.Chat(requestCtx, req, func(r api.ChatResponse) error {
-		log.Printf("[OLLAMA_DEBUG] Received response chunk: %+v", r)
-		resp = r
+	err := c.client.Chat(requestCtx, req, func(resp api.ChatResponse) error {
+		if resp.Message.Content != "" {
+			log.Printf("User Input (Ollama) (len %d): '%s'", len(resp.Message.Content), resp.Message.Content)
+		}
+		if resp.Done {
+			usageInfo.PromptTokens = resp.PromptEvalCount
+			usageInfo.CompletionTokens = resp.EvalCount
+			usageInfo.TotalTokens = resp.PromptEvalCount + resp.EvalCount
+			usageInfo.EstimatedCostUSD = 0
+			if usageInfo.TotalTokens > 0 {
+				log.Printf("Ollama Usage (userID: %s): PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
+					userID, usageInfo.PromptTokens, usageInfo.CompletionTokens, usageInfo.TotalTokens)
+				aiPromptTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(usageInfo.PromptTokens))
+				aiCompletionTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(usageInfo.CompletionTokens))
+				aiTotalTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(usageInfo.TotalTokens))
+			}
+		}
 		return nil
 	})
 	duration := time.Since(startTime)
 	if err != nil {
-		log.Printf("[OLLAMA_DEBUG] Error during Chat call. Last Response: %+v, Error: %v", resp, err)
 		if errors.Is(err, context.DeadlineExceeded) {
-			log.Printf("Ошибка таймаута (%v) от Ollama API за %v (userID: %s): %v", aiTimeout, duration, userID, err)
+			log.Printf("Ошибка таймаута (%v) во время генерации Ollama за %v (userID: %s): %v", aiTimeout, duration, userID, err)
 		} else {
-			log.Printf("Ошибка от Ollama API за %v (userID: %s): %v", duration, userID, err)
+			log.Printf("Ошибка во время генерации Ollama за %v (userID: %s): %v", duration, userID, err)
 		}
 		aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "error", "user_id": userID}).Inc()
 		return "", usageInfo, fmt.Errorf("%w: %v", ErrAIGenerationFailed, err)
 	}
-	if resp.Message.Content == "" {
-		log.Printf("[OLLAMA_DEBUG] Empty content in final response: %+v", resp)
-		log.Printf("Ollama API вернул пустой ответ за %v (userID: %s)", duration, userID)
-		aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "error", "user_id": userID}).Inc()
-		return "", usageInfo, fmt.Errorf("%w: получен пустой ответ", ErrAIGenerationFailed)
+	if usageInfo.TotalTokens == 0 {
+		log.Printf("[WARN] Final usage block not received in Ollama response (userID: %s). Using estimated token counts.", userID)
+		tke, err := tiktoken.EncodingForModel(currentModel)
+		if err == nil {
+			promptTokensCount := len(tke.Encode(systemPrompt, nil, nil)) + len(tke.Encode(userInput, nil, nil))
+			totalTokens := promptTokensCount + usageInfo.CompletionTokens
+			usageInfo.PromptTokens = promptTokensCount
+			usageInfo.CompletionTokens = usageInfo.CompletionTokens
+			usageInfo.TotalTokens = totalTokens
+			usageInfo.EstimatedCostUSD = calculateCost(c.configService, promptTokensCount, usageInfo.CompletionTokens)
+			log.Printf("%s Stream Usage (estimated, userID: %s): Prompt≈%d, Completion≈%d, Total≈%d",
+				"Ollama", userID, promptTokensCount, usageInfo.CompletionTokens, totalTokens)
+			aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "success_stream_estimated", "user_id": userID}).Inc()
+			aiRequestDuration.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(duration.Seconds())
+			aiPromptTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(promptTokensCount))
+			aiCompletionTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(usageInfo.CompletionTokens))
+			aiTotalTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(totalTokens))
+		} else {
+			log.Printf("[ERROR] Could not get tokenizer for model %s to estimate stream tokens (userID: %s). Skipping token metrics for this stream.", currentModel, userID)
+			aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "success_stream_no_tokens", "user_id": userID}).Inc()
+			aiRequestDuration.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(duration.Seconds())
+		}
 	}
-	log.Printf("[OLLAMA_DEBUG] Successful final response: %+v", resp)
-	aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "success", "user_id": userID}).Inc()
-	aiRequestDuration.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(duration.Seconds())
-	generatedText := resp.Message.Content
-	log.Printf("Ответ от Ollama API получен за %v. Длина ответа: %d символов. (userID: %s)", duration, len(generatedText), userID)
-	usageInfo.PromptTokens = resp.PromptEvalCount
-	usageInfo.CompletionTokens = resp.EvalCount
-	usageInfo.TotalTokens = resp.PromptEvalCount + resp.EvalCount
-	usageInfo.EstimatedCostUSD = 0
-	if usageInfo.TotalTokens > 0 {
-		log.Printf("Ollama Usage (userID: %s): PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
-			userID, usageInfo.PromptTokens, usageInfo.CompletionTokens, usageInfo.TotalTokens)
-		aiPromptTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(usageInfo.PromptTokens))
-		aiCompletionTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(usageInfo.CompletionTokens))
-		aiTotalTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(usageInfo.TotalTokens))
+	if usageInfo.EstimatedCostUSD > 0 {
+		aiEstimatedCostUSD.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Add(usageInfo.EstimatedCostUSD)
+		log.Printf("%s Usage Cost (estimated, userID: %s): $%.6f", "Ollama", userID, usageInfo.EstimatedCostUSD)
 	}
-	return generatedText, usageInfo, nil
+	return "", usageInfo, nil
 }
 
 func (c *ollamaClient) GenerateTextStream(ctx context.Context, userID string, systemPrompt string, userInput string, params GenerationParams, chunkHandler func(string) error) (UsageInfo, error) {
@@ -456,37 +500,50 @@ func (c *ollamaClient) GenerateTextStream(ctx context.Context, userID string, sy
 	if userInput != "" {
 		messages = append(messages, api.Message{Role: "user", Content: userInput})
 	}
+
+	// Определяем температуру: приоритет у params, иначе из конфига
+	var finalTemperature float64
+	if params.Temperature != nil {
+		finalTemperature = *params.Temperature
+		log.Printf("[DEBUG] Using Ollama stream temperature from params: %.2f (UserID: %s)", finalTemperature, userID)
+	} else {
+		finalTemperature = c.configService.GetFloat(configservice.ConfigKeyAITemperature, configservice.DefaultAITemperature)
+		log.Printf("[DEBUG] Using Ollama stream temperature from config: %.2f (UserID: %s)", finalTemperature, userID)
+	}
+
+	log.Printf("Sending stream request to Ollama: Model=%s, UserID: %s", currentModel, userID)
+	startTime := time.Now()
 	req := &api.ChatRequest{
 		Model:    currentModel,
 		Messages: messages,
 		Stream:   func(b bool) *bool { return &b }(true),
 		Options: map[string]interface{}{
-			"temperature": float32Val(params.Temperature),
-			"top_p":       float32Val(params.TopP),
+			"temperature": finalTemperature,
 			"num_predict": intVal(params.MaxTokens),
+			"top_p":       params.TopP,
 		},
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, aiTimeout)
-	defer cancel()
-	startTime := time.Now()
-	log.Printf("Отправка STREAM запроса к Ollama: Model=%s, SystemPrompt=%d bytes, UserInput=%d bytes, UserID: %s",
-		currentModel, len(systemPrompt), len(userInput), userID)
-	var finalErr error
-	var promptTokens, completionTokens int
-	err := c.client.Chat(requestCtx, req, func(resp api.ChatResponse) error {
+
+	err := c.client.Chat(ctx, req, func(resp api.ChatResponse) error {
 		if resp.Message.Content != "" {
+			log.Printf("User Input (Ollama Stream) (len %d): '%s'", len(resp.Message.Content), resp.Message.Content)
 			if err := chunkHandler(resp.Message.Content); err != nil {
 				log.Printf("Ошибка обработки чанка стрима Ollama (userID: %s): %v", userID, err)
 				return fmt.Errorf("ошибка обработчика стрима: %w", err)
 			}
 		}
 		if resp.Done {
-			promptTokens = resp.PromptEvalCount
-			completionTokens = resp.EvalCount
-			if resp.DoneReason != "" && resp.DoneReason != "stop" {
-				log.Printf("Стрим Ollama завершился не по причине 'stop': %s", resp.DoneReason)
+			usageInfo.PromptTokens = resp.PromptEvalCount
+			usageInfo.CompletionTokens = resp.EvalCount
+			usageInfo.TotalTokens = resp.PromptEvalCount + resp.EvalCount
+			usageInfo.EstimatedCostUSD = 0
+			if usageInfo.TotalTokens > 0 {
+				log.Printf("Ollama Stream Usage (userID: %s): PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
+					userID, usageInfo.PromptTokens, usageInfo.CompletionTokens, usageInfo.TotalTokens)
+				aiPromptTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(usageInfo.PromptTokens))
+				aiCompletionTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(usageInfo.CompletionTokens))
+				aiTotalTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(usageInfo.TotalTokens))
 			}
-			log.Printf("Стрим Ollama завершен. Причина: %s", resp.DoneReason)
 		}
 		return nil
 	})
@@ -498,27 +555,18 @@ func (c *ollamaClient) GenerateTextStream(ctx context.Context, userID string, sy
 			log.Printf("Ошибка во время стриминга Ollama за %v (userID: %s): %v", duration, userID, err)
 		}
 		aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "error_stream", "user_id": userID}).Inc()
-		if finalErr == nil {
-			finalErr = fmt.Errorf("%w: %v", ErrAIGenerationFailed, err)
-		}
-	}
-	if finalErr != nil {
-		return usageInfo, finalErr
+		return usageInfo, fmt.Errorf("%w: %v", ErrAIGenerationFailed, err)
 	}
 	log.Printf("Обработка стрима Ollama завершена за %v. (userID: %s)", duration, userID)
 	aiRequestsTotal.With(prometheus.Labels{"model": currentModel, "status": "success_stream", "user_id": userID}).Inc()
 	aiRequestDuration.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(duration.Seconds())
-	if promptTokens > 0 || completionTokens > 0 {
+	if usageInfo.TotalTokens > 0 {
 		log.Printf("Ollama Stream Usage (userID: %s): PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d",
-			userID, promptTokens, completionTokens, promptTokens+completionTokens)
-		aiPromptTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(promptTokens))
-		aiCompletionTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(completionTokens))
-		aiTotalTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(promptTokens + completionTokens))
+			userID, usageInfo.PromptTokens, usageInfo.CompletionTokens, usageInfo.TotalTokens)
+		aiPromptTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(usageInfo.PromptTokens))
+		aiCompletionTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(usageInfo.CompletionTokens))
+		aiTotalTokens.With(prometheus.Labels{"model": currentModel, "user_id": userID}).Observe(float64(usageInfo.TotalTokens))
 	}
-	usageInfo.PromptTokens = promptTokens
-	usageInfo.CompletionTokens = completionTokens
-	usageInfo.TotalTokens = promptTokens + completionTokens
-	usageInfo.EstimatedCostUSD = 0
 	return usageInfo, nil
 }
 

@@ -80,10 +80,10 @@ type GameOverConditions struct {
 
 // StatDefinition defines the properties of a core stat, as defined in the setup JSON.
 type StatDefinition struct {
-	Description        string             `json:"d"`            // description
-	Initial            int                `json:"iv"`           // initial_value
-	GameOverConditions GameOverConditions `json:"go"`           // game_over_conditions
-	Icon               string             `json:"ic,omitempty"` // Icon name from the list
+	Description string             `json:"d"`            // description
+	Initial     int                `json:"iv"`           // initial_value
+	Go          GameOverConditions `json:"go"`           // game_over_conditions
+	Icon        string             `json:"ic,omitempty"` // Icon name from the list
 }
 
 // PlayerPreferences defines player preferences within the Config.

@@ -10,7 +10,8 @@ import (
 	"math/rand"
 	sharedInterfaces "novel-server/shared/interfaces" // <<< Используем этот импорт
 	"novel-server/shared/messaging"
-	sharedModels "novel-server/shared/models" // <<< Добавляем импорт models
+	sharedModels "novel-server/shared/models"
+	"novel-server/shared/utils" // <<< CORRECTED import path for utils
 
 	// Импортируем конфиг для AIMaxAttempts
 	// Добавляем модель
@@ -194,6 +195,34 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 					}
 					finalUsageInfo = attemptUsageInfo
 					processingErr = nil
+
+					// <<< MODIFIED: Add explicit BEFORE/AFTER logging for ExtractJsonContent >>>
+					originalAIResponse := aiResponse // Keep original
+
+					// --- Log BEFORE extraction ---
+					log.Printf("[TaskID: %s] BEFORE ExtractJsonContent. Raw AI Response (length: %d): %s", payload.TaskID, len(originalAIResponse), utils.StringShort(originalAIResponse, 500)) // Log snippet before
+
+					extractedJSON := utils.ExtractJsonContent(originalAIResponse) // Always pass original here
+
+					// --- Log AFTER extraction ---
+					log.Printf("[TaskID: %s] AFTER ExtractJsonContent. Extracted JSON (length: %d): %s", payload.TaskID, len(extractedJSON), utils.StringShort(extractedJSON, 500)) // Log snippet after
+
+					if extractedJSON == "" {
+						log.Printf("[TaskID: %s][WARN] ExtractJsonContent returned empty string, using original AI response.", payload.TaskID)
+						// Keep original aiResponse (which is originalAIResponse)
+						aiResponse = originalAIResponse
+					} else {
+						if extractedJSON != originalAIResponse {
+							log.Printf("[TaskID: %s] ExtractJsonContent modified the AI response.", payload.TaskID)
+						} else {
+							log.Printf("[TaskID: %s] ExtractJsonContent did not modify the AI response.", payload.TaskID)
+						}
+						aiResponse = extractedJSON // Use the potentially cleaned JSON moving forward
+					}
+					// <<< END MODIFIED >>>
+
+					// Log the response *after* potential extraction - REMOVED as redundant now
+					// log.Printf("[TaskID: %s] Final AI Response used (length: %d): %s", payload.TaskID, len(aiResponse), aiResponse)
 					break
 				}
 

@@ -297,8 +297,8 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 			coreStatsDTO[statID] = sharedModels.CoreStatDTO{
 				Description:  statDef.Description,
 				InitialValue: statDef.Initial,
-				GameOverMin:  statDef.GameOverConditions.Min,
-				GameOverMax:  statDef.GameOverConditions.Max,
+				GameOverMin:  statDef.Go.Min,
+				GameOverMax:  statDef.Go.Max,
 				Icon:         statDef.Icon,
 			}
 		}

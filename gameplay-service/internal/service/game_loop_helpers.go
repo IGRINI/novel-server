@@ -139,11 +139,11 @@ func applyConsequences(progress *models.PlayerProgress, cons models.Consequences
 				currentValue = 0
 			}
 
-			if definition.GameOverConditions.Min && currentValue <= 0 {
+			if definition.Go.Min && currentValue <= 0 {
 				return statName, true
 			}
 
-			if definition.GameOverConditions.Max && currentValue >= 100 {
+			if definition.Go.Max && currentValue >= 100 {
 				return statName, true
 			}
 		}

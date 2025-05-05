@@ -102,15 +102,15 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 		}
 
 		if parseErr == nil {
-			jsonToParse := utils.ExtractJsonContent(rawGeneratedText)
+			jsonToParse := rawGeneratedText
 			if jsonToParse == "" {
-				p.logger.Error("PARSING ERROR: Could not extract JSON from Narrator text (fetched)",
+				p.logger.Error("PARSING ERROR: Generator returned empty text for Narrator",
 					zap.String("task_id", taskID),
 					zap.String("story_config_id", storyConfigID.String()),
 					zap.String("raw_text_snippet", utils.StringShort(rawGeneratedText, 100)),
 				)
 				config.Status = sharedModels.StatusError
-				parseErr = errors.New("failed to extract JSON block from Narrator text")
+				parseErr = errors.New("generator returned empty text for narrator")
 			} else {
 				p.logger.Debug("Raw JSON bytes before unmarshal",
 					zap.String("task_id", taskID),

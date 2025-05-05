@@ -1,0 +1,57 @@
+/ # psql -U postgres -d novel_db
+psql (15.12)
+Type "help" for help.
+
+novel_db=# \l+ novel_db
+                                                                List of databases
+   Name   |  Owner   | Encoding |  Collate   |   Ctype    | ICU Locale | Locale Provider | Access privileges |  Size   | Tablespace | Description 
+----------+----------+----------+------------+------------+------------+-----------------+-------------------+---------+------------+-------------
+ novel_db | postgres | UTF8     | en_US.utf8 | en_US.utf8 |            | libc            |                   | 9293 kB | pg_default | 
+(1 row)
+
+novel_db=# \d+ generation_results
+                                                                                           Table "public.generation_results"
+       Column       |           Type           | Collation | Nullable |      Default      | Storage  | Compression | Stats target |                                     Description                                     
+--------------------+--------------------------+-----------+----------+-------------------+----------+-------------+--------------+-------------------------------------------------------------------------------------
+ id                 | text                     |           | not null |                   | extended |             |              | Уникальный идентификатор задачи генерации (обычно совпадает с TaskID из сообщения).
+ user_id            | uuid                     |           | not null |                   | plain    |             |              | Идентификатор пользователя, инициировавшего задачу.
+ prompt_type        | character varying(100)   |           | not null |                   | extended |             |              | Тип промта, использованного для генерации.
+ generated_text     | text                     |           |          |                   | extended |             |              | Текст, сгенерированный AI.
+ processing_time_ms | bigint                   |           | not null |                   | plain    |             |              | Время выполнения AI-запроса и внутренней обработки в миллисекундах.
+ created_at         | timestamp with time zone |           | not null | CURRENT_TIMESTAMP | plain    |             |              | Время получения задачи воркером.
+ completed_at       | timestamp with time zone |           | not null |                   | plain    |             |              | Время завершения обработки задачи воркером.
+ error              | text                     |           |          |                   | extended |             |              | Текст ошибки, возникшей при обработке задачи (если была).
+ prompt_tokens      | integer                  |           | not null | 0                 | plain    |             |              | Количество токенов в промпте запроса к AI.
+ completion_tokens  | integer                  |           | not null | 0                 | plain    |             |              | Количество токенов в ответе AI.
+ estimated_cost_usd | numeric(12,8)            |           | not null | 0.0               | main     |             |              | Примерная стоимость запроса к AI в USD.
+Indexes:
+    "generation_results_pkey" PRIMARY KEY, btree (id)
+    "idx_generation_results_created_at" btree (created_at)
+    "idx_generation_results_prompt_type" btree (prompt_type)
+    "idx_generation_results_user_id" btree (user_id)
+Access method: heap
+
+novel_db=# \d+ story_scenes
+                                                           Table "public.story_scenes"
+       Column       |           Type           | Collation | Nullable |      Default       | Storage  | Compression | Stats target | Description 
+--------------------+--------------------------+-----------+----------+--------------------+----------+-------------+--------------+-------------
+ id                 | uuid                     |           | not null | uuid_generate_v4() | plain    |             |              | 
+ published_story_id | uuid                     |           | not null |                    | plain    |             |              | 
+ state_hash         | character varying(64)    |           | not null |                    | extended |             |              | 
+ scene_content      | text                     |           | not null |                    | extended |             |              | 
+ created_at         | timestamp with time zone |           | not null | now()              | plain    |             |              | 
+ updated_at         | timestamp with time zone |           | not null | now()              | plain    |             |              | 
+Indexes:
+    "story_scenes_pkey" PRIMARY KEY, btree (id)
+    "idx_story_scenes_published_story_id" btree (published_story_id)
+    "idx_story_scenes_state_hash" btree (state_hash)
+    "idx_story_scenes_story_hash" UNIQUE, btree (published_story_id, state_hash)
+Foreign-key constraints:
+    "story_scenes_published_story_id_fkey" FOREIGN KEY (published_story_id) REFERENCES published_stories(id) ON DELETE CASCADE
+Referenced by:
+    TABLE "player_game_states" CONSTRAINT "player_game_states_current_scene_id_fkey" FOREIGN KEY (current_scene_id) REFERENCES story_scenes(id) ON DELETE SET NULL
+Triggers:
+    update_story_scenes_updated_at BEFORE UPDATE ON story_scenes FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()
+Access method: heap
+
+novel_db=# 

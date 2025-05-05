@@ -276,8 +276,8 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		reasonCondition := ""
 		finalValue := nextProgress.CoreStats[gameOverStat]
 		if def, ok := setupContent.CoreStatsDefinition[gameOverStat]; ok {
-			minConditionMet := def.GameOverConditions.Min && finalValue <= 0
-			maxConditionMet := def.GameOverConditions.Max && finalValue >= 100
+			minConditionMet := def.Go.Min && finalValue <= 0
+			maxConditionMet := def.Go.Max && finalValue >= 100
 
 			if minConditionMet {
 				reasonCondition = "min"

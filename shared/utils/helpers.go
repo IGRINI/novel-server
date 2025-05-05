@@ -27,6 +27,109 @@ func isValidJson(s string) bool {
 	return json.Unmarshal([]byte(s), &js) == nil
 }
 
+// balanceBrackets пытается добавить/удалить закрывающие скобки/квадратные скобки в конце строки.
+// Улучшенная версия, игнорирующая скобки внутри строк.
+func balanceBrackets(text string) string {
+	balanceCurly := 0
+	balanceSquare := 0
+	inString := false
+	escape := false
+
+	// Сначала подсчитываем баланс скобок, игнорируя строки
+	for _, r := range text {
+		if escape {
+			escape = false
+			continue
+		}
+		if r == '\\' {
+			escape = true
+			continue
+		}
+		// Важно: Проверяем кавычку ДО проверки скобок
+		if r == '"' {
+			inString = !inString
+		}
+		// Считаем скобки только если мы НЕ внутри строки
+		if !inString {
+			switch r {
+			case '{':
+				balanceCurly++
+			case '}':
+				balanceCurly--
+			case '[':
+				balanceSquare++
+			case ']':
+				balanceSquare--
+			}
+		}
+	}
+
+	// Теперь применяем балансировку
+	balancedText := text
+	trimmed := strings.TrimSpace(text)
+
+	if strings.HasPrefix(trimmed, "{") {
+		// Ожидаем объект на верхнем уровне
+		for balanceCurly > 0 {
+			balancedText += "}"
+			balanceCurly--
+		}
+		// Удаляем лишние } только если они точно в конце и баланс отрицательный
+		for balanceCurly < 0 && strings.HasSuffix(balancedText, "}") {
+			// Перед удалением убедимся, что скобка не часть строки (упрощенная проверка)
+			if !strings.Contains(balancedText[len(balancedText)-5:], `"`) { // Примерная проверка
+				balancedText = balancedText[:len(balancedText)-1]
+				balanceCurly++
+			} else {
+				break // Не рискуем удалять, если рядом кавычки
+			}
+		}
+		// После добавления/удаления фигурных, проверим квадратные (менее вероятно, но возможно)
+		for balanceSquare > 0 && strings.HasSuffix(balancedText, "}") { // Если закончили на }, добавляем ]
+			balancedText += "]"
+			balanceSquare--
+		}
+		for balanceSquare < 0 && strings.HasSuffix(balancedText, "]") { // Если закончили на ]
+			if !strings.Contains(balancedText[len(balancedText)-5:], `"`) {
+				balancedText = balancedText[:len(balancedText)-1]
+				balanceSquare++
+			} else {
+				break
+			}
+		}
+
+	} else if strings.HasPrefix(trimmed, "[") {
+		// Ожидаем массив на верхнем уровне
+		for balanceSquare > 0 {
+			balancedText += "]"
+			balanceSquare--
+		}
+		for balanceSquare < 0 && strings.HasSuffix(balancedText, "]") {
+			if !strings.Contains(balancedText[len(balancedText)-5:], `"`) {
+				balancedText = balancedText[:len(balancedText)-1]
+				balanceSquare++
+			} else {
+				break
+			}
+		}
+		// Проверим фигурные
+		for balanceCurly > 0 && strings.HasSuffix(balancedText, "]") {
+			balancedText += "}"
+			balanceCurly--
+		}
+		for balanceCurly < 0 && strings.HasSuffix(balancedText, "}") {
+			if !strings.Contains(balancedText[len(balancedText)-5:], `"`) {
+				balancedText = balancedText[:len(balancedText)-1]
+				balanceCurly++
+			} else {
+				break
+			}
+		}
+	}
+
+	return balancedText
+}
+
 func ExtractJsonContent(rawText string) string {
 	rawText = strings.TrimSpace(rawText)
 
@@ -35,9 +138,11 @@ func ExtractJsonContent(rawText string) string {
 	matches := jsonBlockRegex.FindStringSubmatch(rawText)
 	if len(matches) > 1 {
 		content := strings.TrimSpace(matches[1])
-		if isValidJson(content) {
-			return content
+		balancedContent := balanceBrackets(content) // Балансировка
+		if isValidJson(balancedContent) {
+			return balancedContent
 		}
+		// Если не валидно, продолжаем поиск
 	}
 
 	// 2. Поиск ``` ... ``` (если ```json не найден или невалиден)
@@ -45,25 +150,14 @@ func ExtractJsonContent(rawText string) string {
 	matches = anyBlockRegex.FindStringSubmatch(rawText)
 	if len(matches) > 1 {
 		content := strings.TrimSpace(matches[1])
-		if isValidJson(content) {
-			return content
+		balancedContent := balanceBrackets(content) // Балансировка
+		if isValidJson(balancedContent) {
+			return balancedContent
 		}
+		// Если не валидно, продолжаем поиск
 	}
 
-	// 3. Очистка от ``` по краям (если не найдены блоки или их содержимое невалидно)
-	cleanedText := rawText
-	if strings.HasPrefix(cleanedText, "```json") {
-		cleanedText = strings.TrimPrefix(cleanedText, "```json")
-	} else if strings.HasPrefix(cleanedText, "```") {
-		cleanedText = strings.TrimPrefix(cleanedText, "```")
-	}
-	cleanedText = strings.TrimSuffix(cleanedText, "```")
-	cleanedText = strings.TrimSpace(cleanedText)
-	if isValidJson(cleanedText) && (strings.HasPrefix(cleanedText, "{") || strings.HasPrefix(cleanedText, "[")) {
-		return cleanedText
-	}
-
-	// 4. Поиск между первой { и последней }
+	// 4. Поиск между первой {/[ и последней }/] - основная логика извлечения
 	firstBrace := strings.Index(rawText, "{")
 	lastBrace := strings.LastIndex(rawText, "}")
 	firstBracket := strings.Index(rawText, "[")
@@ -71,46 +165,77 @@ func ExtractJsonContent(rawText string) string {
 
 	var potentialJson string
 
-	// Определяем, что идет раньше: { или [
-	startBrace := -1
-	endBrace := -1
-	isObject := false
+	startIdx := -1
+	endIdx := -1
 
+	// Определяем, что идет раньше и где искать конец
 	if firstBrace != -1 && (firstBracket == -1 || firstBrace < firstBracket) {
 		// Начинается с {
-		startBrace = firstBrace
-		endBrace = lastBrace
-		isObject = true
+		startIdx = firstBrace
+		endIdx = lastBrace // Ищем последнюю }
 	} else if firstBracket != -1 {
-		// Начинается с [ (или { не найдена)
-		startBrace = firstBracket
-		endBrace = lastBracket
+		// Начинается с [
+		startIdx = firstBracket
+		endIdx = lastBracket // Ищем последнюю ]
 	}
 
-	if startBrace != -1 && endBrace != -1 && endBrace > startBrace {
-		potentialJson = rawText[startBrace : endBrace+1]
-		if isValidJson(potentialJson) {
-			// Доп. проверка, что это действительно объект/массив, а не просто текст со скобками
-			trimmedPotential := strings.TrimSpace(potentialJson)
-			if (isObject && strings.HasPrefix(trimmedPotential, "{") && strings.HasSuffix(trimmedPotential, "}")) ||
-				(!isObject && strings.HasPrefix(trimmedPotential, "[") && strings.HasSuffix(trimmedPotential, "]")) {
-				return potentialJson
+	if startIdx != -1 {
+		// Если нашли начало '{' или '['
+		if endIdx != -1 && endIdx > startIdx {
+			// Если нашли и конец, берем срез до него
+			potentialJson = rawText[startIdx : endIdx+1]
+		} else {
+			// Если конец '}' или ']' НЕ найден, берем все от начала до конца строки
+			// Это важно для случаев, когда последняя скобка отсутствует
+			potentialJson = rawText[startIdx:]
+		}
+
+		// Всегда пытаемся сбалансировать то, что извлекли
+		balancedContent := balanceBrackets(potentialJson)
+		if isValidJson(balancedContent) {
+			// Проверяем, что результат начинается с нужной скобки (доп. проверка)
+			trimmedBalanced := strings.TrimSpace(balancedContent)
+			if (strings.HasPrefix(trimmedBalanced, "{") && strings.HasSuffix(trimmedBalanced, "}")) ||
+				(strings.HasPrefix(trimmedBalanced, "[") && strings.HasSuffix(trimmedBalanced, "]")) {
+				return balancedContent
 			}
 		}
+		// Если невалидно или не прошло доп. проверку, продолжаем
 	}
 
-	// 6. Финальная попытка с оригинальной (но жадной) регуляркой
-	// Ищем именно объект {}, т.к. конфиг - это объект
+	// 5. Fallback с жадными регулярками (если шаг 4 не сработал)
+	// Ищем именно объект {}, т.к. наш конфиг - это объект
 	objectRegexFallback := regexp.MustCompile(`(?s)(\{.*\})`)
 	fallbackMatches := objectRegexFallback.FindStringSubmatch(rawText)
 	if len(fallbackMatches) > 1 {
 		content := strings.TrimSpace(fallbackMatches[1])
-		if isValidJson(content) {
-			return content
+		balancedContent := balanceBrackets(content) // Балансировка
+		if isValidJson(balancedContent) {
+			return balancedContent
 		}
 	}
 
-	// 7. Возврат пустой строки
+	// Попробуем также для массива
+	arrayRegexFallback := regexp.MustCompile(`(?s)(\[.*\])`)
+	fallbackMatches = arrayRegexFallback.FindStringSubmatch(rawText)
+	if len(fallbackMatches) > 1 {
+		content := strings.TrimSpace(fallbackMatches[1])
+		balancedContent := balanceBrackets(content) // Балансировка
+		if isValidJson(balancedContent) {
+			return balancedContent
+		}
+	}
+
+	// 6. Если ничего не помогло, возвращаем как есть (но обрезанное)
+	// Это крайний случай, если JSON внутри текста без маркеров
+	if firstBrace != -1 { // Если нашли хоть какую-то фигурную скобку
+		return strings.TrimSpace(rawText[firstBrace:])
+	}
+	if firstBracket != -1 { // Если нашли хоть какую-то квадратную скобку
+		return strings.TrimSpace(rawText[firstBracket:])
+	}
+
+	// 7. Возврат пустой строки, если вообще ничего похожего на JSON не найдено
 	return ""
 }
 
