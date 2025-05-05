@@ -116,5 +116,5 @@ type PublishedStoryRepository interface {
 	UpdateStatusFlagsAndDetails(ctx context.Context, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, errorDetails *string) error
 
 	// GetSummaryWithDetails получает детали истории, имя автора, флаг лайка и прогресса для указанного пользователя.
-	GetSummaryWithDetails(ctx context.Context, storyID, userID uuid.UUID) (*models.PublishedStoryDetailWithProgressAndLike, error)
+	GetSummaryWithDetails(ctx context.Context, storyID, userID uuid.UUID) (*models.PublishedStorySummaryWithProgress, error)
 }

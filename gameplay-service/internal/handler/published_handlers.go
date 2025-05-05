@@ -94,55 +94,21 @@ func (h *GameplayHandler) listMyPublishedStories(c *gin.Context) {
 	)
 	log.Debug("Fetching my published stories")
 
-	// Вызываем метод сервиса, который возвращает []*PublishedStoryDetailWithProgressDTO
-	storiesDTO, nextCursor, err := h.service.ListMyPublishedStories(c.Request.Context(), userID, cursor, limit)
+	// <<< ИЗМЕНЕНО: Тип возвращаемого значения из сервиса >>>
+	stories, nextCursor, err := h.service.ListMyPublishedStories(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
 		log.Error("Error listing my published stories from service", zap.Error(err))
 		handleServiceError(c, err, h.logger)
 		return
 	}
 
-	log.Debug("Service ListMyPublishedStories returned",
-		zap.Int("dto_count", len(storiesDTO)),
-		zap.Stringp("next_cursor", &nextCursor), // Логируем указатель на nextCursor
-	)
-
-	// <<< ДОБАВЛЕНО: Конвертация из DTO сервиса в sharedModels >>>
-	storySummaries := make([]sharedModels.PublishedStorySummaryWithProgress, len(storiesDTO))
-	for i, dto := range storiesDTO {
-		if dto == nil {
-			log.Warn("Received nil PublishedStoryDetailWithProgressDTO in listMyPublishedStories")
-			continue
-		}
-		title := dto.Title
-		description := dto.ShortDescription
-
-		storySummaries[i] = sharedModels.PublishedStorySummaryWithProgress{
-			PublishedStorySummary: sharedModels.PublishedStorySummary{
-				ID:               dto.ID,
-				Title:            title,
-				ShortDescription: description,
-				AuthorID:         dto.AuthorID,
-				AuthorName:       dto.AuthorName,
-				PublishedAt:      dto.PublishedAt,
-				IsAdultContent:   dto.IsAdultContent,
-				LikesCount:       int64(dto.LikesCount),
-				IsLiked:          dto.IsLiked,
-				Status:           dto.Status,
-			},
-			HasPlayerProgress: dto.HasPlayerProgress,
-			IsPublic:          dto.IsPublic,
-			PlayerGameStatus:  dto.PlayerGameStatus,
-		}
-	}
-
 	resp := PaginatedResponse{
-		Data:       storySummaries,
+		Data:       stories, // <<< ИЗМЕНЕНО: Используем stories напрямую
 		NextCursor: nextCursor,
 	}
 
 	log.Debug("Successfully fetched my published stories",
-		zap.Int("count", len(storySummaries)),
+		zap.Int("count", len(stories)), // <<< ИЗМЕНЕНО: Используем stories
 		zap.Bool("hasNext", nextCursor != ""),
 	)
 
@@ -513,48 +479,21 @@ func (h *GameplayHandler) listLikedStories(c *gin.Context) {
 	)
 	log.Debug("Fetching liked stories")
 
-	// <<< ИЗМЕНЕНО: Вызываем обновленный сервис, получаем DTO - теперь это []*service.LikedStoryDetailDTO >>>
-	// Важно: ListLikedStories *не* возвращает []sharedModels.PublishedStorySummaryWithProgress
-	// Он возвращает []*service.LikedStoryDetailDTO, который нужно преобразовать в sharedModels.PublishedStorySummaryWithProgress
-	likedStoriesDetails, nextCursor, err := h.service.ListLikedStories(c.Request.Context(), userID, cursor, limit)
+	// <<< ИЗМЕНЕНО: Тип возвращаемого значения из сервиса >>>
+	likedStories, nextCursor, err := h.service.ListLikedStories(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
 		log.Error("Error listing liked stories", zap.Error(err))
 		handleServiceError(c, err, h.logger)
 		return
 	}
 
-	// <<< ОСТАВЛЯЕМ ПРЕОБРАЗОВАНИЕ, т.к. сервис возвращает другой тип DTO >>>
-	storySummaries := make([]sharedModels.PublishedStorySummaryWithProgress, len(likedStoriesDetails))
-	for i, detail := range likedStoriesDetails {
-		title := detail.Title                  // Используем поле из PublishedStorySummary
-		description := detail.ShortDescription // Используем поле из PublishedStorySummary
-		storySummaries[i] = sharedModels.PublishedStorySummaryWithProgress{
-			PublishedStorySummary: sharedModels.PublishedStorySummary{
-				ID:               detail.ID,
-				Title:            title,
-				ShortDescription: description,     // Используем уже полученное значение
-				AuthorID:         detail.AuthorID, // <<< ПРАВИЛЬНО
-				AuthorName:       detail.AuthorName,
-				PublishedAt:      detail.PublishedAt, // <<< ПРАВИЛЬНО
-				IsAdultContent:   detail.IsAdultContent,
-				LikesCount:       detail.LikesCount,
-				IsLiked:          true,                 // Всегда true для этого эндпоинта
-				Status:           detail.Status,        // <<< ДОБАВЛЕНО: Не хватало статуса
-				CoverImageURL:    detail.CoverImageURL, // <<< ДОБАВЛЕНО: Не хватало обложки
-			},
-			HasPlayerProgress: detail.HasPlayerProgress,
-			IsPublic:          detail.IsPublic,
-			PlayerGameStatus:  detail.PlayerGameStatus,
-		}
-	}
-
 	resp := PaginatedResponse{
-		Data:       storySummaries, // Используем преобразованные данные
+		Data:       likedStories, // <<< ИЗМЕНЕНО: Используем likedStories напрямую
 		NextCursor: nextCursor,
 	}
 
 	log.Debug("Successfully fetched liked stories",
-		zap.Int("count", len(storySummaries)),
+		zap.Int("count", len(likedStories)), // <<< ИЗМЕНЕНО: Используем likedStories
 		zap.Bool("hasNext", nextCursor != ""),
 	)
 	c.JSON(http.StatusOK, resp)
@@ -689,48 +628,6 @@ func (h *GameplayHandler) deletePublishedStory(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// listStoriesWithProgress возвращает список опубликованных историй, в которых у пользователя есть прогресс.
-// GET /published-stories/me/progress?limit=10&cursor=...
-func (h *GameplayHandler) listStoriesWithProgress(c *gin.Context) {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		h.logger.Warn("Failed to get user ID from context", zap.Error(err))
-		c.JSON(http.StatusUnauthorized, APIError{Message: "Unauthorized: " + err.Error()})
-		return
-	}
-
-	// Парсим параметры пагинации
-	limitStr := c.DefaultQuery("limit", "10")
-	cursor := c.Query("cursor")
-
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit <= 0 || limit > 100 {
-		h.logger.Warn("Invalid limit parameter for stories with progress", zap.String("limit", limitStr))
-		c.JSON(http.StatusBadRequest, APIError{Message: "Invalid limit parameter. Must be between 1 and 100."})
-		return
-	}
-
-	// Вызываем метод сервиса для получения историй с прогрессом
-	stories, nextCursor, serviceErr := h.service.GetStoriesWithProgress(c.Request.Context(), userID, limit, cursor)
-	if serviceErr != nil {
-		h.logger.Error("Failed to get stories with progress", zap.String("userID", userID.String()), zap.Error(serviceErr))
-		// Используем handleServiceError, который умеет обрабатывать ErrNotFound и другие стандартные ошибки
-		handleServiceError(c, serviceErr, h.logger)
-		return
-	}
-
-	// Формируем ответ
-	response := PaginatedResponse{
-		Data:       stories,
-		NextCursor: nextCursor,
-	}
-
-	c.JSON(http.StatusOK, response)
-}
-
-// --- НОВЫЕ ОБРАБОТЧИКИ ДЛЯ УПРАВЛЕНИЯ СОСТОЯНИЯМИ ИГРЫ ---
-
-// listGameStates возвращает список состояний игры (слотов сохранений) для пользователя и истории.
 // GET /published-stories/{storyId}/gamestates
 func (h *GameplayHandler) listGameStates(c *gin.Context) {
 	userID, err := getUserIDFromContext(c)
@@ -847,7 +744,7 @@ func (h *GameplayHandler) listMyStoriesWithProgress(c *gin.Context) {
 	log.Debug("Fetching my published stories with progress")
 
 	// Вызываем метод сервиса
-	// <<< ИЗМЕНЕНО: Передаем filterAdult в сервис >>>
+	// <<< ИЗМЕНЕНО: Тип возвращаемого значения из сервиса >>>
 	stories, nextCursor, serviceErr := h.service.ListMyStoriesWithProgress(c.Request.Context(), userID, cursor, limit, filterAdult)
 	if serviceErr != nil {
 		log.Error("Error listing my published stories with progress from service", zap.Error(serviceErr))
@@ -856,7 +753,7 @@ func (h *GameplayHandler) listMyStoriesWithProgress(c *gin.Context) {
 	}
 
 	response := PaginatedResponse{
-		Data:       stories,
+		Data:       stories, // <<< ИЗМЕНЕНО: Используем stories напрямую
 		NextCursor: nextCursor,
 	}
 

@@ -1417,7 +1417,7 @@ func (r *pgPublishedStoryRepository) ListUserSummariesWithProgress(ctx context.C
 }
 
 // GetSummaryWithDetails получает детали истории, имя автора, флаг лайка и прогресса для указанного пользователя.
-func (r *pgPublishedStoryRepository) GetSummaryWithDetails(ctx context.Context, storyID, userID uuid.UUID) (*models.PublishedStoryDetailWithProgressAndLike, error) {
+func (r *pgPublishedStoryRepository) GetSummaryWithDetails(ctx context.Context, storyID, userID uuid.UUID) (*models.PublishedStorySummaryWithProgress, error) {
 	query := `
         SELECT
             ps.id,
@@ -1446,32 +1446,32 @@ func (r *pgPublishedStoryRepository) GetSummaryWithDetails(ctx context.Context, 
         LEFT JOIN image_references ir ON ir.reference = 'history_preview_' || ps.id::text
         WHERE ps.id = $1
     `
-	result := &models.PublishedStoryDetailWithProgressAndLike{}
+	result := &models.PublishedStorySummaryWithProgress{}
 	var title, description sql.NullString
 	var coverImageUrl sql.NullString
 	var hasProgress bool                   // Variable to scan has_player_progress
 	var playerGameStatusSql sql.NullString // <<< Используем NullString для сканирования статуса
+	var authorNameSql sql.NullString       // <<< Добавлено для сканирования имени автора
 
 	logFields := []zap.Field{zap.String("storyID", storyID.String()), zap.Stringer("userID", userID)}
 	r.logger.Debug("Getting story summary with details", logFields...)
 
 	err := r.db.QueryRow(ctx, query, storyID, userID).Scan(
-		&result.ID,
-		&title,
-		&description,
-		&result.AuthorID,
-		&result.AuthorName,
-		&result.PublishedAt,
-		&result.IsAdultContent,
-		&result.LikesCount,
-		&result.Status,
-		&coverImageUrl,
-		&result.IsPublic,
-		&hasProgress,         // <<< Исправлено: было result.IsLiked
-		&playerGameStatusSql, // <<< ИСПРАВЛЕНО: Сканируем в NullString
+		&result.ID,             // 1
+		&title,                 // 2
+		&description,           // 3
+		&result.AuthorID,       // 4
+		&authorNameSql,         // 5 <<< ИЗМЕНЕНО: Сканируем в NullString
+		&result.PublishedAt,    // 6
+		&result.IsAdultContent, // 7
+		&result.LikesCount,     // 8
+		&result.Status,         // 9
+		&coverImageUrl,         // 10
+		&result.IsPublic,       // 11 <<< ИЗМЕНЕНО: Напрямую в IsPublic
+		&result.IsLiked,        // 12 <<< ИЗМЕНЕНО: Напрямую в IsLiked
+		&hasProgress,           // 13
+		&playerGameStatusSql,   // 14
 	)
-
-	r.logger.Debug("Scanned author name (details)", append(logFields, zap.String("scannedAuthorName", result.AuthorName))...) // <<< DEBUG LOG
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -1498,6 +1498,12 @@ func (r *pgPublishedStoryRepository) GetSummaryWithDetails(ctx context.Context, 
 	if playerGameStatusSql.Valid {
 		result.PlayerGameStatus = playerGameStatusSql.String // <<< Исправлено: Присваиваем строку
 	} // Иначе остается пустой ""
+	// <<< ДОБАВЛЕНО: Присвоение AuthorName из NullString >>>
+	if authorNameSql.Valid {
+		result.AuthorName = authorNameSql.String
+	} else {
+		result.AuthorName = "[unknown]"
+	}
 
 	r.logger.Debug("Story summary with details retrieved successfully", logFields...)
 	return result, nil
