@@ -44,6 +44,7 @@ type PublishedStoryDetail struct {
 	LastPlayedAt      *time.Time                         `json:"last_played_at,omitempty"` // Время последнего взаимодействия игрока с историей
 	IsAuthor          bool                               `json:"is_author"`                // Является ли текущий пользователь автором
 	IsPublic          bool                               `json:"is_public"`                // <<< ДОБАВЛЕНО: Является ли история публичной
+	PlayerGameStatus  string                             `json:"player_game_status"`       // <<< ДОБАВЛЕНО
 }
 
 // <<< НОВЫЙ ОБРАБОТЧИК: setStoryVisibility >>>
@@ -131,6 +132,7 @@ func (h *GameplayHandler) listMyPublishedStories(c *gin.Context) {
 			},
 			HasPlayerProgress: dto.HasPlayerProgress,
 			IsPublic:          dto.IsPublic,
+			PlayerGameStatus:  dto.PlayerGameStatus,
 		}
 	}
 
@@ -542,6 +544,7 @@ func (h *GameplayHandler) listLikedStories(c *gin.Context) {
 			},
 			HasPlayerProgress: detail.HasPlayerProgress,
 			IsPublic:          detail.IsPublic,
+			PlayerGameStatus:  detail.PlayerGameStatus,
 		}
 	}
 

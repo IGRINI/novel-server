@@ -1291,7 +1291,15 @@ func (r *pgPublishedStoryRepository) ListUserSummariesWithProgress(ctx context.C
             ps.is_public, -- <<< ДОБАВЛЕНО: is_public >>>
             EXISTS (SELECT 1 FROM story_likes sl WHERE sl.published_story_id = ps.id AND sl.user_id = $1) AS is_liked,
             -- ИЗМЕНЕНО: Проверяем наличие game_state с player_progress_id
-            EXISTS (SELECT 1 FROM player_game_states pgs WHERE pgs.published_story_id = ps.id AND pgs.player_id = $1 AND pgs.player_progress_id IS NOT NULL) AS has_player_progress
+            EXISTS (SELECT 1 FROM player_game_states pgs WHERE pgs.published_story_id = ps.id AND pgs.player_id = $1 AND pgs.player_progress_id IS NOT NULL) AS has_player_progress,
+            -- <<< НОВЫЙ ПОДЗАПРОС для player_game_status >>>
+            (
+                SELECT pgs.player_status
+                FROM player_game_states pgs
+                WHERE pgs.published_story_id = ps.id AND pgs.player_id = $1
+                ORDER BY CASE WHEN pgs.player_status <> 'error' THEN 0 ELSE 1 END, pgs.last_activity_at DESC
+                LIMIT 1
+            ) AS player_game_status
         FROM published_stories ps
         LEFT JOIN users u ON u.id = ps.user_id -- <<< ДОБАВЛЕНО: JOIN с users >>>
         LEFT JOIN image_references ir ON ir.reference = 'history_preview_' || ps.id::text -- <<< ИЗМЕНЕНО: JOIN с image_references >>>
@@ -1344,21 +1352,23 @@ func (r *pgPublishedStoryRepository) ListUserSummariesWithProgress(ctx context.C
 		var publishedAt time.Time     // <<< Переименовано для ясности
 		var isLiked bool
 		var hasProgress bool
+		var playerGameStatusSql sql.NullString // <<< НОВОЕ ПОЛЕ (NullString)
 
 		if err := rows.Scan(
-			&s.ID,             // 1: ps.id
-			&s.Title,          // 2: ps.title
-			&description,      // 3: ps.description
-			&s.AuthorID,       // 4: ps.user_id
-			&authorName,       // 5: author_name <-- Исправлено
-			&publishedAt,      // 6: ps.created_at
-			&s.IsAdultContent, // 7: ps.is_adult_content <<< ДОБАВЛЕНО
-			&s.LikesCount,     // 8: ps.likes_count
-			&s.Status,         // 9: ps.status
-			&coverImageUrl,    // 10: ir.image_url
-			&s.IsPublic,       // 11: ps.is_public
-			&isLiked,          // 12: calculated is_liked
-			&hasProgress,      // 13: calculated has_player_progress
+			&s.ID,                // 1: ps.id
+			&s.Title,             // 2: ps.title
+			&description,         // 3: ps.description
+			&s.AuthorID,          // 4: ps.user_id
+			&authorName,          // 5: author_name <-- Исправлено
+			&publishedAt,         // 6: ps.created_at
+			&s.IsAdultContent,    // 7: ps.is_adult_content <<< ДОБАВЛЕНО
+			&s.LikesCount,        // 8: ps.likes_count
+			&s.Status,            // 9: ps.status
+			&coverImageUrl,       // 10: ir.image_url
+			&s.IsPublic,          // 11: ps.is_public
+			&isLiked,             // 12: calculated is_liked
+			&hasProgress,         // 13: calculated has_player_progress
+			&playerGameStatusSql, // 14: НОВОЕ ПОЛЕ (NullString)
 		); err != nil {
 			r.logger.Error("Failed to scan user story summary with progress row", append(logFields, zap.Error(err))...)
 			continue
@@ -1382,6 +1392,9 @@ func (r *pgPublishedStoryRepository) ListUserSummariesWithProgress(ctx context.C
 		}
 		s.IsLiked = isLiked
 		s.HasPlayerProgress = hasProgress
+		if playerGameStatusSql.Valid {
+			s.PlayerGameStatus = playerGameStatusSql.String
+		} // Иначе остается пустой ""
 
 		summaries = append(summaries, s)
 		lastCreatedAt = publishedAt // <<< Используем publishedAt для курсора
@@ -1419,7 +1432,15 @@ func (r *pgPublishedStoryRepository) GetSummaryWithDetails(ctx context.Context, 
             ir.image_url AS cover_image_url,
             ps.is_public,
             EXISTS (SELECT 1 FROM story_likes sl WHERE sl.published_story_id = ps.id AND sl.user_id = $2) AS is_liked,
-            EXISTS (SELECT 1 FROM player_game_states pgs WHERE pgs.published_story_id = ps.id AND pgs.player_id = $2 AND pgs.player_progress_id IS NOT NULL) AS has_player_progress -- Corrected progress check
+            EXISTS (SELECT 1 FROM player_game_states pgs WHERE pgs.published_story_id = ps.id AND pgs.player_id = $2 AND pgs.player_progress_id IS NOT NULL) AS has_player_progress, -- Corrected progress check
+            -- <<< НОВЫЙ ПОДЗАПРОС для player_game_status >>>
+             (
+                SELECT pgs.player_status
+                FROM player_game_states pgs
+                WHERE pgs.published_story_id = ps.id AND pgs.player_id = $2 -- Используем $2 = userID
+                ORDER BY CASE WHEN pgs.player_status <> 'error' THEN 0 ELSE 1 END, pgs.last_activity_at DESC
+                LIMIT 1
+            ) AS player_game_status
         FROM published_stories ps
         LEFT JOIN users u ON u.id = ps.user_id
         LEFT JOIN image_references ir ON ir.reference = 'history_preview_' || ps.id::text
@@ -1428,7 +1449,8 @@ func (r *pgPublishedStoryRepository) GetSummaryWithDetails(ctx context.Context, 
 	result := &models.PublishedStoryDetailWithProgressAndLike{}
 	var title, description sql.NullString
 	var coverImageUrl sql.NullString
-	var hasProgress bool // Variable to scan has_player_progress
+	var hasProgress bool                   // Variable to scan has_player_progress
+	var playerGameStatusSql sql.NullString // <<< Используем NullString для сканирования статуса
 
 	logFields := []zap.Field{zap.String("storyID", storyID.String()), zap.Stringer("userID", userID)}
 	r.logger.Debug("Getting story summary with details", logFields...)
@@ -1445,7 +1467,8 @@ func (r *pgPublishedStoryRepository) GetSummaryWithDetails(ctx context.Context, 
 		&result.Status,
 		&coverImageUrl,
 		&result.IsPublic,
-		&hasProgress, // Scan into the dedicated variable
+		&hasProgress,         // <<< Исправлено: было result.IsLiked
+		&playerGameStatusSql, // <<< ИСПРАВЛЕНО: Сканируем в NullString
 	)
 
 	r.logger.Debug("Scanned author name (details)", append(logFields, zap.String("scannedAuthorName", result.AuthorName))...) // <<< DEBUG LOG
@@ -1472,6 +1495,9 @@ func (r *pgPublishedStoryRepository) GetSummaryWithDetails(ctx context.Context, 
 		result.CoverImageURL = nil
 	}
 	result.HasPlayerProgress = hasProgress // Assign the scanned value
+	if playerGameStatusSql.Valid {
+		result.PlayerGameStatus = playerGameStatusSql.String // <<< Исправлено: Присваиваем строку
+	} // Иначе остается пустой ""
 
 	r.logger.Debug("Story summary with details retrieved successfully", logFields...)
 	return result, nil
@@ -1536,7 +1562,15 @@ func (r *pgPublishedStoryRepository) ListUserSummariesOnlyWithProgress(ctx conte
         lps.last_activity_at,   -- For sorting and cursor (from CTE)
         (CASE WHEN $1::uuid IS NOT NULL THEN EXISTS (
             SELECT 1 FROM story_likes sl WHERE sl.published_story_id = ps.id AND sl.user_id = $1
-        ) ELSE FALSE END) AS is_liked -- is_liked requires userID ($1)
+        ) ELSE FALSE END) AS is_liked, -- is_liked requires userID ($1)
+        -- <<< ИЗМЕНЕНО: Подзапрос для player_game_status вместо простого EXISTS для has_player_progress >>>
+        (
+            SELECT pgs.player_status
+            FROM player_game_states pgs
+            WHERE pgs.published_story_id = ps.id AND pgs.player_id = $1
+            ORDER BY CASE WHEN pgs.player_status <> 'error' THEN 0 ELSE 1 END, pgs.last_activity_at DESC
+            LIMIT 1
+        ) AS player_game_status -- <<< ВОССТАНОВЛЕНО: 14-е поле
     FROM
         published_stories ps
     JOIN
@@ -1586,7 +1620,8 @@ func (r *pgPublishedStoryRepository) ListUserSummariesOnlyWithProgress(ctx conte
 		var s models.PublishedStorySummaryWithProgress
 		var description sql.NullString
 		var coverImageUrl sql.NullString
-		var currentLastActivity time.Time // <<< Переменная для сканирования lps.last_activity_at
+		var currentLastActivity time.Time      // <<< Переменная для сканирования lps.last_activity_at
+		var playerGameStatusSql sql.NullString // <<< Отдельная NullString для статуса
 
 		if err := rows.Scan(
 			&s.PublishedStorySummary.ID,
@@ -1602,6 +1637,7 @@ func (r *pgPublishedStoryRepository) ListUserSummariesOnlyWithProgress(ctx conte
 			&s.IsPublic,          // Сканируем IsPublic
 			&currentLastActivity, // <<< Сканируем lps.last_activity_at
 			&s.PublishedStorySummary.IsLiked,
+			&playerGameStatusSql, // <<< ИСПРАВЛЕНО: Сканируем в NullString
 		); err != nil {
 			r.logger.Error("Failed to scan user story summary only with progress row", append(logFields, zap.Error(err))...)
 			// Важно не прерывать весь процесс, если одна строка битая
@@ -1618,6 +1654,10 @@ func (r *pgPublishedStoryRepository) ListUserSummariesOnlyWithProgress(ctx conte
 
 		// Устанавливаем флаг прогресса (всегда true из-за INNER JOIN с LatestPlayerStates)
 		s.HasPlayerProgress = true
+		// Устанавливаем статус
+		if playerGameStatusSql.Valid {
+			s.PlayerGameStatus = playerGameStatusSql.String // <<< ИСПРАВЛЕНО: Присваиваем s.PlayerGameStatus
+		} // Иначе оставляем пустым
 
 		summaries = append(summaries, s)
 

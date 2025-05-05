@@ -471,7 +471,8 @@
               "has_player_progress": true, // (обязательно, boolean) Всегда true для этого эндпоинта
               "status": "ready | error | ...", // (обязательно, string)
               "is_public": true, // (обязательно, boolean)
-              "cover_image_url": "https://... | null" // (опционально, string URL или null, поле может отсутствовать)
+              "cover_image_url": "https://... | null", // (опционально, string URL или null, поле может отсутствовать)
+              "player_game_status": "playing | completed | error | null" // (опционально, string или null) Статус последнего не-error сохранения игрока
             }
             /* ... */
           ],
@@ -506,7 +507,8 @@
               "has_player_progress": true, // (обязательно, boolean) Есть ли у *текущего* пользователя сохранения
               "status": "ready | error | ...", // (обязательно, string)
               "is_public": true, // (обязательно, boolean) Всегда true для этого эндпоинта
-              "cover_image_url": "https://.../history_preview_...jpg | null" // (опционально, string URL или null) Поле может отсутствовать, если null (`omitempty`)
+              "cover_image_url": "https://.../history_preview_...jpg | null", // (опционально, string URL или null) Поле может отсутствовать, если null (`omitempty`)
+              "player_game_status": "playing | completed | error | null" // (опционально, string или null) Статус последнего не-error сохранения игрока
             }
             /* ... */
           ],
@@ -829,7 +831,8 @@
               "has_player_progress": true, // Всегда true для этого эндпоинта
               "status": "ready | error | ...",
               "is_public": true,
-              "cover_image_url": "https://... | null"
+              "cover_image_url": "https://... | null",
+              "player_game_status": "playing | completed | error | null" // (опционально, string или null) Статус последнего не-error сохранения игрока
             }
             /* ... */
           ],
@@ -864,7 +867,8 @@
               "has_player_progress": true,
               "status": "ready | error | ...",
               "is_public": true,
-              "cover_image_url": "https://... | null"
+              "cover_image_url": "https://... | null",
+              "player_game_status": "playing | completed | error | null" // (опционально, string или null) Статус последнего не-error сохранения игрока
             }
             /* ... */
           ],

@@ -136,9 +136,10 @@ type PublishedStorySummary struct {
 
 // PublishedStorySummaryWithProgress extends PublishedStorySummary with player progress info.
 type PublishedStorySummaryWithProgress struct {
-	PublishedStorySummary      // Вложенная структура с основными полями
-	HasPlayerProgress     bool `json:"has_player_progress" db:"has_player_progress"` // <<< ИЗМЕНЕНО: json тег на snake_case >>>
-	IsPublic              bool `json:"is_public" db:"is_public"`                     // <<< ИЗМЕНЕНО: json тег на snake_case >>>
+	PublishedStorySummary        // Вложенная структура с основными полями
+	HasPlayerProgress     bool   `json:"has_player_progress" db:"has_player_progress"`         // <<< ИЗМЕНЕНО: json тег на snake_case >>>
+	IsPublic              bool   `json:"is_public" db:"is_public"`                             // <<< ИЗМЕНЕНО: json тег на snake_case >>>
+	PlayerGameStatus      string `json:"player_game_status,omitempty" db:"player_game_status"` // <<< НОВОЕ ПОЛЕ
 }
 
 // <<< НОВАЯ СТРУКТУРА ДЛЯ ОПТИМИЗИРОВАННОГО ЗАПРОСА >>>
@@ -157,6 +158,7 @@ type PublishedStoryDetailWithProgressAndLike struct {
 	IsPublic          bool        `db:"is_public"`
 	IsLiked           bool        `db:"is_liked"`
 	HasPlayerProgress bool        `db:"has_player_progress"`
+	PlayerGameStatus  string      `json:"player_game_status,omitempty" db:"player_game_status"` // <<< НОВОЕ ПОЛЕ
 }
 
 // StatRule defines conditions for game over based on core stats.

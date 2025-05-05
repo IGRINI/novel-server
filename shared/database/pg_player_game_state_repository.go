@@ -516,7 +516,8 @@ func (r *pgPlayerGameStateRepository) ListSummariesByPlayerAndStory(ctx context.
 		    pgs.id,              -- Game State ID
 		    pgs.last_activity_at,
 		    pp.scene_index,
-		    pp.current_scene_summary -- <<< ADDED: Select from player_progress
+		    pp.current_scene_summary, -- <<< ADDED: Select from player_progress
+		    pgs.player_status        -- <<< ДОБАВЛЕНО: Выбираем статус >>>
 		FROM
 		    player_game_states pgs
 		JOIN
@@ -541,17 +542,20 @@ func (r *pgPlayerGameStateRepository) ListSummariesByPlayerAndStory(ctx context.
 	summaries := make([]*models.GameStateSummaryDTO, 0)
 	for rows.Next() {
 		summary := &models.GameStateSummaryDTO{}
-		var sceneSummary *string // <<< ADDED: Variable to scan into
+		var sceneSummary *string   // <<< ADDED: Variable to scan into
+		var playerStatusStr string // <<< НОВОЕ: Временная строка для статуса
 		if err := rows.Scan(
 			&summary.ID,
 			&summary.LastActivityAt,
 			&summary.SceneIndex,
-			&sceneSummary, // <<< ADDED: Scan the summary
+			&sceneSummary,    // <<< ADDED: Scan the summary
+			&playerStatusStr, // <<< ИЗМЕНЕНО: Сканируем в строку
 		); err != nil {
 			r.logger.Error("Failed to scan game state summary row", append(logFields, zap.Error(err))...)
 			return nil, fmt.Errorf("error scanning game state summary: %w", err)
 		}
-		summary.CurrentSceneSummary = sceneSummary // <<< ADDED: Assign to DTO field
+		summary.CurrentSceneSummary = sceneSummary                  // <<< ADDED: Assign to DTO field
+		summary.PlayerStatus = models.PlayerStatus(playerStatusStr) // <<< ИЗМЕНЕНО: Присваиваем с приведением типа
 		summaries = append(summaries, summary)
 	}
 

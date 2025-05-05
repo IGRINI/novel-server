@@ -463,6 +463,7 @@ func (s *gameplayServiceImpl) ListPublishedStoriesPublic(ctx context.Context, us
 			PublishedStorySummary: summary,
 			HasPlayerProgress:     dto.HasPlayerProgress,
 			IsPublic:              dto.IsPublic,
+			PlayerGameStatus:      dto.PlayerGameStatus,
 		})
 	}
 

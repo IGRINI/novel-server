@@ -17,6 +17,7 @@ type GameStateSummaryDTO struct {
 	SceneIndex          int       `json:"scene_index"`                     // Index of the current scene for this save
 	CurrentSceneSummary *string   `json:"current_scene_summary,omitempty"` // Summary of the current scene (from player_progress)
 	// CurrentSceneSummary *string   `json:"currentSceneSummary,omitempty"` // REMOVED: Cannot fetch efficiently
+	PlayerStatus PlayerStatus `json:"player_status"`
 }
 
 // CoreStatDTO represents parsed data for a single stat.

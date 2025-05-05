@@ -62,6 +62,7 @@ type PublishedStorySummaryDTO struct {
 	IsPublic          bool                     `json:"is_public"`
 	Status            sharedModels.StoryStatus `json:"status"`
 	CoverImageURL     *string                  `json:"cover_image_url,omitempty"`
+	PlayerGameStatus  string                   `json:"player_game_status,omitempty"`
 }
 
 type ParsedCharacterDTO struct {
@@ -196,6 +197,7 @@ func (s *storyBrowsingServiceImpl) ListMyPublishedStories(ctx context.Context, u
 			HasPlayerProgress: summary.HasPlayerProgress,
 			IsPublic:          summary.IsPublic,
 			Status:            summary.Status,
+			PlayerGameStatus:  summary.PlayerGameStatus,
 		})
 	}
 
@@ -237,6 +239,7 @@ func (s *storyBrowsingServiceImpl) ListPublicStories(ctx context.Context, userID
 			IsPublic:          summary.IsPublic,
 			Status:            summary.Status,
 			CoverImageURL:     summary.CoverImageURL,
+			PlayerGameStatus:  summary.PlayerGameStatus,
 		})
 	}
 
@@ -503,6 +506,7 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetailsWithProgress(ctx cont
 		IsPublic:          details.IsPublic,
 		Status:            details.Status,
 		CoverImageURL:     details.CoverImageURL,
+		PlayerGameStatus:  details.PlayerGameStatus,
 	}
 
 	log.Info("Successfully retrieved published story summary with progress")
@@ -624,6 +628,7 @@ func (s *storyBrowsingServiceImpl) ListMyStoriesWithProgress(ctx context.Context
 			HasPlayerProgress: summary.HasPlayerProgress,
 			IsPublic:          summary.IsPublic,
 			Status:            summary.Status,
+			PlayerGameStatus:  summary.PlayerGameStatus,
 		})
 	}
 
