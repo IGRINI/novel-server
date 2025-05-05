@@ -113,6 +113,8 @@ func (p *PromptProvider) UpdateCache(event interfaces.PromptEvent) {
 func (p *PromptProvider) GetPrompt(ctx context.Context, key string, language string) (string, error) {
 	const fallbackLanguage = "en" // Define fallback language
 
+	p.logger.Debug("GetPrompt requested", zap.String("key", key), zap.String("language", language))
+
 	p.cacheLock.RLock()
 	langCache, langOk := p.cacheMap[language]
 	var content string

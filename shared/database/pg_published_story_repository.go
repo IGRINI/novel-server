@@ -81,19 +81,21 @@ func (r *pgPublishedStoryRepository) Create(ctx context.Context, story *models.P
 
 	query := `
         INSERT INTO published_stories
-            (id, user_id, config, setup, status, is_public, is_adult_content, title, description, created_at, updated_at)
+            (id, user_id, config, setup, status, is_public, is_adult_content, title, description, language, created_at, updated_at)
         VALUES
-            ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     `
 	logFields := []zap.Field{
 		zap.String("publishedStoryID", story.ID.String()),
 		zap.String("userID", story.UserID.String()),
+		zap.String("language", story.Language),
 	}
 	r.logger.Debug("Creating published story", logFields...)
 
 	_, err := r.db.Exec(ctx, query,
 		story.ID, story.UserID, story.Config, story.Setup, story.Status,
 		story.IsPublic, story.IsAdultContent, story.Title, story.Description,
+		story.Language,
 		story.CreatedAt, story.UpdatedAt,
 	)
 	if err != nil {
@@ -465,42 +467,56 @@ func (r *pgPublishedStoryRepository) ListLikedByUser(ctx context.Context, userID
 
 	for rows.Next() {
 		var summary models.PublishedStorySummaryWithProgress
-		var likeCreatedAt time.Time
-		var description sql.NullString   // Для nullable description
-		var coverImageUrl sql.NullString // <<< ДОБАВЛЕНО: NullString для URL >>>
+		// Временные переменные
+		var description sql.NullString
+		var authorName sql.NullString
+		var publishedAt time.Time
+		var coverImageUrl sql.NullString
+		var isLiked bool
 		var hasProgress bool
-		err = rows.Scan(
-			&summary.ID,
-			&summary.Title,
-			&description, // Сканируем в NullString
-			&summary.AuthorID,
-			&summary.AuthorName, // Сканируем имя автора
-			&summary.PublishedAt,
-			&summary.IsAdultContent,
-			&summary.LikesCount,
-			&summary.Status,
-			&coverImageUrl, // <<< ИЗМЕНЕНО: Сканируем в NullString >>>
-			&summary.IsPublic,
-			&likeCreatedAt, // Сканируем время лайка
-			&hasProgress,   // Сканируем флаг прогресса
+		var isPublic bool
+		var likeCreatedAt time.Time
+
+		err = rows.Scan( // Передаем 14 переменных
+			&summary.ID,             // 1
+			&summary.Title,          // 2
+			&description,            // 3 -> NullString
+			&summary.AuthorID,       // 4
+			&authorName,             // 5 -> NullString
+			&publishedAt,            // 6 -> time.Time (для PublishedAt)
+			&summary.IsAdultContent, // 7
+			&summary.LikesCount,     // 8
+			&summary.Status,         // 9
+			&coverImageUrl,          // 10 -> NullString
+			&isLiked,                // 11 -> bool
+			&hasProgress,            // 12 -> bool
+			&isPublic,               // 13 -> bool
+			&likeCreatedAt,          // 14 -> time.Time (для курсора)
 		)
 		if err != nil {
 			r.logger.Error("Failed to scan liked story row", append(logFields, zap.Error(err))...)
 			// Не прерываем весь процесс, просто пропускаем эту строку
 			continue
 		}
+		// Присваивания из временных переменных
 		if description.Valid {
-			summary.ShortDescription = description.String // Устанавливаем описание
+			summary.ShortDescription = description.String
 		}
-		// <<< ДОБАВЛЕНО: Присваиваем URL из NullString >>>
+		if authorName.Valid {
+			summary.AuthorName = authorName.String
+		} else {
+			summary.AuthorName = "[unknown]"
+		}
+		summary.PublishedAt = publishedAt
 		if coverImageUrl.Valid {
 			urlStr := coverImageUrl.String
 			summary.CoverImageURL = &urlStr
 		} else {
 			summary.CoverImageURL = nil
 		}
-		summary.HasPlayerProgress = hasProgress // Устанавливаем флаг прогресса
-		summary.IsLiked = true                  // Лайк точно есть, т.к. мы делаем JOIN по story_likes
+		summary.IsLiked = isLiked
+		summary.HasPlayerProgress = hasProgress
+		summary.IsPublic = isPublic
 
 		summaries = append(summaries, summary)
 		likeTimes = append(likeTimes, likeCreatedAt)
@@ -1237,45 +1253,56 @@ func (r *pgPublishedStoryRepository) ListUserSummariesWithProgress(ctx context.C
 	summaries := make([]models.PublishedStorySummaryWithProgress, 0, limit)
 	var lastCreatedAt time.Time // <<< ВОССТАНОВЛЕНО
 	var lastIDCursor uuid.UUID  // <<< ВОССТАНОВЛЕНО
-	var hasProgress bool        // <<< ДОБАВЛЕНО: Объявление переменной
 
 	for rows.Next() {
 		var s models.PublishedStorySummaryWithProgress
 		var description sql.NullString
 		var coverImageUrl sql.NullString
-		var currentLastActivity time.Time
+		var authorName sql.NullString // <<< Используем NullString для автора
+		var publishedAt time.Time     // <<< Переименовано для ясности
+		var isLiked bool
+		var hasProgress bool
 
 		if err := rows.Scan(
-			&s.ID,
-			&s.Title,
-			&description,
-			&s.AuthorID,
-			&s.AuthorName,
-			&currentLastActivity,
-			&s.LikesCount,
-			&s.Status,
-			&coverImageUrl,
-			&s.IsPublic,
-			&s.IsLiked,
-			&hasProgress,
+			&s.ID,             // 1: ps.id
+			&s.Title,          // 2: ps.title
+			&description,      // 3: ps.description
+			&s.AuthorID,       // 4: ps.user_id
+			&authorName,       // 5: author_name
+			&publishedAt,      // 6: ps.created_at
+			&s.IsAdultContent, // 7: ps.is_adult_content <<< ДОБАВЛЕНО
+			&s.LikesCount,     // 8: ps.likes_count
+			&s.Status,         // 9: ps.status
+			&coverImageUrl,    // 10: ir.image_url
+			&s.IsPublic,       // 11: ps.is_public
+			&isLiked,          // 12: calculated is_liked
+			&hasProgress,      // 13: calculated has_player_progress
 		); err != nil {
 			r.logger.Error("Failed to scan user story summary with progress row", append(logFields, zap.Error(err))...)
 			continue
 		}
 
+		// Assign scanned values
 		if description.Valid {
 			s.ShortDescription = description.String
 		}
+		if authorName.Valid {
+			s.AuthorName = authorName.String
+		} else {
+			s.AuthorName = "[unknown]" // Default if COALESCE returns null (shouldn't happen with COALESCE)
+		}
+		s.PublishedAt = publishedAt // <<< Используем publishedAt
 		if coverImageUrl.Valid {
 			urlStr := coverImageUrl.String
 			s.CoverImageURL = &urlStr
 		} else {
 			s.CoverImageURL = nil
 		}
-		s.HasPlayerProgress = hasProgress // Устанавливаем флаг прогресса
+		s.IsLiked = isLiked
+		s.HasPlayerProgress = hasProgress
 
 		summaries = append(summaries, s)
-		lastCreatedAt = currentLastActivity
+		lastCreatedAt = publishedAt // <<< Используем publishedAt для курсора
 		lastIDCursor = s.ID
 	}
 

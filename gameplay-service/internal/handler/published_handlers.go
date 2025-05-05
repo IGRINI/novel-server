@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"novel-server/gameplay-service/internal/service" // Добавляем импорт сервиса
 	sharedModels "novel-server/shared/models"
+	"novel-server/shared/utils"
 	"strconv"
 	"time"
 
@@ -229,16 +230,16 @@ func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
 		return
 	}
 
-	// Парсим json.RawMessage из scene.Content
-	var rawContent map[string]json.RawMessage // Используем map для гибкого парсинга
-	if len(scene.Content) == 0 || string(scene.Content) == "null" {
-		log.Error("Scene content is empty or null", zap.String("sceneID", scene.ID.String()))
-		handleServiceError(c, fmt.Errorf("internal error: scene content is missing"), h.logger)
-		return
-	}
+	// <<< ЭТАП 2: Парсинг извлеченного JSON в map >>>
+	var rawContent map[string]json.RawMessage
+	// <<< ИЗМЕНЕНО: Теперь парсим scene.Content напрямую >>>
 	if err := json.Unmarshal(scene.Content, &rawContent); err != nil {
-		log.Error("Failed to unmarshal scene content", zap.String("sceneID", scene.ID.String()), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("internal error: failed to parse scene content"), h.logger)
+		log.Error("Failed to unmarshal scene content",
+			zap.String("sceneID", scene.ID.String()),
+			zap.String("rawContent", utils.StringShort(string(scene.Content), 500)), // Логируем исходный контент
+			zap.Error(err),
+		)
+		handleServiceError(c, fmt.Errorf("internal error: failed to parse scene content"), h.logger) // Обновлено сообщение об ошибке
 		return
 	}
 
@@ -334,13 +335,14 @@ func parseChoicesBlock(chJSON json.RawMessage, responseDTO *GameSceneResponseDTO
 
 					// Извлекаем cs (бывший cs_chg)
 					if csChgJSON, ok := consMap["cs"]; ok { // <<< ИСПРАВЛЕНО: Ищем "cs"
+						// <<< ИЗМЕНЕНО НАЗАД: Ожидаем map[string]int >>>
 						var statChanges map[string]int
 						if errUnmarshal := json.Unmarshal(csChgJSON, &statChanges); errUnmarshal == nil && len(statChanges) > 0 {
 							// Используем поле StatChanges из ConsequencesDTO
 							preview.StatChanges = statChanges
 							hasData = true
 						} else if errUnmarshal != nil {
-							log.Warn("Failed to unmarshal cs content", zap.String("sceneID", sceneID), zap.Error(errUnmarshal))
+							log.Warn("Failed to unmarshal cs content into map[string]int", zap.String("sceneID", sceneID), zap.Error(errUnmarshal))
 						}
 					}
 
@@ -405,10 +407,12 @@ func (h *GameplayHandler) likeStory(c *gin.Context) {
 		return
 	}
 
-	idStr := c.Param("id")
+	// <<< ИСПРАВЛЕНО: Получаем 'story_id' >>>
+	idStr := c.Param("story_id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		h.logger.Warn("Invalid story ID format in likeStory", zap.String("id", idStr), zap.Error(err))
+		// <<< ИСПРАВЛЕНО: Логируем 'story_id' >>>
+		h.logger.Warn("Invalid story ID format in likeStory", zap.String("story_id", idStr), zap.Error(err))
 		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
 		return
 	}
@@ -439,10 +443,12 @@ func (h *GameplayHandler) unlikeStory(c *gin.Context) {
 		return
 	}
 
-	idStr := c.Param("id")
+	// <<< ИСПРАВЛЕНО: Получаем 'story_id' >>>
+	idStr := c.Param("story_id")
 	id, err := uuid.Parse(idStr)
 	if err != nil {
-		h.logger.Warn("Invalid story ID format in unlikeStory", zap.String("id", idStr), zap.Error(err))
+		// <<< ИСПРАВЛЕНО: Логируем 'story_id' >>>
+		h.logger.Warn("Invalid story ID format in unlikeStory", zap.String("story_id", idStr), zap.Error(err))
 		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
 		return
 	}
@@ -558,10 +564,12 @@ func (h *GameplayHandler) setStoryVisibility(c *gin.Context) {
 		return // Ошибка уже обработана
 	}
 
-	idStr := c.Param("id")
+	// <<< ИСПРАВЛЕНО: Получаем 'story_id' >>>
+	idStr := c.Param("story_id")
 	storyID, err := uuid.Parse(idStr)
 	if err != nil {
-		h.logger.Warn("Invalid story ID format in setStoryVisibility", zap.String("id", idStr), zap.Error(err))
+		// <<< ИСПРАВЛЕНО: Логируем 'story_id' >>>
+		h.logger.Warn("Invalid story ID format in setStoryVisibility", zap.String("story_id", idStr), zap.Error(err))
 		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
 		return
 	}
@@ -646,34 +654,37 @@ func (h *GameplayHandler) retryPublishedStoryGeneration(c *gin.Context) {
 	c.Status(http.StatusAccepted)
 }
 
-// <<<<< НАЧАЛО ОБРАБОТЧИКА УДАЛЕНИЯ ОПУБЛИКОВАННОЙ ИСТОРИИ >>>>>
+// deletePublishedStory удаляет опубликованную историю (только автор).
 func (h *GameplayHandler) deletePublishedStory(c *gin.Context) {
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		return // Abort already called
+		// Ошибка уже обработана в getUserIDFromContext
+		return
 	}
 
-	idStr := c.Param("id")
-	storyID, err := uuid.Parse(idStr)
+	// <<< ИСПРАВЛЕНО: Получаем 'story_id' из параметров пути, как в роутере >>>
+	storyIdStr := c.Param("story_id")
+	storyID, err := uuid.Parse(storyIdStr)
 	if err != nil {
-		h.logger.Warn("Invalid published story ID format in deletePublishedStory", zap.String("id", idStr), zap.Error(err))
+		h.logger.Warn("Invalid published story ID format in deletePublishedStory", zap.String("story_id", storyIdStr), zap.Error(err)) // <<< ИСПРАВЛЕНО: Используем story_id в логе
 		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
 		return
 	}
 
-	// Вызываем метод сервиса (GameplayService)
+	log := h.logger.With(zap.String("storyID", storyID.String()), zap.Stringer("userID", userID))
+	log.Info("Handling delete published story request")
+
+	// <<< ИСПРАВЛЕНО: Передаем аргументы в правильном порядке (storyID, userID) >>>
 	err = h.service.DeletePublishedStory(c.Request.Context(), storyID, userID)
 	if err != nil {
-		h.logger.Error("Error deleting published story", zap.String("userID", userID.String()), zap.String("storyID", storyID.String()), zap.Error(err))
-		handleServiceError(c, err, h.logger) // Обрабатываем стандартные ошибки, включая ErrNotFound и ErrForbidden
+		log.Error("Error deleting published story", zap.Error(err))
+		handleServiceError(c, err, h.logger)
 		return
 	}
 
-	// При успехе возвращаем 204 No Content
+	log.Info("Published story deleted successfully")
 	c.Status(http.StatusNoContent)
 }
-
-// <<<<< КОНЕЦ ОБРАБОТЧИКА УДАЛЕНИЯ ОПУБЛИКОВАННОЙ ИСТОРИИ >>>>>
 
 // listStoriesWithProgress возвращает список опубликованных историй, в которых у пользователя есть прогресс.
 // GET /published-stories/me/progress?limit=10&cursor=...
@@ -724,10 +735,12 @@ func (h *GameplayHandler) listGameStates(c *gin.Context) {
 		return // Ошибка уже обработана
 	}
 
-	storyIdStr := c.Param("storyId") // Получаем ID истории из пути
+	// <<< ИСПРАВЛЕНО: Получаем 'story_id' >>>
+	storyIdStr := c.Param("story_id")
 	storyID, err := uuid.Parse(storyIdStr)
 	if err != nil {
-		h.logger.Warn("Invalid story ID format in listGameStates", zap.String("storyId", storyIdStr), zap.Error(err))
+		// <<< ИСПРАВЛЕНО: Логируем 'story_id' >>>
+		h.logger.Warn("Invalid story ID format in listGameStates", zap.String("story_id", storyIdStr), zap.Error(err))
 		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
 		return
 	}

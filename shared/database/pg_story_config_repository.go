@@ -77,7 +77,7 @@ func (r *pgStoryConfigRepository) Create(ctx context.Context, config *sharedMode
 // GetByID - Реализация метода GetByID
 func (r *pgStoryConfigRepository) GetByID(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*sharedModels.StoryConfig, error) { // <<< Возвращаем sharedModels.StoryConfig
 	query := `
-        SELECT id, user_id, title, description, user_input, config, status, created_at, updated_at
+        SELECT id, user_id, title, description, user_input, config, status, language, created_at, updated_at
         FROM story_configs
         WHERE id = $1 AND user_id = $2
     `
@@ -87,7 +87,7 @@ func (r *pgStoryConfigRepository) GetByID(ctx context.Context, id uuid.UUID, use
 
 	err := r.db.QueryRow(ctx, query, id, userID).Scan(
 		&config.ID, &config.UserID, &config.Title, &config.Description,
-		&config.UserInput, &config.Config, &config.Status, &config.CreatedAt, &config.UpdatedAt,
+		&config.UserInput, &config.Config, &config.Status, &config.Language, &config.CreatedAt, &config.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -104,7 +104,7 @@ func (r *pgStoryConfigRepository) GetByID(ctx context.Context, id uuid.UUID, use
 // GetByIDInternal
 func (r *pgStoryConfigRepository) GetByIDInternal(ctx context.Context, id uuid.UUID) (*sharedModels.StoryConfig, error) { // <<< Возвращаем sharedModels.StoryConfig
 	query := `
-        SELECT id, user_id, title, description, user_input, config, status, created_at, updated_at
+        SELECT id, user_id, title, description, user_input, config, status, language, created_at, updated_at
         FROM story_configs
         WHERE id = $1
     `
@@ -114,7 +114,7 @@ func (r *pgStoryConfigRepository) GetByIDInternal(ctx context.Context, id uuid.U
 
 	err := r.db.QueryRow(ctx, query, id).Scan(
 		&config.ID, &config.UserID, &config.Title, &config.Description,
-		&config.UserInput, &config.Config, &config.Status, &config.CreatedAt, &config.UpdatedAt,
+		&config.UserInput, &config.Config, &config.Status, &config.Language, &config.CreatedAt, &config.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

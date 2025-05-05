@@ -886,89 +886,49 @@
 
 *   **URL:** `ws://<ваш_хост>:<порт_traefik_web>/ws?token=<ваш_access_token>`
 *   **Аутентификация:** Через query-параметр `token`.
-*   **Сообщения от сервера:**
-    *   **Успешная генерация черновика (`draft_generated`):**
+*   **Сообщения от сервера:** Сервер отправляет JSON-сообщения в плоской структуре. Основное поле `update_type` определяет тип события.
+    *   **Обновление Черновика (`draft`):**
+        *   Описание: Отправляется после завершения генерации или ревизии черновика (успешно или с ошибкой).
+        *   Структура (`sharedModels.ClientStoryUpdate`):
         ```json
         {
-          "event": "draft_generated",
-          "payload": {
-            "id": "uuid-string", // ID черновика
-            "status": "draft"
-          }
+          "id": "uuid-string", // ID черновика (StoryConfig)
+          "user_id": "uuid-string", // ID пользователя (Игнорируется клиентом)
+          "update_type": "draft", // Тип обновления
+          "status": "draft | error", // Итоговый статус черновика
+          "error_details": "Сообщение об ошибке | null" // Опционально, только при status = error
         }
         ```
-    *   **Ошибка генерации черновика (`draft_error`):**
+    *   **Общее обновление Истории (`story`):**
+        *   Описание: Отправляется при изменении статуса опубликованной истории (PublishedStory), например, после генерации Setup, сцены, концовки, изображений, или при возникновении ошибки.
+        *   Структура (`sharedModels.ClientStoryUpdate`):
         ```json
         {
-          "event": "draft_error",
-          "payload": {
-            "id": "uuid-string", // ID черновика
-            "status": "error",
-            "error": "Сообщение об ошибке"
-          }
+          "id": "uuid-string", // ID опубликованной истории (PublishedStoryID)
+          "user_id": "uuid-string", // ID пользователя (Игнорируется клиентом)
+          "update_type": "story", // Тип обновления
+          "status": "string", // Новый статус PublishedStory (ready, error, setup_pending, first_scene_pending, images_pending, etc.)
+          // --- Опциональные поля (зависят от причины обновления) ---
+          "error_details": "Сообщение об ошибке | null",
+          "story_title": "Заголовок Истории | null",
+          "scene_id": "uuid-string | null", // ID последней сгенерированной сцены/концовки
+          "state_hash": "string | null", // Хэш состояния, связанный со сценой
+          "ending_text": "Текст концовки | null", // Если игра завершена
+          "is_public": true | false | null, // Текущая публичность
+          "cover_image_url": "URL | null" // URL обложки, если готова
         }
         ```
-    *   **Успешная генерация сцены (`scene_generated`):**
+    *   **Обновление Состояния Игры (`game_state`):**
+        *   Описание: Отправляется при изменении статуса конкретного сохранения (PlayerGameState), обычно после успешной генерации сцены или при ошибке.
+        *   Структура (`sharedModels.ClientStoryUpdate`):
         ```json
         {
-          "event": "scene_generated",
-          "payload": {
-            "published_story_id": "uuid-string",
-            "game_state_id": "uuid-string", // <<< ДОБАВЛЕНО (вместо state_hash)
-            "scene_id": "uuid-string"
-            // "state_hash": "string" // <<< УДАЛЕНО
-          }
-        }
-        ```
-    *   **Ошибка генерации сцены (`scene_error`):**
-        ```json
-        {
-          "event": "scene_error",
-          "payload": {
-            "published_story_id": "uuid-string",
-            "game_state_id": "uuid-string", // <<< ДОБАВЛЕНО (вместо state_hash)
-            // "state_hash": "string", // <<< УДАЛЕНО
-            "error": "Сообщение об ошибке"
-          }
-        }
-        ```
-    *   **Успешная генерация концовки (`game_over_generated`):**
-        ```json
-        {
-          "event": "game_over_generated",
-          "payload": {
-            "published_story_id": "uuid-string",
-            "scene_id": "uuid-string" // ID сгенерированной сцены с концовкой
-          }
-        }
-        ```
-    *   **Ошибка генерации концовки (`game_over_error`):**
-        ```json
-        {
-          "event": "game_over_error",
-          "payload": {
-            "published_story_id": "uuid-string",
-            "error": "Сообщение об ошибке"
-          }
-        }
-        ```
-    *   **Успешная генерация Setup (`setup_generated`):**
-        ```json
-        {
-          "event": "setup_generated",
-          "payload": {
-            "published_story_id": "uuid-string"
-          }
-        }
-        ```
-    *   **Ошибка генерации Setup (`setup_error`):**
-        ```json
-        {
-          "event": "setup_error",
-          "payload": {
-            "published_story_id": "uuid-string",
-            "error": "Сообщение об ошибке"
-          }
+          "id": "uuid-string", // ID Состояния Игры (GameStateID)!
+          "user_id": "uuid-string", // ID пользователя (Игнорируется клиентом)
+          "update_type": "game_state", // Тип обновления
+          "status": "playing | completed | error | ...", // Новый статус PlayerGameState
+          "scene_id": "uuid-string | null", // ID сцены, которая стала текущей (при успехе)
+          "error_details": "Сообщение об ошибке | null" // Опционально, при status = error
         }
         ```
 *   **Сообщения от клиента:** Не предусмотрены (только установка соединения).

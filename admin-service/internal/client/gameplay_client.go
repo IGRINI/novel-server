@@ -494,7 +494,7 @@ func (c *gameplayClient) UpdateStoryInternal(ctx context.Context, storyID uuid.U
 	}
 	bodyReader := bytes.NewReader(bodyBytes)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, updateURL, bodyReader)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, updateURL, bodyReader)
 	if err != nil {
 		log.Error("Failed to create update story internal HTTP request", zap.Error(err))
 		return fmt.Errorf("internal error creating request: %w", err)

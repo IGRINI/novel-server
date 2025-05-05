@@ -184,9 +184,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 					var needsPreviewImage bool = false
 					var needsCharacterImages bool = false
 					imageTasks := make([]sharedMessaging.CharacterImageTaskPayload, 0)
-					var errUnmarshalSetup error
-
-					errUnmarshalSetup = json.Unmarshal(setupBytes, &setupContent)
+					var errUnmarshalSetup error = json.Unmarshal(setupBytes, &setupContent)
 					if errUnmarshalSetup != nil {
 						p.logger.Error("SETUP PARSING ERROR (before image check): Failed to unmarshal setup JSON",
 							zap.String("task_id", taskID),
@@ -194,6 +192,23 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 							zap.Error(errUnmarshalSetup),
 						)
 						parseErr = fmt.Errorf("failed to unmarshal setup JSON: %w", errUnmarshalSetup)
+						errDetails := parseErr.Error()
+						dbCtxUpdateStory, cancelUpdateStory := context.WithTimeout(ctx, 10*time.Second)
+						defer cancelUpdateStory()
+						if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtxUpdateStory, publishedStoryID, sharedModels.StatusError, false, false, &errDetails); errUpdateStory != nil {
+							p.logger.Error("CRITICAL ERROR: Failed to update PublishedStory status to Error after specific setup unmarshal error",
+								zap.String("task_id", taskID),
+								zap.String("published_story_id", publishedStoryID.String()),
+								zap.Error(errUpdateStory),
+							)
+						} else {
+							p.logger.Info("PublishedStory status updated to Error due to specific setup unmarshal error",
+								zap.String("task_id", taskID),
+								zap.String("published_story_id", publishedStoryID.String()),
+							)
+						}
+						go p.publishStoryUpdateViaRabbitMQ(ctx, publishedStory, constants.WSEventSetupError, &errDetails)
+						return parseErr
 					} else {
 						if errCfg := json.Unmarshal(publishedStory.Config, &fullConfig); errCfg != nil {
 							p.logger.Warn("Failed to unmarshal config JSON to get CharacterVisualStyle/Style", zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()), zap.Error(errCfg))

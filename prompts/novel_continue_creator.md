@@ -39,8 +39,8 @@
       "char": "string", // Character name from stp.chars[].n
       "desc": "string", // Situation text involving 'char' (Markdown OK)
       "opts": [         // options (Exactly 2)
-        {"txt": "string", "cons": {}}, // Choice 1 text (Markdown OK) & Nested JSON consequences
-        {"txt": "string", "cons": {}}  // Choice 2 text (Markdown OK) & Nested JSON consequences
+        {"txt": "string", "cons": {"cs": {"stat1": integer, "stat2": integer}, "sv": {}, "gf": [], "rt": "optional_string"}}, // Example cons structure
+        {"txt": "string", "cons": {"cs": {"stat3": integer}}}  // Example cons with only cs
       ]
     }
     // ... {{CHOICE_COUNT}} choice blocks ...
@@ -50,7 +50,7 @@
 }
 ```
 
-**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, JSON object described in the 'Output JSON Structure'. Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
+**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, JSON object described in the 'Output JSON Structure'. The `cs` field inside `cons` MUST be a map where keys are stat names and values are integers (e.g., `{"cs": {"Strength": 5, "Agility": -2}}`). Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
 
 **Apply the rules above to the following User Input:**
 

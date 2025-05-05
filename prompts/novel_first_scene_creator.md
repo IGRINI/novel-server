@@ -36,11 +36,11 @@
       "opts": [         // options (Exactly 2)
         {
           "txt": "string", // Choice 1 text (Markdown OK)
-          "cons": {}       // Nested JSON consequences (e.g. cs, sv, gf; rt optional)
+          "cons": {"cs": {"stat1": integer, "stat2": integer}, "sv": {}, "gf": [], "rt": "optional_string"}
         },
         {
           "txt": "string", // Choice 2 text (Markdown OK)
-          "cons": {}       // Nested JSON consequences (e.g. cs, sv, gf; rt optional)
+          "cons": {"cs": {"stat3": integer}}
         }
       ]
     }
@@ -49,7 +49,7 @@
 }
 ```
 
-**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, JSON object described in the 'Output JSON Structure'. Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
+**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, JSON object described in the 'Output JSON Structure'. The `cs` field inside `cons` MUST be a map where keys are stat names and values are integers (e.g., `{"cs": {"Strength": 5, "Agility": -2}}`). Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
 
 **Apply the rules above to the following User Input:**
 {{USER_INPUT}}

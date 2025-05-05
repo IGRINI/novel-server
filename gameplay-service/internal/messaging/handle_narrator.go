@@ -112,14 +112,51 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 				config.Status = sharedModels.StatusError
 				parseErr = errors.New("failed to extract JSON block from Narrator text")
 			} else {
-				var configJSON json.RawMessage
-				configJSON = json.RawMessage(jsonToParse)
-				config.Config = configJSON
-				config.Status = sharedModels.StatusDraft
-				p.logger.Info("Successfully parsed and updated StoryConfig.Config", zap.String("task_id", taskID), zap.String("story_config_id", storyConfigID.String()))
+				p.logger.Debug("Raw JSON bytes before unmarshal",
+					zap.String("task_id", taskID),
+					zap.String("json_snippet", utils.StringShort(jsonToParse, 100)),
+					zap.String("json_hex", fmt.Sprintf("%x", []byte(jsonToParse))),
+				)
+
+				var generatedConfig struct {
+					Title       string `json:"t"`
+					Description string `json:"sd"`
+				}
+				if errUnmarshal := json.Unmarshal([]byte(jsonToParse), &generatedConfig); errUnmarshal != nil {
+					p.logger.Error("PARSING ERROR: Failed to unmarshal generated config JSON",
+						zap.String("task_id", taskID),
+						zap.String("story_config_id", storyConfigID.String()),
+						zap.Error(errUnmarshal),
+						zap.String("json_snippet", utils.StringShort(jsonToParse, 100)),
+					)
+					config.Config = json.RawMessage(jsonToParse)
+					config.Status = sharedModels.StatusError
+					parseErr = fmt.Errorf("failed to unmarshal generated config json: %w", errUnmarshal)
+				} else {
+					config.Title = generatedConfig.Title
+					config.Description = generatedConfig.Description
+					config.Config = json.RawMessage(jsonToParse)
+					config.Status = sharedModels.StatusDraft
+
+					p.logger.Info("Successfully parsed and updated StoryConfig Title, Description, and Config",
+						zap.String("task_id", taskID),
+						zap.String("story_config_id", storyConfigID.String()),
+						zap.String("new_title", config.Title),
+					)
+
+					if config.Title == "" {
+						p.logger.Error("PARSING WARNING: Generated config is valid JSON but title ('t') is empty.",
+							zap.String("task_id", taskID),
+							zap.String("story_config_id", storyConfigID.String()),
+							zap.String("json_snippet", utils.StringShort(jsonToParse, 100)),
+						)
+						config.Status = sharedModels.StatusError
+						parseErr = errors.New("generated config is valid JSON but title is empty")
+					}
+				}
+				config.UpdatedAt = time.Now().UTC()
 			}
 		}
-		config.UpdatedAt = time.Now().UTC()
 	} else if notification.Status == sharedMessaging.NotificationStatusError {
 		p.logger.Warn("Narrator Error notification received",
 			zap.String("task_id", taskID),

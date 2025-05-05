@@ -392,12 +392,21 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 
 	config.Status = sharedModels.StatusGenerating
 	config.UpdatedAt = time.Now().UTC()
+	// <<< ДОБАВЛЯЕМ ЛОГ ПЕРЕД ОБНОВЛЕНИЕМ >>>
+	log.Debug("Updating draft status to Generating before retry task publish", zap.String("language_in_config", config.Language))
+	// <<< КОНЕЦ ЛОГА >>>
 	if err := s.repo.Update(ctx, config); err != nil {
 		log.Error("Error updating draft status before retry task publish", zap.Error(err))
 		return sharedModels.ErrInternalServer // Use shared error
 	}
 
 	taskID := uuid.New().String()
+	// <<< ДОБАВЛЯЕМ ЛОГ ПЕРЕД СОЗДАНИЕМ PAYLOAD >>>
+	log.Debug("Preparing generation payload for retry",
+		zap.String("language_from_config", config.Language),
+		zap.String("prompt_type", string(promptType)),
+	)
+	// <<< КОНЕЦ ЛОГА >>>
 	generationPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:        taskID,
 		UserID:        config.UserID.String(),
@@ -406,6 +415,10 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 		StoryConfigID: config.ID.String(),
 		Language:      config.Language, // <<< ПЕРЕДАЕМ ЯЗЫК ОТДЕЛЬНО >>>
 	}
+
+	// <<< ДОБАВЛЯЕМ ЛОГ ПОСЛЕ СОЗДАНИЯ PAYLOAD >>>
+	log.Debug("Generation payload created for retry", zap.Any("payload", generationPayload))
+	// <<< КОНЕЦ ЛОГА >>>
 
 	if err := s.publisher.PublishGenerationTask(ctx, generationPayload); err != nil {
 		log.Error("Error publishing retry generation task. Rolling back status...", zap.Error(err))
