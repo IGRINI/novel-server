@@ -183,8 +183,32 @@ func (s *authServiceImpl) Logout(ctx context.Context, accessUUID, refreshUUID st
 	log := s.logger.With(zap.String("accessUUID", accessUUID), zap.String("refreshUUID", refreshUUID))
 	log.Debug("Attempting to logout user by deleting tokens")
 
-	// Используем DeleteTokens для удаления обоих UUID
-	deletedCount, err := s.tokenRepo.DeleteTokens(ctx, accessUUID, refreshUUID)
+	// Получаем UserID по одному из UUID (например, AccessUUID)
+	var userID uuid.UUID
+	var fetchErr error
+	if accessUUID != "" {
+		userID, fetchErr = s.tokenRepo.GetUserIDByAccessUUID(ctx, accessUUID)
+	} else if refreshUUID != "" {
+		userID, fetchErr = s.tokenRepo.GetUserIDByRefreshUUID(ctx, refreshUUID)
+	} else {
+		// Не переданы UUID, нечего удалять
+		log.Warn("Logout called with no token UUIDs")
+		return nil
+	}
+
+	// Если токен не найден, просто логируем и выходим (не ошибка)
+	if fetchErr != nil {
+		if errors.Is(fetchErr, models.ErrTokenNotFound) {
+			log.Info("Tokens not found in store during logout (already logged out/expired)")
+			return nil
+		}
+		log.Error("Failed to get userID for token deletion during logout", zap.Error(fetchErr))
+		// В зависимости от логики можно вернуть ошибку или продолжить
+		return fmt.Errorf("could not verify tokens before logout: %w", fetchErr)
+	}
+
+	// Теперь вызываем DeleteTokens с userID
+	deletedCount, err := s.tokenRepo.DeleteTokens(ctx, userID, accessUUID, refreshUUID)
 
 	if err != nil {
 		// Логируем ошибку, но не возвращаем ее клиенту, т.к. токены могли уже быть удалены.
@@ -252,7 +276,7 @@ func (s *authServiceImpl) Refresh(ctx context.Context, refreshTokenString string
 				// Пользователь из валидного токена не найден в БД?
 				s.logger.Error("User from valid refresh token not found in DB", zap.String("userID", userID.String()), zap.String("refreshUUID", refreshUUID))
 				// Удаляем токен, так как он ссылается на несуществующего пользователя
-				_, _ = s.tokenRepo.DeleteTokens(ctx, "", refreshUUID)
+				_ = s.tokenRepo.DeleteRefreshUUID(ctx, userID, refreshUUID)
 				return nil, models.ErrUserNotFound // Или ErrTokenInvalid?
 			}
 			// Другая ошибка БД
@@ -263,7 +287,7 @@ func (s *authServiceImpl) Refresh(ctx context.Context, refreshTokenString string
 		if user.IsBanned {
 			s.logger.Warn("Refresh attempt by a banned user", zap.String("userID", userID.String()), zap.String("refreshUUID", refreshUUID))
 			// Удаляем токен забаненного пользователя
-			_, _ = s.tokenRepo.DeleteTokens(ctx, "", refreshUUID)
+			_ = s.tokenRepo.DeleteRefreshUUID(ctx, userID, refreshUUID)
 			return nil, models.ErrForbidden // Возвращаем 403 Forbidden
 		}
 		// <<< Конец проверки статуса пользователя >>>
@@ -276,7 +300,7 @@ func (s *authServiceImpl) Refresh(ctx context.Context, refreshTokenString string
 		}
 
 		// Пытаемся удалить старые токены
-		_, delErr := s.tokenRepo.DeleteTokens(ctx, "", refreshUUID) // Репо залогирует детали
+		delErr := s.tokenRepo.DeleteRefreshUUID(ctx, claims.UserID, refreshUUID)
 		if delErr != nil {
 			// Логируем здесь, т.к. это некритично для пользователя, но важно для нас
 			s.logger.Error("Non-critical: Failed to delete old refresh token during refresh process", zap.Error(delErr), zap.String("refreshUUID", refreshUUID))
@@ -753,7 +777,7 @@ func (s *authServiceImpl) RefreshAdminToken(ctx context.Context, refreshTokenStr
 		log.Error("Admin refresh token user ID mismatch", zap.String("tokenUserID", userID.String()), zap.String("repoUserID", storedUserID.String()))
 		// Если ID не совпадают, это серьезная проблема, возможно, попытка подмены.
 		// Удаляем токены из хранилища на всякий случай.
-		_, _ = s.tokenRepo.DeleteTokens(ctx, "", refreshUUID) // Игнорируем ошибку удаления
+		_ = s.tokenRepo.DeleteRefreshUUID(ctx, storedUserID, refreshUUID)
 		return nil, nil, models.ErrTokenInvalid
 	}
 
@@ -766,7 +790,7 @@ func (s *authServiceImpl) RefreshAdminToken(ctx context.Context, refreshTokenStr
 			log.Error("User associated with admin refresh token not found in DB", zap.Error(err))
 			// Пользователя нет, хотя токен был валиден? Очень странно.
 			// Удаляем токены на всякий случай.
-			_, _ = s.tokenRepo.DeleteTokens(ctx, "", refreshUUID)
+			_ = s.tokenRepo.DeleteRefreshUUID(ctx, userID, refreshUUID)
 			return nil, nil, models.ErrUserNotFound
 		}
 		log.Error("Error fetching user details from repository for admin refresh", zap.Error(err))
@@ -777,7 +801,7 @@ func (s *authServiceImpl) RefreshAdminToken(ctx context.Context, refreshTokenStr
 	if user.IsBanned {
 		log.Warn("Admin refresh attempt for a banned user")
 		// Удаляем токены забаненного пользователя
-		_, _ = s.tokenRepo.DeleteTokens(ctx, "", refreshUUID)
+		_ = s.tokenRepo.DeleteRefreshUUID(ctx, userID, refreshUUID)
 		return nil, nil, models.ErrForbidden // Используем 403 Forbidden
 	}
 
@@ -786,7 +810,7 @@ func (s *authServiceImpl) RefreshAdminToken(ctx context.Context, refreshTokenStr
 		log.Warn("Refresh attempt by non-admin user using admin endpoint")
 		// Пользователь не админ, но пытается использовать админский рефреш?!
 		// Удаляем его токены.
-		_, _ = s.tokenRepo.DeleteTokens(ctx, "", refreshUUID)
+		_ = s.tokenRepo.DeleteRefreshUUID(ctx, userID, refreshUUID)
 		return nil, nil, models.ErrForbidden // 403 Forbidden - нет прав
 	}
 
@@ -801,7 +825,7 @@ func (s *authServiceImpl) RefreshAdminToken(ctx context.Context, refreshTokenStr
 
 	// 9. Удаляем старый Refresh токен и сохраняем новые
 	// Сначала удаляем старый
-	_, delErr := s.tokenRepo.DeleteTokens(ctx, "", refreshUUID) // Удаляем только старый refresh UUID
+	delErr := s.tokenRepo.DeleteRefreshUUID(ctx, userID, refreshUUID)
 	if delErr != nil {
 		log.Error("Failed to delete old refresh token during admin refresh", zap.Error(delErr))
 		// Это не должно блокировать возврат новых токенов, но логируем ошибку.

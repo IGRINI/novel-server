@@ -18,7 +18,7 @@ type TokenRepository interface {
 
 	// DeleteTokens removes the specified token UUIDs from the store.
 	// Returns the number of keys deleted.
-	DeleteTokens(ctx context.Context, accessUUID, refreshUUID string) (int64, error)
+	DeleteTokens(ctx context.Context, userID uuid.UUID, accessUUID, refreshUUID string) (int64, error)
 
 	// GetUserIDByAccessUUID checks if the Access UUID exists in the store and returns the associated UserID.
 	// Returns models.ErrTokenNotFound if the token is not found (or expired).
@@ -30,7 +30,7 @@ type TokenRepository interface {
 
 	// DeleteRefreshUUID removes only the refresh token UUID from the store.
 	// Useful for testing scenarios or specific logout logic.
-	DeleteRefreshUUID(ctx context.Context, refreshUUID string) error
+	DeleteRefreshUUID(ctx context.Context, userID uuid.UUID, refreshUUID string) error
 
 	// DeleteTokensByUserID removes all tokens (access and refresh) associated with a user ID.
 	// Returns the number of tokens deleted.
