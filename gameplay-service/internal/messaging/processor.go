@@ -27,6 +27,40 @@ const (
 // Регулярное выражение для извлечения UUID из ImageReference - БОЛЬШЕ НЕ НУЖНО
 // var storyIDRegex = regexp.MustCompile(`[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}`)
 
+// <<< ПЕРЕМЕЩЕНО ИЗ handle_setup.go >>>
+// MinimalConfigForFirstScene - структура для минимального конфига, отправляемого для PromptTypeNovelFirstSceneCreator
+// Содержит только поля, необходимые этому промпту
+type MinimalConfigForFirstScene struct {
+	Language       string                   `json:"ln,omitempty"`
+	IsAdultContent bool                     `json:"ac,omitempty"`
+	Genre          string                   `json:"gn,omitempty"`
+	PlayerName     string                   `json:"pn,omitempty"`
+	PlayerGender   string                   `json:"pg,omitempty"`
+	PlayerDesc     string                   `json:"p_desc,omitempty"`
+	WorldContext   string                   `json:"wc,omitempty"`
+	StorySummary   string                   `json:"ss,omitempty"`
+	PlayerPrefs    sharedModels.PlayerPrefs `json:"pp,omitempty"` // Используем существующую структуру
+}
+
+// ToMinimalConfigForFirstScene преобразует полный конфиг в минимальный
+func ToMinimalConfigForFirstScene(configBytes []byte) MinimalConfigForFirstScene {
+	var fullConfig sharedModels.Config
+	_ = json.Unmarshal(configBytes, &fullConfig) // Игнорируем ошибку, если конфиг некорректный
+
+	// Используем структуру PlayerPrefs напрямую
+	return MinimalConfigForFirstScene{
+		Language:       fullConfig.Language,
+		IsAdultContent: fullConfig.IsAdultContent,
+		Genre:          fullConfig.Genre,
+		PlayerName:     fullConfig.PlayerName,
+		PlayerGender:   fullConfig.PlayerGender,
+		PlayerDesc:     fullConfig.PlayerDesc,
+		WorldContext:   fullConfig.WorldContext,
+		StorySummary:   fullConfig.StorySummary,
+		PlayerPrefs:    fullConfig.PlayerPrefs, // Передаем всю структуру PlayerPrefs
+	}
+}
+
 // --- NotificationProcessor ---
 
 // NotificationProcessor обрабатывает логику уведомлений.

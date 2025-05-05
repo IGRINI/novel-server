@@ -48,6 +48,7 @@
     *   Generate {{NPC_COUNT}} relevant NPCs (NO player character).
     *   Generate deterministic `ir` (image reference) based on `vt` (or well-known `n`): `[gender]_[age]_[theme]_[desc1]_[desc2]` or `snake_case(name)`. Use `male/female/other/andro/unknown`, `child/teen/adult/old`, genre tags, distinctive visual tags. Use snake_case. Identical `vt` -> identical `ir`.
 5.  **Story Preview (`spi`):** Generate a detailed English image prompt capturing story essence (`wc`, `ss`, `gn`, `fr`, `th`).
+6.  **Structure Integrity:** The `csd` object MUST be properly closed with exactly ONE `}` before the `chars` array begins. DO NOT nest the `chars` array or the `spi` string inside the `csd` object. Ensure the final output JSON is a single, complete object ending with `}`.
 
 **IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, JSON object described in the 'Output JSON Structure'. Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
 
