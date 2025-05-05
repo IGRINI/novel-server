@@ -16,6 +16,15 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	addLikeQuery    = `INSERT INTO story_likes (user_id, published_story_id) VALUES ($1, $2)`
+	removeLikeQuery = `DELETE FROM story_likes WHERE user_id = $1 AND published_story_id = $2`
+	checkLikeQuery  = `SELECT EXISTS (SELECT 1 FROM story_likes WHERE user_id = $1 AND published_story_id = $2)`
+	countLikesQuery = `SELECT COUNT(*) FROM story_likes WHERE published_story_id = $1`
+	// Base query for listing likes, cursor logic is appended dynamically
+	listLikedStoryIDsBaseQuery = `SELECT published_story_id, created_at FROM story_likes WHERE user_id = $1 `
+)
+
 // pgLikeRepository реализует интерфейс LikeRepository для PostgreSQL.
 type pgLikeRepository struct {
 	db     interfaces.DBTX
@@ -35,14 +44,13 @@ func NewPgLikeRepository(db interfaces.DBTX, logger *zap.Logger) interfaces.Like
 
 // AddLike добавляет запись о лайке.
 func (r *pgLikeRepository) AddLike(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error {
-	query := `INSERT INTO story_likes (user_id, published_story_id) VALUES ($1, $2)`
 	logFields := []zap.Field{
 		zap.String("userID", userID.String()),
 		zap.String("publishedStoryID", publishedStoryID.String()),
 	}
 	r.logger.Debug("Adding like record", logFields...)
 
-	_, err := r.db.Exec(ctx, query, userID, publishedStoryID)
+	_, err := r.db.Exec(ctx, addLikeQuery, userID, publishedStoryID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
@@ -66,14 +74,13 @@ func (r *pgLikeRepository) AddLike(ctx context.Context, userID uuid.UUID, publis
 
 // RemoveLike удаляет запись о лайке.
 func (r *pgLikeRepository) RemoveLike(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error {
-	query := `DELETE FROM story_likes WHERE user_id = $1 AND published_story_id = $2`
 	logFields := []zap.Field{
 		zap.String("userID", userID.String()),
 		zap.String("publishedStoryID", publishedStoryID.String()),
 	}
 	r.logger.Debug("Removing like record", logFields...)
 
-	commandTag, err := r.db.Exec(ctx, query, userID, publishedStoryID)
+	commandTag, err := r.db.Exec(ctx, removeLikeQuery, userID, publishedStoryID)
 	if err != nil {
 		r.logger.Error("Failed to remove like record", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("failed to remove like: %w", err)
@@ -90,7 +97,6 @@ func (r *pgLikeRepository) RemoveLike(ctx context.Context, userID uuid.UUID, pub
 
 // CheckLike проверяет, лайкнул ли пользователь историю.
 func (r *pgLikeRepository) CheckLike(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (bool, error) {
-	query := `SELECT EXISTS (SELECT 1 FROM story_likes WHERE user_id = $1 AND published_story_id = $2)`
 	var exists bool
 	logFields := []zap.Field{
 		zap.String("userID", userID.String()),
@@ -98,7 +104,7 @@ func (r *pgLikeRepository) CheckLike(ctx context.Context, userID uuid.UUID, publ
 	}
 	r.logger.Debug("Checking if like exists", logFields...)
 
-	err := r.db.QueryRow(ctx, query, userID, publishedStoryID).Scan(&exists)
+	err := r.db.QueryRow(ctx, checkLikeQuery, userID, publishedStoryID).Scan(&exists)
 	if err != nil {
 		r.logger.Error("Failed to check like existence", append(logFields, zap.Error(err))...)
 		return false, fmt.Errorf("failed to check like existence: %w", err)
@@ -110,12 +116,11 @@ func (r *pgLikeRepository) CheckLike(ctx context.Context, userID uuid.UUID, publ
 
 // CountLikes возвращает общее количество лайков для истории.
 func (r *pgLikeRepository) CountLikes(ctx context.Context, publishedStoryID uuid.UUID) (int64, error) {
-	query := `SELECT COUNT(*) FROM story_likes WHERE published_story_id = $1`
 	var count int64
 	logFields := []zap.Field{zap.String("publishedStoryID", publishedStoryID.String())}
 	r.logger.Debug("Counting likes for story", logFields...)
 
-	err := r.db.QueryRow(ctx, query, publishedStoryID).Scan(&count)
+	err := r.db.QueryRow(ctx, countLikesQuery, publishedStoryID).Scan(&count)
 	if err != nil {
 		// Если история не найдена, COUNT вернет 0, ошибки не будет (если FK не строгий или история удалена каскадно)
 		// Поэтому проверяем на pgx.ErrNoRows здесь не нужно.
@@ -143,7 +148,7 @@ func (r *pgLikeRepository) ListLikedStoryIDsByUserID(ctx context.Context, userID
 	var args []interface{}
 	args = append(args, userID, limit+1) // Fetch one extra to check for next page
 
-	query := `SELECT published_story_id, created_at FROM story_likes WHERE user_id = $1 `
+	query := listLikedStoryIDsBaseQuery // Start with the base query
 
 	// --- Cursor Logic ---
 	var cursorTime time.Time

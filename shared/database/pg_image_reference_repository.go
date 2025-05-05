@@ -13,6 +13,18 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	getImageURLByReferenceQuery     = `SELECT image_url FROM image_references WHERE reference = $1`
+	saveOrUpdateImageReferenceQuery = `
+        INSERT INTO image_references (reference, image_url)
+        VALUES ($1, $2)
+        ON CONFLICT (reference) DO UPDATE SET
+            image_url = EXCLUDED.image_url,
+            updated_at = NOW()
+    `
+	getImageURLsByReferencesQuery = `SELECT reference, image_url FROM image_references WHERE reference = ANY($1::text[])`
+)
+
 // Compile-time check to ensure pgImageReferenceRepository implements the interface
 var _ interfaces.ImageReferenceRepository = (*pgImageReferenceRepository)(nil)
 
@@ -32,10 +44,9 @@ func NewPgImageReferenceRepository(db interfaces.DBTX, logger *zap.Logger) inter
 
 // GetImageURLByReference получает URL изображения по его reference.
 func (r *pgImageReferenceRepository) GetImageURLByReference(ctx context.Context, reference string) (string, error) {
-	query := `SELECT image_url FROM image_references WHERE reference = $1`
 	var imageURL string
 
-	err := r.db.QueryRow(ctx, query, reference).Scan(&imageURL)
+	err := r.db.QueryRow(ctx, getImageURLByReferenceQuery, reference).Scan(&imageURL)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			r.logger.Debug("Image reference not found", zap.String("reference", reference))
@@ -52,15 +63,7 @@ func (r *pgImageReferenceRepository) GetImageURLByReference(ctx context.Context,
 
 // SaveOrUpdateImageReference сохраняет или обновляет URL для данного reference.
 func (r *pgImageReferenceRepository) SaveOrUpdateImageReference(ctx context.Context, reference string, imageURL string) error {
-	query := `
-        INSERT INTO image_references (reference, image_url)
-        VALUES ($1, $2)
-        ON CONFLICT (reference) DO UPDATE SET
-            image_url = EXCLUDED.image_url,
-            updated_at = NOW()
-    `
-
-	cmdTag, err := r.db.Exec(ctx, query, reference, imageURL)
+	cmdTag, err := r.db.Exec(ctx, saveOrUpdateImageReferenceQuery, reference, imageURL)
 	if err != nil {
 		r.logger.Error("Error executing save/update image reference", zap.String("reference", reference), zap.String("image_url", imageURL), zap.Error(err))
 		return fmt.Errorf("database error saving/updating image reference '%s': %w", reference, err)
@@ -84,11 +87,10 @@ func (r *pgImageReferenceRepository) GetImageURLsByReferences(ctx context.Contex
 		return make(map[string]string), nil // Return empty map if no refs provided
 	}
 
-	query := `SELECT reference, image_url FROM image_references WHERE reference = ANY($1::text[])`
 	logFields := []zap.Field{zap.Int("ref_count", len(refs))}
 	r.logger.Debug("Getting image URLs by references (batch)", logFields...)
 
-	rows, err := r.db.Query(ctx, query, pq.Array(refs))
+	rows, err := r.db.Query(ctx, getImageURLsByReferencesQuery, pq.Array(refs))
 	if err != nil {
 		r.logger.Error("Failed to query image URLs by references", append(logFields, zap.Error(err))...)
 		return nil, fmt.Errorf("failed to query image URLs by references: %w", err)

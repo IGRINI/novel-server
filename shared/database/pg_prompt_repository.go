@@ -15,7 +15,28 @@ import (
 	"novel-server/shared/models"
 )
 
-const promptFields = `id, key, language, content, created_at, updated_at`
+const (
+	promptFields               = `id, key, language, content, created_at, updated_at`
+	createPromptQuery          = `INSERT INTO prompts (key, language, content) VALUES ($1, $2, $3) RETURNING id, created_at, updated_at`
+	getPromptByKeyLangQuery    = `SELECT ` + promptFields + ` FROM prompts WHERE key = $1 AND language = $2`
+	updatePromptQuery          = `UPDATE prompts SET content = $1, updated_at = NOW() WHERE key = $2 AND language = $3 RETURNING updated_at`
+	deletePromptByKeyLangQuery = `DELETE FROM prompts WHERE key = $1 AND language = $2`
+	listPromptsBaseQuery       = `SELECT ` + promptFields + ` FROM prompts`
+	listPromptKeysQuery        = `SELECT DISTINCT key FROM prompts ORDER BY key`
+	getAllPromptsByKeyQuery    = `SELECT ` + promptFields + ` FROM prompts WHERE key = $1 ORDER BY language`
+	upsertPromptQuery          = `
+        INSERT INTO prompts (key, language, content, created_at, updated_at)
+        VALUES ($1, $2, $3, NOW(), NOW())
+        ON CONFLICT (key, language) DO UPDATE SET
+            content = EXCLUDED.content,
+            updated_at = NOW()
+        RETURNING id, created_at, updated_at
+    `
+	createPromptBatchInsertBase = `INSERT INTO prompts (key, language, content) VALUES ($1, $2, $3)`
+	deletePromptByKeyQuery      = `DELETE FROM prompts WHERE key = $1`
+	getPromptByIDQuery          = `SELECT ` + promptFields + ` FROM prompts WHERE id = $1`
+	deletePromptByIDQuery       = `DELETE FROM prompts WHERE id = $1`
+)
 
 type PgPromptRepository struct {
 	db *pgxpool.Pool
@@ -29,8 +50,7 @@ func NewPgPromptRepository(db *pgxpool.Pool) *PgPromptRepository {
 }
 
 func (r *PgPromptRepository) Create(ctx context.Context, prompt *models.Prompt) error {
-	query := `INSERT INTO prompts (key, language, content) VALUES ($1, $2, $3) RETURNING id, created_at, updated_at`
-	err := r.db.QueryRow(ctx, query, prompt.Key, prompt.Language, prompt.Content).Scan(
+	err := r.db.QueryRow(ctx, createPromptQuery, prompt.Key, prompt.Language, prompt.Content).Scan(
 		&prompt.ID, &prompt.CreatedAt, &prompt.UpdatedAt)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -45,9 +65,8 @@ func (r *PgPromptRepository) Create(ctx context.Context, prompt *models.Prompt) 
 }
 
 func (r *PgPromptRepository) GetByKeyAndLanguage(ctx context.Context, key, language string) (*models.Prompt, error) {
-	query := fmt.Sprintf(`SELECT %s FROM prompts WHERE key = $1 AND language = $2`, promptFields)
 	var prompt models.Prompt
-	err := r.db.QueryRow(ctx, query, key, language).Scan(
+	err := r.db.QueryRow(ctx, getPromptByKeyLangQuery, key, language).Scan(
 		&prompt.ID, &prompt.Key, &prompt.Language, &prompt.Content, &prompt.CreatedAt, &prompt.UpdatedAt,
 	)
 	if err != nil {
@@ -61,9 +80,8 @@ func (r *PgPromptRepository) GetByKeyAndLanguage(ctx context.Context, key, langu
 }
 
 func (r *PgPromptRepository) Update(ctx context.Context, prompt *models.Prompt) error {
-	query := `UPDATE prompts SET content = $1, updated_at = NOW() WHERE key = $2 AND language = $3 RETURNING updated_at`
 	var updatedAt time.Time
-	err := r.db.QueryRow(ctx, query, prompt.Content, prompt.Key, prompt.Language).Scan(&updatedAt)
+	err := r.db.QueryRow(ctx, updatePromptQuery, prompt.Content, prompt.Key, prompt.Language).Scan(&updatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return models.ErrNotFound // If no rows were updated, it means the prompt wasn't found
@@ -77,8 +95,7 @@ func (r *PgPromptRepository) Update(ctx context.Context, prompt *models.Prompt) 
 }
 
 func (r *PgPromptRepository) DeleteByKeyAndLanguage(ctx context.Context, key, language string) error {
-	query := `DELETE FROM prompts WHERE key = $1 AND language = $2`
-	commandTag, err := r.db.Exec(ctx, query, key, language)
+	commandTag, err := r.db.Exec(ctx, deletePromptByKeyLangQuery, key, language)
 	if err != nil {
 		log.Error().Err(err).Str("key", key).Str("language", language).Msg("Failed to delete prompt")
 		return fmt.Errorf("failed to delete prompt: %w", err)
@@ -96,7 +113,7 @@ func (r *PgPromptRepository) ListAll(ctx context.Context, language *string, key 
 	paramCount := 1
 
 	queryBuilder := strings.Builder{}
-	queryBuilder.WriteString(fmt.Sprintf(`SELECT %s FROM prompts`, promptFields))
+	queryBuilder.WriteString(listPromptsBaseQuery)
 
 	if language != nil && *language != "" {
 		conditions = append(conditions, fmt.Sprintf("language = $%d", paramCount))
@@ -149,8 +166,7 @@ func (r *PgPromptRepository) GetAll(ctx context.Context) ([]*models.Prompt, erro
 
 // ListKeys retrieves a list of unique prompt keys.
 func (r *PgPromptRepository) ListKeys(ctx context.Context) ([]string, error) {
-	query := `SELECT DISTINCT key FROM prompts ORDER BY key`
-	rows, err := r.db.Query(ctx, query)
+	rows, err := r.db.Query(ctx, listPromptKeysQuery)
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to list prompt keys")
 		return nil, fmt.Errorf("failed to list prompt keys: %w", err)
@@ -178,8 +194,7 @@ func (r *PgPromptRepository) ListKeys(ctx context.Context) ([]string, error) {
 // GetAllPromptsByKey retrieves all language versions of a prompt by its key.
 // This is functionally the same as FindByKey in this implementation.
 func (r *PgPromptRepository) GetAllPromptsByKey(ctx context.Context, key string) ([]*models.Prompt, error) {
-	query := fmt.Sprintf(`SELECT %s FROM prompts WHERE key = $1 ORDER BY language`, promptFields)
-	rows, err := r.db.Query(ctx, query, key)
+	rows, err := r.db.Query(ctx, getAllPromptsByKeyQuery, key)
 	if err != nil {
 		log.Error().Err(err).Str("key", key).Msg("Failed to get all prompts by key")
 		return nil, fmt.Errorf("failed to get all prompts by key %s: %w", key, err)
@@ -208,16 +223,7 @@ func (r *PgPromptRepository) GetAllPromptsByKey(ctx context.Context, key string)
 
 // Upsert creates a new prompt or updates an existing one based on key and language.
 func (r *PgPromptRepository) Upsert(ctx context.Context, prompt *models.Prompt) error {
-	// Используем INSERT ... ON CONFLICT для атомарного создания/обновления
-	query := `
-        INSERT INTO prompts (key, language, content, created_at, updated_at)
-        VALUES ($1, $2, $3, NOW(), NOW())
-        ON CONFLICT (key, language) DO UPDATE SET
-            content = EXCLUDED.content,
-            updated_at = NOW()
-        RETURNING id, created_at, updated_at
-    `
-	err := r.db.QueryRow(ctx, query, prompt.Key, prompt.Language, prompt.Content).Scan(
+	err := r.db.QueryRow(ctx, upsertPromptQuery, prompt.Key, prompt.Language, prompt.Content).Scan(
 		&prompt.ID, &prompt.CreatedAt, &prompt.UpdatedAt, // Обновляем ID и временные метки в переданной структуре
 	)
 	if err != nil {
@@ -236,9 +242,8 @@ func (r *PgPromptRepository) CreateBatch(ctx context.Context, prompts []*models.
 
 	// Используем pgx.Batch для эффективности
 	batch := &pgx.Batch{}
-	insertQuery := `INSERT INTO prompts (key, language, content) VALUES ($1, $2, $3)`
 	for _, p := range prompts {
-		batch.Queue(insertQuery, p.Key, p.Language, p.Content)
+		batch.Queue(createPromptBatchInsertBase, p.Key, p.Language, p.Content)
 	}
 
 	br := r.db.SendBatch(ctx, batch)
@@ -278,8 +283,7 @@ func (r *PgPromptRepository) CreateBatch(ctx context.Context, prompts []*models.
 
 // DeleteByKey removes all language versions of a prompt by its key.
 func (r *PgPromptRepository) DeleteByKey(ctx context.Context, key string) error {
-	query := `DELETE FROM prompts WHERE key = $1`
-	commandTag, err := r.db.Exec(ctx, query, key)
+	commandTag, err := r.db.Exec(ctx, deletePromptByKeyQuery, key)
 	if err != nil {
 		log.Error().Err(err).Str("key", key).Msg("Failed to delete prompts by key")
 		return fmt.Errorf("failed to delete prompts by key %s: %w", key, err)
@@ -292,9 +296,8 @@ func (r *PgPromptRepository) DeleteByKey(ctx context.Context, key string) error 
 
 // GetByID retrieves a prompt by its unique ID.
 func (r *PgPromptRepository) GetByID(ctx context.Context, id int64) (*models.Prompt, error) {
-	query := fmt.Sprintf(`SELECT %s FROM prompts WHERE id = $1`, promptFields)
 	var prompt models.Prompt
-	err := r.db.QueryRow(ctx, query, id).Scan(
+	err := r.db.QueryRow(ctx, getPromptByIDQuery, id).Scan(
 		&prompt.ID, &prompt.Key, &prompt.Language, &prompt.Content, &prompt.CreatedAt, &prompt.UpdatedAt,
 	)
 	if err != nil {
@@ -310,8 +313,7 @@ func (r *PgPromptRepository) GetByID(ctx context.Context, id int64) (*models.Pro
 
 // DeleteByID removes a prompt by its unique ID.
 func (r *PgPromptRepository) DeleteByID(ctx context.Context, id int64) error {
-	query := `DELETE FROM prompts WHERE id = $1`
-	commandTag, err := r.db.Exec(ctx, query, id)
+	commandTag, err := r.db.Exec(ctx, deletePromptByIDQuery, id)
 	if err != nil {
 		log.Error().Err(err).Int64("id", id).Msg("Failed to delete prompt by ID")
 		return fmt.Errorf("failed to delete prompt by ID %d: %w", id, err)

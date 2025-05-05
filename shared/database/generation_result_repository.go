@@ -13,22 +13,8 @@ import (
 	sharedModels "novel-server/shared/models"
 )
 
-type PgGenerationResultRepository struct {
-	pool   *pgxpool.Pool
-	logger *zap.Logger
-}
-
-// NewPgGenerationResultRepository создает новый экземпляр PgGenerationResultRepository.
-func NewPgGenerationResultRepository(pool *pgxpool.Pool, logger *zap.Logger) sharedInterfaces.GenerationResultRepository {
-	return &PgGenerationResultRepository{
-		pool:   pool,
-		logger: logger.Named("PgGenerationResultRepo"),
-	}
-}
-
-// Save сохраняет или обновляет результат генерации в базе данных.
-func (r *PgGenerationResultRepository) Save(ctx context.Context, result *sharedModels.GenerationResult) error {
-	query := `
+const (
+	saveGenerationResultQuery = `
 		INSERT INTO generation_results (
 			id, prompt_type, user_id, generated_text, error, 
 			created_at, completed_at, processing_time_ms, 
@@ -47,7 +33,33 @@ func (r *PgGenerationResultRepository) Save(ctx context.Context, result *sharedM
 			completion_tokens = EXCLUDED.completion_tokens,
 			estimated_cost_usd = EXCLUDED.estimated_cost_usd
 	`
-	tag, err := r.pool.Exec(ctx, query,
+	getGenerationResultByTaskIDQuery = `
+		SELECT 
+			id, prompt_type, user_id, generated_text, error, 
+			created_at, completed_at, processing_time_ms, 
+			prompt_tokens, completion_tokens, estimated_cost_usd
+		FROM generation_results
+		WHERE id = $1
+	`
+	// TODO: Define queries for FindOlderThan and DeleteByTaskID when implemented
+)
+
+type PgGenerationResultRepository struct {
+	pool   *pgxpool.Pool
+	logger *zap.Logger
+}
+
+// NewPgGenerationResultRepository создает новый экземпляр PgGenerationResultRepository.
+func NewPgGenerationResultRepository(pool *pgxpool.Pool, logger *zap.Logger) sharedInterfaces.GenerationResultRepository {
+	return &PgGenerationResultRepository{
+		pool:   pool,
+		logger: logger.Named("PgGenerationResultRepo"),
+	}
+}
+
+// Save сохраняет или обновляет результат генерации в базе данных.
+func (r *PgGenerationResultRepository) Save(ctx context.Context, result *sharedModels.GenerationResult) error {
+	tag, err := r.pool.Exec(ctx, saveGenerationResultQuery,
 		result.ID,
 		result.PromptType,
 		result.UserID,
@@ -73,31 +85,11 @@ func (r *PgGenerationResultRepository) Save(ctx context.Context, result *sharedM
 
 // GetByTaskID получает результат генерации по ID задачи.
 func (r *PgGenerationResultRepository) GetByTaskID(ctx context.Context, taskID string) (*sharedModels.GenerationResult, error) {
-	query := `
-		SELECT 
-			id, prompt_type, user_id, generated_text, error, 
-			created_at, completed_at, processing_time_ms, 
-			prompt_tokens, completion_tokens, estimated_cost_usd
-		FROM generation_results
-		WHERE id = $1
-	`
-	var result sharedModels.GenerationResult
-	err := r.pool.QueryRow(ctx, query, taskID).Scan(
-		&result.ID,
-		&result.PromptType,
-		&result.UserID,
-		&result.GeneratedText,
-		&result.Error,
-		&result.CreatedAt,
-		&result.CompletedAt,
-		&result.ProcessingTimeMs,
-		&result.PromptTokens,
-		&result.CompletionTokens,
-		&result.EstimatedCostUSD,
-	)
+	row := r.pool.QueryRow(ctx, getGenerationResultByTaskIDQuery, taskID)
+	result, err := scanGenerationResult(row)
 
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if err == sharedModels.ErrNotFound { // Check for specific error from scan helper
 			r.logger.Warn("GenerationResult not found by TaskID", zap.String("task_id", taskID))
 			return nil, sharedModels.ErrNotFound
 		}
@@ -109,7 +101,7 @@ func (r *PgGenerationResultRepository) GetByTaskID(ctx context.Context, taskID s
 	}
 
 	r.logger.Debug("GenerationResult retrieved successfully by TaskID", zap.String("task_id", taskID))
-	return &result, nil
+	return result, nil
 }
 
 // FindOlderThan находит результаты генерации старше указанной даты (не реализовано).
@@ -124,4 +116,31 @@ func (r *PgGenerationResultRepository) DeleteByTaskID(ctx context.Context, taskI
 	// TODO: Реализовать при необходимости (для очистки старых записей)
 	r.logger.Warn("DeleteByTaskID method is not implemented")
 	return fmt.Errorf("DeleteByTaskID is not implemented")
+}
+
+// scanGenerationResult scans a single row into a GenerationResult struct.
+// pgx.Row interface covers both QueryRow and Rows.Scan behavior.
+func scanGenerationResult(row pgx.Row) (*sharedModels.GenerationResult, error) {
+	var result sharedModels.GenerationResult
+	err := row.Scan(
+		&result.ID,
+		&result.PromptType,
+		&result.UserID,
+		&result.GeneratedText,
+		&result.Error,
+		&result.CreatedAt,
+		&result.CompletedAt,
+		&result.ProcessingTimeMs,
+		&result.PromptTokens,
+		&result.CompletionTokens,
+		&result.EstimatedCostUSD,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, sharedModels.ErrNotFound // Return specific error for not found
+		}
+		// Log error inside the calling function, return generic error here
+		return nil, fmt.Errorf("error scanning generation result: %w", err)
+	}
+	return &result, nil
 }

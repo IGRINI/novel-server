@@ -13,6 +13,84 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	playerGameStateFields = `id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at`
+
+	insertPlayerGameStateQuery = `
+            INSERT INTO player_game_states
+                (id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at)
+            VALUES
+                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            RETURNING id
+        `
+	updatePlayerGameStateQuery = `
+            UPDATE player_game_states SET
+                current_scene_id = $2,
+                player_progress_id = $3,
+                player_status = $4,
+                ending_text = $5,
+                error_details = $6,
+                last_activity_at = $7,
+                completed_at = $8
+                -- player_id and published_story_id should not change
+                -- started_at should not change on update
+            WHERE id = $1
+            RETURNING id
+        `
+	getPlayerGameStateByPlayerAndStoryQuery = `
+        SELECT ` + playerGameStateFields + `
+        FROM player_game_states
+        WHERE player_id = $1 AND published_story_id = $2
+    `
+	getPlayerGameStateByIDQuery = `
+        SELECT ` + playerGameStateFields + `
+        FROM player_game_states
+        WHERE id = $1
+    `
+	deletePlayerGameStateByIDQuery             = `DELETE FROM player_game_states WHERE id = $1`
+	deletePlayerGameStateByPlayerAndStoryQuery = `DELETE FROM player_game_states WHERE player_id = $1 AND published_story_id = $2`
+	listPlayerGameStateByStoryIDQuery          = `
+        SELECT ` + playerGameStateFields + `
+        FROM player_game_states
+        WHERE published_story_id = $1
+        ORDER BY last_activity_at DESC -- Or started_at?
+    `
+	findAndMarkStalePlayerGeneratingQueryBase = `
+UPDATE player_game_states
+SET player_status = $1, -- PlayerStatusError
+    error_details = $2, -- Сообщение об ошибке
+    last_activity_at = NOW() -- Обновляем время активности
+WHERE (player_status = $3 OR player_status = $4) -- PlayerStatusGeneratingScene или PlayerStatusGameOverPending
+`
+	checkGameStateExistsForStoriesQuery = `
+        SELECT published_story_id
+        FROM player_game_states
+        WHERE player_id = $1 AND published_story_id = ANY($2::uuid[])
+    `
+	listPlayerGameStateByPlayerAndStoryQuery = `
+        SELECT ` + playerGameStateFields + `
+        FROM player_game_states
+        WHERE player_id = $1 AND published_story_id = $2
+        ORDER BY last_activity_at DESC -- Сортируем по последней активности (или started_at?)
+    `
+	listGameStateSummariesByPlayerAndStoryQuery = `
+		SELECT
+		    pgs.id,              -- Game State ID
+		    pgs.last_activity_at,
+		    pp.scene_index,
+		    pp.current_scene_summary, -- <<< ADDED: Select from player_progress
+		    pgs.player_status        -- <<< ДОБАВЛЕНО: Выбираем статус >>>
+		FROM
+		    player_game_states pgs
+		JOIN
+		    player_progress pp ON pgs.player_progress_id = pp.id
+		WHERE
+		    pgs.player_id = $1 AND pgs.published_story_id = $2
+		ORDER BY
+		    pgs.last_activity_at DESC -- Most recent first
+	`
+)
+
 // Compile-time check to ensure pgPlayerGameStateRepository implements the interface
 var _ interfaces.PlayerGameStateRepository = (*pgPlayerGameStateRepository)(nil)
 
@@ -55,14 +133,7 @@ func (r *pgPlayerGameStateRepository) Save(ctx context.Context, state *models.Pl
 		logFields = append(logFields, zap.String("newGameStateID", state.ID.String()))
 		r.logger.Debug("Inserting new player game state", logFields...)
 
-		query := `
-            INSERT INTO player_game_states
-                (id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at)
-            VALUES
-                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-            RETURNING id
-        `
-		err = r.db.QueryRow(ctx, query,
+		err = r.db.QueryRow(ctx, insertPlayerGameStateQuery,
 			state.ID,
 			state.PlayerID,
 			state.PublishedStoryID,
@@ -79,21 +150,7 @@ func (r *pgPlayerGameStateRepository) Save(ctx context.Context, state *models.Pl
 	} else {
 		// --- UPDATE ---
 		r.logger.Debug("Updating existing player game state", logFields...)
-		query := `
-            UPDATE player_game_states SET
-                current_scene_id = $2,
-                player_progress_id = $3,
-                player_status = $4,
-                ending_text = $5,
-                error_details = $6,
-                last_activity_at = $7,
-                completed_at = $8
-                -- player_id and published_story_id should not change
-                -- started_at should not change on update
-            WHERE id = $1
-            RETURNING id
-        `
-		err = r.db.QueryRow(ctx, query,
+		err = r.db.QueryRow(ctx, updatePlayerGameStateQuery,
 			state.ID,               // $1
 			state.CurrentSceneID,   // $2
 			state.PlayerProgressID, // $3
@@ -128,34 +185,17 @@ func (r *pgPlayerGameStateRepository) Save(ctx context.Context, state *models.Pl
 // ПРИМЕЧАНИЕ: Этот метод был переименован/заменен на GetByPlayerAndStory в интерфейсе,
 // но его логика может быть полезна или идентична.
 func (r *pgPlayerGameStateRepository) Get(ctx context.Context, playerID, publishedStoryID uuid.UUID) (*models.PlayerGameState, error) {
-	query := `
-        SELECT id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at
-        FROM player_game_states
-        WHERE player_id = $1 AND published_story_id = $2
-    `
-	state := &models.PlayerGameState{}
 	logFields := []zap.Field{
 		zap.String("playerID", playerID.String()),
 		zap.String("publishedStoryID", publishedStoryID.String()),
 	}
 	r.logger.Debug("Getting player game state (using old Get method name)", logFields...)
 
-	err := r.db.QueryRow(ctx, query, playerID, publishedStoryID).Scan(
-		&state.ID,
-		&state.PlayerID,
-		&state.PublishedStoryID,
-		&state.CurrentSceneID,
-		&state.PlayerProgressID,
-		&state.PlayerStatus,
-		&state.EndingText,
-		&state.ErrorDetails,
-		&state.StartedAt,
-		&state.LastActivityAt,
-		&state.CompletedAt,
-	)
+	row := r.db.QueryRow(ctx, getPlayerGameStateByPlayerAndStoryQuery, playerID, publishedStoryID)
+	state, err := scanPlayerGameState(row)
 
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if err == models.ErrNotFound { // Check specific error from helper
 			r.logger.Warn("Player game state not found", logFields...)
 			return nil, models.ErrNotFound
 		}
@@ -170,34 +210,17 @@ func (r *pgPlayerGameStateRepository) Get(ctx context.Context, playerID, publish
 // Returns models.ErrNotFound if no active game state exists.
 func (r *pgPlayerGameStateRepository) GetByPlayerAndStory(ctx context.Context, playerID, publishedStoryID uuid.UUID) (*models.PlayerGameState, error) {
 	// Используем ту же логику, что и в Get
-	query := `
-        SELECT id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at
-        FROM player_game_states
-        WHERE player_id = $1 AND published_story_id = $2
-    `
-	state := &models.PlayerGameState{}
 	logFields := []zap.Field{
 		zap.String("playerID", playerID.String()),
 		zap.String("publishedStoryID", publishedStoryID.String()),
 	}
 	r.logger.Debug("Getting player game state by player and story", logFields...)
 
-	err := r.db.QueryRow(ctx, query, playerID, publishedStoryID).Scan(
-		&state.ID,
-		&state.PlayerID,
-		&state.PublishedStoryID,
-		&state.CurrentSceneID,
-		&state.PlayerProgressID,
-		&state.PlayerStatus,
-		&state.EndingText,
-		&state.ErrorDetails,
-		&state.StartedAt,
-		&state.LastActivityAt,
-		&state.CompletedAt,
-	)
+	row := r.db.QueryRow(ctx, getPlayerGameStateByPlayerAndStoryQuery, playerID, publishedStoryID)
+	state, err := scanPlayerGameState(row)
 
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if err == models.ErrNotFound { // Check specific error from helper
 			r.logger.Warn("Player game state not found by player and story", logFields...)
 			return nil, models.ErrNotFound
 		}
@@ -210,31 +233,14 @@ func (r *pgPlayerGameStateRepository) GetByPlayerAndStory(ctx context.Context, p
 
 // GetByID retrieves the player's game state by its unique ID.
 func (r *pgPlayerGameStateRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.PlayerGameState, error) {
-	query := `
-        SELECT id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at
-        FROM player_game_states
-        WHERE id = $1
-    `
-	state := &models.PlayerGameState{}
 	logFields := []zap.Field{zap.String("gameStateID", id.String())}
 	r.logger.Debug("Getting player game state by ID", logFields...)
 
-	err := r.db.QueryRow(ctx, query, id).Scan(
-		&state.ID,
-		&state.PlayerID,
-		&state.PublishedStoryID,
-		&state.CurrentSceneID,
-		&state.PlayerProgressID,
-		&state.PlayerStatus,
-		&state.EndingText,
-		&state.ErrorDetails,
-		&state.StartedAt,
-		&state.LastActivityAt,
-		&state.CompletedAt,
-	)
+	row := r.db.QueryRow(ctx, getPlayerGameStateByIDQuery, id)
+	state, err := scanPlayerGameState(row)
 
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if err == models.ErrNotFound { // Check specific error from helper
 			r.logger.Warn("Player game state not found by ID", logFields...)
 			return nil, models.ErrNotFound
 		}
@@ -249,10 +255,9 @@ func (r *pgPlayerGameStateRepository) GetByID(ctx context.Context, id uuid.UUID)
 // Implements the interface method.
 func (r *pgPlayerGameStateRepository) Delete(ctx context.Context, gameStateID uuid.UUID) error {
 	logFields := []zap.Field{zap.String("gameStateID", gameStateID.String())}
-	query := `DELETE FROM player_game_states WHERE id = $1`
 	r.logger.Debug("Deleting player game state by ID", logFields...)
 
-	cmdTag, err := r.db.Exec(ctx, query, gameStateID)
+	cmdTag, err := r.db.Exec(ctx, deletePlayerGameStateByIDQuery, gameStateID)
 	if err != nil {
 		r.logger.Error("Failed to delete player game state by ID", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка удаления состояния игры по ID %s: %w", gameStateID, err)
@@ -269,14 +274,13 @@ func (r *pgPlayerGameStateRepository) Delete(ctx context.Context, gameStateID uu
 
 // Удаляем старый DeleteByPlayerAndStory, так как он больше не в интерфейсе - <<< ОШИБКА, МЕТОД НУЖЕН >>>
 func (r *pgPlayerGameStateRepository) DeleteByPlayerAndStory(ctx context.Context, playerID, publishedStoryID uuid.UUID) error {
-	query := `DELETE FROM player_game_states WHERE player_id = $1 AND published_story_id = $2`
 	logFields := []zap.Field{
 		zap.String("playerID", playerID.String()),
 		zap.String("publishedStoryID", publishedStoryID.String()),
 	}
 	r.logger.Debug("Deleting player game state by player and story", logFields...)
 
-	commandTag, err := r.db.Exec(ctx, query, playerID, publishedStoryID)
+	commandTag, err := r.db.Exec(ctx, deletePlayerGameStateByPlayerAndStoryQuery, playerID, publishedStoryID)
 	if err != nil {
 		r.logger.Error("Failed to delete player game state by player and story", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка удаления состояния игры по игроку и истории: %w", err)
@@ -296,16 +300,10 @@ func (r *pgPlayerGameStateRepository) DeleteByPlayerAndStory(ctx context.Context
 // ListByStoryID retrieves all game states associated with a specific story ID.
 // Primarily for internal use (e.g., deleting related states when a story is deleted).
 func (r *pgPlayerGameStateRepository) ListByStoryID(ctx context.Context, publishedStoryID uuid.UUID) ([]models.PlayerGameState, error) {
-	query := `
-        SELECT id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at
-        FROM player_game_states
-        WHERE published_story_id = $1
-        ORDER BY last_activity_at DESC -- Or started_at?
-    `
 	logFields := []zap.Field{zap.String("publishedStoryID", publishedStoryID.String())}
 	r.logger.Debug("Listing player game states by story ID", logFields...)
 
-	rows, err := r.db.Query(ctx, query, publishedStoryID)
+	rows, err := r.db.Query(ctx, listPlayerGameStateByStoryIDQuery, publishedStoryID)
 	if err != nil {
 		r.logger.Error("Failed to query player game states by story ID", append(logFields, zap.Error(err))...)
 		return nil, fmt.Errorf("ошибка получения списка состояний игры для истории %s: %w", publishedStoryID, err)
@@ -314,25 +312,14 @@ func (r *pgPlayerGameStateRepository) ListByStoryID(ctx context.Context, publish
 
 	states := make([]models.PlayerGameState, 0)
 	for rows.Next() {
-		var state models.PlayerGameState
-		if err := rows.Scan(
-			&state.ID,
-			&state.PlayerID,
-			&state.PublishedStoryID,
-			&state.CurrentSceneID,
-			&state.PlayerProgressID,
-			&state.PlayerStatus,
-			&state.EndingText,
-			&state.ErrorDetails,
-			&state.StartedAt,
-			&state.LastActivityAt,
-			&state.CompletedAt,
-		); err != nil {
-			r.logger.Error("Failed to scan player game state row", append(logFields, zap.Error(err))...)
+		state, err := scanPlayerGameState(rows) // Use helper for scanning rows
+		if err != nil {
+			// scanPlayerGameState doesn't return ErrNotFound for Rows
+			r.logger.Error("Failed to scan player game state row in ListByStoryID", append(logFields, zap.Error(err))...)
 			// Decide: return error or skip row? Returning error for now.
 			return nil, fmt.Errorf("ошибка сканирования строки состояния игры: %w", err)
 		}
-		states = append(states, state)
+		states = append(states, *state) // Append the scanned state (dereferenced)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -343,14 +330,6 @@ func (r *pgPlayerGameStateRepository) ListByStoryID(ctx context.Context, publish
 	r.logger.Debug("Player game states listed successfully", append(logFields, zap.Int("count", len(states)))...)
 	return states, nil
 }
-
-const findAndMarkStalePlayerGeneratingQueryBase = `
-UPDATE player_game_states
-SET player_status = $1, -- PlayerStatusError
-    error_details = $2, -- Сообщение об ошибке
-    last_activity_at = NOW() -- Обновляем время активности
-WHERE (player_status = $3 OR player_status = $4) -- PlayerStatusGeneratingScene или PlayerStatusGameOverPending
-`
 
 // FindAndMarkStaleGeneratingAsError находит состояния игры игрока, которые 'зависли'
 // в статусе генерации сцены или концовки (или все такие, если порог 0), и обновляет их статус на Error.
@@ -403,18 +382,13 @@ func (r *pgPlayerGameStateRepository) CheckGameStateExistsForStories(ctx context
 		return make(map[uuid.UUID]bool), nil // Return empty map if no IDs provided
 	}
 
-	query := `
-        SELECT published_story_id
-        FROM player_game_states
-        WHERE player_id = $1 AND published_story_id = ANY($2::uuid[])
-    `
 	logFields := []zap.Field{
 		zap.String("playerID", playerID.String()),
 		zap.Int("storyIDCount", len(storyIDs)),
 	}
 	r.logger.Debug("Checking game state existence for stories", logFields...)
 
-	rows, err := r.db.Query(ctx, query, playerID, storyIDs)
+	rows, err := r.db.Query(ctx, checkGameStateExistsForStoriesQuery, playerID, storyIDs)
 	if err != nil {
 		r.logger.Error("Failed to query game state existence", append(logFields, zap.Error(err))...)
 		return nil, fmt.Errorf("ошибка проверки существования состояния игры: %w", err)
@@ -450,43 +424,24 @@ func (r *pgPlayerGameStateRepository) CheckGameStateExistsForStories(ctx context
 // ListByPlayerAndStory retrieves all game states for a specific player and story.
 // Returns an empty slice if no game states exist.
 func (r *pgPlayerGameStateRepository) ListByPlayerAndStory(ctx context.Context, playerID, publishedStoryID uuid.UUID) ([]*models.PlayerGameState, error) {
-	query := `
-        SELECT id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at
-        FROM player_game_states
-        WHERE player_id = $1 AND published_story_id = $2
-        ORDER BY last_activity_at DESC -- Сортируем по последней активности (или started_at?)
-    `
-	states := make([]*models.PlayerGameState, 0)
 	logFields := []zap.Field{
 		zap.String("playerID", playerID.String()),
 		zap.String("publishedStoryID", publishedStoryID.String()),
 	}
 	r.logger.Debug("Listing player game states by player and story", logFields...)
 
-	rows, err := r.db.Query(ctx, query, playerID, publishedStoryID)
+	rows, err := r.db.Query(ctx, listPlayerGameStateByPlayerAndStoryQuery, playerID, publishedStoryID)
 	if err != nil {
 		r.logger.Error("Failed to query player game states", append(logFields, zap.Error(err))...)
 		return nil, fmt.Errorf("ошибка получения списка состояний игры: %w", err)
 	}
 	defer rows.Close()
 
+	states := make([]*models.PlayerGameState, 0)
 	for rows.Next() {
-		state := &models.PlayerGameState{}
-		err := rows.Scan(
-			&state.ID,
-			&state.PlayerID,
-			&state.PublishedStoryID,
-			&state.CurrentSceneID,
-			&state.PlayerProgressID,
-			&state.PlayerStatus,
-			&state.EndingText,
-			&state.ErrorDetails,
-			&state.StartedAt,
-			&state.LastActivityAt,
-			&state.CompletedAt,
-		)
+		state, err := scanPlayerGameState(rows) // Use helper
 		if err != nil {
-			r.logger.Error("Failed to scan player game state row", append(logFields, zap.Error(err))...)
+			r.logger.Error("Failed to scan player game state row in ListByPlayerAndStory", append(logFields, zap.Error(err))...)
 			return nil, fmt.Errorf("ошибка сканирования данных состояния игры: %w", err)
 		}
 		states = append(states, state)
@@ -511,24 +466,7 @@ func (r *pgPlayerGameStateRepository) ListSummariesByPlayerAndStory(ctx context.
 	}
 	r.logger.Debug("Listing game state summaries by player and story", logFields...)
 
-	query := `
-		SELECT
-		    pgs.id,              -- Game State ID
-		    pgs.last_activity_at,
-		    pp.scene_index,
-		    pp.current_scene_summary, -- <<< ADDED: Select from player_progress
-		    pgs.player_status        -- <<< ДОБАВЛЕНО: Выбираем статус >>>
-		FROM
-		    player_game_states pgs
-		JOIN
-		    player_progress pp ON pgs.player_progress_id = pp.id
-		WHERE
-		    pgs.player_id = $1 AND pgs.published_story_id = $2
-		ORDER BY
-		    pgs.last_activity_at DESC -- Most recent first
-	`
-
-	rows, err := r.db.Query(ctx, query, userID, publishedStoryID)
+	rows, err := r.db.Query(ctx, listGameStateSummariesByPlayerAndStoryQuery, userID, publishedStoryID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			r.logger.Debug("No game state summaries found for player and story", logFields...)
@@ -571,4 +509,29 @@ func (r *pgPlayerGameStateRepository) ListSummariesByPlayerAndStory(ctx context.
 // --- Helper methods (internal) ---
 
 // scanPlayerGameState scans a single row into a PlayerGameState struct.
-// ... existing code ...
+// It handles potential ErrNoRows from QueryRow and returns models.ErrNotFound.
+// For Rows iteration, ErrNoRows is not expected during Scan.
+func scanPlayerGameState(row pgx.Row) (*models.PlayerGameState, error) {
+	state := &models.PlayerGameState{}
+	err := row.Scan(
+		&state.ID,
+		&state.PlayerID,
+		&state.PublishedStoryID,
+		&state.CurrentSceneID,
+		&state.PlayerProgressID,
+		&state.PlayerStatus,
+		&state.EndingText,
+		&state.ErrorDetails,
+		&state.StartedAt,
+		&state.LastActivityAt,
+		&state.CompletedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, models.ErrNotFound // Specific error for QueryRow case
+		}
+		// Don't log here, let the caller log with more context
+		return nil, fmt.Errorf("ошибка сканирования строки состояния игры: %w", err)
+	}
+	return state, nil
+}

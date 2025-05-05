@@ -11,6 +11,24 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	saveDeviceTokenQuery = `
+		INSERT INTO user_device_tokens (user_id, token, platform, last_used_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (user_id, token)
+		DO UPDATE SET
+			platform = EXCLUDED.platform,
+			last_used_at = NOW();
+	`
+	getDeviceTokensForUserQuery = `
+		SELECT token, platform
+		FROM user_device_tokens
+		WHERE user_id = $1;
+	`
+	deleteDeviceTokenQuery         = `DELETE FROM user_device_tokens WHERE token = $1;`
+	deleteDeviceTokensForUserQuery = `DELETE FROM user_device_tokens WHERE user_id = $1;`
+)
+
 // Убедимся, что pgDeviceTokenRepository реализует интерфейс
 var _ interfaces.UserDeviceTokenRepository = (*pgDeviceTokenRepository)(nil)
 
@@ -29,16 +47,7 @@ func NewDeviceTokenRepository(db interfaces.DBTX, logger *zap.Logger) interfaces
 // SaveDeviceToken сохраняет или обновляет токен устройства для пользователя.
 // Использует INSERT ... ON CONFLICT DO UPDATE для атомарности.
 func (r *pgDeviceTokenRepository) SaveDeviceToken(ctx context.Context, userID uuid.UUID, token, platform string) error {
-	query := `
-		INSERT INTO user_device_tokens (user_id, token, platform, last_used_at)
-		VALUES ($1, $2, $3, NOW())
-		ON CONFLICT (user_id, token)
-		DO UPDATE SET
-			platform = EXCLUDED.platform,
-			last_used_at = NOW();
-	`
-
-	_, err := r.db.Exec(ctx, query, userID, token, platform)
+	_, err := r.db.Exec(ctx, saveDeviceTokenQuery, userID, token, platform)
 	if err != nil {
 		r.logger.Error("Failed to save device token",
 			zap.String("userID", userID.String()),
@@ -58,13 +67,7 @@ func (r *pgDeviceTokenRepository) SaveDeviceToken(ctx context.Context, userID uu
 
 // GetDeviceTokensForUser возвращает все активные токены для указанного пользователя.
 func (r *pgDeviceTokenRepository) GetDeviceTokensForUser(ctx context.Context, userID uuid.UUID) ([]models.DeviceTokenInfo, error) {
-	query := `
-		SELECT token, platform
-		FROM user_device_tokens
-		WHERE user_id = $1;
-	`
-
-	rows, err := r.db.Query(ctx, query, userID)
+	rows, err := r.db.Query(ctx, getDeviceTokensForUserQuery, userID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return []models.DeviceTokenInfo{}, nil // Нет токенов - не ошибка
@@ -98,9 +101,7 @@ func (r *pgDeviceTokenRepository) GetDeviceTokensForUser(ctx context.Context, us
 // DeleteDeviceToken удаляет конкретный токен.
 // Может быть полезно, если FCM/APNS сообщают, что токен невалиден.
 func (r *pgDeviceTokenRepository) DeleteDeviceToken(ctx context.Context, token string) error {
-	query := `DELETE FROM user_device_tokens WHERE token = $1;`
-
-	cmdTag, err := r.db.Exec(ctx, query, token)
+	cmdTag, err := r.db.Exec(ctx, deleteDeviceTokenQuery, token)
 	if err != nil {
 		r.logger.Error("Failed to delete device token", zap.String("token", token), zap.Error(err))
 		return fmt.Errorf("db error deleting device token: %w", err)
@@ -118,9 +119,7 @@ func (r *pgDeviceTokenRepository) DeleteDeviceToken(ctx context.Context, token s
 // DeleteDeviceTokensForUser удаляет все токены для указанного пользователя.
 // Может быть полезно при удалении пользователя или сбросе сессий.
 func (r *pgDeviceTokenRepository) DeleteDeviceTokensForUser(ctx context.Context, userID uuid.UUID) (int64, error) {
-	query := `DELETE FROM user_device_tokens WHERE user_id = $1;`
-
-	cmdTag, err := r.db.Exec(ctx, query, userID)
+	cmdTag, err := r.db.Exec(ctx, deleteDeviceTokensForUserQuery, userID)
 	if err != nil {
 		r.logger.Error("Failed to delete device tokens for user", zap.String("userID", userID.String()), zap.Error(err))
 		return 0, fmt.Errorf("db error deleting user device tokens: %w", err)

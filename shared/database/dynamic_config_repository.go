@@ -12,6 +12,23 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	getDynamicConfigByKeyQuery = `SELECT key, value, created_at, updated_at FROM dynamic_configs WHERE key = $1`
+	getAllDynamicConfigsQuery  = `SELECT key, value, created_at, updated_at FROM dynamic_configs ORDER BY key`
+	createDynamicConfigQuery   = `
+        INSERT INTO dynamic_configs (key, value)
+        VALUES ($1, $2)
+        ON CONFLICT (key) DO NOTHING
+    `
+	upsertDynamicConfigQuery = `
+        INSERT INTO dynamic_configs (key, value)
+        VALUES ($1, $2)
+        ON CONFLICT (key) DO UPDATE SET
+            value = EXCLUDED.value
+            -- updated_at обновляется триггером
+    `
+)
+
 type pgDynamicConfigRepository struct {
 	pool   *pgxpool.Pool
 	logger *zap.Logger
@@ -27,11 +44,10 @@ func NewPgDynamicConfigRepository(pool *pgxpool.Pool, logger *zap.Logger) *pgDyn
 
 // GetByKey возвращает настройку по ее ключу.
 func (r *pgDynamicConfigRepository) GetByKey(ctx context.Context, key string) (*models.DynamicConfig, error) {
-	query := `SELECT key, value, created_at, updated_at FROM dynamic_configs WHERE key = $1`
 	log := r.logger.With(zap.String("query_key", key))
 
 	var config models.DynamicConfig
-	err := pgxscan.Get(ctx, r.pool, &config, query, key)
+	err := pgxscan.Get(ctx, r.pool, &config, getDynamicConfigByKeyQuery, key)
 	if err != nil {
 		if errors.Is(err, pgxV5.ErrNoRows) {
 			log.Warn("Dynamic config not found by key")
@@ -45,11 +61,10 @@ func (r *pgDynamicConfigRepository) GetByKey(ctx context.Context, key string) (*
 
 // GetAll возвращает все динамические настройки.
 func (r *pgDynamicConfigRepository) GetAll(ctx context.Context) ([]*models.DynamicConfig, error) {
-	query := `SELECT key, value, created_at, updated_at FROM dynamic_configs ORDER BY key`
 	log := r.logger
 
 	var configs []*models.DynamicConfig
-	err := pgxscan.Select(ctx, r.pool, &configs, query)
+	err := pgxscan.Select(ctx, r.pool, &configs, getAllDynamicConfigsQuery)
 	if err != nil {
 		// Ошибка pgx.ErrNoRows здесь не страшна, просто вернем пустой срез
 		if errors.Is(err, pgxV5.ErrNoRows) {
@@ -64,14 +79,9 @@ func (r *pgDynamicConfigRepository) GetAll(ctx context.Context) ([]*models.Dynam
 
 // Create создает новую настройку. Если настройка с таким ключом уже существует, возвращает ошибку.
 func (r *pgDynamicConfigRepository) Create(ctx context.Context, config *models.DynamicConfig) error {
-	query := `
-        INSERT INTO dynamic_configs (key, value)
-        VALUES ($1, $2)
-        ON CONFLICT (key) DO NOTHING
-    `
 	log := r.logger.With(zap.String("key", config.Key))
 
-	commandTag, err := r.pool.Exec(ctx, query, config.Key, config.Value)
+	commandTag, err := r.pool.Exec(ctx, createDynamicConfigQuery, config.Key, config.Value)
 	if err != nil {
 		log.Error("Error creating dynamic config", zap.Error(err))
 		return fmt.Errorf("failed to create dynamic config with key %s: %w", config.Key, err)
@@ -90,16 +100,9 @@ func (r *pgDynamicConfigRepository) Create(ctx context.Context, config *models.D
 
 // Upsert создает или обновляет настройку.
 func (r *pgDynamicConfigRepository) Upsert(ctx context.Context, config *models.DynamicConfig) error {
-	query := `
-        INSERT INTO dynamic_configs (key, value)
-        VALUES ($1, $2)
-        ON CONFLICT (key) DO UPDATE SET
-            value = EXCLUDED.value
-            -- updated_at обновляется триггером
-    `
 	log := r.logger.With(zap.String("key", config.Key))
 
-	_, err := r.pool.Exec(ctx, query, config.Key, config.Value)
+	_, err := r.pool.Exec(ctx, upsertDynamicConfigQuery, config.Key, config.Value)
 	if err != nil {
 		log.Error("Error upserting dynamic config", zap.Error(err))
 		return fmt.Errorf("failed to upsert dynamic config with key %s: %w", config.Key, err)
