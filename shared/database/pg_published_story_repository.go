@@ -405,43 +405,42 @@ func (r *pgPublishedStoryRepository) ListLikedByUser(ctx context.Context, userID
 		cursorID = uuid.Nil
 	}
 
-	// SQL Запрос: Выбираем поля для PublishedStorySummaryWithProgress
+	// <<< ИЗМЕНЕНО: Используем CTE для получения уникальных лайкнутых историй >>>
 	query := `
+        WITH LikedStories AS (
+            SELECT
+                published_story_id,
+                MAX(created_at) AS like_created_at -- Используем MAX для стабильности, если вдруг дубли в likes
+            FROM story_likes
+            WHERE user_id = $1
+            GROUP BY published_story_id
+        )
         SELECT
-            ps.id,                  -- PublishedStorySummary.ID
-            ps.title,               -- PublishedStorySummary.Title
-            ps.description,         -- PublishedStorySummary.ShortDescription (use NullString)
-            ps.user_id,             -- PublishedStorySummary.AuthorID
-            COALESCE(u.display_name, '[unknown]') AS author_name, -- PublishedStorySummary.AuthorName
-            ps.created_at,          -- PublishedStorySummary.PublishedAt
-            ps.is_adult_content,    -- PublishedStorySummary.IsAdultContent
-            ps.likes_count,         -- PublishedStorySummary.LikesCount
-            ps.status,              -- PublishedStorySummary.Status
-            ir.image_url,           -- PublishedStorySummary.CoverImageURL (use NullString)
-            TRUE AS is_liked,       -- PublishedStorySummary.IsLiked (always true here)
-            (pp.user_id IS NOT NULL) AS has_player_progress, -- PublishedStorySummaryWithProgress.HasPlayerProgress
-            ps.is_public,           -- PublishedStorySummaryWithProgress.IsPublic
-            l.created_at AS like_created_at -- For cursor
+            ps.id, ps.title, ps.description, ps.user_id, COALESCE(u.display_name, '[unknown]') AS author_name,
+            ps.created_at, ps.is_adult_content, ps.likes_count, ps.status, ir.image_url,
+            TRUE AS is_liked,
+            EXISTS (SELECT 1 FROM player_progress pp WHERE pp.published_story_id = ps.id AND pp.user_id = $1) AS has_player_progress,
+            ps.is_public,
+            ls.like_created_at -- Время лайка из CTE
         FROM published_stories ps
-        JOIN story_likes l ON ps.id = l.published_story_id
+        JOIN LikedStories ls ON ps.id = ls.published_story_id -- JOIN с CTE
         LEFT JOIN users u ON ps.user_id = u.id
-        LEFT JOIN player_progress pp ON ps.id = pp.published_story_id AND pp.user_id = $1 -- Progress check for the requesting user
         LEFT JOIN image_references ir ON ir.reference = 'history_preview_' || ps.id::text
-        WHERE l.user_id = $1 -- Filter by the user who liked the stories
+        WHERE 1=1
     `
 
 	args := []interface{}{userID}
 	paramIndex := 2
 
 	if !cursorTime.IsZero() && cursorID != uuid.Nil {
-		// Фильтруем по времени лайка и ID истории
-		query += fmt.Sprintf("AND (l.created_at, ps.id) < ($%d, $%d) ", paramIndex, paramIndex+1)
+		// Фильтруем по времени лайка (из CTE) и ID истории
+		query += fmt.Sprintf("AND (ls.like_created_at, ps.id) < ($%d, $%d) ", paramIndex, paramIndex+1)
 		args = append(args, cursorTime, cursorID)
 		paramIndex += 2
 	}
 
-	// Упорядочиваем по времени лайка (сначала новые), затем по ID истории
-	query += fmt.Sprintf("ORDER BY l.created_at DESC, ps.id DESC LIMIT $%d", paramIndex)
+	// Упорядочиваем по времени лайка (из CTE), затем по ID истории
+	query += fmt.Sprintf("ORDER BY ls.like_created_at DESC, ps.id DESC LIMIT $%d", paramIndex)
 	args = append(args, fetchLimit)
 
 	logFields := []zap.Field{
@@ -900,14 +899,6 @@ func (r *pgPublishedStoryRepository) CountByStatus(ctx context.Context, status m
 	log.Debug("Successfully counted published stories by status", zap.Int("count", count))
 	return count, nil
 }
-
-const findAndMarkStaleGeneratingQueryBase = `
-UPDATE published_stories
-SET status = $1, -- StatusError
-    error_details = $2, -- Сообщение об ошибке
-    updated_at = NOW()
-WHERE status = ANY($3::story_status[]) -- Массив зависших статусов
-`
 
 // FindAndMarkStaleGeneratingAsError находит "зависшие" истории в процессе генерации и устанавливает им статус Error.
 func (r *pgPublishedStoryRepository) FindAndMarkStaleGeneratingAsError(ctx context.Context, staleThreshold time.Duration) (int64, error) {
