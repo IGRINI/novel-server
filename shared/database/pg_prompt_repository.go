@@ -15,13 +15,6 @@ import (
 	"novel-server/shared/models"
 )
 
-var (
-	ErrPromptNotFound         = errors.New("prompt not found")
-	ErrPromptKeyAlreadyExists = errors.New("prompt key already exists")
-	ErrPromptAlreadyExists    = errors.New("prompt with this key and language already exists")
-	ErrNotFound               = errors.New("record not found")
-)
-
 const promptFields = `id, key, language, content, created_at, updated_at`
 
 type PgPromptRepository struct {
@@ -42,7 +35,7 @@ func (r *PgPromptRepository) Create(ctx context.Context, prompt *models.Prompt) 
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
-			return ErrPromptAlreadyExists
+			return models.ErrAlreadyExists
 		}
 		log.Error().Err(err).Str("key", prompt.Key).Str("language", prompt.Language).Msg("Failed to create prompt")
 		return fmt.Errorf("failed to create prompt: %w", err)
@@ -59,7 +52,7 @@ func (r *PgPromptRepository) GetByKeyAndLanguage(ctx context.Context, key, langu
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrPromptNotFound
+			return nil, models.ErrNotFound
 		}
 		log.Error().Err(err).Str("key", key).Str("language", language).Msg("Failed to get prompt by key and language")
 		return nil, fmt.Errorf("failed to get prompt by key and language: %w", err)
@@ -73,7 +66,7 @@ func (r *PgPromptRepository) Update(ctx context.Context, prompt *models.Prompt) 
 	err := r.db.QueryRow(ctx, query, prompt.Content, prompt.Key, prompt.Language).Scan(&updatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrPromptNotFound // If no rows were updated, it means the prompt wasn't found
+			return models.ErrNotFound // If no rows were updated, it means the prompt wasn't found
 		}
 		log.Error().Err(err).Str("key", prompt.Key).Str("language", prompt.Language).Msg("Failed to update prompt")
 		return fmt.Errorf("failed to update prompt: %w", err)
@@ -91,7 +84,7 @@ func (r *PgPromptRepository) DeleteByKeyAndLanguage(ctx context.Context, key, la
 		return fmt.Errorf("failed to delete prompt: %w", err)
 	}
 	if commandTag.RowsAffected() == 0 {
-		return ErrPromptNotFound // Nothing deleted means it wasn't found
+		return models.ErrNotFound // Nothing deleted means it wasn't found
 	}
 	log.Info().Str("key", key).Str("language", language).Msg("Prompt deleted")
 	return nil
@@ -264,7 +257,7 @@ func (r *PgPromptRepository) CreateBatch(ctx context.Context, prompts []*models.
 					// Возможно, стоит вернуть ошибку, специфичную для CreateBatch?
 					// Пока используем общую ErrPromptKeyAlreadyExists, но это относится ко всему ключу,
 					// а не к конкретной языковой паре, что может быть не совсем точно.
-					firstError = ErrPromptKeyAlreadyExists
+					firstError = models.ErrAlreadyExists
 				}
 				log.Warn().Err(err).Str("key", prompts[i].Key).Str("language", prompts[i].Language).Msg("Prompt already exists during batch create")
 			} else if firstError == nil { // Запоминаем только первую ошибку другого типа
@@ -307,7 +300,7 @@ func (r *PgPromptRepository) GetByID(ctx context.Context, id int64) (*models.Pro
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Используем общую ошибку ErrNotFound, определенную в этом пакете
-			return nil, ErrNotFound
+			return nil, models.ErrNotFound
 		}
 		log.Error().Err(err).Int64("id", id).Msg("Failed to get prompt by ID")
 		return nil, fmt.Errorf("failed to get prompt by ID %d: %w", id, err)
@@ -325,7 +318,7 @@ func (r *PgPromptRepository) DeleteByID(ctx context.Context, id int64) error {
 	}
 	if commandTag.RowsAffected() == 0 {
 		// Если ничего не удалено, значит запись не найдена
-		return ErrNotFound
+		return models.ErrNotFound
 	}
 	log.Info().Int64("id", id).Msg("Prompt deleted by ID")
 	return nil

@@ -2,17 +2,8 @@ package interfaces
 
 import (
 	"context"
-	"errors"
 
 	"github.com/google/uuid"
-)
-
-// Ошибки, специфичные для репозитория лайков
-var (
-	ErrLikeAlreadyExists = errors.New("like already exists")
-	ErrLikeNotFound      = errors.New("like not found")
-	// ErrStoryNotFound можно использовать из другого места или определить здесь, если нужно
-	// ErrStoryNotFound = errors.New("published story not found")
 )
 
 // LikeRepository определяет методы для работы с лайками к опубликованным историям.

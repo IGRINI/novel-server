@@ -13,6 +13,7 @@ var (
 	ErrPlayerGameStateNotFound = errors.New("player game state not found")
 	ErrTokenNotFound           = errors.New("token not found in storage")
 	ErrChoiceNotFound          = errors.New("choice or scene not found")
+	ErrDraftNotFound           = errors.New("draft not found")
 
 	// User & Authentication Errors
 	ErrUserNotFound       = errors.New("user not found")
@@ -56,8 +57,11 @@ var (
 	ErrSaveSlotExists       = errors.New("save slot already exists for this story")
 
 	// Like Errors
-	ErrAlreadyLiked = errors.New("story already liked by this user")
-	ErrNotLikedYet  = errors.New("story not liked by this user yet")
+	ErrAlreadyLiked      = errors.New("story already liked by this user")
+	ErrNotLikedYet       = errors.New("story not liked by this user yet")
+	ErrAlreadyExists     = errors.New("record already exists")
+	ErrLikeAlreadyExists = errors.New("like already exists")
+	ErrLikeNotFound      = errors.New("like not found")
 
 	// General Request/Server Errors
 	ErrInternalServer = errors.New("internal server error")
