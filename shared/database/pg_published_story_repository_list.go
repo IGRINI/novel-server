@@ -174,11 +174,11 @@ func (r *pgPublishedStoryRepository) ListByUserID(ctx context.Context, userID uu
 // ListLikedByUser возвращает список историй, лайкнутых пользователем.
 // !!! Проблема с типами пагинации/сортировки, временно используем placeholders !!!
 // TODO: Implement proper cursor pagination
-func (r *pgPublishedStoryRepository) ListLikedByUser(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]models.PublishedStorySummaryWithProgress, string, error) {
+func (r *pgPublishedStoryRepository) ListLikedByUser(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]models.PublishedStorySummary, string, error) {
 	logFields := []zap.Field{zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit)}
 	r.logger.Debug("Listing liked stories by user ID", logFields...)
 
-	summaries := make([]models.PublishedStorySummaryWithProgress, 0) // <<< Change type
+	summaries := make([]models.PublishedStorySummary, 0) // <<< Change type
 	var args []interface{}
 	args = append(args, userID) // $1 = userID
 
@@ -273,14 +273,14 @@ func (r *pgPublishedStoryRepository) ListLikedByUser(ctx context.Context, userID
 // ListPublicSummaries возвращает список сводок общедоступных опубликованных историй.
 // !!! Проблема с типами пагинации/сортировки, временно используем placeholders !!!
 // TODO: Implement more robust cursor logic based on sortBy
-func (r *pgPublishedStoryRepository) ListPublicSummaries(ctx context.Context, userID *uuid.UUID, cursor string, limit int, sortBy string, filterAdult bool) ([]models.PublishedStorySummaryWithProgress, string, error) {
-	logFields := []zap.Field{zap.String("cursor", cursor), zap.Int("limit", limit), zap.String("sortBy", sortBy), zap.Bool("filterAdult", filterAdult)}
+func (r *pgPublishedStoryRepository) ListPublicSummaries(ctx context.Context, userID *uuid.UUID, cursor string, limit int, sortBy string) ([]models.PublishedStorySummary, string, error) {
+	logFields := []zap.Field{zap.String("cursor", cursor), zap.Int("limit", limit), zap.String("sortBy", sortBy)}
 	if userID != nil {
 		logFields = append(logFields, zap.String("userID", userID.String()))
 	}
-	r.logger.Debug("Listing public story summaries", logFields...)
+	r.logger.Debug("Listing public story summaries (is_public=true, is_adult_content=false)", logFields...)
 
-	summaries := make([]models.PublishedStorySummaryWithProgress, 0) // <<< Change type
+	summaries := make([]models.PublishedStorySummary, 0)
 	var args []interface{}
 	args = append(args, userID) // $1 = userID (can be nil)
 	paramIndex := 2
@@ -289,18 +289,18 @@ func (r *pgPublishedStoryRepository) ListPublicSummaries(ctx context.Context, us
 	queryBuilder.WriteString(listPublicSummariesQueryBase)
 
 	// --- Filters for main query ---
-	filterConditions := []string{}
-	if filterAdult {
-		filterConditions = append(filterConditions, fmt.Sprintf("ps.is_adult_content = $%d", paramIndex))
-		args = append(args, false)
-		paramIndex++
-		logFields = append(logFields, zap.Bool("is_adult_content_filtered", true))
+	// Mandatory filters: public and not adult content
+	filterConditions := []string{
+		fmt.Sprintf("ps.is_public = $%d", paramIndex),
+		fmt.Sprintf("ps.is_adult_content = $%d", paramIndex+1),
 	}
-	if len(filterConditions) > 0 {
-		// Append WHERE conditions (after the initial WHERE ps.status = 'published' in base query)
-		queryBuilder.WriteString(" AND ")
-		queryBuilder.WriteString(strings.Join(filterConditions, " AND "))
-	}
+	args = append(args, true, false) // Add true for is_public, false for is_adult_content
+	paramIndex += 2
+	logFields = append(logFields, zap.Bool("is_public_filtered", true), zap.Bool("is_adult_content_filtered", true))
+
+	// Append WHERE conditions (after the initial WHERE ps.status = 'ready' in base query)
+	queryBuilder.WriteString(" AND ")
+	queryBuilder.WriteString(strings.Join(filterConditions, " AND "))
 
 	// --- Count Total (needs to include the SAME filters) ---
 	countQueryBuilder := strings.Builder{}
@@ -312,7 +312,13 @@ func (r *pgPublishedStoryRepository) ListPublicSummaries(ctx context.Context, us
 	countArgs = append(countArgs, models.StatusReady) // <<< CORRECTED: Use StatusReady
 	countParamIndex++
 
-	// Add count filters
+	// Add count filters - Mandatory: public and not adult
+	countQueryBuilder.WriteString(fmt.Sprintf(" AND ps.is_public = $%d", countParamIndex))
+	countArgs = append(countArgs, true)
+	countParamIndex++
+	countQueryBuilder.WriteString(fmt.Sprintf(" AND ps.is_adult_content = $%d", countParamIndex))
+	countArgs = append(countArgs, false)
+	countParamIndex++
 
 	var totalItems int64
 	err := r.db.QueryRow(ctx, countQueryBuilder.String(), countArgs...).Scan(&totalItems)
@@ -417,20 +423,20 @@ func (r *pgPublishedStoryRepository) ListPublicSummaries(ctx context.Context, us
 	}
 
 	r.logger.Debug("Successfully listed public story summaries", append(logFields, zap.Int("count", len(summaries)), zap.Int64("total", totalItems), zap.Bool("hasNext", nextCursor != ""))...)
-	return summaries, nextCursor, nil // <<< Return correct types
+	return summaries, nextCursor, nil
 }
 
 // SearchPublic выполняет полнотекстовый поиск по общедоступным историям.
 // !!! Проблема с типами пагинации/сортировки, временно используем placeholders !!!
 // !!! Проблема с типом PublishedStorySearchResult, возвращаем []*models.PublishedStorySummaryWithProgress !!!
-func (r *pgPublishedStoryRepository) SearchPublic(ctx context.Context, query string, userID *uuid.UUID /*, pagination *models.PaginationParams, filters *models.StoryFilters */) ([]*models.PublishedStorySummaryWithProgress /* *utils.PaginationInfo */, interface{}, error) {
+func (r *pgPublishedStoryRepository) SearchPublic(ctx context.Context, query string, userID *uuid.UUID /*, pagination *models.PaginationParams, filters *models.StoryFilters */) ([]*models.PublishedStorySummary /* *utils.PaginationInfo */, interface{}, error) {
 	logFields := []zap.Field{zap.String("searchQuery", query)}
 	if userID != nil {
 		logFields = append(logFields, zap.String("userID", userID.String()))
 	}
 	r.logger.Debug("Searching public stories", logFields...)
 
-	results := make([]*models.PublishedStorySummaryWithProgress, 0) // Change return type for now
+	results := make([]*models.PublishedStorySummary, 0) // Change return type for now
 	var args []interface{}
 
 	if userID != nil {
@@ -504,7 +510,7 @@ func (r *pgPublishedStoryRepository) SearchPublic(ctx context.Context, query str
 
 	// Scan Results
 	for rows.Next() {
-		var tempSummary models.PublishedStorySummaryWithProgress
+		var tempSummary models.PublishedStorySummary
 		var publishedAt sql.NullTime
 		var playerStatus sql.NullString
 		var gameStateID sql.NullString

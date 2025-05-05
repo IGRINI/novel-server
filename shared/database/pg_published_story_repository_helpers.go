@@ -80,8 +80,8 @@ func scanPublishedStory(row pgx.Row) (*models.PublishedStory, error) {
 // Обрабатывает pgx.ErrNoRows для QueryRow, возвращая models.ErrNotFound.
 // Порядок полей ДОЛЖЕН СООТВЕТСТВОВАТЬ запросу, использующему этот хелпер.
 // !! ВАЖНО: Этот хелпер НЕ сканирует поле 'rank' для поисковых запросов. !!
-func scanPublishedStorySummaryWithProgress(row pgx.Row) (*models.PublishedStorySummaryWithProgress, error) {
-	var summary models.PublishedStorySummaryWithProgress
+func scanPublishedStorySummaryWithProgress(row pgx.Row) (*models.PublishedStorySummary, error) {
+	var summary models.PublishedStorySummary
 	var playerGameStatus sql.NullString // Handle nullable player_game_status
 
 	// Assuming order based on updated publishedStorySummaryWithProgressFields:
@@ -96,12 +96,12 @@ func scanPublishedStorySummaryWithProgress(row pgx.Row) (*models.PublishedStoryS
 		&summary.AuthorName,        // -> Maps to u.display_name
 		&summary.PublishedAt,       // -> Maps to ps.created_at
 		&summary.IsAdultContent,    // -> Maps to ps.is_adult_content
-		&summary.LikesCount,        // -> Maps to ps.likes_count
-		&summary.Status,            // -> Maps to ps.status
-		&summary.IsPublic,          // -> Maps to ps.is_public
-		&summary.IsLiked,           // -> Maps to (sl.user_id IS NOT NULL)
-		&summary.HasPlayerProgress, // -> Maps to (pgs.player_progress_id IS NOT NULL)
-		&playerGameStatus,          // -> Maps to pgs.player_status
+		&summary.LikesCount,        // 8 -> Maps to ps.likes_count
+		&summary.IsLiked,           // 9 -> Maps to (sl.user_id IS NOT NULL)
+		&summary.Status,            // 10 -> Maps to ps.status
+		&summary.HasPlayerProgress, // 11 -> Maps to (pgs.player_progress_id IS NOT NULL)
+		&summary.IsPublic,          // 12 -> Maps to ps.is_public
+		&playerGameStatus,          // 13 -> Maps to pgs.player_status
 	)
 
 	if err != nil {

@@ -67,7 +67,7 @@ type PublishedStoryRepository interface {
 	// IsStoryLikedByUser(ctx context.Context, storyID uuid.UUID, userID uuid.UUID) (bool, error)
 
 	// ListLikedByUser retrieves a paginated list of stories liked by a specific user using cursor pagination.
-	ListLikedByUser(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]models.PublishedStorySummaryWithProgress, string, error)
+	ListLikedByUser(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]models.PublishedStorySummary, string, error)
 
 	// Delete удаляет опубликованную историю и все связанные с ней данные (сцены, прогресс, лайки).
 	Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
@@ -76,7 +76,7 @@ type PublishedStoryRepository interface {
 	CheckLike(ctx context.Context, userID, storyID uuid.UUID) (bool, error)
 
 	// FindWithProgressByUserID retrieves a paginated list of stories with progress for a specific user using cursor pagination.
-	FindWithProgressByUserID(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]models.PublishedStorySummaryWithProgress, string, error)
+	FindWithProgressByUserID(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]models.PublishedStorySummary, string, error)
 
 	// CountByStatus подсчитывает количество историй по статусу.
 	CountByStatus(ctx context.Context, status models.StoryStatus) (int, error)
@@ -86,14 +86,19 @@ type PublishedStoryRepository interface {
 
 	// ListUserSummariesWithProgress retrieves a paginated list of stories created by a specific user,
 	// including a flag indicating if the current user has progress in that story.
-	ListUserSummariesWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummaryWithProgress, string, error)
+	ListUserSummariesWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error)
 
 	// ListUserSummariesOnlyWithProgress retrieves a paginated list of stories where the user has progress,
 	// sorted by last activity time.
-	ListUserSummariesOnlyWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummaryWithProgress, string, error)
+	ListUserSummariesOnlyWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error)
 
 	// ListPublicSummaries retrieves a paginated list of public stories.
-	ListPublicSummaries(ctx context.Context, userID *uuid.UUID, cursor string, limit int, sortBy string, filterAdult bool) ([]models.PublishedStorySummaryWithProgress, string, error)
+	// Requires the user ID to determine like/progress status for that user.
+	// If userID is nil, like/progress status will not be checked.
+	ListPublicSummaries(ctx context.Context, userID *uuid.UUID, cursor string, limit int, sortBy string) ([]models.PublishedStorySummary, string, error)
+
+	// SearchPublic performs a full-text search on public stories.
+	// Requires the user ID to determine like/progress status for that user.
 
 	// CheckInitialGenerationStatus проверяет, готовы ли Setup и Первая сцена.
 	CheckInitialGenerationStatus(ctx context.Context, id uuid.UUID) (bool, error)
@@ -116,5 +121,5 @@ type PublishedStoryRepository interface {
 	UpdateStatusFlagsAndDetails(ctx context.Context, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, errorDetails *string) error
 
 	// GetSummaryWithDetails получает детали истории, имя автора, флаг лайка и прогресса для указанного пользователя.
-	GetSummaryWithDetails(ctx context.Context, storyID, userID uuid.UUID) (*models.PublishedStorySummaryWithProgress, error)
+	GetSummaryWithDetails(ctx context.Context, storyID, userID uuid.UUID) (*models.PublishedStorySummary, error)
 }

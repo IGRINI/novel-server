@@ -55,7 +55,7 @@ const (
 
 // FindWithProgressByUserID возвращает список историй, в которых у пользователя есть прогресс.
 // !!! Проблема с типами пагинации/сортировки, временно используем placeholders !!!
-func (r *pgPublishedStoryRepository) FindWithProgressByUserID(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]models.PublishedStorySummaryWithProgress, string, error) {
+func (r *pgPublishedStoryRepository) FindWithProgressByUserID(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]models.PublishedStorySummary, string, error) {
 	logFields := []zap.Field{zap.String("userID", userID.String()), zap.Int("limit", limit), zap.String("cursor", cursor)}
 	r.logger.Debug("Finding stories with progress", logFields...)
 
@@ -97,7 +97,7 @@ func (r *pgPublishedStoryRepository) FindWithProgressByUserID(ctx context.Contex
 	}
 	defer rows.Close()
 
-	stories := make([]models.PublishedStorySummaryWithProgress, 0, limit)
+	stories := make([]models.PublishedStorySummary, 0, limit)
 	var lastActivityTime time.Time
 	var lastStoryID uuid.UUID
 
@@ -136,7 +136,7 @@ func (r *pgPublishedStoryRepository) FindWithProgressByUserID(ctx context.Contex
 
 // ListUserSummariesWithProgress возвращает список историй пользователя, включая информацию о прогрессе.
 // !!! Проблема с типами пагинации/сортировки, временно используем placeholders !!!
-func (r *pgPublishedStoryRepository) ListUserSummariesWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummaryWithProgress, string, error) {
+func (r *pgPublishedStoryRepository) ListUserSummariesWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error) {
 	logFields := []zap.Field{zap.String("userID", userID.String()), zap.Int("limit", limit), zap.String("cursor", cursor), zap.Bool("filterAdult", filterAdult)}
 	r.logger.Debug("Listing user summaries with progress", logFields...)
 
@@ -185,7 +185,7 @@ func (r *pgPublishedStoryRepository) ListUserSummariesWithProgress(ctx context.C
 	}
 	defer rows.Close()
 
-	summaries := make([]models.PublishedStorySummaryWithProgress, 0, limit)
+	summaries := make([]models.PublishedStorySummary, 0, limit)
 	var lastCreatedAt time.Time
 	var lastStoryID uuid.UUID
 
@@ -224,7 +224,7 @@ func (r *pgPublishedStoryRepository) ListUserSummariesWithProgress(ctx context.C
 
 // ListUserSummariesOnlyWithProgress возвращает список историй, в которых у пользователя есть прогресс.
 // !!! Проблема с типами пагинации/сортировки, временно используем placeholders !!!
-func (r *pgPublishedStoryRepository) ListUserSummariesOnlyWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummaryWithProgress, string, error) {
+func (r *pgPublishedStoryRepository) ListUserSummariesOnlyWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error) {
 	logFields := []zap.Field{zap.String("userID", userID.String()), zap.Int("limit", limit), zap.String("cursor", cursor), zap.Bool("filterAdult", filterAdult)}
 	r.logger.Debug("Listing user summaries ONLY with progress", logFields...)
 
@@ -274,7 +274,7 @@ func (r *pgPublishedStoryRepository) ListUserSummariesOnlyWithProgress(ctx conte
 	}
 	defer rows.Close()
 
-	summaries := make([]models.PublishedStorySummaryWithProgress, 0, limit)
+	summaries := make([]models.PublishedStorySummary, 0, limit)
 	var lastActivityTime time.Time // Variable to store the last activity time for cursor
 	var lastStoryID uuid.UUID
 
@@ -308,7 +308,7 @@ func (r *pgPublishedStoryRepository) ListUserSummariesOnlyWithProgress(ctx conte
 }
 
 // GetSummaryWithDetails получает детали истории для конкретного пользователя.
-func (r *pgPublishedStoryRepository) GetSummaryWithDetails(ctx context.Context, storyID, userID uuid.UUID) (*models.PublishedStorySummaryWithProgress, error) {
+func (r *pgPublishedStoryRepository) GetSummaryWithDetails(ctx context.Context, storyID, userID uuid.UUID) (*models.PublishedStorySummary, error) {
 	logFields := []zap.Field{zap.String("storyID", storyID.String()), zap.String("userID", userID.String())}
 	r.logger.Debug("Getting summary with details", logFields...)
 
@@ -330,8 +330,8 @@ func (r *pgPublishedStoryRepository) GetSummaryWithDetails(ctx context.Context, 
 
 // --- Helper for scanning summary + activity time ---
 // scanPublishedStorySummaryWithProgressAndActivity scans a summary and the last activity time.
-func scanPublishedStorySummaryWithProgressAndActivity(row pgx.Row, lastActivityAt *time.Time) (*models.PublishedStorySummaryWithProgress, error) {
-	var summary models.PublishedStorySummaryWithProgress
+func scanPublishedStorySummaryWithProgressAndActivity(row pgx.Row, lastActivityAt *time.Time) (*models.PublishedStorySummary, error) {
+	var summary models.PublishedStorySummary
 	var playerGameStatus sql.NullString
 	var publishedAt time.Time // published_at from stories table (mapped to summary.PublishedAt)
 

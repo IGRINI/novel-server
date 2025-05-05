@@ -112,24 +112,24 @@ func (_m *PublishedStoryRepository) Delete(ctx context.Context, id uuid.UUID, us
 }
 
 // FindWithProgressByUserID provides a mock function with given fields: ctx, userID, limit, cursor
-func (_m *PublishedStoryRepository) FindWithProgressByUserID(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]models.PublishedStorySummaryWithProgress, string, error) {
+func (_m *PublishedStoryRepository) FindWithProgressByUserID(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]models.PublishedStorySummary, string, error) {
 	ret := _m.Called(ctx, userID, limit, cursor)
 
 	if len(ret) == 0 {
 		panic("no return value specified for FindWithProgressByUserID")
 	}
 
-	var r0 []models.PublishedStorySummaryWithProgress
+	var r0 []models.PublishedStorySummary
 	var r1 string
 	var r2 error
-	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, int, string) ([]models.PublishedStorySummaryWithProgress, string, error)); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, int, string) ([]models.PublishedStorySummary, string, error)); ok {
 		return rf(ctx, userID, limit, cursor)
 	}
-	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, int, string) []models.PublishedStorySummaryWithProgress); ok {
+	if rf, ok := ret.Get(0).(func(context.Context, uuid.UUID, int, string) []models.PublishedStorySummary); ok {
 		r0 = rf(ctx, userID, limit, cursor)
 	} else {
 		if ret.Get(0) != nil {
-			r0 = ret.Get(0).([]models.PublishedStorySummaryWithProgress)
+			r0 = ret.Get(0).([]models.PublishedStorySummary)
 		}
 	}
 
