@@ -45,6 +45,12 @@ type PlayerProgressRepository interface {
 	// it does nothing but returns the ID of the existing or newly inserted record.
 	UpsertInitial(ctx context.Context, querier DBTX, progress *models.PlayerProgress) (uuid.UUID, error)
 
+	// UpsertByHash attempts to insert a player progress record based on its state hash.
+	// If a record with the same (published_story_id, current_state_hash) already exists,
+	// it does nothing but returns the ID of the existing or newly inserted record.
+	// Note: UserID might be ignored or required depending on implementation needs.
+	UpsertByHash(ctx context.Context, querier DBTX, progress *models.PlayerProgress) (uuid.UUID, error)
+
 	// Update обновляет существующий прогресс игрока.
 	Update(ctx context.Context, querier DBTX, progress *models.PlayerProgress) error
 }

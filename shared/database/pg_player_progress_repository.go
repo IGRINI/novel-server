@@ -568,3 +568,76 @@ func (r *pgPlayerProgressRepository) Update(ctx context.Context, querier interfa
 	log.Info("Player progress updated successfully")
 	return nil
 }
+
+// UpsertByHash attempts to insert a player progress record based on its state hash.
+// Returns the ID of the existing or newly inserted record.
+func (r *pgPlayerProgressRepository) UpsertByHash(ctx context.Context, querier interfaces.DBTX, progress *models.PlayerProgress) (uuid.UUID, error) {
+	// Note: This query assumes a unique constraint exists on (published_story_id, current_state_hash)
+	const query = `
+        INSERT INTO player_progress (
+            id, user_id, published_story_id, current_state_hash, core_stats,
+            story_variables, global_flags, scene_index, encountered_characters,
+            last_story_summary, last_future_direction, last_var_impact_summary, current_scene_summary,
+            created_at, updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        ON CONFLICT (published_story_id, current_state_hash)
+        DO UPDATE SET
+            -- Update updated_at just to ensure RETURNING id works correctly and potentially track reuse
+            updated_at = NOW()
+        RETURNING id;
+    `
+	log := r.logger.With(
+		zap.String("method", "UpsertByHash"),
+		zap.Stringer("userID", progress.UserID), // Log UserID even if not in constraint
+		zap.Stringer("storyID", progress.PublishedStoryID),
+		zap.String("hash", progress.CurrentStateHash),
+	)
+
+	// Ensure ID is set for the potential insert
+	if progress.ID == uuid.Nil {
+		progress.ID = uuid.New()
+	}
+	now := time.Now().UTC()
+	progress.CreatedAt = now // Set in case it's an insert
+	progress.UpdatedAt = now // Set in case it's an insert
+
+	// Marshal maps to JSON
+	coreStatsJSON, errM1 := utils.MarshalMap(progress.CoreStats)
+	storyVarsJSON, errM2 := utils.MarshalMap(progress.StoryVariables)
+	if errM1 != nil || errM2 != nil {
+		log.Error("Failed to marshal progress data for UpsertByHash", zap.Error(errM1), zap.Error(errM2))
+		return uuid.Nil, fmt.Errorf("failed to marshal progress data: %v, %v", errM1, errM2)
+	}
+
+	// Handle empty global flags and encountered characters
+	var globalFlagsValue interface{}
+	if len(progress.GlobalFlags) > 0 {
+		globalFlagsValue = pq.Array(progress.GlobalFlags)
+	} else {
+		globalFlagsValue = "{}" // Use PostgreSQL empty array literal
+	}
+	var encounteredCharsValue interface{}
+	if len(progress.EncounteredCharacters) > 0 {
+		encounteredCharsValue = pq.Array(progress.EncounteredCharacters)
+	} else {
+		encounteredCharsValue = "{}" // Use PostgreSQL empty array literal
+	}
+
+	var returnedID uuid.UUID
+	err := querier.QueryRow(ctx, query,
+		progress.ID, progress.UserID, progress.PublishedStoryID, progress.CurrentStateHash,
+		coreStatsJSON, storyVarsJSON, globalFlagsValue, progress.SceneIndex, encounteredCharsValue,
+		progress.LastStorySummary, progress.LastFutureDirection, progress.LastVarImpactSummary, progress.CurrentSceneSummary,
+		progress.CreatedAt, progress.UpdatedAt,
+	).Scan(&returnedID)
+
+	if err != nil {
+		log.Error("Failed to execute UpsertByHash query", zap.Error(err))
+		// TODO: Check for specific constraint errors if needed
+		return uuid.Nil, fmt.Errorf("database error during UpsertByHash: %w", err)
+	}
+
+	log.Info("Progress node upserted/retrieved successfully by hash", zap.Stringer("progressID", returnedID))
+	return returnedID, nil
+}

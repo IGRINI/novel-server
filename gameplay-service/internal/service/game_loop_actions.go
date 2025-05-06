@@ -402,40 +402,32 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	logFields = append(logFields, zap.String("nextStateHash", nextStateHash))
 	s.logger.Debug("Calculated next state hash", logFields...)
 
-	var nextNodeProgress *models.PlayerProgress
 	var nextNodeProgressID uuid.UUID
 
-	existingNodeByHash, errFindNode := playerProgressRepoTx.GetByStoryIDAndHash(ctx, tx, gameState.PublishedStoryID, nextStateHash)
-	if errFindNode == nil {
-		nextNodeProgress = existingNodeByHash
-		nextNodeProgressID = existingNodeByHash.ID
-		s.logger.Info("Found existing PlayerProgress node matching the new state hash", append(logFields, zap.String("progressID", nextNodeProgressID.String()))...)
-	} else if errors.Is(errFindNode, models.ErrNotFound) || errors.Is(errFindNode, pgx.ErrNoRows) {
-		s.logger.Info("Creating new PlayerProgress node for the new state hash", logFields...)
+	// --- UPSERT next PlayerProgress node using the new state hash ---
+	// Prepare the progress node to be upserted
+	progressToUpsert := *nextProgress            // Make a copy to avoid modifying nextProgress directly here
+	progressToUpsert.ID = uuid.Nil               // Let Upsert handle ID generation if needed
+	progressToUpsert.UserID = gameState.PlayerID // Ensure UserID is set
+	progressToUpsert.PublishedStoryID = gameState.PublishedStoryID
+	// Clear transient fields before potentially saving a new node
+	progressToUpsert.StoryVariables = make(map[string]interface{}) // Clear potentially large transient vars
+	progressToUpsert.GlobalFlags = clearTransientFlags(progressToUpsert.GlobalFlags)
+	progressToUpsert.LastStorySummary = currentProgress.CurrentSceneSummary // Use previous scene summary as last summary
+	// TODO: Fill LastFutureDirection and LastVarImpactSummary if available from generation result
 
-		nextProgress.CurrentStateHash = nextStateHash
-		nextProgress.UserID = gameState.PlayerID
-		nextProgress.PublishedStoryID = gameState.PublishedStoryID
-		nextProgress.StoryVariables = make(map[string]interface{})
-		nextProgress.GlobalFlags = clearTransientFlags(nextProgress.GlobalFlags)
-
-		savedID, errSaveNode := playerProgressRepoTx.Save(ctx, tx, nextProgress)
-		if errSaveNode != nil {
-			s.logger.Error("Failed to save new PlayerProgress node", append(logFields, zap.Error(errSaveNode))...)
-			err = models.ErrInternalServer
-			return err
-		}
-		nextNodeProgressID = savedID
-		nextNodeProgress = nextProgress
-		nextNodeProgress.ID = savedID
-		s.logger.Info("Saved new PlayerProgress node", append(logFields, zap.String("progressID", nextNodeProgressID.String()))...)
-	} else {
-		s.logger.Error("Error checking for existing progress node by hash", append(logFields, zap.Error(errFindNode))...)
+	upsertedProgressID, errUpsert := playerProgressRepoTx.UpsertByHash(ctx, tx, &progressToUpsert)
+	if errUpsert != nil {
+		s.logger.Error("Failed to upsert PlayerProgress node by hash", append(logFields, zap.Error(errUpsert))...)
 		err = models.ErrInternalServer
 		return err
 	}
+	nextNodeProgressID = upsertedProgressID
+	s.logger.Info("Upserted/Retrieved PlayerProgress node by hash", append(logFields, zap.String("progressID", nextNodeProgressID.String()))...)
 
+	// --- Check for existing next scene using the nextNodeProgressID (obtained from upsert) ---
 	var nextSceneID *uuid.UUID
+	// We still need to check if a scene exists for the target state hash
 	nextScene, errScene := sceneRepoTx.FindByStoryAndHash(ctx, tx, gameState.PublishedStoryID, nextStateHash)
 
 	if errScene == nil {
@@ -474,7 +466,7 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		generationPayload, errGenPayload := createGenerationPayload(
 			gameState.PlayerID,
 			publishedStory,
-			nextNodeProgress,
+			nextProgress,
 			gameState,
 			madeChoicesInfo,
 			nextStateHash,
