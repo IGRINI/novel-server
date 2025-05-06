@@ -19,15 +19,15 @@
 ```json
 {
   "csd": { // core_stats_definition: Use EXACT names & `go` from input `cs`. Add `ic`. Enhance `d`.
-    "stat1_name_from_input": {"iv": 50, "d": "string", "go": {..}, "ic": "string"}
+    "stat1_name_from_input": {"iv": 50, "d": "string", "go": {..}, "ic": "string"} // stat name in SystemPrompt language
     // ... Repeat for all 4 stats ...
   },
   "chars": [ // {{NPC_COUNT}} NPC characters. DO NOT include player.
     {
-      "n": "string",    // name (system promt language)
-      "d": "string",    // description (system promt language)
+      "n": "string",    // name (system prompt language)
+      "d": "string",    // description (system prompt language)
       "vt": ["string"], // visual_tags (English)
-      "p": "string",    // personality (system promt language)
+      "p": "string",    // personality (system prompt language)
       "pr": "string",   // image gen prompt (detailed, English)
       "ir": "string"    // deterministic image_reference (snake_case, from vt/name, English)
     }

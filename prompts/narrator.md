@@ -21,7 +21,7 @@
   "sssf": "string", // * story_summary_so_far (Story start)
   "fd": "string",       // * future_direction (First scene plan)
   "cs": {               // * core_stats: 4 unique stats {name: {d: desc, iv: init_val(0-100), go: {min: bool, max: bool}}}
-    "stat1": {"d": "str", "iv": 50, "go": {"min": true, "max": true}}, // Example
+    "stat1": {"d": "str", "iv": 50, "go": {"min": true, "max": true}}, // Example, stat name in SystemPrompt language
     // ... 3 more stats ...
   },
   "pp": {               // * player_preferences
