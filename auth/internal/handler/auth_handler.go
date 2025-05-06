@@ -36,15 +36,25 @@ func NewAuthHandler(
 }
 
 func (h *AuthHandler) RegisterRoutes(router *gin.Engine, rateLimiter gin.HandlerFunc) {
-	baseAuthGroup := router.Group("/auth")
+	// <<< УДАЛЯЕМ baseAuthGroup, все роуты будут от корня / >>>
+	// baseAuthGroup := router.Group("/auth")
+	// {
+	// 	baseAuthGroup.POST("/register", rateLimiter, h.register)
+	// 	baseAuthGroup.POST("/login", rateLimiter, h.login)
+	// 	baseAuthGroup.POST("/refresh", h.refresh)
+	// 	baseAuthGroup.POST("/token/verify", h.verify)
+	// }
+
+	// <<< РЕГИСТРИРУЕМ ПУБЛИЧНЫЕ РОУТЫ ОТ КОРНЯ / >>>
+	publicGroup := router.Group("/") // Группа от корня для публичных эндпоинтов
 	{
-		baseAuthGroup.POST("/register", rateLimiter, h.register)
-		baseAuthGroup.POST("/login", rateLimiter, h.login)
-		baseAuthGroup.POST("/refresh", h.refresh)
-		baseAuthGroup.POST("/token/verify", h.verify)
+		publicGroup.POST("/register", rateLimiter, h.register) // Было в /auth
+		publicGroup.POST("/login", rateLimiter, h.login)       // Было в /auth
+		publicGroup.POST("/refresh", h.refresh)                // Было в /auth
+		publicGroup.POST("/token/verify", h.verify)            // Было в /auth
 	}
 
-	// Группа для защищенных роутов БЕЗ префикса пути
+	// Группа для ЗАЩИЩЕННЫХ роутов от корня /
 	protectedGroup := router.Group("/")    // Группа от корня
 	protectedGroup.Use(h.AuthMiddleware()) // Применяем middleware ко всей группе
 	{
@@ -54,6 +64,7 @@ func (h *AuthHandler) RegisterRoutes(router *gin.Engine, rateLimiter gin.Handler
 		zap.L().Info("Registering POST /logout route") // Лог перед /logout
 		protectedGroup.POST("/logout", h.logout)       // /logout ТЕПЕРЬ ЗДЕСЬ
 
+		// Маршруты для device tokens теперь тоже от корня
 		deviceTokenRoutes := protectedGroup.Group("/device-tokens") // /device-tokens
 		{
 			// Middleware уже применено родительской группой
