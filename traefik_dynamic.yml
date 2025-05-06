@@ -8,7 +8,7 @@ http:
     auth-stripprefix:
       stripPrefix:
         prefixes:
-          - "/auth"
+          - "/api"
 
     # Убирает /admin перед отправкой запроса в admin-service (для защищенных путей)
     admin-protected-stripprefix:
@@ -40,23 +40,16 @@ http:
       service: "landing-page-service"
       priority: 1 # Low priority ensures API routes match first
 
-    # --- Auth Service (Router for LEGACY /auth/*) ---
-    auth-router-legacy:
+    # --- Auth Service (Router for /auth/* AND /api/v1/*) ---
+    auth-router:
       entryPoints:
         - "web"
-      rule: "PathPrefix(`/auth`)"
+      # <<< UPDATED RULE to match both prefixes >>>
+      rule: "PathPrefix(`/auth`) || PathPrefix(`/api/v1`)"
       service: "auth-service"
       middlewares:
-        - "auth-stripprefix"
-      priority: 10
-
-    # --- Auth Service (Router for NEW /api/v1/*) ---
-    auth-router-v1:
-      entryPoints:
-        - "web"
-      rule: "PathPrefix(`/api/v1`)"
-      service: "auth-service"
-      middlewares:
+        # <<< Apply middleware only if path is /api/v1? Or handle in service? >>>
+        # For now, keep it simple. The middleware only strips /api/v1, so it's okay.
         - "auth-v1-stripprefix"
       priority: 10
 

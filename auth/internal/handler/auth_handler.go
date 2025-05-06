@@ -36,36 +36,31 @@ func NewAuthHandler(
 }
 
 func (h *AuthHandler) RegisterRoutes(router *gin.Engine, rateLimiter gin.HandlerFunc) {
-	// <<< УДАЛЯЕМ baseAuthGroup, все роуты будут от корня / >>>
-	// baseAuthGroup := router.Group("/auth")
-	// {
-	// 	baseAuthGroup.POST("/register", rateLimiter, h.register)
-	// 	baseAuthGroup.POST("/login", rateLimiter, h.login)
-	// 	baseAuthGroup.POST("/refresh", h.refresh)
-	// 	baseAuthGroup.POST("/token/verify", h.verify)
-	// }
-
-	// <<< РЕГИСТРИРУЕМ ПУБЛИЧНЫЕ РОУТЫ ОТ КОРНЯ / >>>
-	publicGroup := router.Group("/") // Группа от корня для публичных эндпоинтов
+	baseAuthGroup := router.Group("/auth")
 	{
-		publicGroup.POST("/register", rateLimiter, h.register) // Было в /auth
-		publicGroup.POST("/login", rateLimiter, h.login)       // Было в /auth
-		publicGroup.POST("/refresh", h.refresh)                // Было в /auth
-		publicGroup.POST("/token/verify", h.verify)            // Было в /auth
+		baseAuthGroup.POST("/register", rateLimiter, h.register)
+		baseAuthGroup.POST("/login", rateLimiter, h.login)
+		baseAuthGroup.POST("/refresh", h.refresh)
+		baseAuthGroup.POST("/token/verify", h.verify)
 	}
 
-	// Группа для ЗАЩИЩЕННЫХ роутов от корня /
-	protectedGroup := router.Group("/")    // Группа от корня
-	protectedGroup.Use(h.AuthMiddleware()) // Применяем middleware ко всей группе
+	// NEW Group for PROTECTED /auth routes
+	protectedAuthGroup := router.Group("/auth")
+	protectedAuthGroup.Use(h.AuthMiddleware()) // Apply auth middleware here
 	{
-		zap.L().Info("Registering protected routes")   // Добавим общий лог для группы
-		zap.L().Info("Registering GET /me route")      // Лог перед /me
-		protectedGroup.GET("/me", h.getMe)             // /me
-		zap.L().Info("Registering POST /logout route") // Лог перед /logout
-		protectedGroup.POST("/logout", h.logout)       // /logout ТЕПЕРЬ ЗДЕСЬ
+		zap.L().Info("Registering POST /auth/logout route")
+		protectedAuthGroup.POST("/logout", h.logout) // Will be /auth/logout
+	}
 
-		// Маршруты для device tokens теперь тоже от корня
-		deviceTokenRoutes := protectedGroup.Group("/device-tokens") // /device-tokens
+	// Group for other PROTECTED routes WITHOUT /auth prefix (e.g., /me, /device-tokens)
+	protectedRootGroup := router.Group("/")    // Group from root (renamed from protectedGroup to protectedRootGroup for clarity)
+	protectedRootGroup.Use(h.AuthMiddleware()) // Apply auth middleware
+	{
+		zap.L().Info("Registering protected routes at root") // Updated log message
+		zap.L().Info("Registering GET /me route")            // Лог перед /me
+		protectedRootGroup.GET("/me", h.getMe)               // /me
+
+		deviceTokenRoutes := protectedRootGroup.Group("/device-tokens") // /device-tokens
 		{
 			// Middleware уже применено родительской группой
 			deviceTokenRoutes.POST("", h.registerDeviceToken)     // /device-tokens

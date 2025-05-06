@@ -24,10 +24,10 @@
   },
   "chars": [ // {{NPC_COUNT}} NPC characters. DO NOT include player.
     {
-      "n": "string",    // name
-      "d": "string",    // description
+      "n": "string",    // name (system promt language)
+      "d": "string",    // description (system promt language)
       "vt": ["string"], // visual_tags (English)
-      "p": "string",    // personality
+      "p": "string",    // personality (system promt language)
       "pr": "string",   // image gen prompt (detailed, English)
       "ir": "string"    // deterministic image_reference (snake_case, from vt/name, English)
     }

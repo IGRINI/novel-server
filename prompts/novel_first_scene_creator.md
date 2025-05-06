@@ -16,7 +16,7 @@
 2.  **Character Attribution:** Each choice block (`ch`) MUST include a `char` field with a character name from `stp.chars[].n`. The `desc` text MUST involve or be presented by this character. (Note: The input `ec` list will always be empty, so treat all characters as first encounters).
 3.  **Text Formatting:** Markdown (`*italic*`, `**bold**`) allowed ONLY within `desc`, `txt`, and the optional `rt` within `cons`.
 4.  **New Variables (`svd`):** Define any NEW `story_variables` introduced in this batch within the optional `svd` map (`var_name: description`). Omit `svd` if no new vars.
-5.  **Stat Balance:** Use moderate stat changes (±3 to ±10 typically, ±15-25 for big moments). Respect 0-100 limits and initial values (`iv`) from setup. Avoid instant game over unless dramatically intended.
+5.  **Stat Balance:** Use moderate stat changes (±5 to ±20 typically, ±20-40 for big moments). Respect 0-100 limits and initial values (`iv`) from setup. Avoid instant game over unless dramatically intended.
 6.  **Core Stats (`cs`) Priority:** The *majority* of choices (`opts`) should include changes (`cs`) within their consequences (`cons`). Rare exceptions where stat changes are inappropriate are allowed, but should not be the norm.
 7.  **Meaningful & Conditional Response Text (`rt`):**
     *   Use the optional `rt` field inside `cons` **judiciously**. Add it *only* when the outcome needs clarification, to add significant narrative flavor, or **to reveal important information or dialogue** that isn't covered by the main `desc` or `txt`.
