@@ -14,15 +14,19 @@ import (
 //go:generate mockery --name PublishedStoryRepository --output ./mocks --outpkg mocks --case=underscore
 type PublishedStoryRepository interface {
 	// Create inserts a new published story record. Used internally during publishing.
-	Create(ctx context.Context, story *models.PublishedStory) error
+	Create(ctx context.Context, querier DBTX, story *models.PublishedStory) error
 
 	// GetByID retrieves a published story by its unique ID.
 	GetByID(ctx context.Context, querier DBTX, id uuid.UUID) (*models.PublishedStory, error)
 
+	// GetWithLikeStatus retrieves a published story by its unique ID and checks if the specified user has liked it.
+	// If userID is uuid.Nil, isLiked will always be false.
+	GetWithLikeStatus(ctx context.Context, querier DBTX, storyID, userID uuid.UUID) (story *models.PublishedStory, isLiked bool, err error)
+
 	// UpdateStatusDetails updates the status, setup, error details, and potentially ending text of a published story.
 	// Use this method for various state transitions after generation tasks.
 	// Set setup, errorDetails, or endingText to nil if they shouldn't be updated.
-	UpdateStatusDetails(ctx context.Context, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, title, description, errorDetails *string) error
+	UpdateStatusDetails(ctx context.Context, querier DBTX, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, title, description, errorDetails *string) error
 
 	// SetPublic updates the is_public flag for a story.
 	// Requires userID for ownership check.
@@ -43,7 +47,7 @@ type PublishedStoryRepository interface {
 
 	// UpdateVisibility updates the visibility of a story.
 	// It ensures the operation is performed by the owner and potentially checks status.
-	UpdateVisibility(ctx context.Context, storyID, userID uuid.UUID, isPublic bool, requiredStatus models.StoryStatus) error
+	UpdateVisibility(ctx context.Context, querier DBTX, storyID, userID uuid.UUID, isPublic bool, requiredStatus models.StoryStatus) error
 
 	// ListByIDs retrieves a list of published stories based on their IDs.
 	// ListByIDs(ctx context.Context, ids []uuid.UUID) ([]*models.PublishedStory, error)
@@ -67,7 +71,7 @@ type PublishedStoryRepository interface {
 	// IsStoryLikedByUser(ctx context.Context, storyID uuid.UUID, userID uuid.UUID) (bool, error)
 
 	// ListLikedByUser retrieves a paginated list of stories liked by a specific user using cursor pagination.
-	ListLikedByUser(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]models.PublishedStorySummary, string, error)
+	ListLikedByUser(ctx context.Context, querier DBTX, userID uuid.UUID, cursor string, limit int) ([]models.PublishedStorySummary, string, error)
 
 	// Delete удаляет опубликованную историю и все связанные с ней данные (сцены, прогресс, лайки).
 	Delete(ctx context.Context, querier DBTX, id uuid.UUID, userID uuid.UUID) error

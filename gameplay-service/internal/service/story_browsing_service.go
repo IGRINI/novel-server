@@ -174,13 +174,13 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 	log := s.logger.With(zap.String("storyID", storyID.String()), zap.String("userID", userID.String()))
 	log.Info("GetPublishedStoryDetails called")
 
-	story, err := s.publishedRepo.GetByID(ctx, s.db, storyID)
+	story, isLiked, err := s.publishedRepo.GetWithLikeStatus(ctx, s.db, storyID, userID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sharedModels.ErrNotFound) {
 			log.Warn("Published story not found")
 			return nil, sharedModels.ErrNotFound
 		}
-		log.Error("Failed to get published story from repository", zap.Error(err))
+		log.Error("Failed to get published story with like status from repository", zap.Error(err))
 		return nil, sharedModels.ErrInternalServer
 	}
 
@@ -200,31 +200,26 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 		log.Warn("Failed to get author info from auth service", zap.Error(errAuth))
 	}
 
-	isLiked := false
-	if userID != uuid.Nil {
-		liked, errLike := s.likeRepo.CheckLike(ctx, userID, storyID)
-		if errLike != nil {
-			log.Error("Failed to check if user liked the story", zap.Error(errLike))
-		} else {
-			isLiked = liked
-		}
-	}
-
 	var config sharedModels.Config
 	var setup sharedModels.NovelSetupContent
 	var coreStatsDTO map[string]sharedModels.CoreStatDTO
 	var charactersDTO []sharedModels.CharacterDTO
 
-	if story.Config != nil {
+	if story.Config != nil && len(story.Config) > 0 && string(story.Config) != "null" {
 		if err := json.Unmarshal(story.Config, &config); err != nil {
-			log.Error("Failed to unmarshal story Config JSON", zap.Error(err))
+			log.Error("Failed to unmarshal story Config JSON", zap.Stringer("storyID", story.ID), zap.Error(err))
+			return nil, fmt.Errorf("%w: invalid config data: %v", sharedModels.ErrInternalServer, err)
 		}
-	}
-	parsedSetup, errSetup := s.GetParsedSetup(ctx, storyID)
-	if errSetup != nil {
-		log.Error("Failed to get/parse story Setup JSON", zap.Error(errSetup))
 	} else {
-		setup = *parsedSetup
+		log.Warn("Story Config JSON is nil or empty", zap.Stringer("storyID", story.ID))
+	}
+
+	if story.Setup != nil && len(story.Setup) > 0 && string(story.Setup) != "null" {
+		if err := json.Unmarshal(story.Setup, &setup); err != nil {
+			log.Error("Failed to unmarshal story Setup JSON directly", zap.Stringer("storyID", story.ID), zap.Error(err))
+			return nil, fmt.Errorf("%w: invalid setup data: %v", sharedModels.ErrInternalServer, err)
+		}
+
 		coreStatsDTO = make(map[string]sharedModels.CoreStatDTO)
 		for statID, statDef := range setup.CoreStatsDefinition {
 			coreStatsDTO[statID] = sharedModels.CoreStatDTO{
@@ -244,6 +239,20 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 				ImageReference: charDef.ImageRef,
 			})
 		}
+	} else {
+		log.Warn("Story Setup JSON is nil or empty", zap.Stringer("storyID", story.ID))
+		coreStatsDTO = make(map[string]sharedModels.CoreStatDTO)
+		charactersDTO = make([]sharedModels.CharacterDTO, 0)
+	}
+
+	var gameStates []*sharedModels.GameStateSummaryDTO
+	gameStates, err = s.playerGameStateRepo.ListSummariesByPlayerAndStory(ctx, s.db, userID, storyID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		s.logger.Error("Failed to list game states for story details", zap.String("storyID", storyID.String()), zap.Stringer("userID", userID), zap.Error(err))
+		return nil, fmt.Errorf("%w: failed to list game states: %v", sharedModels.ErrInternalServer, err)
+	}
+	if gameStates == nil {
+		gameStates = make([]*sharedModels.GameStateSummaryDTO, 0)
 	}
 
 	var title string
@@ -274,16 +283,8 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 		PlayerName:       config.PlayerName,
 		CoreStats:        coreStatsDTO,
 		Characters:       charactersDTO,
-		GameStates:       make([]*sharedModels.GameStateSummaryDTO, 0),
+		GameStates:       gameStates,
 	}
-
-	gameStates, err := s.playerGameStateRepo.ListSummariesByPlayerAndStory(ctx, s.db, userID, storyID)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		s.logger.Error("Failed to list game states for story details", zap.String("storyID", storyID.String()), zap.Stringer("userID", userID), zap.Error(err))
-		return nil, fmt.Errorf("%w: failed to list game states: %v", sharedModels.ErrInternalServer, err)
-	}
-
-	dto.GameStates = gameStates
 
 	log.Info("Successfully retrieved published story details with parsed data", zap.String("title", dto.Title))
 	return dto, nil
@@ -318,7 +319,7 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetailsInternal(ctx context.
 			return nil, sharedModels.ErrStoryNotFound
 		}
 		log.Error("Failed to get published story by ID", zap.Error(err))
-		return nil, ErrInternal
+		return nil, sharedModels.ErrInternalServer
 	}
 
 	log.Info("Successfully retrieved published story details for internal use")
@@ -410,38 +411,7 @@ func (s *storyBrowsingServiceImpl) GetStoriesWithProgress(ctx context.Context, u
 	stories, nextCursor, err := s.publishedRepo.FindWithProgressByUserID(ctx, s.db, userID, limit, cursor)
 	if err != nil {
 		log.Error("Failed to find stories with progress in repository", zap.Error(err))
-		return nil, "", fmt.Errorf("%w: failed to retrieve stories with progress from repository: %v", ErrInternal, err)
-	}
-
-	if len(stories) > 0 {
-		authorIDs := make([]uuid.UUID, 0, len(stories))
-		authorIDSet := make(map[uuid.UUID]struct{})
-		for _, s := range stories {
-			if _, exists := authorIDSet[s.AuthorID]; !exists {
-				authorIDSet[s.AuthorID] = struct{}{}
-				authorIDs = append(authorIDs, s.AuthorID)
-			}
-		}
-
-		authorNames := make(map[uuid.UUID]string)
-		if len(authorIDs) > 0 {
-			authorInfos, authErr := s.authClient.GetUsersInfo(ctx, authorIDs)
-			if authErr != nil {
-				log.Warn("Failed to fetch author names for stories with progress", zap.Error(authErr))
-			} else {
-				for id, info := range authorInfos {
-					authorNames[id] = info.DisplayName
-				}
-			}
-		}
-
-		for i := range stories {
-			if name, ok := authorNames[stories[i].AuthorID]; ok {
-				stories[i].AuthorName = name
-			} else {
-				stories[i].AuthorName = "[unknown]"
-			}
-		}
+		return nil, "", fmt.Errorf("%w: failed to retrieve stories with progress from repository: %v", sharedModels.ErrInternalServer, err)
 	}
 
 	log.Info("Successfully fetched stories with progress", zap.Int("count", len(stories)), zap.Bool("hasNext", nextCursor != ""))
@@ -450,10 +420,11 @@ func (s *storyBrowsingServiceImpl) GetStoriesWithProgress(ctx context.Context, u
 
 func (s *storyBrowsingServiceImpl) GetParsedSetup(ctx context.Context, storyID uuid.UUID) (*sharedModels.NovelSetupContent, error) {
 	log := s.logger.With(zap.String("storyID", storyID.String()))
+	log.Debug("GetParsedSetup called")
 
 	story, err := s.publishedRepo.GetByID(ctx, s.db, storyID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, sharedModels.ErrNotFound) {
 			log.Warn("Published story not found for GetParsedSetup")
 			return nil, sharedModels.ErrNotFound
 		}
@@ -462,14 +433,14 @@ func (s *storyBrowsingServiceImpl) GetParsedSetup(ctx context.Context, storyID u
 	}
 
 	if len(story.Setup) == 0 || string(story.Setup) == "null" {
-		log.Warn("Published story has nil or empty Setup JSON")
-		return nil, fmt.Errorf("setup data is missing or invalid for story %s", storyID)
+		log.Warn("Published story has nil or empty Setup JSON for GetParsedSetup")
+		return nil, nil
 	}
 
 	var novelSetup sharedModels.NovelSetupContent
 	if err := json.Unmarshal(story.Setup, &novelSetup); err != nil {
-		log.Error("Failed to unmarshal story Setup JSON", zap.Error(err))
-		return nil, fmt.Errorf("%w: failed to parse setup data", sharedModels.ErrInternalServer)
+		log.Error("Failed to unmarshal story Setup JSON in GetParsedSetup", zap.Error(err))
+		return nil, fmt.Errorf("%w: failed to parse setup data in GetParsedSetup", sharedModels.ErrInternalServer)
 	}
 
 	return &novelSetup, nil

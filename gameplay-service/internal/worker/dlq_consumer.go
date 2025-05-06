@@ -11,6 +11,7 @@ import (
 	"novel-server/shared/models"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
 )
@@ -27,15 +28,17 @@ type DLQConsumer struct {
 	conn         *amqp.Connection
 	logger       *zap.Logger
 	storyRepo    interfaces.PublishedStoryRepository
+	db           *pgxpool.Pool
 	shutdownChan chan struct{}
 }
 
 // NewDLQConsumer создает новый экземпляр DLQConsumer.
-func NewDLQConsumer(conn *amqp.Connection, storyRepo interfaces.PublishedStoryRepository, logger *zap.Logger) *DLQConsumer {
+func NewDLQConsumer(conn *amqp.Connection, storyRepo interfaces.PublishedStoryRepository, db *pgxpool.Pool, logger *zap.Logger) *DLQConsumer {
 	return &DLQConsumer{
 		conn:         conn,
 		logger:       logger.Named("DLQConsumer"),
 		storyRepo:    storyRepo,
+		db:           db,
 		shutdownChan: make(chan struct{}),
 	}
 }
@@ -150,7 +153,7 @@ func (c *DLQConsumer) handleMessage(d amqp.Delivery) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) // Таймаут на операцию с БД
 	defer cancel()
 
-	err = c.storyRepo.UpdateStatusDetails(ctx, storyID, models.StatusError, nil, nil, &errorReason, nil)
+	err = c.storyRepo.UpdateStatusDetails(ctx, c.db, storyID, models.StatusError, nil, nil, nil, &errorReason)
 	if err != nil {
 		log.Error("Ошибка обновления статуса истории на Error из DLQ", zap.Error(err))
 		// Не подтверждаем сообщение (nack с requeue=true?), чтобы попробовать снова?

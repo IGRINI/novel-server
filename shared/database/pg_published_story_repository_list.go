@@ -173,10 +173,8 @@ func (r *pgPublishedStoryRepository) ListByUserID(ctx context.Context, querier i
 	return stories, nextCursor, nil
 }
 
-// ListLikedByUser возвращает список историй, лайкнутых пользователем.
-// !!! Проблема с типами пагинации/сортировки, временно используем placeholders !!!
-// TODO: Implement proper cursor pagination
-func (r *pgPublishedStoryRepository) ListLikedByUser(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]models.PublishedStorySummary, string, error) {
+// ListLikedByUser retrieves a paginated list of stories liked by a specific user using cursor pagination.
+func (r *pgPublishedStoryRepository) ListLikedByUser(ctx context.Context, querier interfaces.DBTX, userID uuid.UUID, cursor string, limit int) ([]models.PublishedStorySummary, string, error) {
 	logFields := []zap.Field{zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit)}
 	r.logger.Debug("Listing liked stories by user ID", logFields...)
 
@@ -200,7 +198,7 @@ func (r *pgPublishedStoryRepository) ListLikedByUser(ctx context.Context, userID
 	countQuery := countQueryBuilder.String()
 
 	var totalItems int64
-	err := r.db.QueryRow(ctx, countQuery, countArgs...).Scan(&totalItems)
+	err := querier.QueryRow(ctx, countQuery, countArgs...).Scan(&totalItems)
 	if err != nil {
 		countLogFields := append(logFields, zap.String("count_query", countQuery), zap.Any("count_args", countArgs), zap.Error(err))
 		r.logger.Error("Failed to count stories for ListLikedByUser", countLogFields...)
@@ -241,7 +239,7 @@ func (r *pgPublishedStoryRepository) ListLikedByUser(ctx context.Context, userID
 	finalQuery := queryBuilder.String()
 	r.logger.Debug("Executing ListLikedByUser query", append(logFields, zap.String("query", finalQuery))...)
 
-	rows, err := r.db.Query(ctx, finalQuery, args...)
+	rows, err := querier.Query(ctx, finalQuery, args...)
 	if err != nil {
 		r.logger.Error("Failed to query liked stories by user ID", append(logFields, zap.Error(err))...)
 		return nil, "", fmt.Errorf("ошибка запроса лайкнутых историй пользователя: %w", err)

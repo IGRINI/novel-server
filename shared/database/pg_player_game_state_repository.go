@@ -206,28 +206,35 @@ func (r *pgPlayerGameStateRepository) Get(ctx context.Context, playerID, publish
 	return state, nil
 }
 
-// GetByPlayerAndStory retrieves the current game state for a specific player and story.
-// Returns models.ErrNotFound if no active game state exists.
-func (r *pgPlayerGameStateRepository) GetByPlayerAndStory(ctx context.Context, playerID, publishedStoryID uuid.UUID) (*models.PlayerGameState, error) {
-	// Используем ту же логику, что и в Get
-	logFields := []zap.Field{
-		zap.String("playerID", playerID.String()),
-		zap.String("publishedStoryID", publishedStoryID.String()),
-	}
-	r.logger.Debug("Getting player game state by player and story", logFields...)
+// GetByPlayerAndStory retrieves the active game state for a player and story.
+func (r *pgPlayerGameStateRepository) GetByPlayerAndStory(ctx context.Context, querier interfaces.DBTX, playerID, publishedStoryID uuid.UUID) (*models.PlayerGameState, error) {
+	const query = `
+        SELECT id, player_id, published_story_id, player_progress_id, current_scene_id, player_status, started_at, last_activity_at, created_at, updated_at
+        FROM player_game_states
+        WHERE player_id = $1 AND published_story_id = $2
+        -- Add ORDER BY if multiple states per player/story are possible and we need the 'latest'
+        LIMIT 1;
+    `
+	log := r.logger.With(
+		zap.String("method", "GetByPlayerAndStory"),
+		zap.Stringer("playerID", playerID),
+		zap.Stringer("storyID", publishedStoryID),
+	)
+	log.Debug("Getting game state by player and story")
 
-	row := r.db.QueryRow(ctx, getPlayerGameStateByPlayerAndStoryQuery, playerID, publishedStoryID)
-	state, err := scanPlayerGameState(row)
+	row := querier.QueryRow(ctx, query, playerID, publishedStoryID)
+	state, err := scanPlayerGameState(row) // Assuming a scan helper exists
 
 	if err != nil {
-		if err == models.ErrNotFound { // Check specific error from helper
-			r.logger.Warn("Player game state not found by player and story", logFields...)
-			return nil, models.ErrNotFound
+		if errors.Is(err, pgx.ErrNoRows) {
+			log.Info("No game state found for player and story")
+			return nil, models.ErrNotFound // Consistent error
 		}
-		r.logger.Error("Failed to get player game state by player and story", append(logFields, zap.Error(err))...)
-		return nil, fmt.Errorf("ошибка получения состояния игры по игроку и истории: %w", err)
+		log.Error("Failed to scan player game state", zap.Error(err))
+		return nil, fmt.Errorf("database scan error: %w", err)
 	}
-	r.logger.Debug("Player game state retrieved successfully by player and story", logFields...)
+
+	log.Debug("Game state retrieved successfully")
 	return state, nil
 }
 
@@ -504,6 +511,75 @@ func (r *pgPlayerGameStateRepository) ListSummariesByPlayerAndStory(ctx context.
 
 	r.logger.Debug("Successfully listed game state summaries", append(logFields, zap.Int("count", len(summaries)))...)
 	return summaries, nil
+}
+
+// DeleteForUser deletes the game state only if the userID matches the owner.
+// Returns ErrNotFound if the state doesn't exist or the user doesn't own it.
+func (r *pgPlayerGameStateRepository) DeleteForUser(ctx context.Context, querier interfaces.DBTX, gameStateID, userID uuid.UUID) error {
+	const query = `DELETE FROM player_game_states WHERE id = $1 AND player_id = $2`
+	log := r.logger.With(
+		zap.String("method", "DeleteForUser"),
+		zap.Stringer("gameStateID", gameStateID),
+		zap.Stringer("userID", userID),
+	)
+	log.Debug("Attempting to delete game state for user")
+
+	cmdTag, err := querier.Exec(ctx, query, gameStateID, userID)
+	if err != nil {
+		log.Error("Failed to execute delete query for game state", zap.Error(err))
+		return fmt.Errorf("database error during game state deletion: %w", err)
+	}
+
+	if cmdTag.RowsAffected() == 0 {
+		log.Warn("Game state not found or user forbidden to delete")
+		// We don't distinguish between NotFound and Forbidden here, return NotFound
+		return models.ErrNotFound
+	}
+
+	log.Info("Game state deleted successfully for user")
+	return nil
+}
+
+// UpdateProgressAndScene updates the progress and current scene ID for a game state.
+func (r *pgPlayerGameStateRepository) UpdateProgressAndScene(ctx context.Context, querier interfaces.DBTX, gameStateID, progressID uuid.UUID, sceneID uuid.UUID) error {
+	const query = `
+        UPDATE player_game_states SET
+            player_progress_id = $2,
+            current_scene_id = $3,
+            player_status = $4,
+            last_activity_at = NOW(),
+            updated_at = NOW()
+        WHERE id = $1;
+    `
+	log := r.logger.With(
+		zap.String("method", "UpdateProgressAndScene"),
+		zap.Stringer("gameStateID", gameStateID),
+		zap.Stringer("progressID", progressID),
+		zap.Stringer("sceneID", sceneID),
+	)
+	log.Debug("Updating game state progress and scene")
+
+	// Determine new status based on whether scene generation is needed
+	newStatus := models.PlayerStatusPlaying // Assume playing if scene exists
+	sceneNullUUID := uuid.NullUUID{UUID: sceneID, Valid: sceneID != uuid.Nil}
+	if !sceneNullUUID.Valid {
+		newStatus = models.PlayerStatusGeneratingScene
+		log.Info("Scene ID is nil, setting player status to GeneratingScene")
+	}
+
+	cmdTag, err := querier.Exec(ctx, query, gameStateID, progressID, sceneNullUUID, newStatus)
+	if err != nil {
+		log.Error("Failed to execute update query for progress and scene", zap.Error(err))
+		return fmt.Errorf("database error updating game state progress/scene: %w", err)
+	}
+
+	if cmdTag.RowsAffected() == 0 {
+		log.Warn("No game state found to update progress and scene")
+		return models.ErrNotFound // Or a more specific error
+	}
+
+	log.Info("Game state progress and scene updated successfully")
+	return nil
 }
 
 // --- Helper methods (internal) ---

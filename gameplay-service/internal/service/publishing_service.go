@@ -138,7 +138,8 @@ func (s *publishingServiceImpl) PublishDraft(ctx context.Context, draftID uuid.U
 		UpdatedAt:      time.Now().UTC(),
 	}
 
-	if err = publishedRepoTx.Create(ctx, newPublishedStory); err != nil {
+	// Pass the transaction 'tx' as the DBTX argument
+	if err = publishedRepoTx.Create(ctx, tx, newPublishedStory); err != nil {
 		log.Error("Error creating published story within transaction", zap.Error(err))
 		return uuid.Nil, fmt.Errorf("error creating published story: %w", err)
 	}
@@ -196,8 +197,8 @@ func (s *publishingServiceImpl) SetStoryVisibility(ctx context.Context, storyID,
 	}
 	s.logger.Info("Attempting to set story visibility", logFields...)
 
-	// 4. Вызываем метод репозитория для обновления флага, передавая требуемый статус
-	err := s.publishedRepo.UpdateVisibility(ctx, storyID, userID, isPublic, sharedModels.StatusReady)
+	// Pass the pool connection 's.pool' as the DBTX argument
+	err := s.publishedRepo.UpdateVisibility(ctx, s.pool, storyID, userID, isPublic, sharedModels.StatusReady)
 	if err != nil {
 		// Обрабатываем ошибки, возвращенные репозиторием
 		if errors.Is(err, sharedModels.ErrNotFound) || errors.Is(err, sharedModels.ErrForbidden) || errors.Is(err, sharedModels.ErrStoryNotReadyForPublishing) {

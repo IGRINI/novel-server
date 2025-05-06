@@ -54,5 +54,15 @@ type PlayerGameStateRepository interface {
 	// Returns an empty slice if no game states are found.
 	ListSummariesByPlayerAndStory(ctx context.Context, querier DBTX, userID, publishedStoryID uuid.UUID) ([]*models.GameStateSummaryDTO, error)
 
+	// GetByPlayerAndStory retrieves the active game state for a player and story.
+	GetByPlayerAndStory(ctx context.Context, querier DBTX, playerID, publishedStoryID uuid.UUID) (*models.PlayerGameState, error)
+
+	// DeleteForUser deletes the game state only if the userID matches the owner.
+	// Returns ErrNotFound if the state doesn't exist or the user doesn't own it.
+	DeleteForUser(ctx context.Context, querier DBTX, gameStateID, userID uuid.UUID) error
+
+	// UpdateProgressAndScene updates the progress and current scene ID for a game state.
+	UpdateProgressAndScene(ctx context.Context, querier DBTX, gameStateID, progressID uuid.UUID, sceneID uuid.UUID) error
+
 	// TODO: Potentially add methods like ListPlayerGameStates(ctx, playerID) if needed.
 }

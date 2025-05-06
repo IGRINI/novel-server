@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype" // Import pgtype for NullUUID equivalent
 	"go.uber.org/zap"
 )
 
@@ -60,7 +61,7 @@ const (
 
 // Create создает новую запись опубликованной истории.
 // Возвращает только error в соответствии с интерфейсом.
-func (r *pgPublishedStoryRepository) Create(ctx context.Context, story *models.PublishedStory) error { // Return only error
+func (r *pgPublishedStoryRepository) Create(ctx context.Context, querier interfaces.DBTX, story *models.PublishedStory) error { // Add querier param
 	// Генерируем UUID, если он еще не установлен
 	if story.ID == uuid.Nil {
 		story.ID = uuid.New()
@@ -78,7 +79,7 @@ func (r *pgPublishedStoryRepository) Create(ctx context.Context, story *models.P
 	r.logger.Debug("Creating new published story", logFields...)
 
 	// Используем Exec, так как RETURNING id не нужен согласно интерфейсу
-	_, err := r.db.Exec(ctx, createPublishedStoryQuery, // Use Exec instead of QueryRow
+	_, err := querier.Exec(ctx, createPublishedStoryQuery, // Use querier
 		story.ID,             // $1 (now generated)
 		story.UserID,         // $2
 		story.Title,          // $3 (*string)
@@ -121,6 +122,51 @@ func (r *pgPublishedStoryRepository) GetByID(ctx context.Context, querier interf
 
 	r.logger.Debug("Published story retrieved successfully by ID", logFields...)
 	return story, nil
+}
+
+// GetWithLikeStatus retrieves a published story by its unique ID and checks if the specified user has liked it.
+// If userID is uuid.Nil, isLiked will always be false.
+func (r *pgPublishedStoryRepository) GetWithLikeStatus(ctx context.Context, querier interfaces.DBTX, storyID, userID uuid.UUID) (*models.PublishedStory, bool, error) {
+	// Assume publishedStoryFields is defined in the main pg_published_story_repository.go file and accessible
+	// It should include all fields of models.PublishedStory
+	const query = `
+		SELECT
+			` + publishedStoryFields + `,
+			CASE WHEN $2::UUID IS NOT NULL THEN EXISTS (
+				SELECT 1 FROM user_story_likes usl WHERE usl.story_id = ps.id AND usl.user_id = $2
+			) ELSE FALSE END AS is_liked
+		FROM published_stories ps
+		WHERE ps.id = $1;
+	`
+	log := r.logger.With(zap.String("method", "GetWithLikeStatus"), zap.Stringer("storyID", storyID), zap.Stringer("userID", userID))
+
+	var isLiked bool
+	pgUserID := pgtype.UUID{}
+	if userID != uuid.Nil {
+		pgUserID = pgtype.UUID{Bytes: userID, Valid: true}
+	}
+	row := querier.QueryRow(ctx, query, storyID, pgUserID) // Use pgtype.UUID
+
+	var story models.PublishedStory
+	// Ensure all fields from publishedStoryFields are scanned here
+	err := row.Scan(
+		&story.ID, &story.UserID, &story.Config, &story.Setup, &story.Status, &story.Language, &story.IsPublic, &story.IsAdultContent,
+		&story.Title, &story.Description, &story.ErrorDetails, &story.LikesCount, &story.CreatedAt, &story.UpdatedAt,
+		&story.IsFirstScenePending, &story.AreImagesPending, // Add any other fields included in publishedStoryFields
+		&isLiked,
+	)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			log.Warn("Story not found")
+			return nil, false, models.ErrNotFound
+		}
+		log.Error("Failed to scan story with like status", zap.Error(err))
+		return nil, false, fmt.Errorf("ошибка сканирования истории %s со статусом лайка: %w", storyID, err)
+	}
+
+	log.Debug("Story with like status retrieved successfully")
+	return &story, isLiked, nil
 }
 
 // Update обновляет данные опубликованной истории.

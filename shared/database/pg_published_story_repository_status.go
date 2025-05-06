@@ -57,7 +57,7 @@ const (
 )
 
 // UpdateStatusDetails обновляет статус, детали ошибки или setup опубликованной истории.
-func (r *pgPublishedStoryRepository) UpdateStatusDetails(ctx context.Context, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, title, description, errorDetails *string) error {
+func (r *pgPublishedStoryRepository) UpdateStatusDetails(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, title, description, errorDetails *string) error {
 	query := baseUpdateStatusDetailsQuery
 	args := []interface{}{id, status, time.Now().UTC()} // Use UTC
 	paramIndex := 4                                     // Start after id, status, updated_at
@@ -102,7 +102,7 @@ func (r *pgPublishedStoryRepository) UpdateStatusDetails(ctx context.Context, id
 
 	r.logger.Debug("Updating published story status/details", append(logFields, zap.String("query", query))...)
 
-	tag, err := r.db.Exec(ctx, query, args...)
+	tag, err := querier.Exec(ctx, query, args...)
 	if err != nil {
 		r.logger.Error("Failed to update published story status/details", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка обновления статуса/деталей опубликованной истории %s: %w", id, err)
@@ -118,7 +118,7 @@ func (r *pgPublishedStoryRepository) UpdateStatusDetails(ctx context.Context, id
 }
 
 // UpdateVisibility обновляет видимость истории.
-func (r *pgPublishedStoryRepository) UpdateVisibility(ctx context.Context, storyID, userID uuid.UUID, isPublic bool, requiredStatus models.StoryStatus) error {
+func (r *pgPublishedStoryRepository) UpdateVisibility(ctx context.Context, querier interfaces.DBTX, storyID, userID uuid.UUID, isPublic bool, requiredStatus models.StoryStatus) error {
 	logFields := []zap.Field{
 		zap.String("publishedStoryID", storyID.String()),
 		zap.String("userID", userID.String()),
@@ -127,17 +127,17 @@ func (r *pgPublishedStoryRepository) UpdateVisibility(ctx context.Context, story
 	}
 	r.logger.Debug("Updating story visibility with status check", logFields...)
 
-	commandTag, err := r.db.Exec(ctx, updateVisibilityQuery, isPublic, storyID, userID, requiredStatus)
+	commandTag, err := querier.Exec(ctx, updateVisibilityQuery, isPublic, storyID, userID, requiredStatus)
 	if err != nil {
 		r.logger.Error("Failed to execute visibility update query", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка обновления видимости истории %s: %w", storyID, err)
 	}
 
 	if commandTag.RowsAffected() == 0 {
-		// Check reason for failure
+		// Check reason for failure - use querier for the check query as well
 		var ownerID uuid.UUID
 		var currentStatus models.StoryStatus
-		checkErr := r.db.QueryRow(ctx, checkStoryOwnerStatusQuery, storyID).Scan(&ownerID, &currentStatus)
+		checkErr := querier.QueryRow(ctx, checkStoryOwnerStatusQuery, storyID).Scan(&ownerID, &currentStatus)
 
 		if checkErr != nil {
 			if errors.Is(checkErr, pgx.ErrNoRows) {

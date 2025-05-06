@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	// "github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
@@ -54,84 +55,109 @@ const (
 	// publishedStorySummaryWithProgressFields needs to be defined/accessible
 )
 
-// FindWithProgressByUserID возвращает список историй, в которых у пользователя есть прогресс.
-// !!! Проблема с типами пагинации/сортировки, временно используем placeholders !!!
+// FindWithProgressByUserID retrieves a paginated list of stories with progress for a specific user using cursor pagination.
+// Includes author name directly via JOIN.
 func (r *pgPublishedStoryRepository) FindWithProgressByUserID(ctx context.Context, querier interfaces.DBTX, userID uuid.UUID, limit int, cursor string) ([]models.PublishedStorySummary, string, error) {
-	logFields := []zap.Field{zap.String("userID", userID.String()), zap.Int("limit", limit), zap.String("cursor", cursor)}
-	r.logger.Debug("Finding stories with progress", logFields...)
+	// Note: The SELECT list now includes fields assumed to be in PublishedStorySummary
+	const baseQuery = `
+		SELECT
+			ps.id, ps.title, ps.description, ps.user_id, u.display_name AS author_name,
+			ps.created_at, ps.is_adult_content, ps.likes_count,
+			TRUE AS has_player_progress,
+			ps.is_public,
+			pgs.player_status, pgs.id as player_game_state_id,
+			pgs.last_accessed_at -- For cursor pagination and LastPlayedAt field
+		FROM published_stories ps
+		JOIN player_game_states pgs ON pgs.published_story_id = ps.id AND pgs.user_id = $1
+		JOIN users u ON u.id = ps.user_id
+		WHERE pgs.user_id = $1
+	`
+	const orderBy = " ORDER BY pgs.last_accessed_at DESC, ps.id DESC"
 
-	if limit <= 0 {
-		limit = 20 // Default limit
-	}
-	fetchLimit := limit + 1
+	log := r.logger.With(
+		zap.String("method", "FindWithProgressByUserID"),
+		zap.Stringer("userID", userID),
+		zap.Int("limit", limit),
+		zap.String("cursor", cursor),
+	)
+	log.Debug("Finding stories with progress by user ID")
 
-	// Decode cursor (assuming progress is sorted by player_game_states.last_activity_at)
-	cursorTime, cursorID, err := utils.DecodeCursor(cursor)
-	if err != nil && cursor != "" { // Only error if cursor is non-empty and invalid
-		r.logger.Warn("Invalid cursor provided for FindWithProgressByUserID", zap.String("cursor", cursor), zap.Error(err))
-		return nil, "", fmt.Errorf("invalid cursor: %w", err)
-	}
+	var queryArgs []interface{}
+	queryArgs = append(queryArgs, userID)
 
-	args := []interface{}{userID}
-	paramIndex := 2
-	queryBuilder := strings.Builder{}
-	queryBuilder.WriteString(findWithProgressByUserIDQueryBase)
-
-	// Add cursor condition
+	finalQuery := baseQuery
+	// Cursor Logic using placeholder utils.DecodeCursor
 	if cursor != "" {
-		queryBuilder.WriteString(fmt.Sprintf(" AND (pgs.last_activity_at, ps.id) < ($%d, $%d)", paramIndex, paramIndex+1))
-		args = append(args, cursorTime, cursorID)
-		paramIndex += 2
+		lastAccessedAt, id, err := utils.DecodeCursor(cursor) // Placeholder
+		if err != nil {
+			log.Warn("Invalid cursor format", zap.Error(err))
+			return nil, "", fmt.Errorf("%w: invalid cursor: %v", models.ErrBadRequest, err)
+		}
+		finalQuery += " AND (pgs.last_accessed_at, ps.id) < ($2, $3)"
+		queryArgs = append(queryArgs, lastAccessedAt, id)
 	}
 
-	// Add order and limit
-	queryBuilder.WriteString(fmt.Sprintf(" ORDER BY pgs.last_activity_at DESC, ps.id DESC LIMIT $%d", paramIndex))
-	args = append(args, fetchLimit)
+	finalQuery += orderBy + fmt.Sprintf(" LIMIT $%d", len(queryArgs)+1)
+	queryArgs = append(queryArgs, limit+1)
 
-	finalQuery := queryBuilder.String()
-	r.logger.Debug("Executing FindWithProgressByUserID query", append(logFields, zap.String("query", finalQuery))...)
-
-	rows, err := querier.Query(ctx, finalQuery, args...)
+	rows, err := querier.Query(ctx, finalQuery, queryArgs...)
 	if err != nil {
-		r.logger.Error("Error querying stories with progress", append(logFields, zap.Error(err))...)
-		return nil, "", fmt.Errorf("database query failed: %w", err)
+		log.Error("Failed to query stories with progress", zap.Error(err))
+		return nil, "", fmt.Errorf("database query error: %w", err)
 	}
 	defer rows.Close()
 
 	stories := make([]models.PublishedStorySummary, 0, limit)
-	var lastActivityTime time.Time
-	var lastStoryID uuid.UUID
+	var lastAccessedAtCursor time.Time
+	var storyIDCursor uuid.UUID
 
 	for rows.Next() {
-		summary, err := scanPublishedStorySummaryWithProgress(rows) // Use helper
+		var story models.PublishedStorySummary
+		var lastAccessedAtNullable pgtype.Timestamptz
+
+		// Scan fields into PublishedStorySummary
+		err := rows.Scan(
+			&story.ID, &story.Title, &story.ShortDescription, // Use ShortDescription
+			&story.AuthorID, &story.AuthorName,
+			&story.PublishedAt, // Use PublishedAt for ps.created_at
+			&story.IsAdultContent, &story.LikesCount,
+			&story.HasPlayerProgress,
+			&story.IsPublic,
+			&story.PlayerGameStatus, // Use PlayerGameStatus for pgs.player_status
+			&story.PlayerGameStateID,
+			&lastAccessedAtNullable,
+		)
 		if err != nil {
-			r.logger.Error("Error scanning story with progress row", append(logFields, zap.Error(err))...)
-			// Decide: return error or skip row? Returning error for now.
-			return nil, "", fmt.Errorf("ошибка сканирования строки истории с прогрессом: %w", err)
+			log.Error("Failed to scan story summary with progress", zap.Error(err))
+			return nil, "", fmt.Errorf("database scan error: %w", err)
 		}
-		stories = append(stories, *summary) // Dereference summary before appending
-		// Need to get last_activity_at for cursor, but it's not in the summary struct
-		// This approach requires scanning last_activity_at separately or adding it to the DTO.
-		// For now, cursor logic might be broken here.
-		// TODO: Fix cursor logic by scanning relevant field.
-		lastStoryID = summary.ID
+		if lastAccessedAtNullable.Valid {
+			story.LastPlayedAt = &lastAccessedAtNullable.Time // Assign LastPlayedAt
+		}
+
+		stories = append(stories, story)
+
+		if lastAccessedAtNullable.Valid {
+			lastAccessedAtCursor = lastAccessedAtNullable.Time
+			storyIDCursor = story.ID
+		} else {
+			log.Warn("last_accessed_at is unexpectedly NULL, cursor might be incorrect", zap.Stringer("storyID", story.ID))
+		}
 	}
 
-	if err := rows.Err(); err != nil {
-		r.logger.Error("Error iterating story with progress rows", append(logFields, zap.Error(err))...)
-		return nil, "", fmt.Errorf("database iteration failed: %w", err)
+	if err = rows.Err(); err != nil {
+		log.Error("Error iterating story rows", zap.Error(err))
+		return nil, "", fmt.Errorf("database iteration error: %w", err)
 	}
 
 	var nextCursor string
-	if len(stories) == fetchLimit {
-		stories = stories[:limit] // Return only the requested number
-		// TODO: Fix cursor generation - needs lastActivityTime from the *last item*
-		if lastStoryID != uuid.Nil { // Check if we actually scanned any rows
-			nextCursor = utils.EncodeCursor(lastActivityTime, lastStoryID) // This lastActivityTime is likely incorrect
-		}
+	if len(stories) > limit {
+		// Generate next cursor using placeholder utils.EncodeCursor
+		nextCursor = utils.EncodeCursor(lastAccessedAtCursor, storyIDCursor) // Placeholder
+		stories = stories[:limit]
 	}
 
-	r.logger.Debug("Found stories with progress", append(logFields, zap.Int("count", len(stories)), zap.Bool("hasNext", nextCursor != ""))...)
+	log.Info("Successfully found stories with progress", zap.Int("count", len(stories)), zap.Bool("hasNext", nextCursor != ""))
 	return stories, nextCursor, nil
 }
 

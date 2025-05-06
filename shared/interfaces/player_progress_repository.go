@@ -39,4 +39,12 @@ type PlayerProgressRepository interface {
 
 	// CheckProgressExistsForStories checks if progress exists for a user and multiple stories.
 	CheckProgressExistsForStories(ctx context.Context, querier DBTX, userID uuid.UUID, storyIDs []uuid.UUID) (map[uuid.UUID]bool, error)
+
+	// UpsertInitial attempts to insert an initial player progress record.
+	// If a record with the same (user_id, published_story_id, current_state_hash=InitialStateHash) already exists,
+	// it does nothing but returns the ID of the existing or newly inserted record.
+	UpsertInitial(ctx context.Context, querier DBTX, progress *models.PlayerProgress) (uuid.UUID, error)
+
+	// Update обновляет существующий прогресс игрока.
+	Update(ctx context.Context, querier DBTX, progress *models.PlayerProgress) error
 }

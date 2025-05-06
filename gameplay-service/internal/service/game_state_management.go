@@ -95,49 +95,41 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 		return nil, err
 	}
 
+	// --- Upsert Initial Player Progress ---
 	var initialProgressID uuid.UUID
-	initialProgress, progressErr := progressRepoTx.GetByStoryIDAndHash(ctx, tx, publishedStoryID, models.InitialStateHash)
-
-	if progressErr == nil {
-		initialProgressID = initialProgress.ID
-		log.Debug("Found existing initial PlayerProgress node", zap.String("progressID", initialProgressID.String()))
-	} else if errors.Is(progressErr, models.ErrNotFound) || errors.Is(progressErr, pgx.ErrNoRows) {
-		log.Info("Initial PlayerProgress node not found, creating it")
-		initialStats := make(map[string]int)
-		if publishedStory.Setup != nil && string(publishedStory.Setup) != "null" {
-			var setupContent models.NovelSetupContent
-			if setupErr := json.Unmarshal(publishedStory.Setup, &setupContent); setupErr == nil && setupContent.CoreStatsDefinition != nil {
-				for key, statDef := range setupContent.CoreStatsDefinition {
-					initialStats[key] = statDef.Initial
-				}
-				log.Debug("Initialized initial progress stats from story setup", zap.Any("initialStats", initialStats))
+	// Prepare the initial progress data
+	initialStats := make(map[string]int)
+	if publishedStory.Setup != nil && string(publishedStory.Setup) != "null" {
+		var setupContent models.NovelSetupContent
+		if setupErr := json.Unmarshal(publishedStory.Setup, &setupContent); setupErr == nil && setupContent.CoreStatsDefinition != nil {
+			for key, statDef := range setupContent.CoreStatsDefinition {
+				initialStats[key] = statDef.Initial
 			}
+			log.Debug("Initialized initial progress stats from story setup", zap.Any("initialStats", initialStats))
 		}
-
-		newInitialProgress := &models.PlayerProgress{
-			UserID:                playerID,
-			PublishedStoryID:      publishedStoryID,
-			CurrentStateHash:      models.InitialStateHash,
-			CoreStats:             initialStats,
-			StoryVariables:        make(map[string]interface{}),
-			GlobalFlags:           []string{},
-			SceneIndex:            0,
-			EncounteredCharacters: []string{},
-		}
-		savedID, createErr := progressRepoTx.Save(ctx, tx, newInitialProgress)
-		if createErr != nil {
-			log.Error("Error creating initial player progress node in repository", zap.Error(createErr))
-			err = models.ErrInternalServer
-			return nil, err
-		}
-		initialProgressID = savedID
-		log.Info("Initial PlayerProgress node created successfully", zap.String("progressID", initialProgressID.String()))
-	} else {
-		log.Error("Unexpected error getting initial player progress node", zap.Error(progressErr))
-		err = models.ErrInternalServer
+	}
+	newInitialProgress := &models.PlayerProgress{
+		// ID will be set by repository if needed
+		UserID:                playerID,
+		PublishedStoryID:      publishedStoryID,
+		CurrentStateHash:      models.InitialStateHash,
+		CoreStats:             initialStats,
+		StoryVariables:        make(map[string]interface{}),
+		GlobalFlags:           []string{},
+		SceneIndex:            0,
+		EncounteredCharacters: []string{},
+	}
+	// Call UpsertInitial
+	upsertedID, upsertErr := progressRepoTx.UpsertInitial(ctx, tx, newInitialProgress)
+	if upsertErr != nil {
+		log.Error("Failed to upsert initial player progress node", zap.Error(upsertErr))
+		err = models.ErrInternalServer // Assign error to be handled by defer
 		return nil, err
 	}
+	initialProgressID = upsertedID
+	log.Info("Initial PlayerProgress upserted/retrieved", zap.String("progressID", initialProgressID.String()))
 
+	// --- Check initial scene ---
 	var initialSceneID *uuid.UUID
 	initialScene, sceneErr := sceneRepoTx.FindByStoryAndHash(ctx, tx, publishedStoryID, models.InitialStateHash)
 	if sceneErr == nil {
@@ -222,31 +214,20 @@ func (s *gameLoopServiceImpl) DeletePlayerGameState(ctx context.Context, userID 
 
 	gameStateRepoTx := database.NewPgPlayerGameStateRepository(tx, s.logger)
 
-	gameState, errState := gameStateRepoTx.GetByID(ctx, tx, gameStateID)
-	if errState != nil {
-		if errors.Is(errState, models.ErrNotFound) || errors.Is(errState, pgx.ErrNoRows) {
-			log.Warn("Player game state not found for deletion by ID")
-			err = models.ErrPlayerGameStateNotFound
-		} else {
-			log.Error("Failed to get player game state for deletion check", zap.Error(errState))
-			err = models.ErrInternalServer
-		}
-		return err
-	}
-
-	if gameState.PlayerID != userID {
-		log.Warn("Attempt to delete game state belonging to another user", zap.Stringer("ownerUserID", gameState.PlayerID))
-		err = models.ErrForbidden
-		return err
-	}
-
-	err = gameStateRepoTx.Delete(ctx, tx, gameStateID)
+	// Call the optimized DeleteForUser method
+	err = gameStateRepoTx.DeleteForUser(ctx, tx, gameStateID, userID)
 	if err != nil {
-		log.Error("Error deleting player game state by ID from repository", zap.Error(err))
-		err = models.ErrInternalServer
-		return err
+		if errors.Is(err, models.ErrNotFound) {
+			// ErrNotFound from DeleteForUser implies not found OR forbidden
+			log.Warn("Player game state not found or user forbidden to delete", zap.Error(err))
+			err = models.ErrPlayerGameStateNotFound // Return specific error
+		} else {
+			log.Error("Error deleting player game state from repository", zap.Error(err))
+			err = models.ErrInternalServer // Return generic internal error
+		}
+		return err // Error will be handled by defer rollback
 	}
 
 	log.Info("Player game state deleted successfully (transaction pending commit)")
-	return nil
+	return nil // Error is nil, defer will commit
 }

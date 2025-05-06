@@ -180,8 +180,8 @@ func (s *likeServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID
 		limit = 20
 	}
 
-	// <<< ИЗМЕНЕНО: Вызываем обновленный метод репозитория publishedRepo >>>
-	summaries, nextCursor, err := s.publishedRepo.ListLikedByUser(ctx, userID, cursor, limit)
+	// Pass the database pool s.pool as the DBTX argument
+	summaries, nextCursor, err := s.publishedRepo.ListLikedByUser(ctx, s.pool, userID, cursor, limit)
 	if err != nil {
 		log.Error("Failed to list liked stories from publishedRepo", zap.Error(err))
 		// Возвращаем внутреннюю ошибку, так как ошибка пришла из репозитория

@@ -479,3 +479,92 @@ func isValidPlayerProgressField(field string) bool {
 		return false
 	}
 }
+
+// UpsertInitial attempts to insert an initial player progress record using INSERT ... ON CONFLICT.
+// It returns the ID of the existing or newly inserted record.
+func (r *pgPlayerProgressRepository) UpsertInitial(ctx context.Context, querier interfaces.DBTX, progress *models.PlayerProgress) (uuid.UUID, error) {
+	const query = `
+        INSERT INTO player_progress (
+            id, user_id, published_story_id, current_state_hash, core_stats,
+            story_variables, global_flags, scene_index, encountered_characters
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (user_id, published_story_id, current_state_hash)
+        DO UPDATE SET
+            -- No actual update needed, just need to retrieve the ID.
+            -- Setting a field to its existing value works around potential restrictions.
+            updated_at = NOW()
+        RETURNING id;
+    `
+	log := r.logger.With(
+		zap.String("method", "UpsertInitial"),
+		zap.Stringer("userID", progress.UserID),
+		zap.Stringer("storyID", progress.PublishedStoryID),
+		zap.String("hash", progress.CurrentStateHash),
+	)
+
+	if progress.CurrentStateHash != models.InitialStateHash {
+		log.Error("UpsertInitial called with non-initial state hash", zap.String("providedHash", progress.CurrentStateHash))
+		return uuid.Nil, fmt.Errorf("UpsertInitial must be used only with InitialStateHash")
+	}
+
+	// Ensure ID is set if it's nil
+	if progress.ID == uuid.Nil {
+		progress.ID = uuid.New()
+	}
+
+	var returnedID uuid.UUID
+	err := querier.QueryRow(ctx, query,
+		progress.ID, progress.UserID, progress.PublishedStoryID, progress.CurrentStateHash,
+		progress.CoreStats, progress.StoryVariables, progress.GlobalFlags,
+		progress.SceneIndex, progress.EncounteredCharacters,
+	).Scan(&returnedID)
+
+	if err != nil {
+		log.Error("Failed to execute UpsertInitial query", zap.Error(err))
+		return uuid.Nil, fmt.Errorf("database error during UpsertInitial: %w", err)
+	}
+
+	log.Info("Initial progress node upserted/retrieved successfully", zap.Stringer("progressID", returnedID))
+	return returnedID, nil
+}
+
+// Update updates an existing player progress record.
+func (r *pgPlayerProgressRepository) Update(ctx context.Context, querier interfaces.DBTX, progress *models.PlayerProgress) error {
+	const query = `
+        UPDATE player_progress SET
+            current_state_hash = $2,
+            core_stats = $3,
+            story_variables = $4,
+            global_flags = $5,
+            scene_index = $6,
+            encountered_characters = $7,
+            updated_at = NOW()
+        WHERE id = $1 AND user_id = $8;
+    `
+	log := r.logger.With(
+		zap.String("method", "Update"),
+		zap.Stringer("progressID", progress.ID),
+		zap.Stringer("userID", progress.UserID),
+	)
+
+	cmdTag, err := querier.Exec(ctx, query,
+		progress.ID, progress.CurrentStateHash, progress.CoreStats, progress.StoryVariables,
+		progress.GlobalFlags, progress.SceneIndex, progress.EncounteredCharacters,
+		progress.UserID, // For WHERE clause
+	)
+
+	if err != nil {
+		log.Error("Failed to execute update query for player progress", zap.Error(err))
+		return fmt.Errorf("database error during player progress update: %w", err)
+	}
+
+	if cmdTag.RowsAffected() == 0 {
+		log.Warn("No player progress found to update, or user ID mismatch", zap.Stringer("progressID", progress.ID), zap.Stringer("userID", progress.UserID))
+		// Consider checking if the record exists to return ErrNotFound vs potentially ErrForbidden
+		return models.ErrNotFound // Or a more specific error
+	}
+
+	log.Info("Player progress updated successfully")
+	return nil
+}
