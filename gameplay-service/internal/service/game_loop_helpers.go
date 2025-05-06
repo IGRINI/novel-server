@@ -221,14 +221,7 @@ func createGenerationPayload(
 	compressedInputData["sv"] = nonTransientVars
 	compressedInputData["ec"] = progress.EncounteredCharacters
 
-	userChoiceMap := make(map[string]string)
-	if len(madeChoicesInfo) > 0 {
-
-		lastChoice := madeChoicesInfo[len(madeChoicesInfo)-1]
-		userChoiceMap["d"] = lastChoice.Desc
-		userChoiceMap["t"] = lastChoice.Text
-	}
-	compressedInputData["uc"] = userChoiceMap
+	compressedInputData["uc"] = madeChoicesInfo
 
 	userInputBytes, errMarshal := json.Marshal(compressedInputData)
 	if errMarshal != nil {

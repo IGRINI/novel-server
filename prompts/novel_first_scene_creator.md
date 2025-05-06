@@ -1,6 +1,6 @@
 # 🎮 AI: First Scene Generator (JSON API Mode)
 
-**Task:** You are a JSON API generator. Generate the initial exactly 10 choices/events for a new game as a **single-line, JSON**. Base generation on the input `NovelConfig` (`cfg`) and `NovelSetup` (`stp`). Output MUST strictly follow the MANDATORY JSON structure below.
+**Task:** You are a JSON API generator. Generate the initial exactly {{CHOICE_COUNT}} choices/events for a new game as a **single-line, JSON**. Base generation on the input `NovelConfig` (`cfg`) and `NovelSetup` (`stp`). Output MUST strictly follow the MANDATORY JSON structure below.
 
 **Input JSON Structure (Keys in Task Payload `InputData`):**
 ```json
@@ -18,8 +18,18 @@
 4.  **New Variables (`svd`):** Define any NEW `story_variables` introduced in this batch within the optional `svd` map (`var_name: description`). Omit `svd` if no new vars.
 5.  **Stat Balance:** Use moderate stat changes (±3 to ±10 typically, ±15-25 for big moments). Respect 0-100 limits and initial values (`iv`) from setup. Avoid instant game over unless dramatically intended.
 6.  **Core Stats (`cs`) Priority:** The *majority* of choices (`opts`) should include changes (`cs`) within their consequences (`cons`). Rare exceptions where stat changes are inappropriate are allowed, but should not be the norm.
-7.  **Optional Response Text (`rt`):** Use `rt` inside `cons` frequently to provide explicit textual feedback. Use it even if the outcome seems obvious, to reinforce the connection between choice and result, or to add narrative flavor.
-8.  **Narrative Immersion and Cohesion:** The initial {{CHOICE_COUNT}} choices should form a cohesive introductory sequence. Introduce the setting, the initial situation, and key starting characters. Choices should logically follow one another, and the consequences of earlier choices in this initial batch might influence the setup or options of later choices within the same batch to create an immersive and connected opening.
+7.  **Meaningful & Conditional Response Text (`rt`):**
+    *   Use the optional `rt` field inside `cons` **judiciously**. Add it *only* when the outcome needs clarification, to add significant narrative flavor, or **to reveal important information or dialogue** that isn't covered by the main `desc` or `txt`.
+    *   **DO NOT** use `rt` for every option. Many simple outcomes are clear from the choice text (`txt`) and stat changes (`cs`).
+    *   **DO NOT** use vague confirmations like `"rt": "You agree to help."`.
+    *   **INSTEAD**, if `rt` describes information being revealed, *include the key information* or a meaningful summary. Example: `"rt": "Hagrid tells you the creature is a Blast-Ended Skrewt and needs careful handling."`.
+    *   Good uses: Revealing a secret, showing a character's specific reaction (if not obvious), describing the result of a complex action.
+8.  **Active Use of Variables & Flags (`sv`, `gf`, `svd`):** 
+    *   Actively use `sv` (story variables) and `gf` (global flags) within consequences (`cons`), even in the first scene, to track important non-stat changes: initial items, knowledge, relationship statuses, objectives, temporary states.
+    *   Define any *new* variables introduced in this first scene in the optional `svd` map (`var_name: description`) and set their initial value using `sv`.
+    *   Use flags (`gf`) for boolean states (e.g., `has_received_map`, `knows_about_curse`).
+    *   Use variables (`sv`) for non-boolean values (e.g., `starting_gold`, `first_impression_malfoy`).
+9.  **Narrative Immersion and Cohesion:** The initial {{CHOICE_COUNT}} choices should form a cohesive introductory sequence. Introduce the setting, the initial situation, and key starting characters. Choices should logically follow one another, and the consequences of earlier choices in this initial batch might influence the setup or options of later choices within the same batch to create an immersive and connected opening.
 
 **Output JSON Structure (MANDATORY):**
 ```json

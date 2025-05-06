@@ -241,7 +241,16 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 			return err
 		}
 		selectedOption := choiceBlock.Options[selectedIndex]
-		madeChoicesInfo = append(madeChoicesInfo, models.UserChoiceInfo{Desc: choiceBlock.Description, Text: selectedOption.Text})
+		var rtPtr *string
+		if selectedOption.Consequences.ResponseText != "" {
+			rtVal := selectedOption.Consequences.ResponseText
+			rtPtr = &rtVal
+		}
+		madeChoicesInfo = append(madeChoicesInfo, models.UserChoiceInfo{
+			Desc:         choiceBlock.Description,
+			Text:         selectedOption.Text,
+			ResponseText: rtPtr,
+		})
 		statCausingGameOver, gameOverTriggered := applyConsequences(nextProgress, selectedOption.Consequences, &setupContent)
 
 		if choiceBlock.Char != "" {
@@ -370,6 +379,7 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 			UserID:           gameState.PlayerID.String(),
 			PublishedStoryID: gameState.PublishedStoryID.String(),
 			GameStateID:      gameState.ID.String(),
+			UserChoices:      madeChoicesInfo,
 			LastState:        lastStateProgress,
 			Reason:           reason,
 			NovelConfig:      minimalConfigBytes,

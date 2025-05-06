@@ -485,14 +485,13 @@ func isValidPlayerProgressField(field string) bool {
 func (r *pgPlayerProgressRepository) UpsertInitial(ctx context.Context, querier interfaces.DBTX, progress *models.PlayerProgress) (uuid.UUID, error) {
 	const query = `
         INSERT INTO player_progress (
-            id, user_id, published_story_id, current_state_hash, core_stats,
-            story_variables, global_flags, scene_index, encountered_characters
+            id, user_id, published_story_id, current_state_hash, current_core_stats,
+            current_story_variables, current_global_flags, scene_index
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ON CONFLICT (user_id, published_story_id, current_state_hash)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (published_story_id, current_state_hash)
         DO UPDATE SET
             -- No actual update needed, just need to retrieve the ID.
-            -- Setting a field to its existing value works around potential restrictions.
             updated_at = NOW()
         RETURNING id;
     `
@@ -513,11 +512,25 @@ func (r *pgPlayerProgressRepository) UpsertInitial(ctx context.Context, querier 
 		progress.ID = uuid.New()
 	}
 
+	// Marshal maps to JSON
+	coreStatsJSON, errM1 := utils.MarshalMap(progress.CoreStats)
+	storyVarsJSON, errM2 := utils.MarshalMap(progress.StoryVariables)
+	if errM1 != nil || errM2 != nil {
+		log.Error("Failed to marshal progress data for UpsertInitial", zap.Error(errM1), zap.Error(errM2))
+		return uuid.Nil, fmt.Errorf("failed to marshal progress data: %v, %v", errM1, errM2)
+	}
+	var globalFlagsValue interface{}
+	if len(progress.GlobalFlags) > 0 {
+		globalFlagsValue = pq.Array(progress.GlobalFlags)
+	} else {
+		globalFlagsValue = "{}" // Use PostgreSQL empty array literal
+	}
+
 	var returnedID uuid.UUID
 	err := querier.QueryRow(ctx, query,
 		progress.ID, progress.UserID, progress.PublishedStoryID, progress.CurrentStateHash,
-		progress.CoreStats, progress.StoryVariables, progress.GlobalFlags,
-		progress.SceneIndex, progress.EncounteredCharacters,
+		coreStatsJSON, storyVarsJSON, globalFlagsValue,
+		progress.SceneIndex,
 	).Scan(&returnedID)
 
 	if err != nil {
@@ -534,13 +547,12 @@ func (r *pgPlayerProgressRepository) Update(ctx context.Context, querier interfa
 	const query = `
         UPDATE player_progress SET
             current_state_hash = $2,
-            core_stats = $3,
-            story_variables = $4,
-            global_flags = $5,
+            current_core_stats = $3,
+            current_story_variables = $4,
+            current_global_flags = $5,
             scene_index = $6,
-            encountered_characters = $7,
             updated_at = NOW()
-        WHERE id = $1 AND user_id = $8;
+        WHERE id = $1 AND user_id = $7;
     `
 	log := r.logger.With(
 		zap.String("method", "Update"),
@@ -548,10 +560,25 @@ func (r *pgPlayerProgressRepository) Update(ctx context.Context, querier interfa
 		zap.Stringer("userID", progress.UserID),
 	)
 
+	// Marshal maps to JSON
+	coreStatsJSON, errM1 := utils.MarshalMap(progress.CoreStats)
+	storyVarsJSON, errM2 := utils.MarshalMap(progress.StoryVariables)
+	if errM1 != nil || errM2 != nil {
+		log.Error("Failed to marshal progress data for Update", zap.Error(errM1), zap.Error(errM2))
+		return fmt.Errorf("failed to marshal progress data: %v, %v", errM1, errM2)
+	}
+	var globalFlagsValue interface{}
+	if len(progress.GlobalFlags) > 0 {
+		globalFlagsValue = pq.Array(progress.GlobalFlags)
+	} else {
+		globalFlagsValue = "{}" // Use PostgreSQL empty array literal
+	}
+
 	cmdTag, err := querier.Exec(ctx, query,
-		progress.ID, progress.CurrentStateHash, progress.CoreStats, progress.StoryVariables,
-		progress.GlobalFlags, progress.SceneIndex, progress.EncounteredCharacters,
-		progress.UserID, // For WHERE clause
+		progress.ID, progress.CurrentStateHash,
+		coreStatsJSON, storyVarsJSON,
+		globalFlagsValue, progress.SceneIndex,
+		progress.UserID, // For WHERE clause ($7)
 	)
 
 	if err != nil {
@@ -575,12 +602,12 @@ func (r *pgPlayerProgressRepository) UpsertByHash(ctx context.Context, querier i
 	// Note: This query assumes a unique constraint exists on (published_story_id, current_state_hash)
 	const query = `
         INSERT INTO player_progress (
-            id, user_id, published_story_id, current_state_hash, core_stats,
-            story_variables, global_flags, scene_index, encountered_characters,
+            id, user_id, published_story_id, current_state_hash, current_core_stats,
+            current_story_variables, current_global_flags, scene_index,
             last_story_summary, last_future_direction, last_var_impact_summary, current_scene_summary,
             created_at, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         ON CONFLICT (published_story_id, current_state_hash)
         DO UPDATE SET
             -- Update updated_at just to ensure RETURNING id works correctly and potentially track reuse
@@ -617,17 +644,11 @@ func (r *pgPlayerProgressRepository) UpsertByHash(ctx context.Context, querier i
 	} else {
 		globalFlagsValue = "{}" // Use PostgreSQL empty array literal
 	}
-	var encounteredCharsValue interface{}
-	if len(progress.EncounteredCharacters) > 0 {
-		encounteredCharsValue = pq.Array(progress.EncounteredCharacters)
-	} else {
-		encounteredCharsValue = "{}" // Use PostgreSQL empty array literal
-	}
 
 	var returnedID uuid.UUID
 	err := querier.QueryRow(ctx, query,
 		progress.ID, progress.UserID, progress.PublishedStoryID, progress.CurrentStateHash,
-		coreStatsJSON, storyVarsJSON, globalFlagsValue, progress.SceneIndex, encounteredCharsValue,
+		coreStatsJSON, storyVarsJSON, globalFlagsValue, progress.SceneIndex,
 		progress.LastStorySummary, progress.LastFutureDirection, progress.LastVarImpactSummary, progress.CurrentSceneSummary,
 		progress.CreatedAt, progress.UpdatedAt,
 	).Scan(&returnedID)

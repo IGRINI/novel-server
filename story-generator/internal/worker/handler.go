@@ -430,7 +430,8 @@ func (h *TaskHandler) saveResultAndNotify(
 				}
 
 				// Используем Upsert, т.к. задача может быть перезапущена
-				upsertErr := h.sceneRepo.Upsert(ctx, h.db, scene)
+				// --- ИСПРАВЛЕНО: Принимаем два значения от Upsert ---
+				_, upsertErr := h.sceneRepo.Upsert(ctx, h.db, scene)
 				if upsertErr != nil {
 					log.Printf("[TaskID: %s] КРИТИЧЕСКАЯ ОШИБКА: Не удалось сохранить/обновить сцену (StoryID: %s, StateHash: %s): %v", payload.TaskID, payload.PublishedStoryID, payload.StateHash, upsertErr)
 					execErr = fmt.Errorf("ошибка сохранения сцены: %w", upsertErr)

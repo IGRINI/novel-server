@@ -8,7 +8,8 @@
   "cfg": { "gn": "string", "pp": {"st": "string", "tn": "string"} /*, ... */ }, // Config (genre, style, tone)
   "setup": { "csd": {}, "chars": [] /*, ... */ }, // Setup (context)
   "lst": { "cs": {}, "gf": [], "sv": {}, "sssf": "string" /*, ... */ }, // Last State (stats, flags, vars, summary) - CRITICAL for context
-  "rsn": { "sn": "string", "cond": "string", "val": number } // Reason/Trigger for the ending (e.g., stat failure, victory condition met)
+  "rsn": { "sn": "string", "cond": "string", "val": number }, // Reason/Trigger for the ending (e.g., stat failure, victory condition met)
+  "uc": [ {"d": "string", "t": "string", "rt": "string | null"}, ... ] // User choices from the final turn leading to this ending
 }
 ```
 

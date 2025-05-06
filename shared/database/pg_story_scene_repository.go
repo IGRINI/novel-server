@@ -52,6 +52,7 @@ const (
             scene_content = EXCLUDED.scene_content,
             updated_at = NOW()
         WHERE trim(story_scenes.scene_content) = '{}' OR trim(story_scenes.scene_content) = '[]'
+    RETURNING id
     `
 	deleteStorySceneQuery            = `DELETE FROM story_scenes WHERE id = $1`
 	getStorySceneByStoryAndHashQuery = `
@@ -219,7 +220,8 @@ func (r *pgStorySceneRepository) UpdateContent(ctx context.Context, querier inte
 }
 
 // Upsert creates a new scene or updates an existing one based on storyID and stateHash.
-func (r *pgStorySceneRepository) Upsert(ctx context.Context, querier interfaces.DBTX, scene *models.StoryScene) error {
+// Возвращает ID вставленной или обновленной записи.
+func (r *pgStorySceneRepository) Upsert(ctx context.Context, querier interfaces.DBTX, scene *models.StoryScene) (uuid.UUID, error) {
 	if scene.ID == uuid.Nil {
 		scene.ID = uuid.New() // Генерируем ID для новой записи
 	}
@@ -234,20 +236,38 @@ func (r *pgStorySceneRepository) Upsert(ctx context.Context, querier interfaces.
 		zap.String("sceneIDHint", scene.ID.String()), // ID может измениться при конфликте
 	}
 
-	_, err := querier.Exec(ctx, upsertStorySceneQuery,
+	var returnedID uuid.UUID // Переменная для возвращенного ID
+
+	// Используем QueryRow(...).Scan(...) вместо Exec(...)
+	err := querier.QueryRow(ctx, upsertStorySceneQuery,
 		scene.ID,
 		scene.PublishedStoryID,
 		scene.StateHash,
 		scene.Content,
 		scene.CreatedAt,
-	)
+	).Scan(&returnedID)
 
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Это означает, что конфликт произошел, но UPDATE был пропущен из-за WHERE.
+			// Нужно получить ID существующей записи.
+			r.logger.Warn("Upsert conflict occurred, but update was skipped due to existing content. Fetching existing scene ID.", logFields...)
+			existingScene, findErr := r.GetByStoryIDAndStateHash(ctx, querier, scene.PublishedStoryID, scene.StateHash)
+			if findErr != nil {
+				r.logger.Error("Failed to fetch existing scene ID after skipped upsert", append(logFields, zap.Error(findErr))...)
+				// Возвращаем оригинальную ошибку upsert + контекст
+				return uuid.Nil, fmt.Errorf("ошибка upsert: конфликт, обновление пропущено, не удалось получить ID существующей сцены: %w; исходная ошибка: %w", findErr, err)
+			}
+			r.logger.Info("Successfully retrieved existing scene ID after skipped upsert", append(logFields, zap.String("existingSceneID", existingScene.ID.String()))...)
+			return existingScene.ID, nil // Возвращаем ID существующей записи
+		}
+		// Другая ошибка при upsert
 		r.logger.Error("Failed to upsert story scene", append(logFields, zap.Error(err))...)
-		return fmt.Errorf("ошибка upsert сцены: %w", err)
+		return uuid.Nil, fmt.Errorf("ошибка upsert сцены: %w", err)
 	}
-	r.logger.Info("Story scene upserted successfully", logFields...)
-	return nil
+	// Логируем и возвращаем реальный ID
+	r.logger.Info("Story scene upserted successfully", append(logFields, zap.String("returnedSceneID", returnedID.String()))...)
+	return returnedID, nil
 }
 
 // Delete deletes a story scene by its unique ID.

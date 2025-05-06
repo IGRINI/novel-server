@@ -117,12 +117,14 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 		defer tx.Rollback(operationCtx)
 		logWithState.Info("DB Transaction started")
 
-		errUpsert := p.sceneRepo.Upsert(operationCtx, tx, scene)
+		logWithState.Debug("TX: Attempting to upsert scene", zap.Any("scene_to_upsert", scene))
+
+		actualSceneID, errUpsert := p.sceneRepo.Upsert(operationCtx, tx, scene)
 		if errUpsert != nil {
 			logWithState.Error("TX ERROR: Failed to upsert scene", zap.String("scene_id_attempted", scene.ID.String()), zap.Error(errUpsert))
 			return p.handleSceneGenerationError(operationCtx, notification, publishedStoryID, fmt.Sprintf("failed to upsert scene: %v", errUpsert), logWithState)
 		}
-		logWithState.Info("TX: Scene upserted successfully", zap.String("scene_id", scene.ID.String()))
+		logWithState.Info("TX: Scene upserted successfully", zap.String("actual_scene_id", actualSceneID.String()))
 
 		fetchedStoryState, errState := p.publishedRepo.GetByID(operationCtx, tx, publishedStoryID)
 		if errState != nil {
@@ -130,6 +132,8 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 			finalStoryStatus = sharedModels.StatusError
 			storyUserID = uuid.Nil
 		} else {
+			logWithState.Debug("TX: Successfully retrieved PublishedStory state within transaction", zap.Any("fetched_story_state", fetchedStoryState))
+
 			currentStoryState = fetchedStoryState
 			finalStoryStatus = currentStoryState.Status
 			storyUserID = currentStoryState.UserID
@@ -158,12 +162,15 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 		}
 
 		if notification.GameStateID != "" {
-			gameState, errGetState := p.playerGameStateRepo.GetByID(operationCtx, p.db, gameStateID)
+			logWithState.Debug("TX: Attempting to get PlayerGameState by ID within transaction", zap.String("search_gameStateID", gameStateID.String()))
+
+			gameState, errGetState := p.playerGameStateRepo.GetByID(operationCtx, tx, gameStateID)
 			if errGetState != nil {
 				logWithState.Error("TX ERROR: Failed to get PlayerGameState by ID", zap.Error(errGetState))
 				finalPlayerStatus = sharedModels.PlayerStatusError
 				return p.handleSceneGenerationError(operationCtx, notification, publishedStoryID, fmt.Sprintf("failed to get gamestate %s: %v", gameStateID.String(), errGetState), logWithState)
 			}
+			logWithState.Debug("TX: Successfully retrieved PlayerGameState by ID within transaction", zap.Any("retrieved_gameState", gameState))
 
 			if isGameOverScene {
 				gameState.PlayerStatus = sharedModels.PlayerStatusCompleted
@@ -173,14 +180,28 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 			} else {
 				gameState.PlayerStatus = sharedModels.PlayerStatusPlaying
 			}
-			gameState.CurrentSceneID = uuid.NullUUID{UUID: scene.ID, Valid: true}
+			gameState.CurrentSceneID = uuid.NullUUID{UUID: actualSceneID, Valid: true}
 			gameState.ErrorDetails = nil
 			gameState.LastActivityAt = time.Now().UTC()
 
-			gameStateIDResult, errSave := p.playerGameStateRepo.Save(operationCtx, p.db, gameState)
+			logWithState.Debug("TX: Attempting to save updated PlayerGameState within transaction",
+				zap.String("gameStateID_to_save", gameState.ID.String()),
+				zap.String("new_playerStatus", string(gameState.PlayerStatus)),
+				zap.String("new_currentSceneID", func() string {
+					if gameState.CurrentSceneID.Valid {
+						return gameState.CurrentSceneID.UUID.String()
+					}
+					return "<null>"
+				}()),
+			)
+
+			gameStateIDResult, errSave := p.playerGameStateRepo.Save(operationCtx, tx, gameState)
 			if errSave != nil {
-				logWithState.Error("TX ERROR: Failed to save updated PlayerGameState", zap.Error(errSave))
-				return p.handleSceneGenerationError(operationCtx, notification, publishedStoryID, fmt.Sprintf("failed to save gamestate referencing scene %s: %v", scene.ID.String(), errSave), logWithState)
+				logWithState.Error("TX ERROR: Failed to save updated PlayerGameState",
+					zap.Error(errSave),
+					zap.String("referenced_scene_id", actualSceneID.String()),
+				)
+				return p.handleSceneGenerationError(operationCtx, notification, publishedStoryID, fmt.Sprintf("failed to save gamestate referencing scene %s: %v", actualSceneID.String(), errSave), logWithState)
 			}
 
 			finalPlayerStatus = gameState.PlayerStatus
@@ -209,6 +230,8 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 		} else {
 			logWithState.Info("TX: No GameStateID in notification, skipping PlayerGameState update.")
 		}
+
+		logWithState.Debug("TX: All operations within transaction seem successful, attempting commit...")
 
 		if errCommit := tx.Commit(operationCtx); errCommit != nil {
 			logWithState.Error("DB ERROR: Failed to commit transaction", zap.Error(errCommit))
@@ -275,17 +298,22 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 }
 
 func (p *NotificationProcessor) handleSceneGenerationError(ctx context.Context, notification sharedMessaging.NotificationPayload, publishedStoryID uuid.UUID, errorDetails string, logger *zap.Logger) error {
+	logger.Warn("Entering handleSceneGenerationError", zap.String("reason", errorDetails))
+
 	dbCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
 	var storyUserID uuid.UUID
 	var updateErr error
+	var parsedGameStateID uuid.UUID
+	var gameStateUpdatedSuccessfully bool
 
 	if notification.GameStateID != "" {
 		gameStateID, errParse := uuid.Parse(notification.GameStateID)
 		if errParse != nil {
 			logger.Error("ERROR: Failed to parse GameStateID from error notification", zap.Error(errParse), zap.String("gameStateID", notification.GameStateID))
 		} else {
+			parsedGameStateID = gameStateID
 			gameState, errGetState := p.playerGameStateRepo.GetByID(dbCtx, p.db, gameStateID)
 			if errGetState != nil {
 				if errors.Is(errGetState, sharedModels.ErrNotFound) {
@@ -309,28 +337,29 @@ func (p *NotificationProcessor) handleSceneGenerationError(ctx context.Context, 
 						}
 					} else {
 						logger.Info("PlayerGameState updated to Error status successfully")
-						return updateErr
+						gameStateUpdatedSuccessfully = true
 					}
 				} else {
 					logger.Info("PlayerGameState already in Error status, skipping update.")
-					return updateErr
+					gameStateUpdatedSuccessfully = true
+					storyUserID = gameState.PlayerID
 				}
 			}
 		}
 	}
 
-	logger.Info("Updating PublishedStory status to Error (either no GameStateID or GameState update failed)")
-	errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, false, false, stringRef(errorDetails))
-	if errUpdateStory != nil {
-		logger.Error("CRITICAL DB ERROR: Failed to update PublishedStory status to Error", zap.Error(errUpdateStory))
-		if updateErr == nil {
+	if !gameStateUpdatedSuccessfully {
+		logger.Info("Updating PublishedStory status to Error (either no GameStateID or GameState update failed/skipped)")
+		errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, false, false, stringRef(errorDetails))
+		if errUpdateStory != nil {
+			logger.Error("CRITICAL DB ERROR: Failed to update PublishedStory status to Error", zap.Error(errUpdateStory))
 			updateErr = fmt.Errorf("failed to update story %s status to Error: %w", publishedStoryID.String(), errUpdateStory)
+		} else {
+			logger.Info("PublishedStory status updated to Error successfully")
 		}
-	} else {
-		logger.Info("PublishedStory status updated to Error successfully")
 	}
 
-	if storyUserID == uuid.Nil && updateErr == nil {
+	if storyUserID == uuid.Nil {
 		story, errGet := p.publishedRepo.GetByID(dbCtx, p.db, publishedStoryID)
 		if errGet != nil {
 			logger.Error("Failed to get story details for WS update after setting Error status", zap.Error(errGet))
@@ -341,20 +370,43 @@ func (p *NotificationProcessor) handleSceneGenerationError(ctx context.Context, 
 
 	if storyUserID != uuid.Nil {
 		clientUpdateError := sharedModels.ClientStoryUpdate{
-			ID:           publishedStoryID.String(),
 			UserID:       storyUserID.String(),
-			UpdateType:   sharedModels.UpdateTypeStory,
-			Status:       string(sharedModels.StatusError),
 			ErrorDetails: stringRef(errorDetails),
 			StateHash:    notification.StateHash,
 		}
+		logMessage := ""
+		wsLogFields := []zap.Field{
+			zap.Stringer("userID", storyUserID),
+			zap.Stringer("publishedStoryID", publishedStoryID),
+			zap.String("stateHash", notification.StateHash),
+		}
+
+		if parsedGameStateID != uuid.Nil && gameStateUpdatedSuccessfully {
+			clientUpdateError.ID = parsedGameStateID.String()
+			clientUpdateError.UpdateType = sharedModels.UpdateTypeGameState
+			clientUpdateError.Status = string(sharedModels.PlayerStatusError)
+			logMessage = "ClientStoryUpdate sent (GameState Error)"
+			wsLogFields = append(wsLogFields, zap.Stringer("gameStateID", parsedGameStateID))
+		} else {
+			clientUpdateError.ID = publishedStoryID.String()
+			clientUpdateError.UpdateType = sharedModels.UpdateTypeStory
+			clientUpdateError.Status = string(sharedModels.StatusError)
+			logMessage = "ClientStoryUpdate sent (Story Error)"
+		}
+
 		wsCtx, wsCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if errWs := p.clientPub.PublishClientUpdate(wsCtx, clientUpdateError); errWs != nil {
-			logger.Error("Error sending ClientStoryUpdate (Story Error)", zap.Error(errWs))
+			logger.Error("Error sending ClientStoryUpdate on error", append(wsLogFields, zap.Error(errWs))...)
 		} else {
-			logger.Info("ClientStoryUpdate sent (Story Error)")
+			logger.Info(logMessage, wsLogFields...)
 		}
 		wsCancel()
+	} else {
+		logger.Warn("Cannot send WebSocket error update: UserID is unknown",
+			zap.Stringer("publishedStoryID", publishedStoryID),
+			zap.Stringer("parsedGameStateID", parsedGameStateID),
+			zap.Bool("gameStateUpdatedSuccessfully", gameStateUpdatedSuccessfully),
+		)
 	}
 
 	return updateErr

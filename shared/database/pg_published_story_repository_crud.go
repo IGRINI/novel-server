@@ -133,7 +133,7 @@ func (r *pgPublishedStoryRepository) GetWithLikeStatus(ctx context.Context, quer
 		SELECT
 			` + publishedStoryFields + `,
 			CASE WHEN $2::UUID IS NOT NULL THEN EXISTS (
-				SELECT 1 FROM user_story_likes usl WHERE usl.story_id = ps.id AND usl.user_id = $2
+				SELECT 1 FROM story_likes usl WHERE usl.published_story_id = ps.id AND usl.user_id = $2
 			) ELSE FALSE END AS is_liked
 		FROM published_stories ps
 		WHERE ps.id = $1;

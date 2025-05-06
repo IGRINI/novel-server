@@ -35,7 +35,8 @@ type StorySceneRepository interface {
 	UpdateContent(ctx context.Context, querier DBTX, id uuid.UUID, content []byte) error
 
 	// Upsert creates a new scene or updates an existing one based on storyID and stateHash.
-	Upsert(ctx context.Context, querier DBTX, scene *models.StoryScene) error
+	// Возвращает ID вставленной или обновленной записи.
+	Upsert(ctx context.Context, querier DBTX, scene *models.StoryScene) (uuid.UUID, error)
 
 	// Delete deletes a story scene by its ID.
 	Delete(ctx context.Context, querier DBTX, id uuid.UUID) error

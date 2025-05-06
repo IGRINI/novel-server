@@ -15,7 +15,7 @@ const (
 	// Поля для полной структуры PublishedStory
 	publishedStoryFields = `
 		ps.id, ps.user_id, ps.config, ps.setup, ps.status, ps.language, ps.is_public, ps.is_adult_content,
-		ps.title, ps.description, error_details, ps.likes_count, ps.created_at, ps.updated_at,
+		ps.title, ps.description, ps.error_details, ps.likes_count, ps.created_at, ps.updated_at,
 		ps.is_first_scene_pending, ps.are_images_pending
 	`
 	// Поля для сводки (используются в PublishedStorySummary)
@@ -79,11 +79,11 @@ func NewPgPublishedStoryRepository(querier interfaces.DBTX, logger *zap.Logger) 
 // << METHOD MOVED TO _list.go >>
 
 // MarkStoryAsLiked отмечает историю как лайкнутую пользователем.
-// Выполняется в транзакции: добавляет запись в user_story_likes и инкрементирует счетчик.
+// Выполняется в транзакции: добавляет запись в story_likes и инкрементирует счетчик.
 // << METHOD MOVED TO _likes.go >>
 
 // MarkStoryAsUnliked отмечает историю как не лайкнутую пользователем.
-// Выполняется в транзакции: удаляет запись из user_story_likes и декрементирует счетчик.
+// Выполняется в транзакции: удаляет запись из story_likes и декрементирует счетчик.
 // << METHOD MOVED TO _likes.go >>
 
 // Ensure pgPublishedStoryRepository implements PublishedStoryRepository

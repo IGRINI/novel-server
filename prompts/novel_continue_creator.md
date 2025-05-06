@@ -9,9 +9,12 @@
   "stp": { ... },  // Original Novel Setup JSON (keys assumed)
   "lst": { ... },  // Final NovelState of previous run (keys: cs, gf, sv, pss, pfd, god?, cc: true)
   "rsn": { "sn": "string", "cond": "string", "val": number }, // Reason for game over (stat_name, condition, value)
+  "uc": [ {"d": "string", "t": "string", "rt": "string | null"}, ... ], // User choices from the final turn of the *previous* character
   "ec": []          // Encountered Characters (always empty for continuation start)
 }
 ```
+
+**IMPORTANT `uc` Field Note: The `uc` field provides the sequence of actions the *previous* character took on their very last turn, leading to the game over described in `rsn` and `lst`. Use this for context when writing the transition text (`etp`).
 
 **Your Goal:** Create the transition narrative (`etp`), define the new starting state (`npd`, `csr`), generate internal notes (`sssf`, `fd`), and the first set of choices (`ch`) for the new character.
 
@@ -22,9 +25,14 @@
 4.  **Character Attribution (`char`):** Each choice block (`ch`) MUST include `char` field with a character name from `stp.chars[].n`. `desc` MUST involve this character. (Note: The input `ec` list will always be empty, so treat all characters as first encounters for the new protagonist).
 5.  **Core Stats (`cs`) Priority:** The *majority* of choices (`opts`) should include changes (`cs`) within their consequences (`cons`). Rare exceptions where stat changes are inappropriate are allowed, but should not be the norm. Respect the values from `csr`.
 6.  **Text Formatting:** Markdown (`*italic*`, `**bold**`) allowed ONLY within `npd`, `etp`, `desc`, `txt`, and the optional `rt` inside `cons`.
-7.  **Optional Response Text (`rt`):** You should use `rt` frequently inside `cons` to provide explicit textual feedback for a choice, complementing other consequences like `cs`, `sv`, or `gf`, or for purely informational outcomes.
-8.  **Internal Notes (`vis`, `svd`):** Usually omit `vis` and `svd` for the very first continuation scene.
-9.  **Narrative Cohesion:** The generated transition (`etp`) and the initial choices (`ch`) for the new character should form a cohesive starting point. Ensure the choices logically follow the setup provided (`npd`, `csr`) and the context of the previous character's ending (`etp`), creating a consistent narrative flow for the new beginning.
+7.  **Active Use of Variables & Flags (`sv`, `gf` - in subsequent choices):** While the *first* choices for the new character might not heavily use `sv`/`gf`, remember to actively use them in consequences (`cons`) later in the playthrough to track important non-stat changes: items, knowledge, relationships, etc.
+8.  **Meaningful & Conditional Response Text (`rt`):**
+    *   Use `rt` **judiciously** in consequences (`cons`), only when needed for clarity, significant narrative flavor, or revealing crucial info/dialogue not in `desc`/`txt`.
+    *   **DO NOT** overuse `rt` for simple outcomes or vague confirmations (e.g., `"You nod."`).
+    *   If `rt` reveals information, make it specific. Instead of `"He tells you the plan"`, use `"rt": "He explains the plan involves sneaking through the kitchens at midnight."`.
+    *   Good uses: Revealing secrets, character reactions, results of complex actions.
+9.  **Internal Notes (`vis`, `svd`):** Usually omit `vis` and `svd` for the very first continuation scene.
+10. **Narrative Cohesion:** The generated transition (`etp`) and the initial choices (`ch`) for the new character should form a cohesive starting point. Ensure the choices logically follow the setup provided (`npd`, `csr`) and the context of the previous character's ending (`etp`), creating a consistent narrative flow for the new beginning.
 
 **Output JSON Structure (MANDATORY):**
 ```json
