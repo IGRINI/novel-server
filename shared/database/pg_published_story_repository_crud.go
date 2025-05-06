@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"novel-server/shared/interfaces"
 	"novel-server/shared/models"
 	"time"
 
@@ -102,11 +103,11 @@ func (r *pgPublishedStoryRepository) Create(ctx context.Context, story *models.P
 }
 
 // GetByID получает опубликованную историю по ее ID.
-func (r *pgPublishedStoryRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.PublishedStory, error) {
+func (r *pgPublishedStoryRepository) GetByID(ctx context.Context, querier interfaces.DBTX, id uuid.UUID) (*models.PublishedStory, error) {
 	logFields := []zap.Field{zap.String("storyID", id.String())}
 	r.logger.Debug("Getting published story by ID", logFields...)
 
-	row := r.db.QueryRow(ctx, getPublishedStoryByIDQuery, id)
+	row := querier.QueryRow(ctx, getPublishedStoryByIDQuery, id)
 	story, err := scanPublishedStory(row) // USE HELPER
 
 	if err != nil {
@@ -155,12 +156,12 @@ func (r *pgPublishedStoryRepository) Update(ctx context.Context, story *models.P
 }
 
 // GetConfigAndSetup получает Config и Setup по ID истории.
-func (r *pgPublishedStoryRepository) GetConfigAndSetup(ctx context.Context, id uuid.UUID) (json.RawMessage, json.RawMessage, error) {
+func (r *pgPublishedStoryRepository) GetConfigAndSetup(ctx context.Context, querier interfaces.DBTX, id uuid.UUID) (json.RawMessage, json.RawMessage, error) {
 	var config, setup []byte // Scan into byte slices
 	logFields := []zap.Field{zap.String("publishedStoryID", id.String())}
 	r.logger.Debug("Getting config and setup for published story", logFields...)
 
-	err := r.db.QueryRow(ctx, getConfigAndSetupQuery, id).Scan(&config, &setup)
+	err := querier.QueryRow(ctx, getConfigAndSetupQuery, id).Scan(&config, &setup)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			r.logger.Warn("Published story not found for config/setup retrieval", logFields...)

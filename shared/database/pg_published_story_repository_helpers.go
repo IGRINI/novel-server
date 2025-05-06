@@ -87,7 +87,7 @@ func scanPublishedStorySummaryWithProgress(row pgx.Row) (*models.PublishedStoryS
 	// Assuming order based on updated publishedStorySummaryWithProgressFields:
 	// ID, Title, ShortDescription, AuthorID, AuthorName, PublishedAt,
 	// IsAdultContent, LikesCount, Status, /* REMOVED */ IsPublic, IsLiked,
-	// HasPlayerProgress, PlayerGameStatus
+	// HasPlayerProgress, PlayerGameStatus, PlayerGameStateID
 	err := row.Scan(
 		&summary.ID,
 		&summary.Title,
@@ -102,6 +102,7 @@ func scanPublishedStorySummaryWithProgress(row pgx.Row) (*models.PublishedStoryS
 		&summary.HasPlayerProgress, // 11 -> Maps to (pgs.player_progress_id IS NOT NULL)
 		&summary.IsPublic,          // 12 -> Maps to ps.is_public
 		&playerGameStatus,          // 13 -> Maps to pgs.player_status
+		&summary.PlayerGameStateID, // 14 -> Maps to pgs.id
 	)
 
 	if err != nil {

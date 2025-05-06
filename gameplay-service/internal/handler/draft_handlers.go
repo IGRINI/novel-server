@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	sharedModels "novel-server/shared/models"
-	"strconv"
 
 	// Добавляем импорт сервиса
 
 	"github.com/gin-gonic/gin" // <<< Используем Gin
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -74,13 +72,10 @@ func (h *GameplayHandler) getStoryConfig(c *gin.Context) { // <<< *gin.Context
 		return // getUserIDFromContext уже вызвал Abort
 	}
 
-	idStr := c.Param("id")
-	id, err := uuid.Parse(idStr)
-	if err != nil {
-		h.logger.Warn("Invalid story ID format in getStoryConfig", zap.String("id", idStr), zap.Error(err))
-		// Используем handleServiceError
-		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
-		return
+	// Используем новую вспомогательную функцию
+	id, ok := parseUUIDParam(c, "id", h.logger)
+	if !ok {
+		return // Ошибка уже обработана и ответ отправлен
 	}
 
 	config, err := h.service.GetStoryConfig(c.Request.Context(), id, userID)
@@ -175,12 +170,10 @@ func (h *GameplayHandler) reviseStoryConfig(c *gin.Context) { // <<< *gin.Contex
 		return
 	}
 
-	idStr := c.Param("id")
-	id, err := uuid.Parse(idStr)
-	if err != nil {
-		h.logger.Warn("Invalid story ID format in reviseStoryConfig", zap.String("id", idStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
-		return
+	// Используем новую вспомогательную функцию
+	id, ok := parseUUIDParam(c, "id", h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
 
 	var req reviseStoryRequest
@@ -214,12 +207,10 @@ func (h *GameplayHandler) publishStoryDraft(c *gin.Context) { // <<< *gin.Contex
 		return
 	}
 
-	idStr := c.Param("id")
-	draftID, err := uuid.Parse(idStr)
-	if err != nil {
-		h.logger.Warn("Invalid draft ID format received", zap.String("id", idStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
-		return
+	// Используем новую вспомогательную функцию
+	draftID, ok := parseUUIDParam(c, "id", h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
 
 	h.logger.Info("Received request to publish draft", zap.String("userID", userID.String()), zap.String("draftID", draftID.String()))
@@ -251,22 +242,10 @@ func (h *GameplayHandler) listStoryConfigs(c *gin.Context) { // <<< *gin.Context
 		return // Оставляем return после Abort
 	}
 
-	// Используем c.Query для Gin
-	limitStr := c.Query("limit")
-	cursor := c.Query("cursor")
-
-	limit := 10
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err != nil || parsedLimit <= 0 {
-			h.logger.Warn("Invalid limit parameter received", zap.String("limit", limitStr), zap.Error(err))
-			handleServiceError(c, fmt.Errorf("%w: invalid 'limit' parameter", sharedModels.ErrBadRequest), h.logger)
-			return
-		}
-		if parsedLimit > 100 {
-			parsedLimit = 100
-		}
-		limit = parsedLimit
+	// Используем новую вспомогательную функцию
+	limit, cursor, ok := parsePaginationParams(c, 10, 100, h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
 
 	h.logger.Debug("Fetching story drafts",
@@ -328,12 +307,10 @@ func (h *GameplayHandler) retryDraftGeneration(c *gin.Context) { // <<< *gin.Con
 		return
 	}
 
-	draftIDStr := c.Param("draft_id")
-	draftID, err := uuid.Parse(draftIDStr)
-	if err != nil {
-		h.logger.Warn("Invalid draft ID format in retryDraftGeneration", zap.String("id", draftIDStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid draft ID format", sharedModels.ErrBadRequest), h.logger)
-		return
+	// Используем новую вспомогательную функцию
+	draftID, ok := parseUUIDParam(c, "draft_id", h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
 
 	log := h.logger.With(zap.String("userID", userID.String()), zap.String("draftID", draftID.String()))
@@ -359,12 +336,10 @@ func (h *GameplayHandler) deleteDraft(c *gin.Context) { // <<< *gin.Context
 		return
 	}
 
-	idStr := c.Param("id")
-	draftID, err := uuid.Parse(idStr)
-	if err != nil {
-		h.logger.Warn("Invalid draft ID format in deleteDraft", zap.String("id", idStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid draft ID format", sharedModels.ErrBadRequest), h.logger)
-		return
+	// Используем новую вспомогательную функцию
+	draftID, ok := parseUUIDParam(c, "id", h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
 
 	// Вызываем метод сервиса

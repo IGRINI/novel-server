@@ -70,21 +70,10 @@ func (h *GameplayHandler) listMyPublishedStories(c *gin.Context) {
 		return
 	}
 
-	limitStr := c.Query("limit")
-	cursor := c.Query("cursor")
-
-	limit := 10
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err != nil || parsedLimit <= 0 {
-			h.logger.Warn("Invalid limit parameter received", zap.String("limit", limitStr), zap.Error(err))
-			handleServiceError(c, fmt.Errorf("%w: invalid 'limit' parameter", sharedModels.ErrBadRequest), h.logger)
-			return
-		}
-		if parsedLimit > 100 {
-			parsedLimit = 100
-		}
-		limit = parsedLimit
+	// Используем новую вспомогательную функцию
+	limit, cursor, ok := parsePaginationParams(c, 10, 100, h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
 
 	log := h.logger.With(
@@ -123,21 +112,10 @@ func (h *GameplayHandler) listMyPublishedStories(c *gin.Context) {
 func (h *GameplayHandler) listPublicPublishedStories(c *gin.Context) {
 	userID, _ := getUserIDFromContext(c) // Опционально для проверки лайков и прогресса
 
-	limitStr := c.Query("limit")
-	cursor := c.Query("cursor")
-
-	limit := 20
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err != nil || parsedLimit <= 0 {
-			h.logger.Warn("Invalid limit parameter received", zap.String("limit", limitStr), zap.Error(err))
-			handleServiceError(c, fmt.Errorf("%w: invalid 'limit' parameter", sharedModels.ErrBadRequest), h.logger)
-			return
-		}
-		if parsedLimit > 100 {
-			parsedLimit = 100
-		}
-		limit = parsedLimit
+	// Используем новую вспомогательную функцию
+	limit, cursor, ok := parsePaginationParams(c, 20, 100, h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
 
 	log := h.logger.With(
@@ -172,12 +150,10 @@ func (h *GameplayHandler) listPublicPublishedStories(c *gin.Context) {
 // GetStoryScene получает текущую игровую сцену для ОПРЕДЕЛЕННОГО СОСТОЯНИЯ ИГРЫ.
 // Теперь принимает gameStateId вместо storyId.
 func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
-	gameStateIdStr := c.Param("game_state_id") // <<< ИЗМЕНЕНО: Получаем game_state_id
-	gameStateID, err := uuid.Parse(gameStateIdStr)
-	if err != nil {
-		h.logger.Warn("Invalid game state ID format in getPublishedStoryScene", zap.String("gameStateId", gameStateIdStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid game state ID format", sharedModels.ErrBadRequest), h.logger)
-		return
+	// Используем новую вспомогательную функцию
+	gameStateID, ok := parseUUIDParam(c, "game_state_id", h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
 
 	// <<< ДОБАВЛЕНО: Получаем userID для проверки прав (хотя сам сервис может это делать) >>>
@@ -331,12 +307,10 @@ func parseChoicesBlock(chJSON json.RawMessage, responseDTO *GameSceneResponseDTO
 
 // makeChoice обрабатывает выбор игрока для ОПРЕДЕЛЕННОГО СОСТОЯНИЯ ИГРЫ.
 func (h *GameplayHandler) makeChoice(c *gin.Context) {
-	gameStateIdStr := c.Param("game_state_id") // <<< ИЗМЕНЕНО: Получаем game_state_id
-	gameStateID, err := uuid.Parse(gameStateIdStr)
-	if err != nil {
-		h.logger.Warn("Invalid game state ID format in makeChoice", zap.String("gameStateId", gameStateIdStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid game state ID format", sharedModels.ErrBadRequest), h.logger)
-		return
+	// Используем новую вспомогательную функцию
+	gameStateID, ok := parseUUIDParam(c, "game_state_id", h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
 
 	var req MakeChoicesRequest
@@ -369,19 +343,15 @@ func (h *GameplayHandler) makeChoice(c *gin.Context) {
 
 // likeStory обрабатывает запрос на постановку лайка опубликованной истории.
 func (h *GameplayHandler) likeStory(c *gin.Context) {
-	userID, err := getUserIDFromContext(c) // <<< Меняем 'ok' на 'err'
-	if err != nil {                        // <<< Проверяем 'err != nil'
-		// Ошибка уже обработана в getUserIDFromContext
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
 		return
 	}
 
-	// <<< ИСПРАВЛЕНО: Получаем 'story_id' >>>
-	idStr := c.Param("story_id")
-	id, err := uuid.Parse(idStr)
-	if err != nil {
-		// <<< ИСПРАВЛЕНО: Логируем 'story_id' >>>
-		h.logger.Warn("Invalid story ID format in likeStory", zap.String("story_id", idStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+	// <<< ИЗМЕНЕНО: Используем ok вместо err >>>
+	id, ok := parseUUIDParam(c, "story_id", h.logger)
+	if !ok { // <<< ИЗМЕНЕНО: Проверяем !ok >>>
+		// Ошибка уже обработана и залогирована в parseUUIDParam
 		return
 	}
 
@@ -411,13 +381,10 @@ func (h *GameplayHandler) unlikeStory(c *gin.Context) {
 		return
 	}
 
-	// <<< ИСПРАВЛЕНО: Получаем 'story_id' >>>
-	idStr := c.Param("story_id")
-	id, err := uuid.Parse(idStr)
-	if err != nil {
-		// <<< ИСПРАВЛЕНО: Логируем 'story_id' >>>
-		h.logger.Warn("Invalid story ID format in unlikeStory", zap.String("story_id", idStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+	// <<< ИЗМЕНЕНО: Используем ok вместо err >>>
+	id, ok := parseUUIDParam(c, "story_id", h.logger)
+	if !ok { // <<< ИЗМЕНЕНО: Проверяем !ok >>>
+		// Ошибка уже обработана и залогирована в parseUUIDParam
 		return
 	}
 
@@ -455,21 +422,10 @@ func (h *GameplayHandler) listLikedStories(c *gin.Context) {
 		return
 	}
 
-	limitStr := c.Query("limit")
-	cursor := c.Query("cursor")
-
-	limit := 10
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err != nil || parsedLimit <= 0 {
-			h.logger.Warn("Invalid limit parameter received", zap.String("limit", limitStr), zap.Error(err))
-			handleServiceError(c, fmt.Errorf("%w: invalid 'limit' parameter", sharedModels.ErrBadRequest), h.logger)
-			return
-		}
-		if parsedLimit > 100 {
-			parsedLimit = 100
-		}
-		limit = parsedLimit
+	// Используем новую вспомогательную функцию
+	limit, cursor, ok := parsePaginationParams(c, 10, 100, h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
 
 	log := h.logger.With(
@@ -503,34 +459,31 @@ func (h *GameplayHandler) listLikedStories(c *gin.Context) {
 func (h *GameplayHandler) setStoryVisibility(c *gin.Context) {
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		return // Ошибка уже обработана
+		return
 	}
 
-	// <<< ИСПРАВЛЕНО: Получаем 'story_id' >>>
-	idStr := c.Param("story_id")
-	storyID, err := uuid.Parse(idStr)
-	if err != nil {
-		// <<< ИСПРАВЛЕНО: Логируем 'story_id' >>>
-		h.logger.Warn("Invalid story ID format in setStoryVisibility", zap.String("story_id", idStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+	// <<< ИЗМЕНЕНО: Используем ok вместо err >>>
+	id, ok := parseUUIDParam(c, "story_id", h.logger)
+	if !ok { // <<< ИЗМЕНЕНО: Проверяем !ok >>>
+		// Ошибка уже обработана и залогирована в parseUUIDParam
 		return
 	}
 
 	var req SetStoryVisibilityRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		h.logger.Warn("Invalid request body for setStoryVisibility", zap.String("storyID", storyID.String()), zap.Error(err))
+		h.logger.Warn("Invalid request body for setStoryVisibility", zap.String("storyID", id.String()), zap.Error(err))
 		handleServiceError(c, fmt.Errorf("%w: invalid request body: %v", sharedModels.ErrBadRequest, err), h.logger)
 		return
 	}
 
 	log := h.logger.With(
-		zap.String("storyID", storyID.String()),
+		zap.String("storyID", id.String()),
 		zap.Stringer("userID", userID),
 		zap.Bool("isPublic", req.IsPublic),
 	)
 	log.Info("Setting story visibility")
 
-	err = h.service.SetStoryVisibility(c.Request.Context(), storyID, userID, req.IsPublic)
+	err = h.service.SetStoryVisibility(c.Request.Context(), id, userID, req.IsPublic)
 	if err != nil {
 		// Логируем только неожидаемые ошибки
 		if !errors.Is(err, sharedModels.ErrNotFound) &&
@@ -554,15 +507,13 @@ func (h *GameplayHandler) retryPublishedStoryGeneration(c *gin.Context) {
 		return // Ошибка уже обработана
 	}
 
-	idStr := c.Param("story_id") // <-- ИЗМЕНЕНО: Используем "story_id" вместо "id"
-	storyID, err := uuid.Parse(idStr)
-	if err != nil {
-		h.logger.Warn("Invalid story ID format in retryPublishedStoryGeneration", zap.String("story_id", idStr), zap.Error(err)) // <-- ИЗМЕНЕНО: Логируем как story_id
-		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
-		return
+	// Используем новую вспомогательную функцию
+	id, ok := parseUUIDParam(c, "story_id", h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
 
-	log := h.logger.With(zap.String("userID", userID.String()), zap.String("storyID", storyID.String()))
+	log := h.logger.With(zap.String("userID", userID.String()), zap.String("storyID", id.String()))
 	log.Info("Handling retry published story generation request")
 
 	// <<< ИЗМЕНЕНО: Проверка лимита активных генераций через publishedStoryRepo >>>
@@ -585,7 +536,7 @@ func (h *GameplayHandler) retryPublishedStoryGeneration(c *gin.Context) {
 	*/
 
 	// <<< ИЗМЕНЕНО: Вызываем RetryInitialGeneration вместо старого метода >>>
-	err = h.service.RetryInitialGeneration(c.Request.Context(), userID, storyID) // <<< ИЗМЕНЕНИЕ ЗДЕСЬ
+	err = h.service.RetryInitialGeneration(c.Request.Context(), userID, id) // <<< ИЗМЕНЕНИЕ ЗДЕСЬ
 	if err != nil {
 		log.Error("Error retrying initial published story generation", zap.Error(err))
 		handleServiceError(c, err, h.logger)
@@ -600,23 +551,18 @@ func (h *GameplayHandler) retryPublishedStoryGeneration(c *gin.Context) {
 func (h *GameplayHandler) deletePublishedStory(c *gin.Context) {
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		// Ошибка уже обработана в getUserIDFromContext
 		return
 	}
 
-	// <<< ИСПРАВЛЕНО: Получаем 'story_id' из параметров пути, как в роутере >>>
-	storyIdStr := c.Param("story_id")
-	storyID, err := uuid.Parse(storyIdStr)
-	if err != nil {
-		h.logger.Warn("Invalid published story ID format in deletePublishedStory", zap.String("story_id", storyIdStr), zap.Error(err)) // <<< ИСПРАВЛЕНО: Используем story_id в логе
-		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+	// <<< ИЗМЕНЕНО: Используем ok вместо err >>>
+	storyID, ok := parseUUIDParam(c, "story_id", h.logger)
+	if !ok { // <<< ИЗМЕНЕНО: Проверяем !ok >>>
 		return
 	}
 
 	log := h.logger.With(zap.String("storyID", storyID.String()), zap.Stringer("userID", userID))
 	log.Info("Handling delete published story request")
 
-	// <<< ИСПРАВЛЕНО: Передаем аргументы в правильном порядке (storyID, userID) >>>
 	err = h.service.DeletePublishedStory(c.Request.Context(), storyID, userID)
 	if err != nil {
 		log.Error("Error deleting published story", zap.Error(err))
@@ -678,11 +624,9 @@ func (h *GameplayHandler) retrySpecificGameStateGeneration(c *gin.Context) {
 		return // Error already handled
 	}
 
-	storyIdStr := c.Param("story_id")
-	storyID, err := uuid.Parse(storyIdStr)
-	if err != nil {
-		h.logger.Warn("Invalid story ID format in retrySpecificGameStateGeneration", zap.String("story_id", storyIdStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid story ID format", sharedModels.ErrBadRequest), h.logger)
+	// Используем новую вспомогательную функцию
+	storyID, okStory := parseUUIDParam(c, "story_id", h.logger)
+	if !okStory {
 		return
 	}
 
@@ -722,17 +666,14 @@ func (h *GameplayHandler) listMyStoriesWithProgress(c *gin.Context) {
 		return // Error handled in helper
 	}
 
-	limitStr := c.DefaultQuery("limit", "10")
-	cursor := c.Query("cursor")
+	// Используем новую вспомогательную функцию
+	limit, cursor, ok := parsePaginationParams(c, 10, 100, h.logger)
+	if !ok {
+		return // Ошибка уже обработана
+	}
 	filterAdultStr := c.DefaultQuery("filter_adult", "false") // <<< ДОБАВЛЕНО: Читаем filter_adult
 
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil || limit <= 0 || limit > 100 {
-		h.logger.Warn("Invalid limit parameter for listMyStoriesWithProgress", zap.String("limit", limitStr), zap.Stringer("userID", userID))
-		handleServiceError(c, fmt.Errorf("%w: invalid limit parameter", sharedModels.ErrBadRequest), h.logger)
-		return
-	}
-
+	// Парсим filter_adult вручную, т.к. parsePaginationParams его не обрабатывает
 	filterAdult, err := strconv.ParseBool(filterAdultStr) // <<< ДОБАВЛЕНО: Парсим filter_adult
 	if err != nil {
 		h.logger.Warn("Invalid filter_adult parameter for listMyStoriesWithProgress", zap.String("filter_adult", filterAdultStr), zap.Stringer("userID", userID))

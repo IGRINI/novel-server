@@ -7,7 +7,6 @@ import (
 	"net/http"
 	sharedInterfaces "novel-server/shared/interfaces"
 	sharedModels "novel-server/shared/models"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -32,15 +31,10 @@ func (h *GameplayHandler) listUserDraftsInternal(c *gin.Context) {
 		return
 	}
 
-	limitStr := c.Query("limit")
-	cursor := c.Query("cursor")
-	limit := 20 // Значение по умолчанию
-	if limitStr != "" {
-		if l, parseErr := strconv.Atoi(limitStr); parseErr == nil && l > 0 {
-			limit = l
-		} else {
-			log.Warn("Invalid limit parameter received, using default", zap.String("limit", limitStr), zap.Error(parseErr))
-		}
+	// Используем новую вспомогательную функцию
+	limit, cursor, ok := parsePaginationParams(c, 20, 100, h.logger) // Установим maxLimit=100
+	if !ok {
+		return // Ошибка уже обработана
 	}
 
 	log = log.With(zap.Stringer("userID", userID), zap.Int("limit", limit), zap.String("cursor", cursor))
@@ -79,18 +73,10 @@ func (h *GameplayHandler) listUserStoriesInternal(c *gin.Context) {
 		return
 	}
 
-	// <<< ИЗМЕНЕНО: Получаем cursor и limit >>>
-	limitStr := c.Query("limit")
-	cursor := c.Query("cursor")
-	limit := 10
-	if limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err == nil && parsedLimit > 0 && parsedLimit <= 100 {
-			limit = parsedLimit
-		} else {
-			h.logger.Warn("Invalid limit in listUserStoriesInternal", zap.String("limit", limitStr))
-			// Продолжаем с лимитом по умолчанию
-		}
+	// Используем новую вспомогательную функцию
+	limit, cursor, ok := parsePaginationParams(c, 10, 100, h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
 
 	// <<< ИЗМЕНЕНО: Вызываем обновленный метод сервиса >>>
@@ -113,15 +99,13 @@ func (h *GameplayHandler) listUserStoriesInternal(c *gin.Context) {
 func (h *GameplayHandler) updateDraftInternal(c *gin.Context) {
 	log := h.logger.With(zap.String("handler", "updateDraftInternal"))
 
-	// Парсим ID
-	userIDStr := c.Param("user_id") // userID не используется сервисом, но есть в URL
-	draftIDStr := c.Param("draft_id")
-	draftID, err := uuid.Parse(draftIDStr)
-	if err != nil {
-		log.Warn("Invalid draft ID format", zap.String("draft_id", draftIDStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid draft ID", sharedModels.ErrBadRequest), h.logger)
-		return
+	// Используем новую вспомогательную функцию
+	draftID, ok := parseUUIDParam(c, "draft_id", h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
+	// Парсим userID из URL, хотя он может не использоваться напрямую
+	userIDStr := c.Param("user_id")
 	log = log.With(zap.String("draftID", draftID.String()), zap.String("userIDParam", userIDStr))
 
 	// Парсим тело запроса
@@ -140,7 +124,7 @@ func (h *GameplayHandler) updateDraftInternal(c *gin.Context) {
 	log.Info("Handling internal draft update request", zap.String("newStatus", string(req.Status)))
 
 	// Вызываем сервис
-	err = h.service.UpdateDraftInternal(c.Request.Context(), draftID, req.ConfigJson, req.UserInputJson, req.Status)
+	err := h.service.UpdateDraftInternal(c.Request.Context(), draftID, req.ConfigJson, req.UserInputJson, req.Status)
 	if err != nil {
 		log.Error("Error updating draft internally", zap.Error(err))
 		handleServiceError(c, err, h.logger) // Передаем ошибку для стандартизированной обработки
@@ -155,15 +139,13 @@ func (h *GameplayHandler) updateDraftInternal(c *gin.Context) {
 func (h *GameplayHandler) updateStoryInternal(c *gin.Context) {
 	log := h.logger.With(zap.String("handler", "updateStoryInternal"))
 
-	// Парсим ID
-	userIDStr := c.Param("user_id")
-	storyIDStr := c.Param("story_id")
-	storyID, err := uuid.Parse(storyIDStr)
-	if err != nil {
-		log.Warn("Invalid story ID format", zap.String("story_id", storyIDStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid story ID", sharedModels.ErrBadRequest), h.logger)
-		return
+	// Используем новую вспомогательную функцию
+	storyID, ok := parseUUIDParam(c, "story_id", h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
+	// Парсим userID из URL, хотя он может не использоваться напрямую
+	userIDStr := c.Param("user_id")
 	log = log.With(zap.String("storyID", storyID.String()), zap.String("userIDParam", userIDStr))
 
 	// Парсим тело запроса
@@ -182,7 +164,7 @@ func (h *GameplayHandler) updateStoryInternal(c *gin.Context) {
 	log.Info("Handling internal story update request", zap.String("newStatus", string(req.Status)))
 
 	// Вызываем сервис, передавая json.RawMessage напрямую
-	err = h.service.UpdateStoryInternal(c.Request.Context(), storyID, req.ConfigJson, req.SetupJson, req.Status)
+	err := h.service.UpdateStoryInternal(c.Request.Context(), storyID, req.ConfigJson, req.SetupJson, req.Status)
 	if err != nil {
 		log.Error("Error updating story internally", zap.Error(err))
 		handleServiceError(c, err, h.logger)
@@ -197,16 +179,14 @@ func (h *GameplayHandler) updateStoryInternal(c *gin.Context) {
 func (h *GameplayHandler) updateSceneInternal(c *gin.Context) {
 	log := h.logger.With(zap.String("handler", "updateSceneInternal"))
 
-	// Парсим ID
-	userIDStr := c.Param("user_id")
-	storyIDStr := c.Param("story_id")
-	sceneIDStr := c.Param("scene_id")
-	sceneID, err := uuid.Parse(sceneIDStr)
-	if err != nil {
-		log.Warn("Invalid scene ID format", zap.String("scene_id", sceneIDStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid scene ID", sharedModels.ErrBadRequest), h.logger)
-		return
+	// Используем новую вспомогательную функцию
+	sceneID, ok := parseUUIDParam(c, "scene_id", h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
+	// Парсим остальные ID из URL, хотя они могут не использоваться напрямую
+	storyIDStr := c.Param("story_id")
+	userIDStr := c.Param("user_id")
 	log = log.With(zap.String("sceneID", sceneID.String()), zap.String("storyIDParam", storyIDStr), zap.String("userIDParam", userIDStr))
 
 	// Парсим тело запроса
@@ -223,7 +203,7 @@ func (h *GameplayHandler) updateSceneInternal(c *gin.Context) {
 	log.Info("Handling internal scene update request")
 
 	// Вызываем сервис
-	err = h.service.UpdateSceneInternal(c.Request.Context(), sceneID, req.ContentJson)
+	err := h.service.UpdateSceneInternal(c.Request.Context(), sceneID, req.ContentJson)
 	if err != nil {
 		log.Error("Error updating scene internally", zap.Error(err))
 		handleServiceError(c, err, h.logger)
@@ -238,20 +218,17 @@ func (h *GameplayHandler) updateSceneInternal(c *gin.Context) {
 func (h *GameplayHandler) deleteSceneInternal(c *gin.Context) {
 	log := h.logger.With(zap.String("handler", "deleteSceneInternal"))
 
-	// Парсим ID сцены из URL
-	sceneIDStr := c.Param("scene_id")
-	sceneID, err := uuid.Parse(sceneIDStr)
-	if err != nil {
-		log.Warn("Invalid scene ID format for deletion", zap.String("scene_id", sceneIDStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid scene ID", sharedModels.ErrBadRequest), h.logger)
-		return
+	// Используем новую вспомогательную функцию
+	sceneID, ok := parseUUIDParam(c, "scene_id", h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
 	log = log.With(zap.String("sceneID", sceneID.String()))
 
 	log.Info("Handling internal scene delete request")
 
 	// Вызываем метод сервиса (предполагаем, что он существует)
-	err = h.service.DeleteSceneInternal(c.Request.Context(), sceneID)
+	err := h.service.DeleteSceneInternal(c.Request.Context(), sceneID)
 	if err != nil {
 		log.Error("Error deleting scene internally", zap.Error(err))
 		handleServiceError(c, err, h.logger) // Обрабатываем стандартные ошибки (NotFound и др.)
@@ -266,13 +243,10 @@ func (h *GameplayHandler) deleteSceneInternal(c *gin.Context) {
 func (h *GameplayHandler) listStoryPlayersInternal(c *gin.Context) {
 	log := h.logger.With(zap.String("handler", "listStoryPlayersInternal"))
 
-	// Парсим ID истории из URL
-	storyIDStr := c.Param("story_id")
-	storyID, err := uuid.Parse(storyIDStr)
-	if err != nil {
-		log.Warn("Invalid story ID format for player list", zap.String("story_id", storyIDStr), zap.Error(err))
-		handleServiceError(c, fmt.Errorf("%w: invalid story ID", sharedModels.ErrBadRequest), h.logger)
-		return
+	// Используем новую вспомогательную функцию
+	storyID, ok := parseUUIDParam(c, "story_id", h.logger)
+	if !ok {
+		return // Ошибка уже обработана
 	}
 	log = log.With(zap.String("storyID", storyID.String()))
 

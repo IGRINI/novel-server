@@ -30,7 +30,7 @@ func (s *gameLoopServiceImpl) UpdateSceneInternal(ctx context.Context, sceneID u
 		return fmt.Errorf("%w: scene content cannot be empty", models.ErrBadRequest)
 	}
 
-	err := s.sceneRepo.UpdateContent(ctx, sceneID, contentBytes)
+	err := s.sceneRepo.UpdateContent(ctx, s.pool, sceneID, contentBytes)
 	if err != nil {
 		if errors.Is(err, models.ErrNotFound) {
 			log.Warn("Scene not found for update")
@@ -49,7 +49,7 @@ func (s *gameLoopServiceImpl) DeleteSceneInternal(ctx context.Context, sceneID u
 	log := s.logger.With(zap.String("sceneID", sceneID.String()))
 	log.Info("DeleteSceneInternal called")
 
-	err := s.sceneRepo.Delete(ctx, sceneID)
+	err := s.sceneRepo.Delete(ctx, s.pool, sceneID)
 	if err != nil {
 		if errors.Is(err, models.ErrNotFound) {
 			log.Warn("Scene not found for deletion")
@@ -68,9 +68,9 @@ func (s *gameLoopServiceImpl) UpdatePlayerProgressInternal(ctx context.Context, 
 	log := s.logger.With(zap.String("progressID", progressID.String()))
 	log.Info("Attempting to update player progress internally")
 
-	currentProgress, err := s.playerProgressRepo.GetByID(ctx, progressID)
+	currentProgress, err := s.playerProgressRepo.GetByID(ctx, s.pool, progressID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, models.ErrNotFound) {
 			log.Warn("Player progress not found for internal update")
 			return fmt.Errorf("%w: player progress with ID %s not found", models.ErrNotFound, progressID)
 		}
@@ -89,7 +89,7 @@ func (s *gameLoopServiceImpl) UpdatePlayerProgressInternal(ctx context.Context, 
 		"updated_at":         time.Now().UTC(),
 	}
 
-	err = s.playerProgressRepo.UpdateFields(ctx, currentProgress.ID, updates)
+	err = s.playerProgressRepo.UpdateFields(ctx, s.pool, currentProgress.ID, updates)
 	if err != nil {
 		log.Error("Failed to update player progress internally in repository", zap.Error(err))
 		return fmt.Errorf("failed to update player progress in repository: %w", err)

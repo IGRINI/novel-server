@@ -13,7 +13,6 @@ import (
 	"novel-server/admin-service/internal/service"
 	"novel-server/shared/database"
 	"novel-server/shared/interfaces"
-	sharedInterfaces "novel-server/shared/interfaces"
 	sharedLogger "novel-server/shared/logger"
 	sharedMessaging "novel-server/shared/messaging"
 	middleware "novel-server/shared/middleware"
@@ -245,31 +244,21 @@ func main() {
 	sugar.Info("Успешно подключено к RabbitMQ")
 
 	// --- Инициализация репозиториев ---
-	var promptRepo sharedInterfaces.PromptRepository
+	var promptRepo interfaces.PromptRepository
 	if dbPool != nil {
 		promptRepo = database.NewPgPromptRepository(dbPool)
 		sugar.Info("PromptRepository инициализирован")
-		// <<< DEBUG LOG >>>
-		if promptRepo == nil {
-			sugar.Error("ОШИБКА: promptRepo is nil ПОСЛЕ инициализации!")
-		} else {
-			sugar.Debug("DEBUG: promptRepo НЕ nil после инициализации.")
-		}
+		sugar.Debug("DEBUG: promptRepo НЕ nil после инициализации.")
 	} else {
 		sugar.Warn("PromptRepository не инициализирован из-за отсутствия подключения к БД")
 	}
 
 	// <<< Инициализация репозитория динамических конфигов >>>
-	var dynamicConfigRepo sharedInterfaces.DynamicConfigRepository
+	var dynamicConfigRepo interfaces.DynamicConfigRepository
 	if dbPool != nil {
 		dynamicConfigRepo = database.NewPgDynamicConfigRepository(dbPool, logger)
 		sugar.Info("DynamicConfigRepository инициализирован")
-		// <<< DEBUG LOG >>>
-		if dynamicConfigRepo == nil {
-			sugar.Error("ОШИБКА: dynamicConfigRepo is nil ПОСЛЕ инициализации!")
-		} else {
-			sugar.Debug("DEBUG: dynamicConfigRepo НЕ nil после инициализации.")
-		}
+		sugar.Debug("DEBUG: dynamicConfigRepo НЕ nil после инициализации.")
 	} else {
 		sugar.Warn("DynamicConfigRepository не инициализирован из-за отсутствия подключения к БД")
 	}
@@ -283,12 +272,7 @@ func main() {
 	}
 	// TODO: Добавить defer configUpdatePublisher.Close()? // <<< Возможно, здесь нужен defer
 	sugar.Info("ConfigUpdatePublisher инициализирован")
-	// <<< DEBUG LOG >>>
-	if configUpdatePublisher == nil {
-		sugar.Error("ОШИБКА: configUpdatePublisher is nil ПОСЛЕ инициализации! (Хотя Fatalf должен был сработать при err != nil)")
-	} else {
-		sugar.Debug("DEBUG: configUpdatePublisher НЕ nil после инициализации.")
-	}
+	sugar.Debug("DEBUG: configUpdatePublisher НЕ nil после инициализации.")
 
 	promptPublisher, err := sharedMessaging.NewRabbitMQPromptPublisher(rabbitConn)
 	if err != nil {
@@ -329,8 +313,8 @@ func main() {
 
 	// <<< Инициализация ConfigService >>>
 	var configSvc service.ConfigService
-	if dynamicConfigRepo != nil && configUpdatePublisher != nil {
-		configSvc = service.NewConfigService(dynamicConfigRepo, configUpdatePublisher, logger)
+	if dynamicConfigRepo != nil {
+		configSvc = service.NewConfigService(dynamicConfigRepo, configUpdatePublisher, logger, dbPool)
 		sugar.Info("ConfigService инициализирован")
 	} else {
 		sugar.Warn("ConfigService не инициализирован из-за отсутствия репозитория или издателя")
@@ -400,23 +384,20 @@ func main() {
 					ticker := time.NewTicker(cfg.InterServiceTokenTTL / 2)
 					defer ticker.Stop()
 
-					for {
-						select {
-						case <-ticker.C:
-							updateCtx, updateCancel := context.WithTimeout(context.Background(), 10*time.Second)
-							newToken, err := authClient.GenerateInterServiceToken(updateCtx, cfg.ServiceID)
-							updateCancel()
+					for range ticker.C {
+						updateCtx, updateCancel := context.WithTimeout(context.Background(), 10*time.Second)
+						newToken, err := authClient.GenerateInterServiceToken(updateCtx, cfg.ServiceID)
+						updateCancel()
 
-							if err != nil {
-								sugar.Errorf("Не удалось обновить межсервисный токен: %v", err)
-								continue
-							}
-
-							authClient.SetInterServiceToken(newToken)
-							gameplayClient.SetInterServiceToken(newToken)
-							storyGenClient.SetInterServiceToken(newToken) // Добавляем обновление для storyGenClient
-							sugar.Info("Межсервисный токен успешно обновлен для всех клиентов")
+						if err != nil {
+							sugar.Errorf("Не удалось обновить межсервисный токен: %v", err)
+							continue
 						}
+
+						authClient.SetInterServiceToken(newToken)
+						gameplayClient.SetInterServiceToken(newToken)
+						storyGenClient.SetInterServiceToken(newToken) // Добавляем обновление для storyGenClient
+						sugar.Info("Межсервисный токен успешно обновлен для всех клиентов")
 					}
 				}()
 

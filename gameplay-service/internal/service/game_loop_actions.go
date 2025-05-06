@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"novel-server/shared/database"
 	sharedMessaging "novel-server/shared/messaging"
 	"novel-server/shared/models"
 	"time"
@@ -18,7 +19,7 @@ func (s *gameLoopServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUI
 	log := s.logger.With(zap.String("gameStateID", gameStateID.String()), zap.Stringer("userID", userID))
 	log.Info("GetStoryScene called")
 
-	gameState, errState := s.playerGameStateRepo.GetByID(ctx, gameStateID)
+	gameState, errState := s.playerGameStateRepo.GetByID(ctx, s.pool, gameStateID)
 	if errState != nil {
 		if errors.Is(errState, models.ErrNotFound) || errors.Is(errState, pgx.ErrNoRows) {
 			log.Warn("Player game state not found by ID")
@@ -58,7 +59,7 @@ func (s *gameLoopServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUI
 		return nil, models.ErrSceneNotFound
 	}
 
-	scene, errScene := s.sceneRepo.GetByID(ctx, gameState.CurrentSceneID.UUID)
+	scene, errScene := s.sceneRepo.GetByID(ctx, s.pool, gameState.CurrentSceneID.UUID)
 	if errScene != nil {
 		if errors.Is(errScene, pgx.ErrNoRows) || errors.Is(errScene, models.ErrNotFound) {
 			log.Error("CRITICAL: CurrentSceneID from game state not found in scene repository", zap.String("sceneID", gameState.CurrentSceneID.UUID.String()))
@@ -80,78 +81,129 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	}
 	s.logger.Info("MakeChoice called", logFields...)
 
-	gameState, errState := s.playerGameStateRepo.GetByID(ctx, gameStateID)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		s.logger.Error("Failed to begin transaction for MakeChoice", zap.Error(err))
+		return models.ErrInternalServer
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("Panic recovered during MakeChoice, rolling back transaction", zap.Any("panic", r))
+			_ = tx.Rollback(context.Background())
+			err = fmt.Errorf("panic during MakeChoice: %v", r)
+		} else if err != nil {
+			s.logger.Warn("Rolling back transaction due to error during MakeChoice", zap.Error(err))
+			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
+				s.logger.Error("Failed to rollback MakeChoice transaction", zap.Error(rollbackErr))
+			}
+		} else {
+			s.logger.Info("Attempting to commit MakeChoice transaction")
+			if commitErr := tx.Commit(ctx); commitErr != nil {
+				s.logger.Error("Failed to commit MakeChoice transaction", zap.Error(commitErr))
+				err = fmt.Errorf("error committing MakeChoice transaction: %w", commitErr)
+			} else {
+				s.logger.Info("MakeChoice transaction committed successfully")
+			}
+		}
+	}()
+
+	gameStateRepoTx := database.NewPgPlayerGameStateRepository(tx, s.logger)
+	playerProgressRepoTx := database.NewPgPlayerProgressRepository(tx, s.logger)
+	sceneRepoTx := database.NewPgStorySceneRepository(tx, s.logger)
+	publishedRepoTx := database.NewPgPublishedStoryRepository(tx, s.logger)
+
+	gameState, errState := gameStateRepoTx.GetByID(ctx, tx, gameStateID)
 	if errState != nil {
 		if errors.Is(errState, models.ErrNotFound) || errors.Is(errState, pgx.ErrNoRows) {
 			s.logger.Warn("Player game state not found for MakeChoice")
-			return models.ErrPlayerGameStateNotFound
+			err = models.ErrPlayerGameStateNotFound
+		} else {
+			s.logger.Error("Failed to get player game state for MakeChoice", zap.Error(errState))
+			err = models.ErrInternalServer
 		}
-		s.logger.Error("Failed to get player game state for MakeChoice", zap.Error(errState))
-		return models.ErrInternalServer
+		return err
+	}
+
+	if gameState.PlayerID != userID {
+		s.logger.Warn("User attempted to access game state they do not own in MakeChoice", zap.Stringer("ownerID", gameState.PlayerID))
+		err = models.ErrForbidden
+		return err
 	}
 
 	if gameState.PlayerStatus != models.PlayerStatusPlaying {
 		s.logger.Warn("Attempt to make choice while not in Playing status", append(logFields, zap.String("playerStatus", string(gameState.PlayerStatus)))...)
 		if gameState.PlayerStatus == models.PlayerStatusGeneratingScene {
-			return models.ErrSceneNeedsGeneration
+			err = models.ErrSceneNeedsGeneration
+		} else {
+			err = models.ErrBadRequest
 		}
-		return models.ErrBadRequest
+		return err
 	}
 
 	if gameState.PlayerProgressID == uuid.Nil {
 		s.logger.Error("CRITICAL: PlayerStatus is Playing, but PlayerProgressID is Nil", append(logFields, zap.String("gameStateID", gameState.ID.String()))...)
-		return models.ErrInternalServer
+		err = models.ErrInternalServer
+		return err
 	}
 	if !gameState.CurrentSceneID.Valid {
 		s.logger.Error("CRITICAL: PlayerStatus is Playing, but CurrentSceneID is Nil", append(logFields, zap.String("gameStateID", gameState.ID.String()))...)
-		return models.ErrSceneNotFound
+		err = models.ErrSceneNotFound
+		return err
 	}
 
 	currentProgressID := gameState.PlayerProgressID
 	currentSceneID := gameState.CurrentSceneID.UUID
 	logFields = append(logFields, zap.String("currentProgressID", currentProgressID.String()), zap.String("currentSceneID", currentSceneID.String()))
 
-	currentProgress, errProgress := s.playerProgressRepo.GetByID(ctx, currentProgressID)
+	currentProgress, errProgress := playerProgressRepoTx.GetByID(ctx, tx, currentProgressID)
 	if errProgress != nil {
 		s.logger.Error("Failed to get current PlayerProgress node linked in game state", append(logFields, zap.Error(errProgress))...)
-		return models.ErrInternalServer
+		err = models.ErrInternalServer
+		return err
 	}
 
-	currentScene, errScene := s.sceneRepo.GetByID(ctx, currentSceneID)
+	currentScene, errScene := sceneRepoTx.GetByID(ctx, tx, currentSceneID)
 	if errScene != nil {
 		s.logger.Error("Failed to get current Scene linked in game state", append(logFields, zap.Error(errScene))...)
-		return models.ErrInternalServer
+		err = models.ErrInternalServer
+		return err
 	}
 
-	publishedStory, errStory := s.publishedRepo.GetByID(ctx, gameState.PublishedStoryID)
+	publishedStory, errStory := publishedRepoTx.GetByID(ctx, tx, gameState.PublishedStoryID)
 	if errStory != nil {
 		s.logger.Error("Failed to get published story associated with game state", append(logFields, zap.Error(errStory))...)
-		return models.ErrInternalServer
+		err = models.ErrInternalServer
+		return err
 	}
 
 	var sceneData sceneContentChoices
 	if err := json.Unmarshal(currentScene.Content, &sceneData); err != nil {
 		s.logger.Error("Failed to unmarshal current scene content", append(logFields, zap.Error(err))...)
-		return models.ErrInternalServer
+		err = models.ErrInternalServer
+		return err
 	}
 
 	if len(selectedOptionIndices) == 0 {
 		s.logger.Warn("Player sent empty choice array", logFields...)
-		return fmt.Errorf("%w: selected_option_indices cannot be empty", models.ErrBadRequest)
+		err = fmt.Errorf("%w: selected_option_indices cannot be empty", models.ErrBadRequest)
+		return err
 	}
 	if len(selectedOptionIndices) > len(sceneData.Choices) {
 		s.logger.Warn("Player sent more choices than available in the scene", append(logFields, zap.Int("sceneChoices", len(sceneData.Choices)), zap.Int("playerChoices", len(selectedOptionIndices)))...)
-		return fmt.Errorf("%w: received %d choice indices, but scene only has %d choice blocks", models.ErrBadRequest, len(selectedOptionIndices), len(sceneData.Choices))
+		err = fmt.Errorf("%w: received %d choice indices, but scene only has %d choice blocks", models.ErrBadRequest, len(selectedOptionIndices), len(sceneData.Choices))
+		return err
 	}
 
 	if publishedStory.Setup == nil {
 		s.logger.Error("CRITICAL: PublishedStory Setup is nil", logFields...)
-		return models.ErrInternalServer
+		err = models.ErrInternalServer
+		return err
 	}
 	var setupContent models.NovelSetupContent
 	if err := json.Unmarshal(publishedStory.Setup, &setupContent); err != nil {
 		s.logger.Error("Failed to unmarshal NovelSetup content", append(logFields, zap.Error(err))...)
-		return models.ErrInternalServer
+		err = models.ErrInternalServer
+		return err
 	}
 
 	nextProgress := &models.PlayerProgress{
@@ -178,13 +230,15 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	for i, selectedIndex := range selectedOptionIndices {
 		if i >= len(sceneData.Choices) {
 			s.logger.Error("Logic error: index out of bounds accessing sceneData.Choices", append(logFields, zap.Int("index", i), zap.Int("sceneChoicesLen", len(sceneData.Choices)))...)
-			return models.ErrInternalServer
+			err = models.ErrInternalServer
+			return err
 		}
 		choiceBlock := sceneData.Choices[i]
 
 		if selectedIndex < 0 || selectedIndex >= len(choiceBlock.Options) {
 			s.logger.Warn("Invalid selected option index for choice block", append(logFields, zap.Int("choiceBlockIndex", i), zap.Int("selectedIndex", selectedIndex), zap.Int("optionsAvailable", len(choiceBlock.Options)))...)
-			return fmt.Errorf("%w: invalid index %d for choice block %d (options: %d)", models.ErrInvalidChoice, selectedIndex, i, len(choiceBlock.Options))
+			err = fmt.Errorf("%w: invalid index %d for choice block %d (options: %d)", models.ErrInvalidChoice, selectedIndex, i, len(choiceBlock.Options))
+			return err
 		}
 		selectedOption := choiceBlock.Options[selectedIndex]
 		madeChoicesInfo = append(madeChoicesInfo, models.UserChoiceInfo{Desc: choiceBlock.Description, Text: selectedOption.Text})
@@ -215,8 +269,9 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	if !isGameOver && len(selectedOptionIndices) < len(sceneData.Choices) {
 		s.logger.Warn("Player did not provide choices for all available blocks, and game did not end",
 			append(logFields, zap.Int("choicesMade", len(selectedOptionIndices)), zap.Int("choicesAvailable", len(sceneData.Choices)))...)
-		return fmt.Errorf("%w: not all choices were made (made %d, available %d) and game over condition not met",
+		err = fmt.Errorf("%w: not all choices were made (made %d, available %d) and game over condition not met",
 			models.ErrBadRequest, len(selectedOptionIndices), len(sceneData.Choices))
+		return err
 	}
 
 	if isGameOver {
@@ -233,11 +288,12 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		finalStateHash, hashErr := calculateStateHash(currentProgress.CurrentStateHash, nextProgress.CoreStats, nextProgress.StoryVariables, nextProgress.GlobalFlags)
 		if hashErr != nil {
 			s.logger.Error("Failed to calculate final state hash before game over", append(logFields, zap.Error(hashErr))...)
-			return models.ErrInternalServer
+			err = models.ErrInternalServer
+			return err
 		}
 		nextProgress.CurrentStateHash = finalStateHash
 
-		existingFinalNode, errFind := s.playerProgressRepo.GetByStoryIDAndHash(ctx, gameState.PublishedStoryID, finalStateHash)
+		existingFinalNode, errFind := playerProgressRepoTx.GetByStoryIDAndHash(ctx, tx, gameState.PublishedStoryID, finalStateHash)
 		var finalProgressNodeID uuid.UUID
 
 		if errFind == nil {
@@ -249,16 +305,18 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 
 			nextProgress.UserID = gameState.PlayerID
 
-			savedID, errSave := s.playerProgressRepo.Save(ctx, nextProgress)
+			savedID, errSave := playerProgressRepoTx.Save(ctx, tx, nextProgress)
 			if errSave != nil {
 				s.logger.Error("Failed to save final player progress node before game over", append(logFields, zap.Error(errSave))...)
-				return models.ErrInternalServer
+				err = models.ErrInternalServer
+				return err
 			}
 			finalProgressNodeID = savedID
 			s.logger.Info("Saved new final PlayerProgress node before game over", append(logFields, zap.String("progressID", finalProgressNodeID.String()))...)
 		} else {
 			s.logger.Error("Error checking for existing final progress node before game over", append(logFields, zap.Error(errFind))...)
-			return models.ErrInternalServer
+			err = models.ErrInternalServer
+			return err
 		}
 
 		now := time.Now().UTC()
@@ -267,9 +325,10 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		gameState.CurrentSceneID = uuid.NullUUID{Valid: false}
 		gameState.LastActivityAt = now
 
-		if _, err := s.playerGameStateRepo.Save(ctx, gameState); err != nil {
+		if _, err := gameStateRepoTx.Save(ctx, tx, gameState); err != nil {
 			s.logger.Error("Failed to update PlayerGameState to GameOverPending", append(logFields, zap.Error(err))...)
-			return models.ErrInternalServer
+			err = models.ErrInternalServer
+			return err
 		}
 
 		taskID := uuid.New().String()
@@ -293,12 +352,14 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		minimalConfigBytes, errMarshalConf := json.Marshal(minimalGameOverConfig)
 		if errMarshalConf != nil {
 			s.logger.Error("Failed to marshal minimal config for game over task", append(logFields, zap.Error(errMarshalConf))...)
-			return models.ErrInternalServer
+			err = models.ErrInternalServer
+			return err
 		}
 		minimalSetupBytes, errMarshalSetup := json.Marshal(minimalGameOverSetup)
 		if errMarshalSetup != nil {
 			s.logger.Error("Failed to marshal minimal setup for game over task", append(logFields, zap.Error(errMarshalSetup))...)
-			return models.ErrInternalServer
+			err = models.ErrInternalServer
+			return err
 		}
 
 		lastStateProgress := *nextProgress
@@ -317,7 +378,8 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		}
 		if err := s.publisher.PublishGameOverTask(ctx, gameOverPayload); err != nil {
 			s.logger.Error("Failed to publish game over generation task", append(logFields, zap.Error(err))...)
-			return models.ErrInternalServer
+			err = models.ErrInternalServer
+			return err
 		}
 		s.logger.Info("Game over task published", append(logFields, zap.String("taskID", taskID))...)
 		return nil
@@ -333,7 +395,8 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	nextStateHash, hashErr := calculateStateHash(currentProgress.CurrentStateHash, nextProgress.CoreStats, nextProgress.StoryVariables, nextProgress.GlobalFlags)
 	if hashErr != nil {
 		s.logger.Error("Failed to calculate next state hash", append(logFields, zap.Error(hashErr))...)
-		return models.ErrInternalServer
+		err = models.ErrInternalServer
+		return err
 	}
 	nextProgress.CurrentStateHash = nextStateHash
 	logFields = append(logFields, zap.String("nextStateHash", nextStateHash))
@@ -342,7 +405,7 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	var nextNodeProgress *models.PlayerProgress
 	var nextNodeProgressID uuid.UUID
 
-	existingNodeByHash, errFindNode := s.playerProgressRepo.GetByStoryIDAndHash(ctx, gameState.PublishedStoryID, nextStateHash)
+	existingNodeByHash, errFindNode := playerProgressRepoTx.GetByStoryIDAndHash(ctx, tx, gameState.PublishedStoryID, nextStateHash)
 	if errFindNode == nil {
 		nextNodeProgress = existingNodeByHash
 		nextNodeProgressID = existingNodeByHash.ID
@@ -356,10 +419,11 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		nextProgress.StoryVariables = make(map[string]interface{})
 		nextProgress.GlobalFlags = clearTransientFlags(nextProgress.GlobalFlags)
 
-		savedID, errSaveNode := s.playerProgressRepo.Save(ctx, nextProgress)
+		savedID, errSaveNode := playerProgressRepoTx.Save(ctx, tx, nextProgress)
 		if errSaveNode != nil {
 			s.logger.Error("Failed to save new PlayerProgress node", append(logFields, zap.Error(errSaveNode))...)
-			return models.ErrInternalServer
+			err = models.ErrInternalServer
+			return err
 		}
 		nextNodeProgressID = savedID
 		nextNodeProgress = nextProgress
@@ -367,11 +431,12 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		s.logger.Info("Saved new PlayerProgress node", append(logFields, zap.String("progressID", nextNodeProgressID.String()))...)
 	} else {
 		s.logger.Error("Error checking for existing progress node by hash", append(logFields, zap.Error(errFindNode))...)
-		return models.ErrInternalServer
+		err = models.ErrInternalServer
+		return err
 	}
 
 	var nextSceneID *uuid.UUID
-	nextScene, errScene := s.sceneRepo.FindByStoryAndHash(ctx, gameState.PublishedStoryID, nextStateHash)
+	nextScene, errScene := sceneRepoTx.FindByStoryAndHash(ctx, tx, gameState.PublishedStoryID, nextStateHash)
 
 	if errScene == nil {
 		nextSceneID = &nextScene.ID
@@ -383,11 +448,12 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		gameState.PlayerProgressID = nextNodeProgressID
 		gameState.LastActivityAt = time.Now().UTC()
 
-		if _, err := s.playerGameStateRepo.Save(ctx, gameState); err != nil {
+		if _, err := gameStateRepoTx.Save(ctx, tx, gameState); err != nil {
 			s.logger.Error("Failed to update PlayerGameState after finding next scene", append(logFields, zap.Error(err))...)
-			return models.ErrInternalServer
+			err = models.ErrInternalServer
+			return err
 		}
-		s.logger.Info("PlayerGameState updated to Playing, linked to existing scene")
+		s.logger.Info("PlayerGameState updated to Playing, linked to existing scene (pending commit)")
 		return nil
 
 	} else if errors.Is(errScene, pgx.ErrNoRows) || errors.Is(errScene, models.ErrNotFound) {
@@ -398,11 +464,12 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		gameState.PlayerProgressID = nextNodeProgressID
 		gameState.LastActivityAt = time.Now().UTC()
 
-		if _, err := s.playerGameStateRepo.Save(ctx, gameState); err != nil {
+		if _, err := gameStateRepoTx.Save(ctx, tx, gameState); err != nil {
 			s.logger.Error("Failed to update PlayerGameState to GeneratingScene", append(logFields, zap.Error(err))...)
-			return models.ErrInternalServer
+			err = models.ErrInternalServer
+			return err
 		}
-		s.logger.Info("PlayerGameState updated to GeneratingScene")
+		s.logger.Info("PlayerGameState updated to GeneratingScene (pending commit), task should be published after commit")
 
 		generationPayload, errGenPayload := createGenerationPayload(
 			gameState.PlayerID,
@@ -411,23 +478,27 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 			gameState,
 			madeChoicesInfo,
 			nextStateHash,
+			publishedStory.Language,
 		)
 		if errGenPayload != nil {
 			s.logger.Error("Failed to create generation payload", append(logFields, zap.Error(errGenPayload))...)
-			return models.ErrInternalServer
+			err = models.ErrInternalServer
+			return err
 		}
 		generationPayload.GameStateID = gameState.ID.String()
 
 		if errPub := s.publisher.PublishGenerationTask(ctx, generationPayload); errPub != nil {
 			s.logger.Error("Failed to publish next scene generation task", append(logFields, zap.Error(errPub))...)
-			return models.ErrInternalServer
+			err = models.ErrInternalServer
+			return err
 		}
 		s.logger.Info("Next scene generation task published", append(logFields, zap.String("taskID", generationPayload.TaskID))...)
 		return nil
 
 	} else {
 		s.logger.Error("Error searching for next scene", append(logFields, zap.Error(errScene))...)
-		return models.ErrInternalServer
+		err = models.ErrInternalServer
+		return err
 	}
 }
 
@@ -435,7 +506,7 @@ func (s *gameLoopServiceImpl) GetPlayerProgress(ctx context.Context, userID uuid
 	log := s.logger.With(zap.String("gameStateID", gameStateID.String()), zap.Stringer("userID", userID))
 	log.Debug("GetPlayerProgress called")
 
-	gameState, errState := s.playerGameStateRepo.GetByID(ctx, gameStateID)
+	gameState, errState := s.playerGameStateRepo.GetByID(ctx, s.pool, gameStateID)
 	if errState != nil {
 		if errors.Is(errState, models.ErrNotFound) || errors.Is(errState, pgx.ErrNoRows) {
 			log.Warn("Player game state not found for GetPlayerProgress")
@@ -445,12 +516,17 @@ func (s *gameLoopServiceImpl) GetPlayerProgress(ctx context.Context, userID uuid
 		return nil, models.ErrInternalServer
 	}
 
+	if gameState.PlayerID != userID {
+		log.Warn("User attempted to access progress from game state they do not own", zap.Stringer("ownerID", gameState.PlayerID))
+		return nil, models.ErrForbidden
+	}
+
 	if gameState.PlayerProgressID == uuid.Nil {
 		log.Warn("Player game state exists but has no associated PlayerProgressID", zap.String("gameStateID", gameState.ID.String()))
 		return nil, models.ErrNotFound
 	}
 
-	progress, errProgress := s.playerProgressRepo.GetByID(ctx, gameState.PlayerProgressID)
+	progress, errProgress := s.playerProgressRepo.GetByID(ctx, s.pool, gameState.PlayerProgressID)
 	if errProgress != nil {
 		log.Error("Failed to get player progress node by ID from repository", zap.String("progressID", gameState.PlayerProgressID.String()), zap.Error(errProgress))
 		if errors.Is(errProgress, pgx.ErrNoRows) || errors.Is(errProgress, models.ErrNotFound) {

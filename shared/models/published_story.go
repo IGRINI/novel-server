@@ -116,17 +116,18 @@ type Config struct {
 }
 
 type PublishedStorySummary struct {
-	ID                uuid.UUID   `json:"id" db:"id"`
-	Title             string      `json:"title" db:"title"`
-	ShortDescription  string      `json:"short_description" db:"short_description"` // Changed from Description
-	AuthorID          uuid.UUID   `json:"author_id" db:"user_id"`
-	AuthorName        string      `json:"author_name" db:"author_name"`
-	PublishedAt       time.Time   `json:"published_at" db:"created_at"`
-	IsAdultContent    bool        `json:"is_adult_content" db:"is_adult_content"`
-	LikesCount        int64       `json:"likes_count" db:"likes_count"`                         // Added LikesCount
-	IsLiked           bool        `json:"is_liked" db:"is_liked"`                               // Added IsLiked (specific to user context)
-	Status            StoryStatus `json:"status" db:"status"`                                   // Added Status
-	HasPlayerProgress bool        `json:"has_player_progress" db:"has_player_progress"`         // <<< ИЗМЕНЕНО: json тег на snake_case >>>
-	IsPublic          bool        `json:"is_public" db:"is_public"`                             // <<< ИЗМЕНЕНО: json тег на snake_case >>>
-	PlayerGameStatus  string      `json:"player_game_status,omitempty" db:"player_game_status"` // <<< НОВОЕ ПОЛЕ
+	ID                uuid.UUID     `json:"id" db:"id"`
+	Title             string        `json:"title" db:"title"`
+	ShortDescription  string        `json:"short_description" db:"short_description"` // Changed from Description
+	AuthorID          uuid.UUID     `json:"author_id" db:"user_id"`
+	AuthorName        string        `json:"author_name" db:"author_name"`
+	PublishedAt       time.Time     `json:"published_at" db:"created_at"`
+	IsAdultContent    bool          `json:"is_adult_content" db:"is_adult_content"`
+	LikesCount        int64         `json:"likes_count" db:"likes_count"`                             // Added LikesCount
+	IsLiked           bool          `json:"is_liked" db:"is_liked"`                                   // Added IsLiked (specific to user context)
+	Status            StoryStatus   `json:"status" db:"status"`                                       // Added Status
+	HasPlayerProgress bool          `json:"has_player_progress" db:"has_player_progress"`             // <<< ИЗМЕНЕНО: json тег на snake_case >>>
+	IsPublic          bool          `json:"is_public" db:"is_public"`                                 // <<< ИЗМЕНЕНО: json тег на snake_case >>>
+	PlayerGameStatus  string        `json:"player_game_status,omitempty" db:"player_game_status"`     // <<< НОВОЕ ПОЛЕ
+	PlayerGameStateID uuid.NullUUID `json:"player_game_state_id,omitempty" db:"player_game_state_id"` // <<< ДОБАВЛЕНО: ID текущего game state
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"novel-server/shared/interfaces"
 	"novel-server/shared/models"
 
 	"github.com/google/uuid"
@@ -24,18 +25,18 @@ const (
 // Delete удаляет опубликованную историю и все связанные с ней данные.
 // Требует userID для проверки владения.
 // ВНИМАНИЕ: Этот метод больше НЕ управляет транзакцией. Вызывающий код ДОЛЖЕН обернуть его в транзакцию.
-func (r *pgPublishedStoryRepository) Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error {
+func (r *pgPublishedStoryRepository) Delete(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, userID uuid.UUID) error {
 	logFields := []zap.Field{
 		zap.String("publishedStoryID", id.String()),
 		zap.String("userID", userID.String()),
 	}
 	r.logger.Info("Attempting to delete published story and related data (transaction managed externally)", logFields...)
 
-	// Транзакция управляется извне, используем r.db напрямую
+	// Транзакция управляется извне, используем querier напрямую
 
 	// 1. Check ownership
 	var ownerID uuid.UUID
-	err := r.db.QueryRow(ctx, checkStoryExistsQuery, id).Scan(&ownerID)
+	err := querier.QueryRow(ctx, checkStoryExistsQuery, id).Scan(&ownerID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			r.logger.Warn("Published story not found for deletion", logFields...)
@@ -50,17 +51,17 @@ func (r *pgPublishedStoryRepository) Delete(ctx context.Context, id uuid.UUID, u
 	}
 
 	// 2. Delete related data (Order: likes -> progress -> states -> scenes -> story)
-	// Используем r.db для всех операций
+	// Используем querier для всех операций
 
 	// 2a. Delete likes
-	if _, err := r.db.Exec(ctx, deleteStoryLikesQuery, id); err != nil {
+	if _, err := querier.Exec(ctx, deleteStoryLikesQuery, id); err != nil {
 		r.logger.Error("Failed to delete story_likes during story deletion", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка удаления лайков для истории %s: %w", id, err)
 	}
 	r.logger.Debug("Deleted related likes", logFields...)
 
 	// 2b. Delete player progress
-	if _, err := r.db.Exec(ctx, deletePlayerProgressQuery, id); err != nil {
+	if _, err := querier.Exec(ctx, deletePlayerProgressQuery, id); err != nil {
 		r.logger.Error("Failed to delete player_progress during story deletion", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка удаления прогресса игроков для истории %s: %w", id, err)
 	}
@@ -69,17 +70,17 @@ func (r *pgPublishedStoryRepository) Delete(ctx context.Context, id uuid.UUID, u
 	// 2c. Delete player game states (assuming relation exists)
 	// TODO: Add query and execution for deleting player_game_states if necessary
 	// deleteGameStatesQuery := `DELETE FROM player_game_states WHERE published_story_id = $1`
-	// if _, err := r.db.Exec(ctx, deleteGameStatesQuery, id); err != nil { ... }
+	// if _, err := querier.Exec(ctx, deleteGameStatesQuery, id); err != nil { ... }
 
 	// 2d. Delete story scenes
-	if _, err := r.db.Exec(ctx, deleteStoryScenesQuery, id); err != nil {
+	if _, err := querier.Exec(ctx, deleteStoryScenesQuery, id); err != nil {
 		r.logger.Error("Failed to delete story_scenes during story deletion", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка удаления сцен для истории %s: %w", id, err)
 	}
 	r.logger.Debug("Deleted related scenes", logFields...)
 
 	// 3. Delete the story itself
-	commandTag, err := r.db.Exec(ctx, deletePublishedStoryQuery, id)
+	commandTag, err := querier.Exec(ctx, deletePublishedStoryQuery, id)
 	if err != nil {
 		r.logger.Error("Failed to delete published_stories record", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка удаления основной записи истории %s: %w", id, err)
@@ -97,11 +98,11 @@ func (r *pgPublishedStoryRepository) Delete(ctx context.Context, id uuid.UUID, u
 }
 
 // IncrementViewCount увеличивает счетчик просмотров для истории.
-func (r *pgPublishedStoryRepository) IncrementViewCount(ctx context.Context, storyID uuid.UUID) error {
+func (r *pgPublishedStoryRepository) IncrementViewCount(ctx context.Context, querier interfaces.DBTX, storyID uuid.UUID) error {
 	logFields := []zap.Field{zap.String("storyID", storyID.String())}
 	r.logger.Debug("Incrementing view count", logFields...)
 
-	commandTag, err := r.db.Exec(ctx, incrementViewCountQuery, storyID)
+	commandTag, err := querier.Exec(ctx, incrementViewCountQuery, storyID)
 	if err != nil {
 		// Log the error but don't necessarily return a fatal error to the user,
 		// as failing to increment view count might not be critical.

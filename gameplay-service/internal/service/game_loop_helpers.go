@@ -161,6 +161,7 @@ func createGenerationPayload(
 	gameState *models.PlayerGameState,
 	madeChoicesInfo []models.UserChoiceInfo,
 	currentStateHash string,
+	language string,
 ) (sharedMessaging.GenerationTaskPayload, error) {
 
 	if story.Config == nil || story.Setup == nil {
@@ -180,12 +181,6 @@ func createGenerationPayload(
 
 	minimalConfig := models.ToMinimalConfigForScene(&fullConfig)
 	minimalSetup := models.ToMinimalSetupForScene(&fullSetup)
-
-	storyLanguage := story.Language
-	if storyLanguage == "" {
-		log.Printf("WARN: Story language is empty for StoryID %s, defaulting to 'en'", story.ID)
-		storyLanguage = "en"
-	}
 
 	promptType := models.PromptTypeNovelCreator
 	if gameState != nil && gameState.PlayerStatus == models.PlayerStatusGameOverPending {
@@ -249,7 +244,7 @@ func createGenerationPayload(
 		PromptType:       promptType,
 		UserInput:        userInputJSON,
 		StateHash:        currentStateHash,
-		Language:         storyLanguage,
+		Language:         language,
 	}
 
 	return payload, nil
@@ -274,6 +269,7 @@ func clearTransientFlags(flags []string) []string {
 func createInitialSceneGenerationPayload(
 	userID uuid.UUID,
 	story *models.PublishedStory,
+	language string,
 ) (sharedMessaging.GenerationTaskPayload, error) {
 
 	if story.Config == nil || story.Setup == nil {
@@ -299,12 +295,6 @@ func createInitialSceneGenerationPayload(
 		for statName, definition := range fullSetup.CoreStatsDefinition {
 			initialCoreStats[statName] = definition.Initial
 		}
-	}
-
-	storyLanguage := story.Language
-	if storyLanguage == "" {
-		log.Printf("WARN: Story language is empty for StoryID %s, defaulting to 'en'", story.ID)
-		storyLanguage = "en"
 	}
 
 	compressedInputData := make(map[string]interface{})
@@ -333,7 +323,7 @@ func createInitialSceneGenerationPayload(
 		PromptType:       models.PromptTypeNovelFirstSceneCreator,
 		UserInput:        userInputJSON,
 		StateHash:        models.InitialStateHash,
-		Language:         storyLanguage,
+		Language:         language,
 	}
 
 	return payload, nil

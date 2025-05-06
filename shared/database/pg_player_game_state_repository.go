@@ -110,7 +110,7 @@ func NewPgPlayerGameStateRepository(db interfaces.DBTX, logger *zap.Logger) inte
 
 // Save создает новую запись состояния игры или обновляет существующую по ID.
 // Ответственность за проверку лимитов слотов лежит на сервисном слое.
-func (r *pgPlayerGameStateRepository) Save(ctx context.Context, state *models.PlayerGameState) (uuid.UUID, error) {
+func (r *pgPlayerGameStateRepository) Save(ctx context.Context, querier interfaces.DBTX, state *models.PlayerGameState) (uuid.UUID, error) {
 	now := time.Now().UTC()
 	state.LastActivityAt = now // Always update last activity time
 
@@ -133,7 +133,7 @@ func (r *pgPlayerGameStateRepository) Save(ctx context.Context, state *models.Pl
 		logFields = append(logFields, zap.String("newGameStateID", state.ID.String()))
 		r.logger.Debug("Inserting new player game state", logFields...)
 
-		err = r.db.QueryRow(ctx, insertPlayerGameStateQuery,
+		err = querier.QueryRow(ctx, insertPlayerGameStateQuery,
 			state.ID,
 			state.PlayerID,
 			state.PublishedStoryID,
@@ -150,7 +150,7 @@ func (r *pgPlayerGameStateRepository) Save(ctx context.Context, state *models.Pl
 	} else {
 		// --- UPDATE ---
 		r.logger.Debug("Updating existing player game state", logFields...)
-		err = r.db.QueryRow(ctx, updatePlayerGameStateQuery,
+		err = querier.QueryRow(ctx, updatePlayerGameStateQuery,
 			state.ID,               // $1
 			state.CurrentSceneID,   // $2
 			state.PlayerProgressID, // $3
@@ -232,11 +232,11 @@ func (r *pgPlayerGameStateRepository) GetByPlayerAndStory(ctx context.Context, p
 }
 
 // GetByID retrieves the player's game state by its unique ID.
-func (r *pgPlayerGameStateRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.PlayerGameState, error) {
+func (r *pgPlayerGameStateRepository) GetByID(ctx context.Context, querier interfaces.DBTX, id uuid.UUID) (*models.PlayerGameState, error) {
 	logFields := []zap.Field{zap.String("gameStateID", id.String())}
 	r.logger.Debug("Getting player game state by ID", logFields...)
 
-	row := r.db.QueryRow(ctx, getPlayerGameStateByIDQuery, id)
+	row := querier.QueryRow(ctx, getPlayerGameStateByIDQuery, id)
 	state, err := scanPlayerGameState(row)
 
 	if err != nil {
@@ -253,11 +253,11 @@ func (r *pgPlayerGameStateRepository) GetByID(ctx context.Context, id uuid.UUID)
 
 // Delete removes a game state record by its unique ID.
 // Implements the interface method.
-func (r *pgPlayerGameStateRepository) Delete(ctx context.Context, gameStateID uuid.UUID) error {
+func (r *pgPlayerGameStateRepository) Delete(ctx context.Context, querier interfaces.DBTX, gameStateID uuid.UUID) error {
 	logFields := []zap.Field{zap.String("gameStateID", gameStateID.String())}
 	r.logger.Debug("Deleting player game state by ID", logFields...)
 
-	cmdTag, err := r.db.Exec(ctx, deletePlayerGameStateByIDQuery, gameStateID)
+	cmdTag, err := querier.Exec(ctx, deletePlayerGameStateByIDQuery, gameStateID)
 	if err != nil {
 		r.logger.Error("Failed to delete player game state by ID", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка удаления состояния игры по ID %s: %w", gameStateID, err)
@@ -273,14 +273,14 @@ func (r *pgPlayerGameStateRepository) Delete(ctx context.Context, gameStateID uu
 }
 
 // Удаляем старый DeleteByPlayerAndStory, так как он больше не в интерфейсе - <<< ОШИБКА, МЕТОД НУЖЕН >>>
-func (r *pgPlayerGameStateRepository) DeleteByPlayerAndStory(ctx context.Context, playerID, publishedStoryID uuid.UUID) error {
+func (r *pgPlayerGameStateRepository) DeleteByPlayerAndStory(ctx context.Context, querier interfaces.DBTX, playerID, publishedStoryID uuid.UUID) error {
 	logFields := []zap.Field{
 		zap.String("playerID", playerID.String()),
 		zap.String("publishedStoryID", publishedStoryID.String()),
 	}
 	r.logger.Debug("Deleting player game state by player and story", logFields...)
 
-	commandTag, err := r.db.Exec(ctx, deletePlayerGameStateByPlayerAndStoryQuery, playerID, publishedStoryID)
+	commandTag, err := querier.Exec(ctx, deletePlayerGameStateByPlayerAndStoryQuery, playerID, publishedStoryID)
 	if err != nil {
 		r.logger.Error("Failed to delete player game state by player and story", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка удаления состояния игры по игроку и истории: %w", err)
@@ -299,11 +299,11 @@ func (r *pgPlayerGameStateRepository) DeleteByPlayerAndStory(ctx context.Context
 
 // ListByStoryID retrieves all game states associated with a specific story ID.
 // Primarily for internal use (e.g., deleting related states when a story is deleted).
-func (r *pgPlayerGameStateRepository) ListByStoryID(ctx context.Context, publishedStoryID uuid.UUID) ([]models.PlayerGameState, error) {
+func (r *pgPlayerGameStateRepository) ListByStoryID(ctx context.Context, querier interfaces.DBTX, publishedStoryID uuid.UUID) ([]models.PlayerGameState, error) {
 	logFields := []zap.Field{zap.String("publishedStoryID", publishedStoryID.String())}
 	r.logger.Debug("Listing player game states by story ID", logFields...)
 
-	rows, err := r.db.Query(ctx, listPlayerGameStateByStoryIDQuery, publishedStoryID)
+	rows, err := querier.Query(ctx, listPlayerGameStateByStoryIDQuery, publishedStoryID)
 	if err != nil {
 		r.logger.Error("Failed to query player game states by story ID", append(logFields, zap.Error(err))...)
 		return nil, fmt.Errorf("ошибка получения списка состояний игры для истории %s: %w", publishedStoryID, err)
@@ -333,7 +333,7 @@ func (r *pgPlayerGameStateRepository) ListByStoryID(ctx context.Context, publish
 
 // FindAndMarkStaleGeneratingAsError находит состояния игры игрока, которые 'зависли'
 // в статусе генерации сцены или концовки (или все такие, если порог 0), и обновляет их статус на Error.
-func (r *pgPlayerGameStateRepository) FindAndMarkStaleGeneratingAsError(ctx context.Context, staleThreshold time.Duration) (int64, error) {
+func (r *pgPlayerGameStateRepository) FindAndMarkStaleGeneratingAsError(ctx context.Context, querier interfaces.DBTX, staleThreshold time.Duration) (int64, error) {
 	staleStatus1 := models.PlayerStatusGeneratingScene
 	staleStatus2 := models.PlayerStatusGameOverPending
 	errorMessage := "Player state generation process timed out or got stuck."
@@ -363,7 +363,7 @@ func (r *pgPlayerGameStateRepository) FindAndMarkStaleGeneratingAsError(ctx cont
 	r.logger.Info("Finding and marking stale generating player game states as Error", logFields...)
 
 	// Передаем собранные аргументы
-	commandTag, err := r.db.Exec(ctx, query, args...)
+	commandTag, err := querier.Exec(ctx, query, args...)
 
 	if err != nil {
 		r.logger.Error("Failed to execute update query for stale player game states", append(logFields, zap.Error(err))...)
@@ -377,7 +377,7 @@ func (r *pgPlayerGameStateRepository) FindAndMarkStaleGeneratingAsError(ctx cont
 }
 
 // CheckGameStateExistsForStories checks if active player game states exist for a given player and a list of story IDs.
-func (r *pgPlayerGameStateRepository) CheckGameStateExistsForStories(ctx context.Context, playerID uuid.UUID, storyIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+func (r *pgPlayerGameStateRepository) CheckGameStateExistsForStories(ctx context.Context, querier interfaces.DBTX, playerID uuid.UUID, storyIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
 	if len(storyIDs) == 0 {
 		return make(map[uuid.UUID]bool), nil // Return empty map if no IDs provided
 	}
@@ -388,7 +388,7 @@ func (r *pgPlayerGameStateRepository) CheckGameStateExistsForStories(ctx context
 	}
 	r.logger.Debug("Checking game state existence for stories", logFields...)
 
-	rows, err := r.db.Query(ctx, checkGameStateExistsForStoriesQuery, playerID, storyIDs)
+	rows, err := querier.Query(ctx, checkGameStateExistsForStoriesQuery, playerID, storyIDs)
 	if err != nil {
 		r.logger.Error("Failed to query game state existence", append(logFields, zap.Error(err))...)
 		return nil, fmt.Errorf("ошибка проверки существования состояния игры: %w", err)
@@ -423,14 +423,14 @@ func (r *pgPlayerGameStateRepository) CheckGameStateExistsForStories(ctx context
 
 // ListByPlayerAndStory retrieves all game states for a specific player and story.
 // Returns an empty slice if no game states exist.
-func (r *pgPlayerGameStateRepository) ListByPlayerAndStory(ctx context.Context, playerID, publishedStoryID uuid.UUID) ([]*models.PlayerGameState, error) {
+func (r *pgPlayerGameStateRepository) ListByPlayerAndStory(ctx context.Context, querier interfaces.DBTX, playerID, publishedStoryID uuid.UUID) ([]*models.PlayerGameState, error) {
 	logFields := []zap.Field{
 		zap.String("playerID", playerID.String()),
 		zap.String("publishedStoryID", publishedStoryID.String()),
 	}
 	r.logger.Debug("Listing player game states by player and story", logFields...)
 
-	rows, err := r.db.Query(ctx, listPlayerGameStateByPlayerAndStoryQuery, playerID, publishedStoryID)
+	rows, err := querier.Query(ctx, listPlayerGameStateByPlayerAndStoryQuery, playerID, publishedStoryID)
 	if err != nil {
 		r.logger.Error("Failed to query player game states", append(logFields, zap.Error(err))...)
 		return nil, fmt.Errorf("ошибка получения списка состояний игры: %w", err)
@@ -459,14 +459,14 @@ func (r *pgPlayerGameStateRepository) ListByPlayerAndStory(ctx context.Context, 
 // ListSummariesByPlayerAndStory retrieves a list of game state summaries (ID, LastActivityAt, SceneIndex)
 // for a specific player and story, joined with player_progress.
 // Returns an empty slice if no game states are found.
-func (r *pgPlayerGameStateRepository) ListSummariesByPlayerAndStory(ctx context.Context, userID, publishedStoryID uuid.UUID) ([]*models.GameStateSummaryDTO, error) {
+func (r *pgPlayerGameStateRepository) ListSummariesByPlayerAndStory(ctx context.Context, querier interfaces.DBTX, userID, publishedStoryID uuid.UUID) ([]*models.GameStateSummaryDTO, error) {
 	logFields := []zap.Field{
 		zap.Stringer("userID", userID),
 		zap.Stringer("publishedStoryID", publishedStoryID),
 	}
 	r.logger.Debug("Listing game state summaries by player and story", logFields...)
 
-	rows, err := r.db.Query(ctx, listGameStateSummariesByPlayerAndStoryQuery, userID, publishedStoryID)
+	rows, err := querier.Query(ctx, listGameStateSummariesByPlayerAndStoryQuery, userID, publishedStoryID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			r.logger.Debug("No game state summaries found for player and story", logFields...)

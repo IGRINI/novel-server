@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
 
@@ -102,6 +103,7 @@ type storyBrowsingServiceImpl struct {
 	imageReferenceRepo  interfaces.ImageReferenceRepository
 	authClient          interfaces.AuthServiceClient
 	logger              *zap.Logger
+	db                  *pgxpool.Pool
 }
 
 func NewStoryBrowsingService(
@@ -113,6 +115,7 @@ func NewStoryBrowsingService(
 	imageReferenceRepo interfaces.ImageReferenceRepository,
 	authClient interfaces.AuthServiceClient,
 	logger *zap.Logger,
+	db *pgxpool.Pool,
 ) StoryBrowsingService {
 	return &storyBrowsingServiceImpl{
 		publishedRepo:       publishedRepo,
@@ -123,6 +126,7 @@ func NewStoryBrowsingService(
 		imageReferenceRepo:  imageReferenceRepo,
 		authClient:          authClient,
 		logger:              logger.Named("StoryBrowsingService"),
+		db:                  db,
 	}
 }
 
@@ -134,7 +138,7 @@ func (s *storyBrowsingServiceImpl) ListMyPublishedStories(ctx context.Context, u
 		limit = 20
 	}
 
-	summaries, nextCursor, err := s.publishedRepo.ListUserSummariesWithProgress(ctx, userID, cursor, limit, false)
+	summaries, nextCursor, err := s.publishedRepo.ListUserSummariesWithProgress(ctx, s.db, userID, cursor, limit, false)
 	if err != nil {
 		log.Error("Failed to list user published stories summaries with progress", zap.Error(err))
 		return nil, "", sharedModels.ErrInternalServer
@@ -156,7 +160,7 @@ func (s *storyBrowsingServiceImpl) ListPublicStories(ctx context.Context, userID
 		requestingUserID = &userID
 	}
 
-	summaries, nextCursor, err := s.publishedRepo.ListPublicSummaries(ctx, requestingUserID, cursor, limit, "default")
+	summaries, nextCursor, err := s.publishedRepo.ListPublicSummaries(ctx, s.db, requestingUserID, cursor, limit, "default")
 	if err != nil {
 		s.logger.Error("Failed to list public stories summaries", zap.Error(err))
 		return nil, "", sharedModels.ErrInternalServer
@@ -170,7 +174,7 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 	log := s.logger.With(zap.String("storyID", storyID.String()), zap.String("userID", userID.String()))
 	log.Info("GetPublishedStoryDetails called")
 
-	story, err := s.publishedRepo.GetByID(ctx, storyID)
+	story, err := s.publishedRepo.GetByID(ctx, s.db, storyID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			log.Warn("Published story not found")
@@ -273,7 +277,7 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 		GameStates:       make([]*sharedModels.GameStateSummaryDTO, 0),
 	}
 
-	gameStates, err := s.playerGameStateRepo.ListSummariesByPlayerAndStory(ctx, userID, storyID)
+	gameStates, err := s.playerGameStateRepo.ListSummariesByPlayerAndStory(ctx, s.db, userID, storyID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		s.logger.Error("Failed to list game states for story details", zap.String("storyID", storyID.String()), zap.Stringer("userID", userID), zap.Error(err))
 		return nil, fmt.Errorf("%w: failed to list game states: %v", sharedModels.ErrInternalServer, err)
@@ -293,7 +297,7 @@ func (s *storyBrowsingServiceImpl) ListUserPublishedStories(ctx context.Context,
 		limit = 20
 	}
 
-	stories, nextCursor, err := s.publishedRepo.ListByUserID(ctx, userID, cursor, limit)
+	stories, nextCursor, err := s.publishedRepo.ListByUserID(ctx, s.db, userID, cursor, limit)
 	if err != nil {
 		log.Error("Error listing user published stories from repository (cursor-based)", zap.Error(err))
 		return nil, "", fmt.Errorf("repository error fetching stories: %w", err)
@@ -307,7 +311,7 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetailsInternal(ctx context.
 	log := s.logger.With(zap.String("storyID", storyID.String()))
 	log.Info("GetPublishedStoryDetailsInternal called")
 
-	story, err := s.publishedRepo.GetByID(ctx, storyID)
+	story, err := s.publishedRepo.GetByID(ctx, s.db, storyID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			log.Warn("Published story not found")
@@ -325,7 +329,7 @@ func (s *storyBrowsingServiceImpl) ListStoryScenesInternal(ctx context.Context, 
 	log := s.logger.With(zap.String("storyID", storyID.String()))
 	log.Info("ListStoryScenesInternal called")
 
-	scenes, err := s.sceneRepo.ListByStoryID(ctx, storyID)
+	scenes, err := s.sceneRepo.ListByStoryID(ctx, s.db, storyID)
 	if err != nil {
 		log.Error("Failed to list story scenes", zap.Error(err))
 		return nil, fmt.Errorf("failed to list story scenes from repository: %w", err)
@@ -361,7 +365,7 @@ func (s *storyBrowsingServiceImpl) UpdateStoryInternal(ctx context.Context, stor
 		validatedSetup = nil
 	}
 
-	err := s.publishedRepo.UpdateConfigAndSetupAndStatus(ctx, storyID, validatedConfig, validatedSetup, status)
+	err := s.publishedRepo.UpdateConfigAndSetupAndStatus(ctx, s.db, storyID, validatedConfig, validatedSetup, status)
 	if err != nil {
 		if errors.Is(err, sharedModels.ErrNotFound) {
 			log.Warn("Story not found for internal update")
@@ -379,7 +383,7 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetailsWithProgress(ctx cont
 	log := s.logger.With(zap.String("storyID", publishedStoryID.String()), zap.String("requestingUserID", userID.String()))
 	log.Info("GetPublishedStoryDetailsWithProgress called")
 
-	details, err := s.publishedRepo.GetSummaryWithDetails(ctx, publishedStoryID, userID)
+	details, err := s.publishedRepo.GetSummaryWithDetails(ctx, s.db, publishedStoryID, userID)
 	if err != nil {
 		if errors.Is(err, sharedModels.ErrNotFound) {
 			log.Warn("Published story summary with details not found")
@@ -403,7 +407,7 @@ func (s *storyBrowsingServiceImpl) GetStoriesWithProgress(ctx context.Context, u
 	log := s.logger.With(zap.String("method", "GetStoriesWithProgress"), zap.String("userID", userID.String()), zap.Int("limit", limit), zap.String("cursor", cursor))
 	log.Debug("Fetching stories with progress for user")
 
-	stories, nextCursor, err := s.publishedRepo.FindWithProgressByUserID(ctx, userID, limit, cursor)
+	stories, nextCursor, err := s.publishedRepo.FindWithProgressByUserID(ctx, s.db, userID, limit, cursor)
 	if err != nil {
 		log.Error("Failed to find stories with progress in repository", zap.Error(err))
 		return nil, "", fmt.Errorf("%w: failed to retrieve stories with progress from repository: %v", ErrInternal, err)
@@ -447,7 +451,7 @@ func (s *storyBrowsingServiceImpl) GetStoriesWithProgress(ctx context.Context, u
 func (s *storyBrowsingServiceImpl) GetParsedSetup(ctx context.Context, storyID uuid.UUID) (*sharedModels.NovelSetupContent, error) {
 	log := s.logger.With(zap.String("storyID", storyID.String()))
 
-	story, err := s.publishedRepo.GetByID(ctx, storyID)
+	story, err := s.publishedRepo.GetByID(ctx, s.db, storyID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			log.Warn("Published story not found for GetParsedSetup")
@@ -475,7 +479,7 @@ func (s *storyBrowsingServiceImpl) GetActiveStoryCount(ctx context.Context) (int
 	log := s.logger.With(zap.String("method", "GetActiveStoryCount"))
 	log.Debug("Counting active stories")
 
-	count, err := s.publishedRepo.CountByStatus(ctx, sharedModels.StatusReady)
+	count, err := s.publishedRepo.CountByStatus(ctx, s.db, sharedModels.StatusReady)
 	if err != nil {
 		log.Error("Failed to count active stories", zap.Error(err))
 		return 0, fmt.Errorf("failed to count active stories: %w", err)
@@ -493,7 +497,7 @@ func (s *storyBrowsingServiceImpl) ListMyStoriesWithProgress(ctx context.Context
 		limit = 20
 	}
 
-	summaries, nextCursor, err := s.publishedRepo.ListUserSummariesOnlyWithProgress(ctx, userID, cursor, limit, filterAdult)
+	summaries, nextCursor, err := s.publishedRepo.ListUserSummariesOnlyWithProgress(ctx, s.db, userID, cursor, limit, filterAdult)
 	if err != nil {
 		log.Error("Failed to list user stories only with progress", zap.Error(err))
 		return nil, "", sharedModels.ErrInternalServer

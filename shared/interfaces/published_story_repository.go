@@ -17,7 +17,7 @@ type PublishedStoryRepository interface {
 	Create(ctx context.Context, story *models.PublishedStory) error
 
 	// GetByID retrieves a published story by its unique ID.
-	GetByID(ctx context.Context, id uuid.UUID) (*models.PublishedStory, error)
+	GetByID(ctx context.Context, querier DBTX, id uuid.UUID) (*models.PublishedStory, error)
 
 	// UpdateStatusDetails updates the status, setup, error details, and potentially ending text of a published story.
 	// Use this method for various state transitions after generation tasks.
@@ -32,7 +32,7 @@ type PublishedStoryRepository interface {
 	// ListPublic(ctx context.Context, cursor string, limit int) ([]*models.PublishedStory, string, error)
 
 	// ListByUserID retrieves a paginated list of stories created by a specific user using cursor pagination.
-	ListByUserID(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*models.PublishedStory, string, error)
+	ListByUserID(ctx context.Context, querier DBTX, userID uuid.UUID, cursor string, limit int) ([]*models.PublishedStory, string, error)
 
 	// IncrementLikesCount атомарно увеличивает счетчик лайков для истории.
 	// IncrementLikesCount(ctx context.Context, id uuid.UUID) error
@@ -52,16 +52,16 @@ type PublishedStoryRepository interface {
 	// UpdateConfigAndSetup(ctx context.Context, id uuid.UUID, config, setup []byte) error
 
 	// UpdateConfigAndSetupAndStatus updates config, setup and status for a published story.
-	UpdateConfigAndSetupAndStatus(ctx context.Context, id uuid.UUID, config, setup json.RawMessage, status models.StoryStatus) error
+	UpdateConfigAndSetupAndStatus(ctx context.Context, querier DBTX, id uuid.UUID, config, setup json.RawMessage, status models.StoryStatus) error
 
 	// CountActiveGenerationsForUser counts the number of published stories with statuses indicating active generation for a specific user.
-	CountActiveGenerationsForUser(ctx context.Context, userID uuid.UUID) (int, error)
+	CountActiveGenerationsForUser(ctx context.Context, querier DBTX, userID uuid.UUID) (int, error)
 
 	// MarkStoryAsLiked marks a story as liked by a user.
-	MarkStoryAsLiked(ctx context.Context, storyID uuid.UUID, userID uuid.UUID) error
+	MarkStoryAsLiked(ctx context.Context, querier DBTX, storyID uuid.UUID, userID uuid.UUID) error
 
 	// MarkStoryAsUnliked marks a story as unliked by a user.
-	MarkStoryAsUnliked(ctx context.Context, storyID uuid.UUID, userID uuid.UUID) error
+	MarkStoryAsUnliked(ctx context.Context, querier DBTX, storyID uuid.UUID, userID uuid.UUID) error
 
 	// IsStoryLikedByUser checks if a story is liked by a user.
 	// IsStoryLikedByUser(ctx context.Context, storyID uuid.UUID, userID uuid.UUID) (bool, error)
@@ -70,56 +70,56 @@ type PublishedStoryRepository interface {
 	ListLikedByUser(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]models.PublishedStorySummary, string, error)
 
 	// Delete удаляет опубликованную историю и все связанные с ней данные (сцены, прогресс, лайки).
-	Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
+	Delete(ctx context.Context, querier DBTX, id uuid.UUID, userID uuid.UUID) error
 
 	// CheckLike checks if a story is liked by a user.
-	CheckLike(ctx context.Context, userID, storyID uuid.UUID) (bool, error)
+	CheckLike(ctx context.Context, querier DBTX, userID, storyID uuid.UUID) (bool, error)
 
 	// FindWithProgressByUserID retrieves a paginated list of stories with progress for a specific user using cursor pagination.
-	FindWithProgressByUserID(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]models.PublishedStorySummary, string, error)
+	FindWithProgressByUserID(ctx context.Context, querier DBTX, userID uuid.UUID, limit int, cursor string) ([]models.PublishedStorySummary, string, error)
 
 	// CountByStatus подсчитывает количество историй по статусу.
-	CountByStatus(ctx context.Context, status models.StoryStatus) (int, error)
+	CountByStatus(ctx context.Context, querier DBTX, status models.StoryStatus) (int, error)
 
 	// ListByUserIDOffset retrieves a paginated list of stories created by a specific user using cursor pagination with offset.
 	// ListByUserIDOffset(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.PublishedStory, error)
 
 	// ListUserSummariesWithProgress retrieves a paginated list of stories created by a specific user,
 	// including a flag indicating if the current user has progress in that story.
-	ListUserSummariesWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error)
+	ListUserSummariesWithProgress(ctx context.Context, querier DBTX, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error)
 
 	// ListUserSummariesOnlyWithProgress retrieves a paginated list of stories where the user has progress,
 	// sorted by last activity time.
-	ListUserSummariesOnlyWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error)
+	ListUserSummariesOnlyWithProgress(ctx context.Context, querier DBTX, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error)
 
 	// ListPublicSummaries retrieves a paginated list of public stories.
 	// Requires the user ID to determine like/progress status for that user.
 	// If userID is nil, like/progress status will not be checked.
-	ListPublicSummaries(ctx context.Context, userID *uuid.UUID, cursor string, limit int, sortBy string) ([]models.PublishedStorySummary, string, error)
+	ListPublicSummaries(ctx context.Context, querier DBTX, userID *uuid.UUID, cursor string, limit int, sortBy string) ([]models.PublishedStorySummary, string, error)
 
 	// SearchPublic performs a full-text search on public stories.
 	// Requires the user ID to determine like/progress status for that user.
 
 	// CheckInitialGenerationStatus проверяет, готовы ли Setup и Первая сцена.
-	CheckInitialGenerationStatus(ctx context.Context, id uuid.UUID) (bool, error)
+	CheckInitialGenerationStatus(ctx context.Context, querier DBTX, id uuid.UUID) (bool, error)
 
 	// GetConfigAndSetup получает Config и Setup по ID истории.
-	GetConfigAndSetup(ctx context.Context, id uuid.UUID) (json.RawMessage, json.RawMessage, error)
+	GetConfigAndSetup(ctx context.Context, querier DBTX, id uuid.UUID) (json.RawMessage, json.RawMessage, error)
 
 	// FindAndMarkStaleGeneratingAsError находит опубликованные истории, которые 'зависли' в статусе генерации,
 	// и обновляет их статус на StatusError.
 	// staleThreshold: длительность, после которой история считается зависшей (например, 1 час).
 	// Возвращает количество обновленных записей и ошибку.
-	FindAndMarkStaleGeneratingAsError(ctx context.Context, staleThreshold time.Duration) (int64, error)
+	FindAndMarkStaleGeneratingAsError(ctx context.Context, querier DBTX, staleThreshold time.Duration) (int64, error)
 
 	// UpdateStatusFlagsAndSetup обновляет статус, Setup и флаги ожидания для истории.
 	// Используется после успешной генерации Setup.
-	UpdateStatusFlagsAndSetup(ctx context.Context, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, isFirstScenePending bool, areImagesPending bool) error
+	UpdateStatusFlagsAndSetup(ctx context.Context, querier DBTX, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, isFirstScenePending bool, areImagesPending bool) error
 
 	// UpdateStatusFlagsAndDetails обновляет статус, флаги ожидания и детали ошибки.
 	// Используется при установке статуса Error или потенциально других переходах.
-	UpdateStatusFlagsAndDetails(ctx context.Context, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, errorDetails *string) error
+	UpdateStatusFlagsAndDetails(ctx context.Context, querier DBTX, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, errorDetails *string) error
 
 	// GetSummaryWithDetails получает детали истории, имя автора, флаг лайка и прогресса для указанного пользователя.
-	GetSummaryWithDetails(ctx context.Context, storyID, userID uuid.UUID) (*models.PublishedStorySummary, error)
+	GetSummaryWithDetails(ctx context.Context, querier DBTX, storyID, userID uuid.UUID) (*models.PublishedStorySummary, error)
 }

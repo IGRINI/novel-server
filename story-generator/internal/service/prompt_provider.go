@@ -24,10 +24,11 @@ type PromptProvider struct {
 	cacheLock         sync.RWMutex                       // Mutex for map operations (alternative to sync.Map)
 	cacheMap          map[string]map[string]string       // Cache: map[language]map[key]content
 	logger            *zap.Logger                        // Use *zap.Logger
+	db                interfaces.DBTX                    // <<< ДОБАВЛЕНО: Пул соединений БД >>>
 }
 
 // NewPromptProvider creates a new PromptProvider.
-func NewPromptProvider(repo interfaces.PromptRepository, dynamicConfigRepo interfaces.DynamicConfigRepository, logger *zap.Logger) *PromptProvider {
+func NewPromptProvider(repo interfaces.PromptRepository, dynamicConfigRepo interfaces.DynamicConfigRepository, logger *zap.Logger, dbPool interfaces.DBTX) *PromptProvider { // <<< ДОБАВЛЕНО: dbPool interfaces.DBTX >>>
 	if repo == nil {
 		log.Fatal().Msg("PromptRepository is nil for PromptProvider")
 	}
@@ -42,6 +43,7 @@ func NewPromptProvider(repo interfaces.PromptRepository, dynamicConfigRepo inter
 		dynamicConfigRepo: dynamicConfigRepo,
 		cacheMap:          make(map[string]map[string]string),
 		logger:            logger.Named("PromptProvider"),
+		db:                dbPool, // <<< ДОБАВЛЕНО: Сохраняем пул >>>
 	}
 }
 
@@ -154,7 +156,7 @@ func (p *PromptProvider) GetPrompt(ctx context.Context, key string, language str
 	if strings.Contains(content, "{{NPC_COUNT}}") {
 		npcCount := 10
 		configKey := "generation.npc_count"
-		dynConf, err := p.dynamicConfigRepo.GetByKey(ctx, configKey)
+		dynConf, err := p.dynamicConfigRepo.GetByKey(ctx, p.db, configKey)
 		if err != nil {
 			if !errors.Is(err, models.ErrNotFound) {
 				p.logger.Error("Failed to get dynamic config for NPC count, using default",
@@ -186,7 +188,7 @@ func (p *PromptProvider) GetPrompt(ctx context.Context, key string, language str
 	if strings.Contains(content, "{{CHOICE_COUNT}}") {
 		choiceCount := 10
 		configKey := "generation.choice_count"
-		dynConf, err := p.dynamicConfigRepo.GetByKey(ctx, configKey)
+		dynConf, err := p.dynamicConfigRepo.GetByKey(ctx, p.db, configKey)
 		if err != nil {
 			if !errors.Is(err, models.ErrNotFound) {
 				p.logger.Error("Failed to get dynamic config for CHOICE count, using default",

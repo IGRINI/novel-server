@@ -15,6 +15,7 @@ import (
 	"novel-server/gameplay-service/internal/config"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
 
@@ -65,8 +66,10 @@ type gameLoopServiceImpl struct {
 	imageReferenceRepo         interfaces.ImageReferenceRepository
 	characterImageTaskBatchPub messaging.CharacterImageTaskBatchPublisher
 	dynamicConfigRepo          interfaces.DynamicConfigRepository
+	clientPub                  messaging.ClientUpdatePublisher
 	logger                     *zap.Logger
 	cfg                        *config.Config
+	pool                       *pgxpool.Pool
 }
 
 // NewGameLoopService creates a new instance of GameLoopService.
@@ -80,8 +83,10 @@ func NewGameLoopService(
 	imageReferenceRepo interfaces.ImageReferenceRepository,
 	characterImageTaskBatchPub messaging.CharacterImageTaskBatchPublisher,
 	dynamicConfigRepo interfaces.DynamicConfigRepository,
+	clientPub messaging.ClientUpdatePublisher,
 	logger *zap.Logger,
 	cfg *config.Config,
+	pool *pgxpool.Pool,
 ) GameLoopService {
 	if cfg == nil {
 		panic("cfg cannot be nil for NewGameLoopService")
@@ -96,8 +101,10 @@ func NewGameLoopService(
 		imageReferenceRepo:         imageReferenceRepo,
 		characterImageTaskBatchPub: characterImageTaskBatchPub,
 		dynamicConfigRepo:          dynamicConfigRepo,
+		clientPub:                  clientPub,
 		logger:                     logger.Named("GameLoopService"),
 		cfg:                        cfg,
+		pool:                       pool,
 	}
 }
 
@@ -121,7 +128,7 @@ func (s *gameLoopServiceImpl) checkAndGenerateSetupImages(ctx context.Context, s
 	var previewStyleSuffix string = ""
 
 	charDynConfKey := "prompt.character_style_suffix"
-	dynamicConfigChar, errConfChar := s.dynamicConfigRepo.GetByKey(ctx, charDynConfKey)
+	dynamicConfigChar, errConfChar := s.dynamicConfigRepo.GetByKey(ctx, s.pool, charDynConfKey)
 	if errConfChar != nil {
 		if !errors.Is(errConfChar, models.ErrNotFound) {
 			log.Error("Failed to get dynamic config for character style suffix, using empty default", zap.String("key", charDynConfKey), zap.Error(errConfChar))
@@ -134,7 +141,7 @@ func (s *gameLoopServiceImpl) checkAndGenerateSetupImages(ctx context.Context, s
 	}
 
 	previewDynConfKey := "prompt.story_preview_style_suffix"
-	dynamicConfigPreview, errConfPreview := s.dynamicConfigRepo.GetByKey(ctx, previewDynConfKey)
+	dynamicConfigPreview, errConfPreview := s.dynamicConfigRepo.GetByKey(ctx, s.pool, previewDynConfKey)
 	if errConfPreview != nil {
 		if !errors.Is(errConfPreview, models.ErrNotFound) {
 			log.Error("Failed to get dynamic config for story preview style suffix, using empty default", zap.String("key", previewDynConfKey), zap.Error(errConfPreview))
@@ -227,6 +234,7 @@ func (s *gameLoopServiceImpl) checkAndGenerateSetupImages(ctx context.Context, s
 
 		if err := s.publishedRepo.UpdateStatusFlagsAndDetails(
 			ctx,
+			s.pool,
 			story.ID,
 			story.Status,
 			story.IsFirstScenePending,

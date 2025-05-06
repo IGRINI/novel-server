@@ -4,6 +4,8 @@ import (
 	"novel-server/shared/interfaces"
 
 	"github.com/google/uuid"
+	// "github.com/jackc/pgx/v5/pgxpool" // Пул больше не нужен напрямую в структуре
+
 	"go.uber.org/zap"
 )
 
@@ -23,7 +25,7 @@ const (
 	`
 	// Поля для сводки с прогрессом (используются в PublishedStorySummaryWithProgress)
 	publishedStorySummaryWithProgressFields = publishedStorySummaryFields + `,
-		(pgs.player_progress_id IS NOT NULL) as has_player_progress, ps.is_public, pgs.player_status
+		(pgs.player_progress_id IS NOT NULL) as has_player_progress, ps.is_public, pgs.player_status, pgs.id as player_game_state_id
 	`
 )
 
@@ -37,13 +39,15 @@ var _ interfaces.PublishedStoryRepository = (*pgPublishedStoryRepository)(nil)
 type pgPublishedStoryRepository struct {
 	db     interfaces.DBTX
 	logger *zap.Logger
+	// pool   *pgxpool.Pool // Removed pool field
 }
 
 // NewPgPublishedStoryRepository создает новый экземпляр репозитория.
-func NewPgPublishedStoryRepository(db interfaces.DBTX, logger *zap.Logger) interfaces.PublishedStoryRepository {
+func NewPgPublishedStoryRepository(querier interfaces.DBTX, logger *zap.Logger) interfaces.PublishedStoryRepository {
 	return &pgPublishedStoryRepository{
-		db:     db,
+		db:     querier,
 		logger: logger.Named("PgPublishedStoryRepo"),
+		// pool:   pool, // Removed
 	}
 }
 

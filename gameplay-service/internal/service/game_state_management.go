@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"novel-server/shared/database"
 	"novel-server/shared/models"
 	"time"
 
@@ -17,7 +19,7 @@ func (s *gameLoopServiceImpl) ListGameStates(ctx context.Context, playerID uuid.
 	log := s.logger.With(zap.String("playerID", playerID.String()), zap.String("publishedStoryID", publishedStoryID.String()))
 	log.Info("ListGameStates called")
 
-	states, err := s.playerGameStateRepo.ListByPlayerAndStory(ctx, playerID, publishedStoryID)
+	states, err := s.playerGameStateRepo.ListByPlayerAndStory(ctx, s.pool, playerID, publishedStoryID)
 	if err != nil {
 		log.Error("Failed to list player game states from repository", zap.Error(err))
 		return nil, models.ErrInternalServer
@@ -28,37 +30,73 @@ func (s *gameLoopServiceImpl) ListGameStates(ctx context.Context, playerID uuid.
 }
 
 // CreateNewGameState creates a new game state (save slot).
-func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) (*models.PlayerGameState, error) {
+func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) (createdState *models.PlayerGameState, err error) {
 	log := s.logger.With(zap.String("playerID", playerID.String()), zap.String("publishedStoryID", publishedStoryID.String()))
 	log.Info("CreateNewGameState called")
 
-	existingStates, errList := s.playerGameStateRepo.ListByPlayerAndStory(ctx, playerID, publishedStoryID)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		log.Error("Failed to begin transaction for CreateNewGameState", zap.Error(err))
+		return nil, models.ErrInternalServer
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("Panic recovered during CreateNewGameState, rolling back transaction", zap.Any("panic", r))
+			_ = tx.Rollback(context.Background())
+			err = fmt.Errorf("panic during game state creation: %v", r)
+		} else if err != nil {
+			log.Warn("Rolling back transaction due to error during game state creation", zap.Error(err))
+			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
+				log.Error("Failed to rollback transaction", zap.Error(rollbackErr))
+			}
+		} else {
+			log.Info("Attempting to commit transaction for CreateNewGameState")
+			if commitErr := tx.Commit(ctx); commitErr != nil {
+				log.Error("Failed to commit transaction after successful game state creation", zap.Error(commitErr))
+				err = fmt.Errorf("error committing transaction: %w", commitErr)
+			} else {
+				log.Info("Transaction committed successfully for CreateNewGameState")
+			}
+		}
+	}()
+
+	gameStateRepoTx := database.NewPgPlayerGameStateRepository(tx, s.logger)
+	publishedRepoTx := database.NewPgPublishedStoryRepository(tx, s.logger)
+	progressRepoTx := database.NewPgPlayerProgressRepository(tx, s.logger)
+	sceneRepoTx := database.NewPgStorySceneRepository(tx, s.logger)
+
+	existingStates, errList := gameStateRepoTx.ListByPlayerAndStory(ctx, tx, playerID, publishedStoryID)
 	if errList != nil {
 		log.Error("Failed to list existing game states before creation", zap.Error(errList))
-		return nil, models.ErrInternalServer
+		err = models.ErrInternalServer
+		return nil, err
 	}
 	if len(existingStates) > 0 {
 		log.Warn("Attempted to create new game state when one already exists", zap.Int("existingCount", len(existingStates)))
-		return nil, models.ErrSaveSlotExists
+		err = models.ErrSaveSlotExists
+		return nil, err
 	}
 
-	publishedStory, storyErr := s.publishedRepo.GetByID(ctx, publishedStoryID)
+	publishedStory, storyErr := publishedRepoTx.GetByID(ctx, tx, publishedStoryID)
 	if storyErr != nil {
-		if errors.Is(storyErr, pgx.ErrNoRows) {
+		if errors.Is(storyErr, pgx.ErrNoRows) || errors.Is(storyErr, models.ErrNotFound) {
 			log.Error("Published story not found for creating new game state")
-			return nil, models.ErrStoryNotFound
+			err = models.ErrStoryNotFound
+		} else {
+			log.Error("Failed to get published story for creating new game state", zap.Error(storyErr))
+			err = models.ErrInternalServer
 		}
-		log.Error("Failed to get published story for creating new game state", zap.Error(storyErr))
-		return nil, models.ErrInternalServer
+		return nil, err
 	}
 
 	if publishedStory.Status != models.StatusReady {
 		log.Warn("Attempt to create game state for story not in Ready status", zap.String("status", string(publishedStory.Status)))
-		return nil, models.ErrStoryNotReady
+		err = models.ErrStoryNotReady
+		return nil, err
 	}
 
 	var initialProgressID uuid.UUID
-	initialProgress, progressErr := s.playerProgressRepo.GetByStoryIDAndHash(ctx, publishedStoryID, models.InitialStateHash)
+	initialProgress, progressErr := progressRepoTx.GetByStoryIDAndHash(ctx, tx, publishedStoryID, models.InitialStateHash)
 
 	if progressErr == nil {
 		initialProgressID = initialProgress.ID
@@ -86,26 +124,27 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 			SceneIndex:            0,
 			EncounteredCharacters: []string{},
 		}
-		savedID, createErr := s.playerProgressRepo.Save(ctx, newInitialProgress)
+		savedID, createErr := progressRepoTx.Save(ctx, tx, newInitialProgress)
 		if createErr != nil {
 			log.Error("Error creating initial player progress node in repository", zap.Error(createErr))
-			return nil, models.ErrInternalServer
+			err = models.ErrInternalServer
+			return nil, err
 		}
 		initialProgressID = savedID
 		log.Info("Initial PlayerProgress node created successfully", zap.String("progressID", initialProgressID.String()))
 	} else {
 		log.Error("Unexpected error getting initial player progress node", zap.Error(progressErr))
-		return nil, models.ErrInternalServer
+		err = models.ErrInternalServer
+		return nil, err
 	}
 
 	var initialSceneID *uuid.UUID
-	initialScene, sceneErr := s.sceneRepo.FindByStoryAndHash(ctx, publishedStoryID, models.InitialStateHash)
+	initialScene, sceneErr := sceneRepoTx.FindByStoryAndHash(ctx, tx, publishedStoryID, models.InitialStateHash)
 	if sceneErr == nil {
 		initialSceneID = &initialScene.ID
 		log.Debug("Found initial scene", zap.String("sceneID", initialSceneID.String()))
 	} else if !errors.Is(sceneErr, pgx.ErrNoRows) && !errors.Is(sceneErr, models.ErrNotFound) {
 		log.Error("Error fetching initial scene by hash", zap.Error(sceneErr))
-
 	}
 
 	now := time.Now().UTC()
@@ -117,88 +156,97 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 	newGameState := &models.PlayerGameState{
 		PlayerID:         playerID,
 		PublishedStoryID: publishedStoryID,
-
 		PlayerProgressID: initialProgressID,
-
-		CurrentSceneID: uuid.NullUUID{},
-		PlayerStatus:   playerStatus,
-		StartedAt:      now,
-		LastActivityAt: now,
+		CurrentSceneID:   uuid.NullUUID{},
+		PlayerStatus:     playerStatus,
+		StartedAt:        now,
+		LastActivityAt:   now,
 	}
 
 	if initialSceneID != nil {
 		newGameState.CurrentSceneID = uuid.NullUUID{UUID: *initialSceneID, Valid: true}
 	}
 
-	createdStateID, saveErr := s.playerGameStateRepo.Save(ctx, newGameState)
+	createdStateID, saveErr := gameStateRepoTx.Save(ctx, tx, newGameState)
 	if saveErr != nil {
 		log.Error("Error creating new player game state in repository", zap.Error(saveErr))
-		return nil, models.ErrInternalServer
+		err = models.ErrInternalServer
+		return nil, err
 	}
 	newGameState.ID = createdStateID
 
-	log.Info("New player game state created successfully", zap.String("gameStateID", createdStateID.String()))
+	log.Info("New player game state created successfully (transaction pending commit)", zap.String("gameStateID", createdStateID.String()))
 
 	if newGameState.PlayerStatus == models.PlayerStatusGeneratingScene {
-		log.Info("Publishing initial scene generation task for the new game state")
-		generationPayload, errPayload := createInitialSceneGenerationPayload(playerID, publishedStory)
+		log.Info("Initial scene generation task needed for the new game state (task should be published AFTER commit)")
+		_, errPayload := createInitialSceneGenerationPayload(playerID, publishedStory, publishedStory.Language)
 		if errPayload != nil {
-			log.Error("Failed to create initial generation payload after creating game state", zap.Error(errPayload))
-			newGameState.PlayerStatus = models.PlayerStatusError
-			newGameState.ErrorDetails = models.StringPtr("Failed to create initial generation payload")
-			if _, updateErr := s.playerGameStateRepo.Save(ctx, newGameState); updateErr != nil {
-				log.Error("Failed to update game state to Error after payload creation failure", zap.Error(updateErr))
-			}
-			return nil, models.ErrInternalServer
+			log.Error("Failed to create initial generation payload object (potential issue for task sending later)", zap.Error(errPayload))
 		}
-
-		if errPub := s.publisher.PublishGenerationTask(ctx, generationPayload); errPub != nil {
-			log.Error("Error publishing initial scene generation task after creating game state", zap.Error(errPub))
-			newGameState.PlayerStatus = models.PlayerStatusError
-			newGameState.ErrorDetails = models.StringPtr("Failed to publish initial generation task")
-			if _, updateErr := s.playerGameStateRepo.Save(ctx, newGameState); updateErr != nil {
-				log.Error("Failed to update game state to Error after publish failure", zap.Error(updateErr))
-			}
-			return nil, models.ErrInternalServer
-		}
-		log.Info("Initial scene generation task published successfully for new game state", zap.String("taskID", generationPayload.TaskID))
 	}
 
-	return newGameState, nil
+	createdState = newGameState
+	return createdState, nil
 }
 
 // DeletePlayerGameState deletes a specific game state (save slot).
-func (s *gameLoopServiceImpl) DeletePlayerGameState(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID) error {
+func (s *gameLoopServiceImpl) DeletePlayerGameState(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID) (err error) {
 	log := s.logger.With(zap.String("gameStateID", gameStateID.String()), zap.Stringer("userID", userID))
 	log.Info("Deleting player game state by ID")
 
-	gameState, errState := s.playerGameStateRepo.GetByID(ctx, gameStateID)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		log.Error("Failed to begin transaction for DeletePlayerGameState", zap.Error(err))
+		return models.ErrInternalServer
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("Panic recovered during DeletePlayerGameState, rolling back transaction", zap.Any("panic", r))
+			_ = tx.Rollback(context.Background())
+			err = fmt.Errorf("panic during game state deletion: %v", r)
+		} else if err != nil {
+			log.Warn("Rolling back transaction due to error during game state deletion", zap.Error(err))
+			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
+				log.Error("Failed to rollback transaction", zap.Error(rollbackErr))
+			}
+		} else {
+			log.Info("Attempting to commit transaction for DeletePlayerGameState")
+			if commitErr := tx.Commit(ctx); commitErr != nil {
+				log.Error("Failed to commit transaction after successful game state deletion", zap.Error(commitErr))
+				err = fmt.Errorf("error committing transaction: %w", commitErr)
+			} else {
+				log.Info("Transaction committed successfully for DeletePlayerGameState")
+			}
+		}
+	}()
+
+	gameStateRepoTx := database.NewPgPlayerGameStateRepository(tx, s.logger)
+
+	gameState, errState := gameStateRepoTx.GetByID(ctx, tx, gameStateID)
 	if errState != nil {
 		if errors.Is(errState, models.ErrNotFound) || errors.Is(errState, pgx.ErrNoRows) {
 			log.Warn("Player game state not found for deletion by ID")
-			return models.ErrPlayerGameStateNotFound
+			err = models.ErrPlayerGameStateNotFound
+		} else {
+			log.Error("Failed to get player game state for deletion check", zap.Error(errState))
+			err = models.ErrInternalServer
 		}
-		log.Error("Failed to get player game state for deletion check", zap.Error(errState))
-		return models.ErrInternalServer
+		return err
 	}
 
 	if gameState.PlayerID != userID {
 		log.Warn("Attempt to delete game state belonging to another user", zap.Stringer("ownerUserID", gameState.PlayerID))
-		return models.ErrForbidden
+		err = models.ErrForbidden
+		return err
 	}
 
-	err := s.playerGameStateRepo.Delete(ctx, gameStateID)
+	err = gameStateRepoTx.Delete(ctx, tx, gameStateID)
 	if err != nil {
-		if errors.Is(err, models.ErrNotFound) {
-
-			log.Warn("Player game state not found for deletion by ID (unexpected after check)")
-			return models.ErrPlayerGameStateNotFound
-		}
-
 		log.Error("Error deleting player game state by ID from repository", zap.Error(err))
-		return models.ErrInternalServer
+		err = models.ErrInternalServer
+		return err
 	}
 
-	log.Info("Player game state deleted successfully by ID")
+	log.Info("Player game state deleted successfully (transaction pending commit)")
 	return nil
 }

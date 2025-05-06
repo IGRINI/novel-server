@@ -23,6 +23,7 @@ type configServiceImpl struct {
 	repo      interfaces.DynamicConfigRepository
 	publisher messaging.Publisher // Интерфейс для RabbitMQ
 	logger    *zap.Logger
+	db        interfaces.DBTX // <<< ДОБАВЛЕНО: Пул соединений >>>
 }
 
 // NewConfigService создает новый экземпляр ConfigService.
@@ -30,16 +31,18 @@ func NewConfigService(
 	repo interfaces.DynamicConfigRepository,
 	publisher messaging.Publisher, // Принимаем паблишер
 	logger *zap.Logger,
+	dbPool interfaces.DBTX, // <<< ДОБАВЛЕНО: Принимаем пул >>>
 ) ConfigService {
 	return &configServiceImpl{
 		repo:      repo,
 		publisher: publisher, // Сохраняем паблишер
 		logger:    logger.Named("ConfigService"),
+		db:        dbPool, // <<< ДОБАВЛЕНО: Сохраняем пул >>>
 	}
 }
 
 func (s *configServiceImpl) GetAllConfigs(ctx context.Context) ([]*models.DynamicConfig, error) {
-	configs, err := s.repo.GetAll(ctx)
+	configs, err := s.repo.GetAll(ctx, s.db)
 	if err != nil {
 		s.logger.Error("Failed to get all configs from repository", zap.Error(err))
 		// Можно вернуть специфичную ошибку сервисного уровня, если нужно
@@ -49,7 +52,7 @@ func (s *configServiceImpl) GetAllConfigs(ctx context.Context) ([]*models.Dynami
 }
 
 func (s *configServiceImpl) GetConfigByKey(ctx context.Context, key string) (*models.DynamicConfig, error) {
-	config, err := s.repo.GetByKey(ctx, key)
+	config, err := s.repo.GetByKey(ctx, s.db, key)
 	if err != nil {
 		s.logger.Warn("Failed to get config by key from repository", zap.String("key", key), zap.Error(err))
 		// repo.GetByKey уже возвращает models.ErrNotFound
@@ -69,7 +72,7 @@ func (s *configServiceImpl) UpdateConfig(ctx context.Context, key, value string)
 	}
 
 	// 2. Выполняем Upsert в БД
-	err := s.repo.Upsert(ctx, config)
+	err := s.repo.Upsert(ctx, s.db, config)
 	if err != nil {
 		log.Error("Failed to upsert config in repository", zap.Error(err))
 		return err // Возвращаем ошибку репозитория
@@ -110,7 +113,7 @@ func (s *configServiceImpl) CreateConfig(ctx context.Context, key, value string)
 	}
 
 	// 2. Выполняем Create в БД
-	err := s.repo.Create(ctx, newConfig)
+	err := s.repo.Create(ctx, s.db, newConfig)
 	if err != nil {
 		log.Error("Failed to create config in repository", zap.Error(err))
 		return err // Возвращаем ошибку репозитория

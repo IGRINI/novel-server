@@ -30,6 +30,36 @@ type GenerationParams struct {
 	TopP        *float64
 }
 
+// --- Вспомогательный тип для добавления заголовков ---
+type headerTransport struct {
+	Transport http.RoundTripper
+	Headers   map[string]string
+}
+
+func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Клонируем заголовки запроса, чтобы не модифицировать оригинальный req.Header напрямую
+	// (на случай, если он используется где-то еще)
+	newHeader := req.Header.Clone()
+	// Добавляем кастомные заголовки
+	for key, value := range t.Headers {
+		// Используем Add, а не Set, чтобы не перезаписывать существующие заголовки с тем же именем,
+		// хотя для HTTP-Referer и X-Title это обычно не критично.
+		// Set тоже подойдет.
+		newHeader.Set(key, value)
+	}
+	req.Header = newHeader // Устанавливаем модифицированные заголовки
+
+	// Выполняем запрос через базовый транспорт
+	// Если Transport не задан, используем http.DefaultTransport
+	transport := t.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	return transport.RoundTrip(req)
+}
+
+// --- Конец вспомогательного типа ---
+
 var ErrAIGenerationFailed = errors.New("ошибка генерации текста AI")
 
 var (
@@ -605,12 +635,31 @@ func NewAIClient(configService *configservice.ConfigService) (AIClient, error) {
 		}
 		openaiConfig := openaigo.DefaultConfig(aiAPIKey)
 		openaiConfig.BaseURL = aiBaseURL
+
+		// --- Модификация HTTP клиента для добавления заголовков ---
+		baseTransport := http.DefaultTransport
+		// Проверяем, не равен ли http.DefaultTransport nil и можно ли его клонировать
+		if dt, ok := http.DefaultTransport.(*http.Transport); ok && dt != nil {
+			baseTransport = dt.Clone()
+		} // Иначе используем http.DefaultTransport как есть
+
+		customTransport := &headerTransport{
+			Transport: baseTransport,
+			Headers: map[string]string{
+				"HTTP-Referer": "crion.space",
+				"X-Title":      "TaleShift",
+			},
+		}
+
 		httpClient := &http.Client{
-			Timeout: aiTimeout,
+			Timeout:   aiTimeout,
+			Transport: customTransport, // Используем кастомный транспорт
 		}
 		openaiConfig.HTTPClient = httpClient
+		// --- Конец модификации ---
+
 		client := openaigo.NewClientWithConfig(openaiConfig)
-		log.Printf("OpenAI Клиент создан. Используемый BaseURL: %s, Timeout: %v", aiBaseURL, aiTimeout)
+		log.Printf("OpenAI Клиент создан. Используемый BaseURL: %s, Timeout: %v, Custom Headers Added: HTTP-Referer, X-Title", aiBaseURL, aiTimeout) // Добавлено в лог
 		return &openAIClient{
 			client:        client,
 			configService: configService,

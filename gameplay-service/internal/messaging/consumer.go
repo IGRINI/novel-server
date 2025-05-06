@@ -12,6 +12,7 @@ import (
 
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
 )
@@ -57,6 +58,7 @@ func NewNotificationConsumer(
 	// Параметры самого консьюмера:
 	queueName string,
 	cfg *config.Config,
+	db *pgxpool.Pool,
 ) (*NotificationConsumer, error) {
 	if conn == nil {
 		return nil, errors.New("connection is nil")
@@ -79,6 +81,7 @@ func NewNotificationConsumer(
 		logger,
 		cfg,
 		playerProgressRepo,
+		db,
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())

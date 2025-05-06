@@ -65,7 +65,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 
 	p.logger.Info("Processing NovelSetup", zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()))
 
-	publishedStory, err := p.publishedRepo.GetByID(dbCtx, publishedStoryID)
+	publishedStory, err := p.publishedRepo.GetByID(dbCtx, p.db, publishedStoryID)
 	if err != nil {
 		p.logger.Error("CRITICAL ERROR: Error getting PublishedStory for Setup update", zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()), zap.Error(err))
 		return fmt.Errorf("error getting PublishedStory %s: %w", publishedStoryID, err)
@@ -117,7 +117,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 
 			dbCtxUpdateStory, cancelUpdateStory := context.WithTimeout(ctx, 10*time.Second)
 			defer cancelUpdateStory()
-			if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtxUpdateStory, publishedStoryID, sharedModels.StatusError, false, false, &errDetails); errUpdateStory != nil {
+			if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtxUpdateStory, p.db, publishedStoryID, sharedModels.StatusError, false, false, &errDetails); errUpdateStory != nil {
 				p.logger.Error("CRITICAL ERROR: Failed to update PublishedStory status to Error after initial setup processing error",
 					zap.String("task_id", taskID),
 					zap.String("published_story_id", publishedStoryID.String()),
@@ -154,7 +154,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 
 			dbCtxUpdateStory, cancelUpdateStory := context.WithTimeout(ctx, 10*time.Second)
 			defer cancelUpdateStory()
-			if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtxUpdateStory, publishedStoryID, sharedModels.StatusError, false, false, &errDetails); errUpdateStory != nil {
+			if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtxUpdateStory, p.db, publishedStoryID, sharedModels.StatusError, false, false, &errDetails); errUpdateStory != nil {
 				p.logger.Error("CRITICAL ERROR: Failed to update PublishedStory status to Error after initial setup processing error",
 					zap.String("task_id", taskID),
 					zap.String("published_story_id", publishedStoryID.String()),
@@ -258,7 +258,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 
 			areImagesPending := needsPreviewImage || needsCharacterImages
 			isFirstScenePending := true
-			if errUpdateSetup := p.publishedRepo.UpdateStatusFlagsAndSetup(dbCtx, publishedStoryID, sharedModels.StatusFirstScenePending, setupBytes, isFirstScenePending, areImagesPending); errUpdateSetup != nil {
+			if errUpdateSetup := p.publishedRepo.UpdateStatusFlagsAndSetup(dbCtx, p.db, publishedStoryID, sharedModels.StatusFirstScenePending, setupBytes, isFirstScenePending, areImagesPending); errUpdateSetup != nil {
 				p.logger.Error("CRITICAL ERROR: Failed to update status, flags and Setup for PublishedStory",
 					zap.String("task_id", taskID),
 					zap.String("published_story_id", publishedStoryID.String()),
@@ -336,7 +336,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 
 				dbCtxUpdateStory, cancelUpdateStory := context.WithTimeout(ctx, 10*time.Second)
 				defer cancelUpdateStory()
-				if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtxUpdateStory, publishedStoryID, sharedModels.StatusError, false, false, &errDetails); errUpdateStory != nil {
+				if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtxUpdateStory, p.db, publishedStoryID, sharedModels.StatusError, false, false, &errDetails); errUpdateStory != nil {
 					p.logger.Error("CRITICAL ERROR: Failed to update PublishedStory status to Error after setup processing error",
 						zap.String("task_id", taskID),
 						zap.String("published_story_id", publishedStoryID.String()),
@@ -354,7 +354,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 			}
 
 			// Отправка WebSocket уведомления об успехе Setup
-			finalStoryState, errGetFinal := p.publishedRepo.GetByID(ctx, publishedStoryID)
+			finalStoryState, errGetFinal := p.publishedRepo.GetByID(ctx, p.db, publishedStoryID)
 			if errGetFinal != nil {
 				p.logger.Error("Failed to get final story state for WS notification after setup success", zap.Error(errGetFinal))
 			} else {
@@ -374,7 +374,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 
 		dbCtxUpdateStory, cancelUpdateStory := context.WithTimeout(ctx, 10*time.Second)
 		defer cancelUpdateStory()
-		if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtxUpdateStory, publishedStoryID, sharedModels.StatusError, false, false, &notification.ErrorDetails); errUpdateStory != nil {
+		if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtxUpdateStory, p.db, publishedStoryID, sharedModels.StatusError, false, false, &notification.ErrorDetails); errUpdateStory != nil {
 			p.logger.Error("CRITICAL ERROR: Failed to update PublishedStory status to Error after Setup generation error",
 				zap.String("task_id", taskID),
 				zap.String("published_story_id", publishedStoryID.String()),

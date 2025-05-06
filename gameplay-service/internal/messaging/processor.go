@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
 
@@ -81,6 +82,7 @@ type NotificationProcessor struct {
 	logger                     *zap.Logger                         // <<< ДОБАВЛЕНО
 	cfg                        *config.Config                      // <<< ДОБАВЛЕНО: Доступ к конфигурации
 	playerProgressRepo         interfaces.PlayerProgressRepository // <<< ADDED: Dependency for progress updates
+	db                         *pgxpool.Pool                       // <<< На pgxpool.Pool
 }
 
 // NewNotificationProcessor создает новый экземпляр NotificationProcessor.
@@ -100,6 +102,7 @@ func NewNotificationProcessor(
 	logger *zap.Logger, // <<< ДОБАВЛЕНО
 	cfg *config.Config, // <<< ДОБАВЛЕНО: Принимаем конфиг
 	playerProgressRepo interfaces.PlayerProgressRepository, // <<< ADDED
+	db *pgxpool.Pool, // <<< На pgxpool.Pool
 ) *NotificationProcessor {
 	if genResultRepo == nil {
 		logger.Fatal("genResultRepo cannot be nil for NotificationProcessor")
@@ -120,6 +123,9 @@ func NewNotificationProcessor(
 	if cfg == nil {
 		logger.Fatal("cfg cannot be nil for NotificationProcessor")
 	}
+	if db == nil { // <<< Проверяем pgxpool.Pool
+		logger.Fatal("db pool cannot be nil for NotificationProcessor")
+	}
 	return &NotificationProcessor{
 		repo:                       repo,
 		publishedRepo:              publishedRepo,
@@ -136,6 +142,7 @@ func NewNotificationProcessor(
 		logger:                     logger,
 		cfg:                        cfg,
 		playerProgressRepo:         playerProgressRepo,
+		db:                         db, // <<< Присваиваем pgxpool.Pool
 	}
 }
 
@@ -320,7 +327,7 @@ func (p *NotificationProcessor) handleInitialSceneGenerated(ctx context.Context,
 	// 1. Обработка ошибки
 	if notification.Status == sharedMessaging.NotificationStatusError {
 		log.Error("Initial scene generation failed", zap.String("error_details", notification.ErrorDetails))
-		err := p.publishedRepo.UpdateStatusFlagsAndDetails(ctx, publishedStoryID, sharedModels.StatusError, false, false, &notification.ErrorDetails)
+		err := p.publishedRepo.UpdateStatusFlagsAndDetails(ctx, p.db, publishedStoryID, sharedModels.StatusError, false, false, &notification.ErrorDetails)
 		if err != nil {
 			log.Error("Failed to update published story status to Error after initial scene generation failure", zap.Error(err))
 		}
@@ -335,7 +342,7 @@ func (p *NotificationProcessor) handleInitialSceneGenerated(ctx context.Context,
 	if notification.Status == sharedMessaging.NotificationStatusSuccess {
 		log.Info("Initial scene generated successfully")
 		// 2.1 Находим сцену
-		scene, errScene := p.sceneRepo.FindByStoryAndHash(ctx, publishedStoryID, sharedModels.InitialStateHash)
+		scene, errScene := p.sceneRepo.FindByStoryAndHash(ctx, p.db, publishedStoryID, sharedModels.InitialStateHash)
 		if errScene != nil {
 			log.Error("Failed to find the generated initial scene by hash", zap.Error(errScene))
 			return fmt.Errorf("failed to find generated initial scene: %w", errScene) // Nack
@@ -345,7 +352,7 @@ func (p *NotificationProcessor) handleInitialSceneGenerated(ctx context.Context,
 		// 2.3 Находим ВСЕ PlayerGameState, ожидающие начальную сцену
 		// Используем ListByPlayerAndStory + фильтрация
 		userID, _ := uuid.Parse(notification.UserID)
-		allStatesForUser, errList := p.playerGameStateRepo.ListByPlayerAndStory(ctx, userID, publishedStoryID)
+		allStatesForUser, errList := p.playerGameStateRepo.ListByPlayerAndStory(ctx, p.db, userID, publishedStoryID)
 		if errList != nil {
 			log.Error("Failed to list game states by player and story for initial scene", zap.Error(errList))
 			return fmt.Errorf("failed to list waiting game states: %w", errList) // Nack
@@ -369,7 +376,7 @@ func (p *NotificationProcessor) handleInitialSceneGenerated(ctx context.Context,
 			gameState.CurrentSceneID = uuid.NullUUID{UUID: scene.ID, Valid: true}
 			gameState.LastActivityAt = now
 			gameState.ErrorDetails = nil
-			_, errSave := p.playerGameStateRepo.Save(ctx, gameState)
+			_, errSave := p.playerGameStateRepo.Save(ctx, p.db, gameState)
 			if errSave != nil {
 				gameStateLog.Error("Failed to update player game state with initial scene", zap.Error(errSave))
 				continue
@@ -383,7 +390,7 @@ func (p *NotificationProcessor) handleInitialSceneGenerated(ctx context.Context,
 
 		// 2.5 Обновляем статус истории и отправляем уведомление, если нужно
 		// Получаем актуальное состояние ДО обновления статуса
-		storyBeforeUpdate, errStory := p.publishedRepo.GetByID(ctx, publishedStoryID)
+		storyBeforeUpdate, errStory := p.publishedRepo.GetByID(ctx, p.db, publishedStoryID)
 		if errStory != nil {
 			log.Error("Failed to get published story before final status update", zap.Error(errStory))
 			// Не критично для обновления статуса, но уведомление может не уйти
@@ -398,7 +405,7 @@ func (p *NotificationProcessor) handleInitialSceneGenerated(ctx context.Context,
 		wasReadyBefore := storyBeforeUpdate != nil && storyBeforeUpdate.Status == sharedModels.StatusReady
 		wereImagesPendingBefore := storyBeforeUpdate != nil && storyBeforeUpdate.AreImagesPending
 
-		errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(ctx, publishedStoryID, newStatus,
+		errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(ctx, p.db, publishedStoryID, newStatus,
 			false,                   // isFirstScenePending = false
 			wereImagesPendingBefore, // Сохраняем флаг AreImagesPending (он мог быть false, если картинки не требовались)
 			nil)                     // Сбрасываем ошибку
@@ -475,7 +482,7 @@ func (p *NotificationProcessor) handleImageNotification(ctx context.Context, not
 		imageReference := notification.ImageReference
 		p.logger.Info("Image generated successfully, saving URL", append(logFields, zap.String("image_url", imageURL))...)
 
-		dbCtx, cancel := context.WithTimeout(ctx, 15*time.Second) // Используем переданный ctx
+		dbCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 
 		// 1. Сохраняем URL для текущего референса
@@ -488,7 +495,7 @@ func (p *NotificationProcessor) handleImageNotification(ctx context.Context, not
 
 		// 2. Проверяем, все ли изображения для этой истории готовы
 		// Вызываем отдельную функцию для проверки и обновления статуса
-		go p.checkStoryReadinessAfterImage(dbCtx, publishedStoryID) // Используем dbCtx
+		go p.checkStoryReadinessAfterImage(dbCtx, publishedStoryID)
 
 		// Если дошли сюда без ошибок сохранения URL, подтверждаем сообщение
 		return nil // Ack
@@ -592,11 +599,11 @@ func (p *NotificationProcessor) checkStoryReadinessAfterImage(ctx context.Contex
 	log := p.logger.With(zap.Stringer("publishedStoryID", publishedStoryID))
 	log.Info("Checking story readiness after image generated")
 
-	dbCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // <<< ИЗМЕНЕНИЕ: Используем context.Background()
+	dbCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// 1. Получаем текущее состояние истории
-	story, errGetStory := p.publishedRepo.GetByID(dbCtx, publishedStoryID)
+	story, errGetStory := p.publishedRepo.GetByID(dbCtx, p.db, publishedStoryID)
 	if errGetStory != nil {
 		if errors.Is(errGetStory, sharedModels.ErrNotFound) {
 			log.Warn("PublishedStory not found while checking image completion, maybe deleted?")
@@ -700,7 +707,7 @@ func (p *NotificationProcessor) checkStoryReadinessAfterImage(ctx context.Contex
 		}
 
 		// Обновляем статус и флаг AreImagesPending
-		errUpdatePending := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, newStatus, story.IsFirstScenePending, false, nil)
+		errUpdatePending := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, p.db, publishedStoryID, newStatus, story.IsFirstScenePending, false, nil)
 		if errUpdatePending != nil {
 			log.Error("Failed to update status and AreImagesPending flag.", zap.Error(errUpdatePending))
 			// Выходим, так как не смогли обновить важную информацию
@@ -725,7 +732,7 @@ func (p *NotificationProcessor) checkStoryReadinessAfterImage(ctx context.Contex
 	// 4. Проверяем, готова ли первая сцена и нужно ли установить статус Ready
 	if !story.IsFirstScenePending && !story.AreImagesPending && story.Status != sharedModels.StatusReady {
 		log.Info("Both first scene and images are now ready. Setting story status to Ready.")
-		errUpdateReady := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, publishedStoryID, sharedModels.StatusReady, false, false, nil)
+		errUpdateReady := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, p.db, publishedStoryID, sharedModels.StatusReady, false, false, nil)
 		if errUpdateReady != nil {
 			log.Error("Failed to set story status to Ready after all checks passed.", zap.Error(errUpdateReady))
 			return // Не смогли установить статус Ready

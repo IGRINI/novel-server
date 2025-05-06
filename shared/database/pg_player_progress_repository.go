@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lib/pq"
 	"go.uber.org/zap"
 )
@@ -22,17 +21,18 @@ import (
 var _ interfaces.PlayerProgressRepository = (*pgPlayerProgressRepository)(nil)
 
 type pgPlayerProgressRepository struct {
-	db     interfaces.DBTX // Keep DBTX for potential transactions
+	db     interfaces.DBTX // Changed field name for clarity
 	logger *zap.Logger
-	pool   *pgxpool.Pool // Use pool for regular queries
+	// pool *pgxpool.Pool // Removed pool field
 }
 
 // NewPgPlayerProgressRepository creates a new repository instance.
-func NewPgPlayerProgressRepository(pool *pgxpool.Pool, logger *zap.Logger) interfaces.PlayerProgressRepository {
+// <<< ИЗМЕНЕНО: Принимает interfaces.DBTX >>>
+func NewPgPlayerProgressRepository(querier interfaces.DBTX, logger *zap.Logger) interfaces.PlayerProgressRepository {
 	return &pgPlayerProgressRepository{
-		db:     pool, // Can assign pool to DBTX if needed for consistency or transactions later
+		db:     querier,
 		logger: logger.Named("PgPlayerProgressRepo"),
-		pool:   pool,
+		// pool:   pool, // Removed
 	}
 }
 
@@ -140,9 +140,9 @@ func scanPlayerProgress(row pgx.Row) (*models.PlayerProgress, error) {
 // --- Interface Method Implementations ---
 
 // GetByID retrieves a specific progress node by its unique ID.
-func (r *pgPlayerProgressRepository) GetByID(ctx context.Context, progressID uuid.UUID) (*models.PlayerProgress, error) {
+func (r *pgPlayerProgressRepository) GetByID(ctx context.Context, querier interfaces.DBTX, progressID uuid.UUID) (*models.PlayerProgress, error) {
 	logFields := []zap.Field{zap.String("progressID", progressID.String())}
-	row := r.pool.QueryRow(ctx, getPlayerProgressByIDQuery, progressID)
+	row := querier.QueryRow(ctx, getPlayerProgressByIDQuery, progressID)
 	progress, err := scanPlayerProgress(row)
 	if err != nil {
 		if errors.Is(err, models.ErrNotFound) {
@@ -157,9 +157,9 @@ func (r *pgPlayerProgressRepository) GetByID(ctx context.Context, progressID uui
 }
 
 // GetByStoryIDAndHash retrieves a specific progress node by story ID and state hash.
-func (r *pgPlayerProgressRepository) GetByStoryIDAndHash(ctx context.Context, publishedStoryID uuid.UUID, stateHash string) (*models.PlayerProgress, error) {
+func (r *pgPlayerProgressRepository) GetByStoryIDAndHash(ctx context.Context, querier interfaces.DBTX, publishedStoryID uuid.UUID, stateHash string) (*models.PlayerProgress, error) {
 	logFields := []zap.Field{zap.String("publishedStoryID", publishedStoryID.String()), zap.String("stateHash", stateHash)}
-	row := r.pool.QueryRow(ctx, getPlayerProgressByStoryAndHashQuery, publishedStoryID, stateHash)
+	row := querier.QueryRow(ctx, getPlayerProgressByStoryAndHashQuery, publishedStoryID, stateHash)
 	progress, err := scanPlayerProgress(row)
 	if err != nil {
 		if errors.Is(err, models.ErrNotFound) {
@@ -177,9 +177,9 @@ func (r *pgPlayerProgressRepository) GetByStoryIDAndHash(ctx context.Context, pu
 // Note: This might be less used now, potentially replaced by lookups via PlayerGameState.
 // Since user_id and published_story_id might be null in the DB now, this might return ErrNotFound
 // even if a progress node exists but isn't directly linked to a user/story via these columns.
-func (r *pgPlayerProgressRepository) GetByUserIDAndStoryID(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (*models.PlayerProgress, error) {
+func (r *pgPlayerProgressRepository) GetByUserIDAndStoryID(ctx context.Context, querier interfaces.DBTX, userID uuid.UUID, publishedStoryID uuid.UUID) (*models.PlayerProgress, error) {
 	logFields := []zap.Field{zap.Stringer("userID", userID), zap.String("publishedStoryID", publishedStoryID.String())}
-	row := r.pool.QueryRow(ctx, getPlayerProgressByUserAndStoryQuery, userID, publishedStoryID)
+	row := querier.QueryRow(ctx, getPlayerProgressByUserAndStoryQuery, userID, publishedStoryID)
 	progress, err := scanPlayerProgress(row)
 	if err != nil {
 		if errors.Is(err, models.ErrNotFound) {
@@ -196,7 +196,7 @@ func (r *pgPlayerProgressRepository) GetByUserIDAndStoryID(ctx context.Context, 
 // Save creates a new player progress node if progress.ID is zero UUID,
 // or updates an existing one based on progress.ID.
 // Returns the ID of the created/updated record.
-func (r *pgPlayerProgressRepository) Save(ctx context.Context, progress *models.PlayerProgress) (uuid.UUID, error) {
+func (r *pgPlayerProgressRepository) Save(ctx context.Context, querier interfaces.DBTX, progress *models.PlayerProgress) (uuid.UUID, error) {
 	now := time.Now().UTC() // Use UTC
 	progress.UpdatedAt = now
 
@@ -249,7 +249,7 @@ func (r *pgPlayerProgressRepository) Save(ctx context.Context, progress *models.
 		r.logger.Debug("Inserting new player progress node", logFields...)
 		progress.CreatedAt = now // Set CreatedAt only on insert
 
-		err = r.pool.QueryRow(ctx, insertPlayerProgressQuery,
+		err = querier.QueryRow(ctx, insertPlayerProgressQuery,
 			userIDArg,                     // $1 (nullable)
 			storyIDArg,                    // $2 (nullable)
 			coreStatsJSON,                 // $3
@@ -277,7 +277,7 @@ func (r *pgPlayerProgressRepository) Save(ctx context.Context, progress *models.
 		// --- UPDATE existing progress node ---
 		r.logger.Debug("Updating existing player progress node", logFields...)
 
-		err = r.pool.QueryRow(ctx, updatePlayerProgressQuery,
+		err = querier.QueryRow(ctx, updatePlayerProgressQuery,
 			progress.ID,                   // $1 for WHERE clause
 			userIDArg,                     // $2 (nullable)
 			storyIDArg,                    // $3 (nullable)
@@ -307,9 +307,9 @@ func (r *pgPlayerProgressRepository) Save(ctx context.Context, progress *models.
 }
 
 // Delete deletes a specific progress node by its ID.
-func (r *pgPlayerProgressRepository) Delete(ctx context.Context, progressID uuid.UUID) error {
+func (r *pgPlayerProgressRepository) Delete(ctx context.Context, querier interfaces.DBTX, progressID uuid.UUID) error {
 	logFields := []zap.Field{zap.String("progressID", progressID.String())}
-	cmdTag, err := r.pool.Exec(ctx, deletePlayerProgressByIDQuery, progressID)
+	cmdTag, err := querier.Exec(ctx, deletePlayerProgressByIDQuery, progressID)
 	if err != nil {
 		r.logger.Error("Failed to delete player progress node by ID", append(logFields, zap.Error(err))...)
 		return err
@@ -326,9 +326,9 @@ func (r *pgPlayerProgressRepository) Delete(ctx context.Context, progressID uuid
 
 // DeleteByUserIDAndStoryID - Keeping the old delete logic under a new name for potential use cases
 // (like resetting progress) but it's NOT part of the PlayerProgressRepository interface anymore.
-func (r *pgPlayerProgressRepository) DeleteByUserIDAndStoryID(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error {
+func (r *pgPlayerProgressRepository) DeleteByUserIDAndStoryID(ctx context.Context, querier interfaces.DBTX, userID uuid.UUID, publishedStoryID uuid.UUID) error {
 	logFields := []zap.Field{zap.Stringer("userID", userID), zap.String("publishedStoryID", publishedStoryID.String())}
-	cmdTag, err := r.pool.Exec(ctx, deletePlayerProgressByUserAndStoryQuery, userID, publishedStoryID)
+	cmdTag, err := querier.Exec(ctx, deletePlayerProgressByUserAndStoryQuery, userID, publishedStoryID)
 	if err != nil {
 		r.logger.Error("Failed to delete player progress by user and story", append(logFields, zap.Error(err))...)
 		return err
@@ -345,7 +345,7 @@ func (r *pgPlayerProgressRepository) DeleteByUserIDAndStoryID(ctx context.Contex
 // CheckProgressExistsForStories checks if player progress exists for a given user and multiple story IDs.
 // Note: This implementation still relies on user_id/story_id lookup.
 // Its relevance might decrease depending on how player progress is managed.
-func (r *pgPlayerProgressRepository) CheckProgressExistsForStories(ctx context.Context, userID uuid.UUID, storyIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+func (r *pgPlayerProgressRepository) CheckProgressExistsForStories(ctx context.Context, querier interfaces.DBTX, userID uuid.UUID, storyIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
 	logFields := []zap.Field{zap.Stringer("userID", userID), zap.Int("storyIDCount", len(storyIDs))}
 	r.logger.Debug("Checking progress existence for multiple stories", logFields...)
 
@@ -361,7 +361,7 @@ func (r *pgPlayerProgressRepository) CheckProgressExistsForStories(ctx context.C
 		WHERE user_id = $1 AND published_story_id = ANY($2::uuid[])
 	`
 
-	rows, err := r.pool.Query(ctx, query, userID, storyIDs)
+	rows, err := querier.Query(ctx, query, userID, storyIDs)
 	if err != nil {
 		r.logger.Error("Failed to query progress existence for stories", append(logFields, zap.Error(err))...)
 		return nil, fmt.Errorf("error checking progress existence: %w", err)
@@ -392,7 +392,7 @@ func (r *pgPlayerProgressRepository) CheckProgressExistsForStories(ctx context.C
 }
 
 // UpdateFields updates specific fields for a player progress node.
-func (r *pgPlayerProgressRepository) UpdateFields(ctx context.Context, progressID uuid.UUID, updates map[string]interface{}) error {
+func (r *pgPlayerProgressRepository) UpdateFields(ctx context.Context, querier interfaces.DBTX, progressID uuid.UUID, updates map[string]interface{}) error {
 	logFields := []zap.Field{zap.String("progressID", progressID.String()), zap.Any("updates", updates)}
 	r.logger.Debug("Updating specific fields for player progress", logFields...)
 
@@ -440,7 +440,7 @@ func (r *pgPlayerProgressRepository) UpdateFields(ctx context.Context, progressI
 	r.logger.Debug("Executing dynamic update query", append(logFields, zap.String("query", query), zap.Any("args", args))...)
 
 	// --- Выполнение запроса --- //
-	cmdTag, err := r.pool.Exec(ctx, query, args...)
+	cmdTag, err := querier.Exec(ctx, query, args...)
 	if err != nil {
 		// TODO: Обработать специфичные ошибки БД, если нужно (e.g., неверный тип данных)
 		r.logger.Error("Failed to execute dynamic update for player progress", append(logFields, zap.Error(err))...)

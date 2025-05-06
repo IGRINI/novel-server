@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"novel-server/shared/interfaces"
 	"novel-server/shared/models"
 	"time"
 
@@ -165,14 +166,14 @@ func (r *pgPublishedStoryRepository) UpdateVisibility(ctx context.Context, story
 }
 
 // UpdateConfigAndSetupAndStatus обновляет конфиг, setup и статус опубликованной истории.
-func (r *pgPublishedStoryRepository) UpdateConfigAndSetupAndStatus(ctx context.Context, id uuid.UUID, config, setup json.RawMessage, status models.StoryStatus) error {
+func (r *pgPublishedStoryRepository) UpdateConfigAndSetupAndStatus(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, config, setup json.RawMessage, status models.StoryStatus) error {
 	logFields := []zap.Field{
 		zap.String("publishedStoryID", id.String()),
 		zap.String("newStatus", string(status)),
 	}
 	r.logger.Debug("Updating published story config/setup/status", logFields...)
 
-	commandTag, err := r.db.Exec(ctx, updateConfigSetupStatusQuery, id, config, setup, status)
+	commandTag, err := querier.Exec(ctx, updateConfigSetupStatusQuery, id, config, setup, status)
 	if err != nil {
 		r.logger.Error("Failed to update published story config/setup/status", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("failed to update config/setup/status for story %s: %w", id, err)
@@ -186,7 +187,7 @@ func (r *pgPublishedStoryRepository) UpdateConfigAndSetupAndStatus(ctx context.C
 }
 
 // CountActiveGenerationsForUser подсчитывает количество опубликованных историй с активными статусами генерации.
-func (r *pgPublishedStoryRepository) CountActiveGenerationsForUser(ctx context.Context, userID uuid.UUID) (int, error) {
+func (r *pgPublishedStoryRepository) CountActiveGenerationsForUser(ctx context.Context, querier interfaces.DBTX, userID uuid.UUID) (int, error) {
 	activeStatuses := []models.StoryStatus{
 		models.StatusSetupPending,
 		models.StatusFirstScenePending,
@@ -197,7 +198,7 @@ func (r *pgPublishedStoryRepository) CountActiveGenerationsForUser(ctx context.C
 	logFields := []zap.Field{zap.String("userID", userID.String()), zap.Any("activeStatuses", activeStatuses)}
 	r.logger.Debug("Counting active generations for user in published_stories", logFields...)
 
-	err := r.db.QueryRow(ctx, countActiveGenerationsQuery, userID, activeStatuses[0], activeStatuses[1], activeStatuses[2]).Scan(&count)
+	err := querier.QueryRow(ctx, countActiveGenerationsQuery, userID, activeStatuses[0], activeStatuses[1], activeStatuses[2]).Scan(&count)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, nil // Not an error
@@ -211,11 +212,11 @@ func (r *pgPublishedStoryRepository) CountActiveGenerationsForUser(ctx context.C
 }
 
 // CountByStatus подсчитывает количество опубликованных историй по заданному статусу.
-func (r *pgPublishedStoryRepository) CountByStatus(ctx context.Context, status models.StoryStatus) (int, error) {
+func (r *pgPublishedStoryRepository) CountByStatus(ctx context.Context, querier interfaces.DBTX, status models.StoryStatus) (int, error) {
 	log := r.logger.With(zap.String("status", string(status)))
 
 	var count int
-	err := r.db.QueryRow(ctx, countByStatusQuery, status).Scan(&count)
+	err := querier.QueryRow(ctx, countByStatusQuery, status).Scan(&count)
 	if err != nil {
 		log.Error("Failed to count published stories by status", zap.Error(err))
 		return 0, fmt.Errorf("failed to query story count by status: %w", err)
@@ -226,7 +227,7 @@ func (r *pgPublishedStoryRepository) CountByStatus(ctx context.Context, status m
 }
 
 // FindAndMarkStaleGeneratingAsError находит "зависшие" истории в процессе генерации и устанавливает им статус Error.
-func (r *pgPublishedStoryRepository) FindAndMarkStaleGeneratingAsError(ctx context.Context, staleThreshold time.Duration) (int64, error) {
+func (r *pgPublishedStoryRepository) FindAndMarkStaleGeneratingAsError(ctx context.Context, querier interfaces.DBTX, staleThreshold time.Duration) (int64, error) {
 	staleStatuses := []models.StoryStatus{
 		models.StatusSetupPending,
 		models.StatusFirstScenePending,
@@ -252,7 +253,7 @@ func (r *pgPublishedStoryRepository) FindAndMarkStaleGeneratingAsError(ctx conte
 		r.logger.Info("Stale threshold is zero, checking all specified stale statuses regardless of time.", logFields...)
 	}
 
-	commandTag, err := r.db.Exec(ctx, query, args...)
+	commandTag, err := querier.Exec(ctx, query, args...)
 	if err != nil {
 		r.logger.Error("Failed to execute update query for stale published stories", append(logFields, zap.Error(err), zap.String("query", query))...)
 		return 0, fmt.Errorf("ошибка обновления статуса зависших опубликованных историй: %w", err)
@@ -264,12 +265,12 @@ func (r *pgPublishedStoryRepository) FindAndMarkStaleGeneratingAsError(ctx conte
 }
 
 // CheckInitialGenerationStatus проверяет, готовы ли Setup и Первая сцена.
-func (r *pgPublishedStoryRepository) CheckInitialGenerationStatus(ctx context.Context, id uuid.UUID) (bool, error) {
+func (r *pgPublishedStoryRepository) CheckInitialGenerationStatus(ctx context.Context, querier interfaces.DBTX, id uuid.UUID) (bool, error) {
 	var status models.StoryStatus
 	logFields := []zap.Field{zap.String("publishedStoryID", id.String())}
 	r.logger.Debug("Checking initial generation status for published story", logFields...)
 
-	err := r.db.QueryRow(ctx, checkInitialGenStatusQuery, id).Scan(&status)
+	err := querier.QueryRow(ctx, checkInitialGenStatusQuery, id).Scan(&status)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			r.logger.Warn("Published story not found for initial generation status check", logFields...)
@@ -285,7 +286,7 @@ func (r *pgPublishedStoryRepository) CheckInitialGenerationStatus(ctx context.Co
 }
 
 // UpdateStatusFlagsAndSetup обновляет статус, Setup и флаги ожидания для истории.
-func (r *pgPublishedStoryRepository) UpdateStatusFlagsAndSetup(ctx context.Context, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, isFirstScenePending bool, areImagesPending bool) error {
+func (r *pgPublishedStoryRepository) UpdateStatusFlagsAndSetup(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, isFirstScenePending bool, areImagesPending bool) error {
 	logFields := []zap.Field{
 		zap.String("publishedStoryID", id.String()),
 		zap.String("newStatus", string(status)),
@@ -295,7 +296,7 @@ func (r *pgPublishedStoryRepository) UpdateStatusFlagsAndSetup(ctx context.Conte
 	}
 	r.logger.Debug("Updating published story status, flags, and setup", logFields...)
 
-	commandTag, err := r.db.Exec(ctx, updateStatusFlagsSetupQuery, id, status, setup, isFirstScenePending, areImagesPending)
+	commandTag, err := querier.Exec(ctx, updateStatusFlagsSetupQuery, id, status, setup, isFirstScenePending, areImagesPending)
 	if err != nil {
 		r.logger.Error("Failed to update published story status, flags, and setup", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка обновления статуса/флагов/Setup для истории %s: %w", id, err)
@@ -311,7 +312,7 @@ func (r *pgPublishedStoryRepository) UpdateStatusFlagsAndSetup(ctx context.Conte
 }
 
 // UpdateStatusFlagsAndDetails обновляет статус, флаги ожидания и детали ошибки.
-func (r *pgPublishedStoryRepository) UpdateStatusFlagsAndDetails(ctx context.Context, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, errorDetails *string) error {
+func (r *pgPublishedStoryRepository) UpdateStatusFlagsAndDetails(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, errorDetails *string) error {
 	logFields := []zap.Field{
 		zap.String("publishedStoryID", id.String()),
 		zap.String("newStatus", string(status)),
@@ -325,7 +326,7 @@ func (r *pgPublishedStoryRepository) UpdateStatusFlagsAndDetails(ctx context.Con
 	}
 	r.logger.Debug("Updating published story status, flags, and error details", logFields...)
 
-	commandTag, err := r.db.Exec(ctx, updateStatusFlagsDetailsQuery, id, status, isFirstScenePending, areImagesPending, errorDetails)
+	commandTag, err := querier.Exec(ctx, updateStatusFlagsDetailsQuery, id, status, isFirstScenePending, areImagesPending, errorDetails)
 	if err != nil {
 		r.logger.Error("Failed to update published story status, flags, and error details", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка обновления статуса/флагов/деталей ошибки для истории %s: %w", id, err)

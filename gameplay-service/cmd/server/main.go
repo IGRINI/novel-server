@@ -9,7 +9,8 @@ import (
 	"novel-server/gameplay-service/internal/handler"
 	"novel-server/gameplay-service/internal/messaging"
 	"novel-server/gameplay-service/internal/service"
-	sharedDatabase "novel-server/shared/database"     // Импорт для репозиториев
+	sharedDatabase "novel-server/shared/database" // Импорт для репозиториев
+	"novel-server/shared/interfaces"
 	sharedInterfaces "novel-server/shared/interfaces" // <<< Добавляем импорт shared/interfaces
 	sharedLogger "novel-server/shared/logger"         // <<< Добавляем импорт shared/logger
 	sharedMiddleware "novel-server/shared/middleware" // <<< Импортируем shared/middleware
@@ -120,7 +121,7 @@ func main() {
 	logger.Info("Auth Service client initialized")
 
 	// <<< НОВОЕ: Инициализация ConfigService >>> // <<< Используем sharedConfigService >>>
-	configService, err := sharedConfigService.NewConfigService(dynamicConfigRepo, logger)
+	configService, err := sharedConfigService.NewConfigService(dynamicConfigRepo, logger, dbPool)
 	if err != nil {
 		logger.Fatal("Не удалось инициализировать ConfigService", zap.Error(err))
 	}
@@ -139,11 +140,34 @@ func main() {
 		dynamicConfigRepo,
 		taskPublisher,
 		characterImageTaskBatchPublisher,
+		clientUpdatePublisher,
 		dbPool,
 		logger,
 		authServiceClient,
 		cfg,
 		configService,
+	)
+
+	// <<< Добавляем инициализацию StoryBrowsingService >>>
+	storyBrowsingService := service.NewStoryBrowsingService(
+		publishedRepo,
+		sceneRepo,
+		playerProgressRepo,
+		playerGameStateRepo,
+		likeRepo,
+		imageReferenceRepo,
+		authServiceClient, // Используем тот же authClient
+		logger,
+		dbPool, // <<< Передаем пул соединений >>>
+	)
+
+	// <<< Добавляем инициализацию LikeService >>>
+	likeService := service.NewLikeService(
+		publishedRepo,
+		playerGameStateRepo, // Убедитесь, что gameStateRepo инициализирован
+		authServiceClient,
+		logger,
+		dbPool, // <<< Передаем пул соединений >>>
 	)
 
 	// <<< Rate Limiter Middleware Setup >>>
@@ -200,20 +224,20 @@ func main() {
 	// <<< End Rate Limiter Setup >>>
 
 	// --- Инициализация хендлеров --- //
-	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret, storyConfigRepo, publishedRepo, cfg)
+	gameplayHandler := handler.NewGameplayHandler(gameplayService, logger, cfg.JWTSecret, cfg.InterServiceSecret, storyConfigRepo, publishedRepo, cfg, storyBrowsingService, likeService) // <<< Передаем likeService >>>
 
 	// --- Первоначальная проверка зависших задач --- //
 	logger.Info("Performing initial check for stuck tasks...")
 	markStuckDraftsAsError(storyConfigRepo, 0, logger)
-	markStuckPublishedStoriesAsError(publishedRepo, 0, logger)
-	markStuckPlayerGameStatesAsError(playerGameStateRepo, 0, logger)
+	markStuckPublishedStoriesAsError(publishedRepo, dbPool, 0, logger)
+	markStuckPlayerGameStatesAsError(playerGameStateRepo, dbPool, 0, logger)
 	logger.Info("Initial check for stuck tasks completed.")
 
 	// --- Запуск периодической проверки зависших задач --- //
 	logger.Info("Starting periodic checks for stuck tasks...")
 	go markStuckDraftsAsError(storyConfigRepo, 1*time.Hour, logger)
-	go markStuckPublishedStoriesAsError(publishedRepo, 1*time.Hour, logger)
-	go markStuckPlayerGameStatesAsError(playerGameStateRepo, 30*time.Minute, logger)
+	go markStuckPublishedStoriesAsError(publishedRepo, dbPool, 1*time.Hour, logger)
+	go markStuckPlayerGameStatesAsError(playerGameStateRepo, dbPool, 30*time.Minute, logger)
 
 	// --- Инициализация консьюмера уведомлений --- //
 	notificationConsumer, err := messaging.NewNotificationConsumer(
@@ -236,6 +260,7 @@ func main() {
 		// Параметры самого консьюмера:
 		cfg.InternalUpdatesQueueName,
 		cfg,
+		dbPool, // <<< Добавляем dbPool >>>
 	)
 	if err != nil {
 		logger.Fatal("Не удалось создать консьюмер уведомлений", zap.Error(err))
@@ -263,6 +288,7 @@ func main() {
 		// Но слушаем другую очередь:
 		cfg.ImageGeneratorResultQueue,
 		cfg,
+		dbPool, // <<< Добавляем dbPool >>>
 	)
 	if err != nil {
 		logger.Fatal("Не удалось создать консьюмер результатов изображений", zap.Error(err))
@@ -432,7 +458,6 @@ func main() {
 	logger.Info("Gameplay Service успешно остановлен")
 }
 
-// <<< ПЕРЕИМЕНОВАНО и немного изменено >>>
 // markStuckDraftsAsError устанавливает статус Error для зависших ЧЕРНОВИКОВ (StoryConfig).
 func markStuckDraftsAsError(repo sharedInterfaces.StoryConfigRepository, staleThreshold time.Duration, logger *zap.Logger) {
 	// Небольшая задержка перед проверкой
@@ -442,7 +467,6 @@ func markStuckDraftsAsError(repo sharedInterfaces.StoryConfigRepository, staleTh
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // Таймаут на всю операцию
 	defer cancel()
 
-	// <<< ИЗМЕНЕНО: Используем новый метод репозитория >>>
 	updatedCount, err := repo.FindAndMarkStaleGeneratingDraftsAsError(ctx, staleThreshold)
 	if err != nil {
 		logger.Error("Failed to find and mark stale draft tasks", zap.Error(err))
@@ -456,9 +480,8 @@ func markStuckDraftsAsError(repo sharedInterfaces.StoryConfigRepository, staleTh
 	}
 }
 
-// <<< НОВАЯ ФУНКЦИЯ >>>
 // markStuckPublishedStoriesAsError устанавливает статус Error для зависших ОПУБЛИКОВАННЫХ историй.
-func markStuckPublishedStoriesAsError(repo sharedInterfaces.PublishedStoryRepository, staleThreshold time.Duration, logger *zap.Logger) {
+func markStuckPublishedStoriesAsError(repo sharedInterfaces.PublishedStoryRepository, querier interfaces.DBTX, staleThreshold time.Duration, logger *zap.Logger) {
 	// Небольшая задержка перед проверкой (чуть больше, чем для черновиков)
 	time.Sleep(10 * time.Second)
 	logger.Info("Checking for stuck published stories to set Error status...", zap.Duration("staleThreshold", staleThreshold))
@@ -466,7 +489,7 @@ func markStuckPublishedStoriesAsError(repo sharedInterfaces.PublishedStoryReposi
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // Таймаут на всю операцию
 	defer cancel()
 
-	updatedCount, err := repo.FindAndMarkStaleGeneratingAsError(ctx, staleThreshold)
+	updatedCount, err := repo.FindAndMarkStaleGeneratingAsError(ctx, querier, staleThreshold)
 	if err != nil {
 		logger.Error("Failed to find and mark stale published stories", zap.Error(err))
 		return
@@ -479,9 +502,8 @@ func markStuckPublishedStoriesAsError(repo sharedInterfaces.PublishedStoryReposi
 	}
 }
 
-// <<< НОВАЯ ФУНКЦИЯ >>>
 // markStuckPlayerGameStatesAsError устанавливает статус Error для зависших состояний игры игрока.
-func markStuckPlayerGameStatesAsError(repo sharedInterfaces.PlayerGameStateRepository, staleThreshold time.Duration, logger *zap.Logger) {
+func markStuckPlayerGameStatesAsError(repo sharedInterfaces.PlayerGameStateRepository, querier interfaces.DBTX, staleThreshold time.Duration, logger *zap.Logger) {
 	// Небольшая задержка перед проверкой (еще чуть больше)
 	time.Sleep(15 * time.Second)
 	logger.Info("Checking for stuck player game states to set Error status...", zap.Duration("staleThreshold", staleThreshold))
@@ -489,7 +511,7 @@ func markStuckPlayerGameStatesAsError(repo sharedInterfaces.PlayerGameStateRepos
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // Таймаут на всю операцию
 	defer cancel()
 
-	updatedCount, err := repo.FindAndMarkStaleGeneratingAsError(ctx, staleThreshold)
+	updatedCount, err := repo.FindAndMarkStaleGeneratingAsError(ctx, querier, staleThreshold)
 	if err != nil {
 		logger.Error("Failed to find and mark stale player game states", zap.Error(err))
 		return
@@ -566,7 +588,6 @@ func setupDatabase(cfg *config.Config, logger *zap.Logger) (*pgxpool.Pool, error
 	return nil, fmt.Errorf("не удалось подключиться к БД после %d попыток: %w", maxRetries, err) // Возвращаем последнюю ошибку
 }
 
-// <<< ДОБАВЛЯЮ ФУНКЦИЮ ИЗ STORY-GENERATOR >>>
 // connectRabbitMQ пытается подключиться к RabbitMQ с несколькими попытками
 func connectRabbitMQ(url string, logger *zap.Logger) (*amqp.Connection, error) {
 	var conn *amqp.Connection
@@ -592,5 +613,3 @@ func connectRabbitMQ(url string, logger *zap.Logger) (*amqp.Connection, error) {
 	}
 	return nil, fmt.Errorf("не удалось подключиться к RabbitMQ после %d попыток: %w", maxRetries, err)
 }
-
-// <<< КОНЕЦ ДОБАВЛЕНИЯ >>>

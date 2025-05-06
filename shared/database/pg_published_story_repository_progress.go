@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	interfaces "novel-server/shared/interfaces"
 	"novel-server/shared/models"
 	"novel-server/shared/utils" // For cursor utils
 	"strings"
@@ -55,7 +56,7 @@ const (
 
 // FindWithProgressByUserID возвращает список историй, в которых у пользователя есть прогресс.
 // !!! Проблема с типами пагинации/сортировки, временно используем placeholders !!!
-func (r *pgPublishedStoryRepository) FindWithProgressByUserID(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]models.PublishedStorySummary, string, error) {
+func (r *pgPublishedStoryRepository) FindWithProgressByUserID(ctx context.Context, querier interfaces.DBTX, userID uuid.UUID, limit int, cursor string) ([]models.PublishedStorySummary, string, error) {
 	logFields := []zap.Field{zap.String("userID", userID.String()), zap.Int("limit", limit), zap.String("cursor", cursor)}
 	r.logger.Debug("Finding stories with progress", logFields...)
 
@@ -90,7 +91,7 @@ func (r *pgPublishedStoryRepository) FindWithProgressByUserID(ctx context.Contex
 	finalQuery := queryBuilder.String()
 	r.logger.Debug("Executing FindWithProgressByUserID query", append(logFields, zap.String("query", finalQuery))...)
 
-	rows, err := r.db.Query(ctx, finalQuery, args...)
+	rows, err := querier.Query(ctx, finalQuery, args...)
 	if err != nil {
 		r.logger.Error("Error querying stories with progress", append(logFields, zap.Error(err))...)
 		return nil, "", fmt.Errorf("database query failed: %w", err)
@@ -136,7 +137,7 @@ func (r *pgPublishedStoryRepository) FindWithProgressByUserID(ctx context.Contex
 
 // ListUserSummariesWithProgress возвращает список историй пользователя, включая информацию о прогрессе.
 // !!! Проблема с типами пагинации/сортировки, временно используем placeholders !!!
-func (r *pgPublishedStoryRepository) ListUserSummariesWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error) {
+func (r *pgPublishedStoryRepository) ListUserSummariesWithProgress(ctx context.Context, querier interfaces.DBTX, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error) {
 	logFields := []zap.Field{zap.String("userID", userID.String()), zap.Int("limit", limit), zap.String("cursor", cursor), zap.Bool("filterAdult", filterAdult)}
 	r.logger.Debug("Listing user summaries with progress", logFields...)
 
@@ -178,7 +179,7 @@ func (r *pgPublishedStoryRepository) ListUserSummariesWithProgress(ctx context.C
 	finalQuery := queryBuilder.String()
 	r.logger.Debug("Executing ListUserSummariesWithProgress query", append(logFields, zap.String("query", finalQuery))...)
 
-	rows, err := r.db.Query(ctx, finalQuery, args...)
+	rows, err := querier.Query(ctx, finalQuery, args...)
 	if err != nil {
 		r.logger.Error("Error querying user summaries with progress", append(logFields, zap.Error(err))...)
 		return nil, "", fmt.Errorf("database query failed: %w", err)
@@ -224,7 +225,7 @@ func (r *pgPublishedStoryRepository) ListUserSummariesWithProgress(ctx context.C
 
 // ListUserSummariesOnlyWithProgress возвращает список историй, в которых у пользователя есть прогресс.
 // !!! Проблема с типами пагинации/сортировки, временно используем placeholders !!!
-func (r *pgPublishedStoryRepository) ListUserSummariesOnlyWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error) {
+func (r *pgPublishedStoryRepository) ListUserSummariesOnlyWithProgress(ctx context.Context, querier interfaces.DBTX, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]models.PublishedStorySummary, string, error) {
 	logFields := []zap.Field{zap.String("userID", userID.String()), zap.Int("limit", limit), zap.String("cursor", cursor), zap.Bool("filterAdult", filterAdult)}
 	r.logger.Debug("Listing user summaries ONLY with progress", logFields...)
 
@@ -267,7 +268,7 @@ func (r *pgPublishedStoryRepository) ListUserSummariesOnlyWithProgress(ctx conte
 	finalQuery := queryBuilder.String()
 	r.logger.Debug("Executing ListUserSummariesOnlyWithProgress query", append(logFields, zap.String("query", finalQuery))...)
 
-	rows, err := r.db.Query(ctx, finalQuery, args...)
+	rows, err := querier.Query(ctx, finalQuery, args...)
 	if err != nil {
 		r.logger.Error("Error querying user summaries only with progress", append(logFields, zap.Error(err))...)
 		return nil, "", fmt.Errorf("database query failed: %w", err)
@@ -308,11 +309,11 @@ func (r *pgPublishedStoryRepository) ListUserSummariesOnlyWithProgress(ctx conte
 }
 
 // GetSummaryWithDetails получает детали истории для конкретного пользователя.
-func (r *pgPublishedStoryRepository) GetSummaryWithDetails(ctx context.Context, storyID, userID uuid.UUID) (*models.PublishedStorySummary, error) {
+func (r *pgPublishedStoryRepository) GetSummaryWithDetails(ctx context.Context, querier interfaces.DBTX, storyID, userID uuid.UUID) (*models.PublishedStorySummary, error) {
 	logFields := []zap.Field{zap.String("storyID", storyID.String()), zap.String("userID", userID.String())}
 	r.logger.Debug("Getting summary with details", logFields...)
 
-	row := r.db.QueryRow(ctx, getSummaryWithDetailsQueryBase, storyID, userID)
+	row := querier.QueryRow(ctx, getSummaryWithDetailsQueryBase, storyID, userID)
 	summary, err := scanPublishedStorySummaryWithProgress(row) // Use standard helper
 
 	if err != nil {
@@ -336,8 +337,8 @@ func scanPublishedStorySummaryWithProgressAndActivity(row pgx.Row, lastActivityA
 	var publishedAt time.Time // published_at from stories table (mapped to summary.PublishedAt)
 
 	// Need to know the exact order from the query using this helper
-	// Assuming: summaryFields..., has_player_progress, is_public, player_status, last_activity_at
-	err := row.Scan( // Now expecting 14 destinations
+	// Assuming: summaryFields..., has_player_progress, is_public, player_status, player_game_state_id, last_activity_at
+	err := row.Scan( // Now expecting 15 destinations
 		&summary.ID,                // 1
 		&summary.Title,             // 2
 		&summary.ShortDescription,  // 3
@@ -348,10 +349,11 @@ func scanPublishedStorySummaryWithProgressAndActivity(row pgx.Row, lastActivityA
 		&summary.LikesCount,        // 8
 		&summary.IsLiked,           // 9
 		&summary.Status,            // 10
-		&summary.HasPlayerProgress, // 11 (was 12)
-		&summary.IsPublic,          // 12 (was 13)
-		&playerGameStatus,          // 13 (was 14)
-		lastActivityAt,             // 14 (was 15)
+		&summary.HasPlayerProgress, // 11
+		&summary.IsPublic,          // 12
+		&playerGameStatus,          // 13
+		&summary.PlayerGameStateID, // 14 (pgs.id)
+		lastActivityAt,             // 15 (pgs.last_activity_at)
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

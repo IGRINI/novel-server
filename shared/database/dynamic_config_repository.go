@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"novel-server/shared/interfaces"
 	"novel-server/shared/models" // Импорт модели
 
 	"github.com/georgysavva/scany/v2/pgxscan"
 	pgxV5 "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	// "github.com/jackc/pgx/v5/pgxpool" // Пул больше не используется напрямую
 	"go.uber.org/zap"
 )
 
@@ -30,24 +32,27 @@ const (
 )
 
 type pgDynamicConfigRepository struct {
-	pool   *pgxpool.Pool
+	db     interfaces.DBTX // <<< ИЗМЕНЕНО: Используем DBTX
 	logger *zap.Logger
 }
 
 // NewPgDynamicConfigRepository создает новый экземпляр репозитория динамических настроек.
-func NewPgDynamicConfigRepository(pool *pgxpool.Pool, logger *zap.Logger) *pgDynamicConfigRepository {
+// <<< ИЗМЕНЕНО: Принимает interfaces.DBTX >>>
+func NewPgDynamicConfigRepository(querier interfaces.DBTX, logger *zap.Logger) *pgDynamicConfigRepository { // Возвращаемый тип оставляем конкретным
 	return &pgDynamicConfigRepository{
-		pool:   pool,
+		db:     querier,
 		logger: logger.Named("DynamicConfigRepo"),
 	}
 }
 
 // GetByKey возвращает настройку по ее ключу.
-func (r *pgDynamicConfigRepository) GetByKey(ctx context.Context, key string) (*models.DynamicConfig, error) {
+// <<< ИЗМЕНЕНО: Добавлен querier >>>
+func (r *pgDynamicConfigRepository) GetByKey(ctx context.Context, querier interfaces.DBTX, key string) (*models.DynamicConfig, error) {
 	log := r.logger.With(zap.String("query_key", key))
 
 	var config models.DynamicConfig
-	err := pgxscan.Get(ctx, r.pool, &config, getDynamicConfigByKeyQuery, key)
+	// <<< ИЗМЕНЕНО: Используем querier >>>
+	err := pgxscan.Get(ctx, querier, &config, getDynamicConfigByKeyQuery, key)
 	if err != nil {
 		if errors.Is(err, pgxV5.ErrNoRows) {
 			log.Warn("Dynamic config not found by key")
@@ -60,11 +65,13 @@ func (r *pgDynamicConfigRepository) GetByKey(ctx context.Context, key string) (*
 }
 
 // GetAll возвращает все динамические настройки.
-func (r *pgDynamicConfigRepository) GetAll(ctx context.Context) ([]*models.DynamicConfig, error) {
+// <<< ИЗМЕНЕНО: Добавлен querier >>>
+func (r *pgDynamicConfigRepository) GetAll(ctx context.Context, querier interfaces.DBTX) ([]*models.DynamicConfig, error) {
 	log := r.logger
 
 	var configs []*models.DynamicConfig
-	err := pgxscan.Select(ctx, r.pool, &configs, getAllDynamicConfigsQuery)
+	// <<< ИЗМЕНЕНО: Используем querier >>>
+	err := pgxscan.Select(ctx, querier, &configs, getAllDynamicConfigsQuery)
 	if err != nil {
 		// Ошибка pgx.ErrNoRows здесь не страшна, просто вернем пустой срез
 		if errors.Is(err, pgxV5.ErrNoRows) {
@@ -78,10 +85,12 @@ func (r *pgDynamicConfigRepository) GetAll(ctx context.Context) ([]*models.Dynam
 }
 
 // Create создает новую настройку. Если настройка с таким ключом уже существует, возвращает ошибку.
-func (r *pgDynamicConfigRepository) Create(ctx context.Context, config *models.DynamicConfig) error {
+// <<< ИЗМЕНЕНО: Добавлен querier >>>
+func (r *pgDynamicConfigRepository) Create(ctx context.Context, querier interfaces.DBTX, config *models.DynamicConfig) error {
 	log := r.logger.With(zap.String("key", config.Key))
 
-	commandTag, err := r.pool.Exec(ctx, createDynamicConfigQuery, config.Key, config.Value)
+	// <<< ИЗМЕНЕНО: Используем querier >>>
+	commandTag, err := querier.Exec(ctx, createDynamicConfigQuery, config.Key, config.Value)
 	if err != nil {
 		log.Error("Error creating dynamic config", zap.Error(err))
 		return fmt.Errorf("failed to create dynamic config with key %s: %w", config.Key, err)
@@ -99,10 +108,12 @@ func (r *pgDynamicConfigRepository) Create(ctx context.Context, config *models.D
 }
 
 // Upsert создает или обновляет настройку.
-func (r *pgDynamicConfigRepository) Upsert(ctx context.Context, config *models.DynamicConfig) error {
+// <<< ИЗМЕНЕНО: Добавлен querier >>>
+func (r *pgDynamicConfigRepository) Upsert(ctx context.Context, querier interfaces.DBTX, config *models.DynamicConfig) error {
 	log := r.logger.With(zap.String("key", config.Key))
 
-	_, err := r.pool.Exec(ctx, upsertDynamicConfigQuery, config.Key, config.Value)
+	// <<< ИЗМЕНЕНО: Используем querier >>>
+	_, err := querier.Exec(ctx, upsertDynamicConfigQuery, config.Key, config.Value)
 	if err != nil {
 		log.Error("Error upserting dynamic config", zap.Error(err))
 		return fmt.Errorf("failed to upsert dynamic config with key %s: %w", config.Key, err)

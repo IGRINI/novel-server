@@ -97,7 +97,7 @@ func main() {
 
 	// --- Инициализация ConfigService ---
 	sugar.Info("Инициализация ConfigService...")
-	configService, err := sharedConfigService.NewConfigService(dynamicConfigRepo, logger)
+	configService, err := sharedConfigService.NewConfigService(dynamicConfigRepo, logger, dbPool)
 	if err != nil {
 		sugar.Fatalf("Не удалось инициализировать ConfigService: %v", err)
 	}
@@ -112,7 +112,7 @@ func main() {
 
 	// --- Инициализация Prompt Provider ---
 	sugar.Info("Инициализация Prompt Provider...")
-	promptProvider := internalService.NewPromptProvider(promptRepo, dynamicConfigRepo, logger)
+	promptProvider := internalService.NewPromptProvider(promptRepo, dynamicConfigRepo, logger, dbPool)
 	loadCtx, loadCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if err := promptProvider.LoadInitialPrompts(loadCtx); err != nil {
 		loadCancel()
@@ -258,6 +258,7 @@ func main() {
 		sceneRepo,
 		notifier,
 		promptProvider,
+		dbPool,
 	)
 	sugar.Info("Обработчик задач создан")
 

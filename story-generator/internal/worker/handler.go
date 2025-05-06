@@ -80,6 +80,7 @@ type TaskHandler struct {
 	sceneRepo      sharedInterfaces.StorySceneRepository // <<< ДОБАВЛЕНО: Репозиторий для сцен >>>
 	notifier       service.Notifier
 	prompts        *service.PromptProvider
+	db             sharedInterfaces.DBTX // <<< ДОБАВЛЕНО: Пул соединений БД >>>
 	// configProvider *service.ConfigProvider // <<< УДАЛЕНО
 }
 
@@ -94,6 +95,7 @@ func NewTaskHandler(
 	sceneRepo sharedInterfaces.StorySceneRepository, // <<< ДОБАВЛЕНО: Принимаем репозиторий сцен >>>
 	notifier service.Notifier,
 	promptProvider *service.PromptProvider,
+	dbPool sharedInterfaces.DBTX, // <<< ДОБАВЛЕНО: Принимаем пул соединений >>>
 	// configProvider *service.ConfigProvider, // <<< УДАЛЕНО
 ) *TaskHandler {
 	return &TaskHandler{
@@ -106,6 +108,7 @@ func NewTaskHandler(
 		sceneRepo:      sceneRepo, // <<< ДОБАВЛЕНО: Сохраняем репозиторий сцен >>>
 		notifier:       notifier,
 		prompts:        promptProvider,
+		db:             dbPool, // <<< ДОБАВЛЕНО: Сохраняем пул соединений >>>
 		// configProvider: configProvider, // <<< УДАЛЕНО
 	}
 }
@@ -427,7 +430,7 @@ func (h *TaskHandler) saveResultAndNotify(
 				}
 
 				// Используем Upsert, т.к. задача может быть перезапущена
-				upsertErr := h.sceneRepo.Upsert(ctx, scene)
+				upsertErr := h.sceneRepo.Upsert(ctx, h.db, scene)
 				if upsertErr != nil {
 					log.Printf("[TaskID: %s] КРИТИЧЕСКАЯ ОШИБКА: Не удалось сохранить/обновить сцену (StoryID: %s, StateHash: %s): %v", payload.TaskID, payload.PublishedStoryID, payload.StateHash, upsertErr)
 					execErr = fmt.Errorf("ошибка сохранения сцены: %w", upsertErr)

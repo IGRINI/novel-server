@@ -45,14 +45,16 @@ type ConfigService struct {
 	repo    interfaces.DynamicConfigRepository // Use shared interface
 	mu      sync.RWMutex                       // Мьютекс для защиты доступа к configs
 	configs map[string]string                  // Кэш конфигураций: ключ -> значение
+	db      interfaces.DBTX                    // <<< ДОБАВЛЕНО: Пул соединений >>>
 }
 
 // NewConfigService создает новый экземпляр ConfigService и загружает начальные конфигурации.
-func NewConfigService(repo interfaces.DynamicConfigRepository, logger *zap.Logger) (*ConfigService, error) {
+func NewConfigService(repo interfaces.DynamicConfigRepository, logger *zap.Logger, dbPool interfaces.DBTX) (*ConfigService, error) { // <<< ДОБАВЛЕНО: dbPool >>>
 	cs := &ConfigService{
 		logger:  logger.Named("ConfigService"),
 		repo:    repo,
 		configs: make(map[string]string),
+		db:      dbPool, // <<< ДОБАВЛЕНО: Сохраняем пул >>>
 	}
 
 	cs.logger.Info("Загрузка начальных динамических конфигураций...")
@@ -69,7 +71,7 @@ func NewConfigService(repo interfaces.DynamicConfigRepository, logger *zap.Logge
 // loadAllConfigs загружает все конфигурации из репозитория в кэш.
 func (cs *ConfigService) loadAllConfigs() error {
 	ctx := context.Background() // TODO: Consider using a context with timeout
-	configs, err := cs.repo.GetAll(ctx)
+	configs, err := cs.repo.GetAll(ctx, cs.db)
 	if err != nil {
 		return err
 	}

@@ -66,9 +66,9 @@ type pgStorySceneRepository struct {
 	logger *zap.Logger
 }
 
-func NewPgStorySceneRepository(db interfaces.DBTX, logger *zap.Logger) interfaces.StorySceneRepository {
+func NewPgStorySceneRepository(querier interfaces.DBTX, logger *zap.Logger) interfaces.StorySceneRepository {
 	return &pgStorySceneRepository{
-		db:     db,
+		db:     querier,
 		logger: logger.Named("PgStorySceneRepo"),
 	}
 }
@@ -98,7 +98,7 @@ func scanStoryScene(row pgx.Row) (*models.StoryScene, error) {
 // --- Repository Methods ---
 
 // Create inserts a new story scene record.
-func (r *pgStorySceneRepository) Create(ctx context.Context, scene *models.StoryScene) error {
+func (r *pgStorySceneRepository) Create(ctx context.Context, querier interfaces.DBTX, scene *models.StoryScene) error {
 	if scene.ID == uuid.Nil {
 		scene.ID = uuid.New()
 	}
@@ -106,7 +106,7 @@ func (r *pgStorySceneRepository) Create(ctx context.Context, scene *models.Story
 		scene.CreatedAt = time.Now()
 	}
 
-	_, err := r.db.Exec(ctx, createStorySceneQuery,
+	_, err := querier.Exec(ctx, createStorySceneQuery,
 		scene.ID,
 		scene.PublishedStoryID,
 		scene.StateHash,
@@ -122,12 +122,12 @@ func (r *pgStorySceneRepository) Create(ctx context.Context, scene *models.Story
 }
 
 // FindByStoryAndHash attempts to find an existing scene for a given story and state hash.
-func (r *pgStorySceneRepository) FindByStoryAndHash(ctx context.Context, publishedStoryID uuid.UUID, stateHash string) (*models.StoryScene, error) {
+func (r *pgStorySceneRepository) FindByStoryAndHash(ctx context.Context, querier interfaces.DBTX, publishedStoryID uuid.UUID, stateHash string) (*models.StoryScene, error) {
 	logFields := []zap.Field{
 		zap.String("publishedStoryID", publishedStoryID.String()),
 		zap.String("stateHash", stateHash),
 	}
-	row := r.db.QueryRow(ctx, findStorySceneByHashQuery, publishedStoryID, stateHash)
+	row := querier.QueryRow(ctx, findStorySceneByHashQuery, publishedStoryID, stateHash)
 	scene, err := scanStoryScene(row)
 
 	if err != nil {
@@ -145,10 +145,10 @@ func (r *pgStorySceneRepository) FindByStoryAndHash(ctx context.Context, publish
 }
 
 // GetByID retrieves a story scene by its unique ID.
-func (r *pgStorySceneRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.StoryScene, error) {
+func (r *pgStorySceneRepository) GetByID(ctx context.Context, querier interfaces.DBTX, id uuid.UUID) (*models.StoryScene, error) {
 	logFields := []zap.Field{zap.String("sceneID", id.String())}
 
-	row := r.db.QueryRow(ctx, getStorySceneByIDQuery, id)
+	row := querier.QueryRow(ctx, getStorySceneByIDQuery, id)
 	scene, err := scanStoryScene(row)
 
 	if err != nil {
@@ -167,8 +167,8 @@ func (r *pgStorySceneRepository) GetByID(ctx context.Context, id uuid.UUID) (*mo
 }
 
 // ListByStoryID retrieves a list of story scenes for a given story ID.
-func (r *pgStorySceneRepository) ListByStoryID(ctx context.Context, publishedStoryID uuid.UUID) ([]models.StoryScene, error) {
-	rows, err := r.db.Query(ctx, listStoryScenesByStoryIDQuery, publishedStoryID)
+func (r *pgStorySceneRepository) ListByStoryID(ctx context.Context, querier interfaces.DBTX, publishedStoryID uuid.UUID) ([]models.StoryScene, error) {
+	rows, err := querier.Query(ctx, listStoryScenesByStoryIDQuery, publishedStoryID)
 	if err != nil {
 		r.logger.Error("Failed to query story scenes by story ID", zap.String("publishedStoryID", publishedStoryID.String()), zap.Error(err))
 		return nil, fmt.Errorf("ошибка запроса сцен истории: %w", err)
@@ -195,7 +195,7 @@ func (r *pgStorySceneRepository) ListByStoryID(ctx context.Context, publishedSto
 }
 
 // UpdateContent updates the content of a story scene.
-func (r *pgStorySceneRepository) UpdateContent(ctx context.Context, id uuid.UUID, content []byte) error {
+func (r *pgStorySceneRepository) UpdateContent(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, content []byte) error {
 	logFields := []zap.Field{
 		zap.String("sceneID", id.String()),
 		zap.Int("contentSize", len(content)),
@@ -203,7 +203,7 @@ func (r *pgStorySceneRepository) UpdateContent(ctx context.Context, id uuid.UUID
 	r.logger.Debug("Updating story scene content", logFields...)
 
 	// Используем NOW() для updated_at, если такой колонки нет, надо будет добавить миграцией
-	commandTag, err := r.db.Exec(ctx, updateSceneContentQuery, id, content)
+	commandTag, err := querier.Exec(ctx, updateSceneContentQuery, id, content)
 	if err != nil {
 		r.logger.Error("Failed to update story scene content", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка обновления контента сцены %s: %w", id, err)
@@ -219,7 +219,7 @@ func (r *pgStorySceneRepository) UpdateContent(ctx context.Context, id uuid.UUID
 }
 
 // Upsert creates a new scene or updates an existing one based on storyID and stateHash.
-func (r *pgStorySceneRepository) Upsert(ctx context.Context, scene *models.StoryScene) error {
+func (r *pgStorySceneRepository) Upsert(ctx context.Context, querier interfaces.DBTX, scene *models.StoryScene) error {
 	if scene.ID == uuid.Nil {
 		scene.ID = uuid.New() // Генерируем ID для новой записи
 	}
@@ -234,7 +234,7 @@ func (r *pgStorySceneRepository) Upsert(ctx context.Context, scene *models.Story
 		zap.String("sceneIDHint", scene.ID.String()), // ID может измениться при конфликте
 	}
 
-	_, err := r.db.Exec(ctx, upsertStorySceneQuery,
+	_, err := querier.Exec(ctx, upsertStorySceneQuery,
 		scene.ID,
 		scene.PublishedStoryID,
 		scene.StateHash,
@@ -251,8 +251,8 @@ func (r *pgStorySceneRepository) Upsert(ctx context.Context, scene *models.Story
 }
 
 // Delete deletes a story scene by its unique ID.
-func (r *pgStorySceneRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	result, err := r.db.Exec(ctx, deleteStorySceneQuery, id)
+func (r *pgStorySceneRepository) Delete(ctx context.Context, querier interfaces.DBTX, id uuid.UUID) error {
+	result, err := querier.Exec(ctx, deleteStorySceneQuery, id)
 	if err != nil {
 		return fmt.Errorf("error executing delete query for story scene %s: %w", id, err)
 	}
@@ -275,8 +275,8 @@ func (r *pgStorySceneRepository) Delete(ctx context.Context, id uuid.UUID) error
 }
 
 // GetByStoryIDAndStateHash retrieves a story scene by its story ID and state hash.
-func (r *pgStorySceneRepository) GetByStoryIDAndStateHash(ctx context.Context, storyID uuid.UUID, stateHash string) (*models.StoryScene, error) {
-	row := r.db.QueryRow(ctx, getStorySceneByStoryAndHashQuery, storyID, stateHash)
+func (r *pgStorySceneRepository) GetByStoryIDAndStateHash(ctx context.Context, querier interfaces.DBTX, storyID uuid.UUID, stateHash string) (*models.StoryScene, error) {
+	row := querier.QueryRow(ctx, getStorySceneByStoryAndHashQuery, storyID, stateHash)
 	scene, err := scanStoryScene(row)
 
 	if err != nil {

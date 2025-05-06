@@ -8,7 +8,6 @@ import (
 )
 
 // PlayerStatus определяет возможные статусы состояния игры для конкретного игрока.
-// Совпадает с типом ENUM 'player_game_status' в БД (нужно будет создать).
 type PlayerStatus string
 
 const (

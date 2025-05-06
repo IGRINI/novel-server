@@ -10,6 +10,7 @@ import (
 	"novel-server/shared/authutils"
 	interfaces "novel-server/shared/interfaces"
 	sharedModels "novel-server/shared/models"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,10 +83,12 @@ type GameplayHandler struct {
 	supportedLanguagesMap     map[string]struct{}
 	jwtSecret                 string
 	interServiceSecret        string
+	StoryBrowsingSvc          service.StoryBrowsingService
+	LikeSvc                   service.LikeService
 }
 
 // NewGameplayHandler создает новый GameplayHandler.
-func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret, interServiceSecret string, storyConfigRepo interfaces.StoryConfigRepository, publishedStoryRepo interfaces.PublishedStoryRepository, cfg *config.Config) *GameplayHandler {
+func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret, interServiceSecret string, storyConfigRepo interfaces.StoryConfigRepository, publishedStoryRepo interfaces.PublishedStoryRepository, cfg *config.Config, storyBrowsingSvc service.StoryBrowsingService, likeSvc service.LikeService) *GameplayHandler {
 	userVerifier, err := authutils.NewJWTVerifier(jwtSecret, logger)
 	if err != nil {
 		logger.Fatal("Failed to create User JWT Verifier", zap.Error(err))
@@ -113,6 +116,8 @@ func NewGameplayHandler(s service.GameplayService, logger *zap.Logger, jwtSecret
 		supportedLanguagesMap:     langMap,
 		jwtSecret:                 jwtSecret,
 		interServiceSecret:        interServiceSecret,
+		StoryBrowsingSvc:          storyBrowsingSvc,
+		LikeSvc:                   likeSvc,
 	}
 }
 
@@ -291,6 +296,9 @@ func handleServiceError(c *gin.Context, err error, logger *zap.Logger) {
 	case errors.Is(err, sharedModels.ErrPlayerStateInError):
 		statusCode = http.StatusInternalServerError
 		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodePlayerStateInError, Message: err.Error()}
+	case errors.Is(err, service.ErrCannotRetryInitial): // Убедись, что ErrCannotRetryInitial экспортируется из пакета service
+		statusCode = http.StatusConflict // 409 Conflict - состояние ресурса не позволяет выполнить операцию
+		apiErr = sharedModels.ErrorResponse{Code: sharedModels.ErrCodeCannotRetry, Message: "Cannot retry: initial generation steps already completed or story is ready"}
 	default:
 		logger.Error("Unhandled internal error", zap.Error(err))
 		statusCode = http.StatusInternalServerError
@@ -661,4 +669,46 @@ func (h *GameplayHandler) parseAndValidateTokenLocally(tokenString string) (*sha
 	}
 
 	return claims, nil
+}
+
+// --- НОВЫЕ Вспомогательные функции для уменьшения дублирования --- //
+
+// parseUUIDParam парсит UUID из параметра пути Gin.
+// Возвращает UUID и true при успехе, иначе uuid.Nil и false.
+// Автоматически логирует ошибку и отправляет ответ клиенту при неудаче.
+func parseUUIDParam(c *gin.Context, paramName string, logger *zap.Logger) (uuid.UUID, bool) {
+	idStr := c.Param(paramName)
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		logger.Warn(fmt.Sprintf("Invalid %s format in request URL", paramName), zap.String(paramName, idStr), zap.Error(err))
+		handleServiceError(c, fmt.Errorf("%w: invalid %s format", sharedModels.ErrBadRequest, paramName), logger)
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+// parsePaginationParams парсит 'limit' и 'cursor' из query-параметров Gin.
+// Возвращает limit, cursor и true при успехе, иначе (0, "", false).
+// Автоматически логирует ошибку и отправляет ответ клиенту при неудаче.
+func parsePaginationParams(c *gin.Context, defaultLimit int, maxLimit int, logger *zap.Logger) (limit int, cursor string, ok bool) {
+	limit = defaultLimit
+	limitStr := c.Query("limit")
+	cursor = c.Query("cursor")
+
+	if limitStr != "" {
+		parsedLimit, err := strconv.Atoi(limitStr)
+		if err != nil || parsedLimit <= 0 {
+			logger.Warn("Invalid limit parameter received", zap.String("limit", limitStr), zap.Error(err))
+			handleServiceError(c, fmt.Errorf("%w: invalid 'limit' parameter", sharedModels.ErrBadRequest), logger)
+			return 0, "", false
+		}
+		if parsedLimit > maxLimit {
+			limit = maxLimit
+		} else {
+			limit = parsedLimit
+		}
+	}
+
+	// Курсор не требует специальной валидации здесь, если пуст - то пуст.
+	return limit, cursor, true
 }

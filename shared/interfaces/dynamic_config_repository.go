@@ -8,12 +8,12 @@ import (
 // DynamicConfigRepository определяет методы для доступа к динамическим настройкам.
 type DynamicConfigRepository interface {
 	// GetByKey возвращает настройку по ее ключу.
-	GetByKey(ctx context.Context, key string) (*models.DynamicConfig, error)
+	GetByKey(ctx context.Context, querier DBTX, key string) (*models.DynamicConfig, error)
 	// GetAll возвращает все динамические настройки.
-	GetAll(ctx context.Context) ([]*models.DynamicConfig, error)
+	GetAll(ctx context.Context, querier DBTX) ([]*models.DynamicConfig, error)
 	// Upsert создает или обновляет настройку.
 	// Обновляет только поля Value и Description. Key и UpdatedAt не трогает (UpdatedAt обновляется триггером).
-	Upsert(ctx context.Context, config *models.DynamicConfig) error
+	Upsert(ctx context.Context, querier DBTX, config *models.DynamicConfig) error
 	// Create создает новую настройку. Если настройка с таким ключом уже существует, возвращает ошибку.
-	Create(ctx context.Context, config *models.DynamicConfig) error
+	Create(ctx context.Context, querier DBTX, config *models.DynamicConfig) error
 }

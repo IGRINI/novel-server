@@ -218,18 +218,47 @@ func (s *publishingServiceImpl) DeletePublishedStory(ctx context.Context, id uui
 	log := s.logger.With(zap.String("publishedStoryID", id.String()), zap.String("userID", userID.String()))
 	log.Info("DeletePublishedStory called")
 
-	// Вызываем метод Delete репозитория
-	err := s.publishedRepo.Delete(ctx, id, userID)
+	// Начинаем транзакцию
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		log.Error("Error deleting published story from repository", zap.Error(err))
+		log.Error("Failed to begin transaction for deleting published story", zap.Error(err))
+		return fmt.Errorf("error starting transaction: %w", err)
+	}
+	// Гарантируем откат или коммит
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("Panic recovered during DeletePublishedStory, rolling back transaction", zap.Any("panic", r))
+			_ = tx.Rollback(context.Background()) // Ignore rollback error after panic
+			err = fmt.Errorf("panic during deletion: %v", r)
+		} else if err != nil {
+			log.Warn("Rolling back transaction due to error during delete", zap.Error(err))
+			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
+				log.Error("Failed to rollback transaction", zap.Error(rollbackErr))
+			}
+		} else {
+			if commitErr := tx.Commit(ctx); commitErr != nil {
+				log.Error("Failed to commit transaction after successful delete", zap.Error(commitErr))
+				err = fmt.Errorf("error committing transaction: %w", commitErr)
+			}
+		}
+	}()
+
+	// Создаем репозиторий с транзакцией
+	publishedRepoTx := database.NewPgPublishedStoryRepository(tx, s.logger)
+
+	// Вызываем метод Delete репозитория с транзакцией
+	err = publishedRepoTx.Delete(ctx, tx, id, userID) // <<< ИЗМЕНЕНО: Передаем tx
+	if err != nil {
+		// Не логируем здесь снова, т.к. defer обработает rollback
 		// Возвращаем стандартные ошибки, если это возможно
 		if errors.Is(err, sharedModels.ErrNotFound) || errors.Is(err, sharedModels.ErrForbidden) {
-			return err
+			return err // Ошибка будет обработана defer для отката
 		}
 		// В остальных случаях возвращаем обобщенную ошибку
-		return fmt.Errorf("error deleting published story: %w", err)
+		return fmt.Errorf("error deleting published story: %w", err) // Ошибка будет обработана defer для отката
 	}
 
-	log.Info("Published story deleted successfully")
+	log.Info("Published story deleted successfully (transaction pending commit)")
+	// defer tx.Commit() сработает, если err == nil
 	return nil
 }

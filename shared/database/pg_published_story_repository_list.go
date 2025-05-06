@@ -6,7 +6,9 @@ import (
 	"fmt"
 
 	// "novel-server/shared/interfaces" // Not used here
+	interfaces "novel-server/shared/interfaces"
 	"novel-server/shared/models" // Import for pagination utils
+
 	// For pagination utils AND PaginationInfo
 	// For pagination calculation
 	"strings"
@@ -81,7 +83,7 @@ const (
 // ListByUserID возвращает список опубликованных историй для указанного пользователя.
 // !!! Проблема с типами пагинации/сортировки, временно используем placeholders !!!
 // TODO: Implement proper cursor pagination instead of offset/limit
-func (r *pgPublishedStoryRepository) ListByUserID(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]*models.PublishedStory, string, error) {
+func (r *pgPublishedStoryRepository) ListByUserID(ctx context.Context, querier interfaces.DBTX, userID uuid.UUID, cursor string, limit int) ([]*models.PublishedStory, string, error) {
 	logFields := []zap.Field{zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit)}
 	r.logger.Debug("Listing published stories by user ID", logFields...)
 
@@ -95,7 +97,7 @@ func (r *pgPublishedStoryRepository) ListByUserID(ctx context.Context, userID uu
 	// Count Total
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM (%s) AS sub", strings.ReplaceAll(queryBuilder.String(), publishedStoryFields, "1")) // Replace fields with 1 for count
 	var totalItems int64
-	err := r.db.QueryRow(ctx, countQuery, args...).Scan(&totalItems)
+	err := querier.QueryRow(ctx, countQuery, args...).Scan(&totalItems)
 	if err != nil {
 		r.logger.Error("Failed to count stories for ListByUserID", append(logFields, zap.Error(err))...)
 		return nil, "", fmt.Errorf("ошибка подсчета историй пользователя: %w", err)
@@ -140,7 +142,7 @@ func (r *pgPublishedStoryRepository) ListByUserID(ctx context.Context, userID uu
 	finalQuery := queryBuilder.String()
 	r.logger.Debug("Executing ListByUserID query", append(logFields, zap.String("query", finalQuery))...)
 
-	rows, err := r.db.Query(ctx, finalQuery, args...)
+	rows, err := querier.Query(ctx, finalQuery, args...)
 	if err != nil {
 		r.logger.Error("Failed to query published stories by user ID", append(logFields, zap.Error(err))...)
 		return nil, "", fmt.Errorf("ошибка запроса опубликованных историй пользователя: %w", err)
@@ -273,7 +275,7 @@ func (r *pgPublishedStoryRepository) ListLikedByUser(ctx context.Context, userID
 // ListPublicSummaries возвращает список сводок общедоступных опубликованных историй.
 // !!! Проблема с типами пагинации/сортировки, временно используем placeholders !!!
 // TODO: Implement more robust cursor logic based on sortBy
-func (r *pgPublishedStoryRepository) ListPublicSummaries(ctx context.Context, userID *uuid.UUID, cursor string, limit int, sortBy string) ([]models.PublishedStorySummary, string, error) {
+func (r *pgPublishedStoryRepository) ListPublicSummaries(ctx context.Context, querier interfaces.DBTX, userID *uuid.UUID, cursor string, limit int, sortBy string) ([]models.PublishedStorySummary, string, error) {
 	logFields := []zap.Field{zap.String("cursor", cursor), zap.Int("limit", limit), zap.String("sortBy", sortBy)}
 	if userID != nil {
 		logFields = append(logFields, zap.String("userID", userID.String()))
@@ -321,7 +323,7 @@ func (r *pgPublishedStoryRepository) ListPublicSummaries(ctx context.Context, us
 	countParamIndex++
 
 	var totalItems int64
-	err := r.db.QueryRow(ctx, countQueryBuilder.String(), countArgs...).Scan(&totalItems)
+	err := querier.QueryRow(ctx, countQueryBuilder.String(), countArgs...).Scan(&totalItems)
 	if err != nil {
 		// Add count query details to log
 		countLogFields := append(logFields, zap.String("count_query", countQueryBuilder.String()), zap.Any("count_args", countArgs), zap.Error(err))
@@ -377,7 +379,7 @@ func (r *pgPublishedStoryRepository) ListPublicSummaries(ctx context.Context, us
 	finalQuery := queryBuilder.String()
 	r.logger.Debug("Executing ListPublicSummaries query", append(logFields, zap.String("query", finalQuery))...)
 
-	rows, err := r.db.Query(ctx, finalQuery, args...)
+	rows, err := querier.Query(ctx, finalQuery, args...)
 	if err != nil {
 		r.logger.Error("Failed to query public story summaries", append(logFields, zap.Error(err))...)
 		return nil, "", fmt.Errorf("ошибка запроса публичных сводок историй: %w", err)
@@ -429,7 +431,7 @@ func (r *pgPublishedStoryRepository) ListPublicSummaries(ctx context.Context, us
 // SearchPublic выполняет полнотекстовый поиск по общедоступным историям.
 // !!! Проблема с типами пагинации/сортировки, временно используем placeholders !!!
 // !!! Проблема с типом PublishedStorySearchResult, возвращаем []*models.PublishedStorySummaryWithProgress !!!
-func (r *pgPublishedStoryRepository) SearchPublic(ctx context.Context, query string, userID *uuid.UUID /*, pagination *models.PaginationParams, filters *models.StoryFilters */) ([]*models.PublishedStorySummary /* *utils.PaginationInfo */, interface{}, error) {
+func (r *pgPublishedStoryRepository) SearchPublic(ctx context.Context, querier interfaces.DBTX, query string, userID *uuid.UUID /*, pagination *models.PaginationParams, filters *models.StoryFilters */) ([]*models.PublishedStorySummary /* *utils.PaginationInfo */, interface{}, error) {
 	logFields := []zap.Field{zap.String("searchQuery", query)}
 	if userID != nil {
 		logFields = append(logFields, zap.String("userID", userID.String()))
@@ -457,7 +459,7 @@ func (r *pgPublishedStoryRepository) SearchPublic(ctx context.Context, query str
 	countArgs := []interface{}{query} // Query is $1
 
 	var totalItems int64
-	err := r.db.QueryRow(ctx, countQuery, countArgs...).Scan(&totalItems)
+	err := querier.QueryRow(ctx, countQuery, countArgs...).Scan(&totalItems)
 	if err != nil {
 		r.logger.Error("Failed to count stories for SearchPublic", append(logFields, zap.Error(err), zap.String("count_query", countQuery))...)
 		return nil, nil, fmt.Errorf("ошибка подсчета результатов поиска: %w", err)
@@ -501,7 +503,7 @@ func (r *pgPublishedStoryRepository) SearchPublic(ctx context.Context, query str
 	finalQuery := queryBuilder.String()
 	r.logger.Debug("Executing SearchPublic query", append(logFields, zap.String("query", finalQuery))...)
 
-	rows, err := r.db.Query(ctx, finalQuery, args...)
+	rows, err := querier.Query(ctx, finalQuery, args...)
 	if err != nil {
 		r.logger.Error("Failed to execute public story search query", append(logFields, zap.Error(err))...)
 		return nil, nil, fmt.Errorf("ошибка выполнения поиска публичных историй: %w", err)
@@ -513,7 +515,6 @@ func (r *pgPublishedStoryRepository) SearchPublic(ctx context.Context, query str
 		var tempSummary models.PublishedStorySummary
 		var publishedAt sql.NullTime
 		var playerStatus sql.NullString
-		var gameStateID sql.NullString
 		var rank float32
 
 		scanErr := rows.Scan(
@@ -530,7 +531,7 @@ func (r *pgPublishedStoryRepository) SearchPublic(ctx context.Context, query str
 			&tempSummary.IsLiked,
 			&tempSummary.HasPlayerProgress,
 			&playerStatus,
-			&gameStateID,
+			&tempSummary.PlayerGameStateID,
 			&rank, // Scan rank
 		)
 		if scanErr != nil {
@@ -545,15 +546,8 @@ func (r *pgPublishedStoryRepository) SearchPublic(ctx context.Context, query str
 			s := models.PlayerStatus(playerStatus.String)
 			tempSummary.PlayerGameStatus = string(s) // Corrected: Assign string(s)
 		}
-		// GameStateID is not part of PublishedStorySummaryWithProgress in the model
+		// GameStateID is now scanned directly into tempSummary.PlayerGameStateID
 
-		/* // Commented out SearchResult usage
-		searchResult := &models.PublishedStorySearchResult{
-			PublishedStorySummaryWithProgress: tempSummary,
-			Rank:                              rank,
-		}
-		results = append(results, searchResult)
-		*/
 		results = append(results, &tempSummary) // Append the summary directly for now
 	}
 

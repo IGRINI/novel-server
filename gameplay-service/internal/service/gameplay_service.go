@@ -167,6 +167,7 @@ func NewGameplayService(
 	dynamicConfigRepo interfaces.DynamicConfigRepository,
 	taskPublisher messaging.TaskPublisher,
 	imgBatchPublisher messaging.CharacterImageTaskBatchPublisher,
+	clientPub messaging.ClientUpdatePublisher,
 	pool *pgxpool.Pool,
 	logger *zap.Logger,
 	authClient interfaces.AuthServiceClient,
@@ -178,7 +179,7 @@ func NewGameplayService(
 	// <<< СОЗДАЕМ PublishingService >>>
 	publishingSvc := NewPublishingService(configRepo, publishedRepo, taskPublisher, pool, logger)
 	// <<< СОЗДАЕМ LikeService >>>
-	likeSvc := NewLikeService(publishedRepo, playerGameStateRepo, authClient, logger)
+	likeSvc := NewLikeService(publishedRepo, playerGameStateRepo, authClient, logger, pool)
 	// <<< СОЗДАЕМ StoryBrowsingService >>>
 	storyBrowsingSvc := NewStoryBrowsingService(
 		publishedRepo,
@@ -189,6 +190,7 @@ func NewGameplayService(
 		imageRefRepo,
 		authClient,
 		logger,
+		pool,
 	)
 	// <<< СОЗДАЕМ GameLoopService >>>
 	gameLoopSvc := NewGameLoopService(
@@ -198,8 +200,10 @@ func NewGameplayService(
 		imageRefRepo,
 		imgBatchPublisher,
 		dynamicConfigRepo,
+		clientPub,
 		logger,
 		cfg,
+		pool,
 	)
 
 	return &gameplayServiceImpl{
@@ -448,14 +452,14 @@ func (s *gameplayServiceImpl) GetStoriesWithProgress(ctx context.Context, userID
 // <<< ДОБАВЛЕНО: Метод для получения списка состояний игроков админкой >>>
 func (s *gameplayServiceImpl) ListStoryPlayersInternal(ctx context.Context, storyID uuid.UUID) ([]sharedModels.PlayerGameState, error) {
 	// Implementation of ListStoryPlayersInternal method
-	return s.playerGameStateRepo.ListByStoryID(ctx, storyID)
+	return s.playerGameStateRepo.ListByStoryID(ctx, s.pool, storyID)
 }
 
 // <<< ДОБАВЛЕНО: Метод для получения деталей прогресса игрока админкой >>>
 func (s *gameplayServiceImpl) GetPlayerProgressInternal(ctx context.Context, progressID uuid.UUID) (*sharedModels.PlayerProgress, error) {
 	s.logger.Debug("Getting player progress internally", zap.Stringer("progressID", progressID))
 
-	progress, err := s.playerProgressRepo.GetByID(ctx, progressID)
+	progress, err := s.playerProgressRepo.GetByID(ctx, s.pool, progressID)
 	if err != nil {
 		if errors.Is(err, sharedModels.ErrNotFound) {
 			s.logger.Warn("Player progress not found for internal request", zap.Stringer("progressID", progressID))
