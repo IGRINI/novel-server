@@ -162,6 +162,7 @@ func createGenerationPayload(
 	madeChoicesInfo []models.UserChoiceInfo,
 	currentStateHash string,
 	language string,
+	promptType models.PromptType,
 ) (sharedMessaging.GenerationTaskPayload, error) {
 
 	if story.Config == nil || story.Setup == nil {
@@ -181,13 +182,6 @@ func createGenerationPayload(
 
 	minimalConfig := models.ToMinimalConfigForScene(&fullConfig)
 	minimalSetup := models.ToMinimalSetupForScene(&fullSetup)
-
-	promptType := models.PromptTypeNovelCreator
-	if gameState != nil && gameState.PlayerStatus == models.PlayerStatusGameOverPending {
-
-		log.Printf("WARN: Attempting to create generation payload for StoryID %s while game over is pending. This should not happen.", story.ID)
-
-	}
 
 	compressedInputData := make(map[string]interface{})
 

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"novel-server/shared/database"
-	sharedMessaging "novel-server/shared/messaging"
 	"novel-server/shared/models"
 	"time"
 
@@ -42,8 +41,23 @@ func (s *gameLoopServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUI
 		log.Info("Player is waiting for game over generation")
 		return nil, models.ErrGameOverPending
 	case models.PlayerStatusCompleted:
-		log.Info("Player has completed the game")
-		return nil, models.ErrGameCompleted
+		log.Info("Player has completed the game, attempting to fetch final scene")
+		if !gameState.CurrentSceneID.Valid {
+			log.Error("Player game state is Completed, but CurrentSceneID is nil", zap.Stringer("gameStateID", gameStateID))
+			return nil, models.ErrInternalServer // Should not happen if game over was processed correctly
+		}
+		// Fetch the final scene (ending text)
+		finalScene, errScene := s.sceneRepo.GetByID(ctx, s.pool, gameState.CurrentSceneID.UUID)
+		if errScene != nil {
+			if errors.Is(errScene, models.ErrNotFound) || errors.Is(errScene, pgx.ErrNoRows) {
+				log.Error("Could not find final scene for completed game state", zap.Stringer("sceneID", gameState.CurrentSceneID.UUID), zap.Error(errScene))
+				return nil, models.ErrInternalServer // Scene should exist
+			}
+			log.Error("Failed to get final scene by ID for completed game", zap.Stringer("sceneID", gameState.CurrentSceneID.UUID), zap.Error(errScene))
+			return nil, models.ErrInternalServer
+		}
+		log.Info("Returning final scene for completed game")
+		return finalScene, nil // Return the final scene containing the ending text
 	case models.PlayerStatusError:
 		log.Error("Player game state is in error", zap.Stringp("errorDetails", gameState.ErrorDetails))
 		return nil, models.ErrPlayerStateInError
@@ -340,58 +354,29 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 			return err
 		}
 
-		taskID := uuid.New().String()
-		reasonCondition := ""
-		finalValue := nextProgress.CoreStats[gameOverStat]
-		if def, ok := setupContent.CoreStatsDefinition[gameOverStat]; ok {
-			minConditionMet := def.Go.Min && finalValue <= 0
-			maxConditionMet := def.Go.Max && finalValue >= 100
-
-			if minConditionMet {
-				reasonCondition = "min"
-			} else if maxConditionMet {
-				reasonCondition = "max"
-			}
-		}
-		reason := sharedMessaging.GameOverReason{StatName: gameOverStat, Condition: reasonCondition, Value: finalValue}
-
-		minimalGameOverConfig := models.ToMinimalConfigForGameOver(publishedStory.Config)
-		minimalGameOverSetup := models.ToMinimalSetupForGameOver(&setupContent)
-
-		minimalConfigBytes, errMarshalConf := json.Marshal(minimalGameOverConfig)
-		if errMarshalConf != nil {
-			s.logger.Error("Failed to marshal minimal config for game over task", append(logFields, zap.Error(errMarshalConf))...)
+		generationPayload, errGenPayload := createGenerationPayload(
+			gameState.PlayerID,
+			publishedStory,
+			nextProgress,
+			gameState,
+			madeChoicesInfo,
+			finalStateHash,
+			publishedStory.Language,
+			models.PromptTypeNovelGameOverCreator,
+		)
+		if errGenPayload != nil {
+			s.logger.Error("Failed to create generation payload for game over task", append(logFields, zap.Error(errGenPayload))...)
 			err = models.ErrInternalServer
 			return err
 		}
-		minimalSetupBytes, errMarshalSetup := json.Marshal(minimalGameOverSetup)
-		if errMarshalSetup != nil {
-			s.logger.Error("Failed to marshal minimal setup for game over task", append(logFields, zap.Error(errMarshalSetup))...)
+		generationPayload.GameStateID = gameState.ID.String()
+
+		if err := s.publisher.PublishGenerationTask(ctx, generationPayload); err != nil {
+			s.logger.Error("Failed to publish game over generation task (as GenerationTask)", append(logFields, zap.Error(err))...)
 			err = models.ErrInternalServer
 			return err
 		}
-
-		lastStateProgress := *nextProgress
-		lastStateProgress.ID = finalProgressNodeID
-
-		gameOverPayload := sharedMessaging.GameOverTaskPayload{
-			TaskID:           taskID,
-			UserID:           gameState.PlayerID.String(),
-			PublishedStoryID: gameState.PublishedStoryID.String(),
-			GameStateID:      gameState.ID.String(),
-			UserChoices:      madeChoicesInfo,
-			LastState:        lastStateProgress,
-			Reason:           reason,
-			NovelConfig:      minimalConfigBytes,
-			NovelSetup:       minimalSetupBytes,
-			Language:         publishedStory.Language,
-		}
-		if err := s.publisher.PublishGameOverTask(ctx, gameOverPayload); err != nil {
-			s.logger.Error("Failed to publish game over generation task", append(logFields, zap.Error(err))...)
-			err = models.ErrInternalServer
-			return err
-		}
-		s.logger.Info("Game over task published", append(logFields, zap.String("taskID", taskID))...)
+		s.logger.Info("Game over generation task published (as GenerationTask)", append(logFields, zap.String("taskID", generationPayload.TaskID))...)
 		return nil
 	}
 
@@ -481,6 +466,7 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 			madeChoicesInfo,
 			nextStateHash,
 			publishedStory.Language,
+			models.PromptTypeNovelCreator,
 		)
 		if errGenPayload != nil {
 			s.logger.Error("Failed to create generation payload", append(logFields, zap.Error(errGenPayload))...)

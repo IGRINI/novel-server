@@ -215,9 +215,14 @@ func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
 	// Парсим и добавляем блоки выборов ('ch') или данные продолжения/концовки
 	if chJSON, ok := rawContent["ch"]; ok {
 		parseChoicesBlock(chJSON, &responseDTO, scene.ID.String(), log)
-	} else if _, ok := rawContent["et"]; ok { // etJSON -> _
-		// parseEndingBlock(etJSON, &responseDTO, log) // <<< ЗАКОММЕНТИРОВАНО: Функция не определена
-		log.Warn("Ending block 'et' found but parseEndingBlock is commented out", zap.String("sceneID", scene.ID.String())) // Добавим лог
+	} else if etJSON, ok := rawContent["et"]; ok {
+		var endingText string
+		if errUnmarshal := json.Unmarshal(etJSON, &endingText); errUnmarshal == nil {
+			responseDTO.EndingText = &endingText
+		} else {
+			log.Error("Failed to unmarshal ending text ('et')", zap.String("sceneID", scene.ID.String()), zap.Error(errUnmarshal))
+			// Не возвращаем ошибку, просто не будет текста концовки
+		}
 	} else if _, ok := rawContent["npd"]; ok { // npdJSON -> _
 		// parseContinuationBlock(rawContent, &responseDTO, log) // <<< ЗАКОММЕНТИРОВАНО: Функция не определена
 		log.Warn("Continuation block 'npd' found but parseContinuationBlock is commented out", zap.String("sceneID", scene.ID.String())) // Добавим лог

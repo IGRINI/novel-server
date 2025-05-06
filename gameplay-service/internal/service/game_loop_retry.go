@@ -55,9 +55,9 @@ func (s *gameLoopServiceImpl) RetryGenerationForGameState(ctx context.Context, u
 						log.Error("Error publishing retry setup generation task POST-COMMIT", zap.Error(errPub))
 					}
 				} else if generationPayload != nil {
-					log.Info("Publishing scene generation task (retry) after commit", zap.String("taskID", generationPayload.TaskID))
+					log.Info("Publishing scene/gameover generation task (retry) after commit", zap.String("taskID", generationPayload.TaskID), zap.String("promptType", string(generationPayload.PromptType)))
 					if errPub := s.publisher.PublishGenerationTask(context.Background(), *generationPayload); errPub != nil {
-						log.Error("Error publishing retry scene generation task POST-COMMIT", zap.Error(errPub))
+						log.Error("Error publishing retry scene/gameover generation task POST-COMMIT", zap.Error(errPub))
 					}
 				}
 			}
@@ -147,7 +147,7 @@ func (s *gameLoopServiceImpl) RetryGenerationForGameState(ctx context.Context, u
 		log.Info("Setup generation task payload created for post-commit publish", zap.String("taskID", taskID))
 		return nil
 	} else {
-		log.Info("Proceeding with scene generation retry for the game state")
+		log.Info("Proceeding with scene/game_over retry for the game state")
 
 		if gameState.PlayerProgressID == uuid.Nil {
 			log.Error("CRITICAL: GameState is in Error/Generating but PlayerProgressID is Nil.")
@@ -168,23 +168,24 @@ func (s *gameLoopServiceImpl) RetryGenerationForGameState(ctx context.Context, u
 			return err
 		}
 
+		promptTypeToUse := models.PromptTypeNovelCreator
+		if !gameState.CurrentSceneID.Valid {
+			promptTypeToUse = models.PromptTypeNovelGameOverCreator
+			log.Info("Identified as Game Over retry.")
+			gameState.PlayerStatus = models.PlayerStatusGeneratingScene
+		} else {
+			log.Info("Identified as Scene retry.")
+		}
+
 		gameState.PlayerStatus = models.PlayerStatusGeneratingScene
 		gameState.ErrorDetails = nil
 		gameState.LastActivityAt = time.Now().UTC()
 		if _, errSave := gameStateRepoTx.Save(ctx, tx, gameState); errSave != nil {
-			log.Error("Failed to update game state status to GeneratingScene before retry task publish", zap.Error(errSave))
+			log.Error("Failed to update game state status before retry task publish", zap.String("targetStatus", string(models.PlayerStatusGeneratingScene)), zap.Error(errSave))
 			err = models.ErrInternalServer
 			return err
 		}
-		log.Info("Updated game state status to GeneratingScene")
-
-		logFields := []zap.Field{
-			zap.String("userID", userID.String()),
-			zap.String("storyID", storyID.String()),
-			zap.String("gameStateID", gameStateID.String()),
-			zap.String("progressID", progress.ID.String()),
-			zap.String("retryStateHash", progress.CurrentStateHash),
-		}
+		log.Info("Updated game state status before retry task publish", zap.String("newStatus", string(gameState.PlayerStatus)))
 
 		madeChoicesInfo := []models.UserChoiceInfo{}
 		generationPayloadLocal, errGenPayload := createGenerationPayload(
@@ -195,14 +196,15 @@ func (s *gameLoopServiceImpl) RetryGenerationForGameState(ctx context.Context, u
 			madeChoicesInfo,
 			progress.CurrentStateHash,
 			publishedStory.Language,
+			promptTypeToUse,
 		)
 		if errGenPayload != nil {
-			log.Error("Failed to create generation payload for scene retry", append(logFields, zap.Error(errGenPayload))...)
-			gameState.PlayerStatus = models.PlayerStatusError
+			log.Error("Failed to create generation payload for scene/gameover retry", zap.Error(errGenPayload))
 			errMsg := fmt.Sprintf("Failed to create generation payload: %v", errGenPayload)
+			gameState.PlayerStatus = models.PlayerStatusError
 			gameState.ErrorDetails = &errMsg
 			if _, saveErr := gameStateRepoTx.Save(context.Background(), tx, gameState); saveErr != nil {
-				log.Error("Failed to roll back game state status after payload creation error", append(logFields, zap.Error(saveErr))...)
+				log.Error("Failed to roll back game state status to Error after payload creation error", zap.Error(saveErr))
 			}
 			err = models.ErrInternalServer
 			return err
@@ -210,7 +212,7 @@ func (s *gameLoopServiceImpl) RetryGenerationForGameState(ctx context.Context, u
 		generationPayloadLocal.GameStateID = gameStateID.String()
 		generationPayload = &generationPayloadLocal
 
-		log.Info("Scene generation task payload created for post-commit publish", zap.String("taskID", generationPayload.TaskID))
+		log.Info("Scene/Game Over generation task payload created for post-commit publish", zap.String("taskID", generationPayload.TaskID), zap.String("promptType", string(generationPayload.PromptType)))
 		return nil
 	}
 }

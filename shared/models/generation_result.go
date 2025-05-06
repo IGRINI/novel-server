@@ -19,7 +19,7 @@ const (
 	PromptTypeNovelSetup             PromptType = "novel_setup"               // Генерация стартового состояния мира (статы, персонажи)
 	PromptTypeNovelFirstSceneCreator PromptType = "novel_first_scene_creator" // Генерация первой сцены
 	PromptTypeNovelCreator           PromptType = "novel_creator"             // Генерация следующей сцены (или первой)
-	PromptTypeNovelGameOverCreator   PromptType = "novel_game_over_creator"   // Генерация финальной сцены (конец игры)
+	PromptTypeNovelGameOverCreator   PromptType = "novel_gameover_creator"    // Генерация финальной сцены (конец игры)
 	PromptTypeCharacterImage         PromptType = "character_image"           // Генерация изображения персонажа
 	PromptTypeStoryPreviewImage      PromptType = "story_preview_image"       // Генерация превью-изображения истории
 	// Добавить другие типы по необходимости
