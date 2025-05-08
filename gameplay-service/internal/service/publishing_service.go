@@ -12,6 +12,7 @@ import (
 	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
+	"novel-server/shared/schemas"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -154,13 +155,19 @@ func (s *publishingServiceImpl) PublishDraft(ctx context.Context, draftID uuid.U
 
 	// 6. Send task for Setup generation (outside the transaction, after commit)
 	taskID := uuid.New().String()
-	configJSONString := string(newPublishedStory.Config) // Конфиг истории как строка
+	// Генерируем plain-текст конфига для setup
+	var cfgObj sharedModels.Config
+	if err := json.Unmarshal(newPublishedStory.Config, &cfgObj); err != nil {
+		s.logger.Error("Failed to unmarshal published story config for plain formatting", zap.Error(err))
+	}
+	plainConfig := schemas.FormatNarratorPlain(&cfgObj)
 	setupPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:           taskID,
 		UserID:           newPublishedStory.UserID.String(),
 		PromptType:       sharedModels.PromptTypeNovelSetup,
-		UserInput:        configJSONString,              // <-- Передаем JSON конфиг сюда
+		UserInput:        plainConfig,                   // Передаем plain-текст конфига
 		PublishedStoryID: newPublishedStory.ID.String(), // Link to published story
+		Language:         newPublishedStory.Language,
 	}
 
 	// Publish task OUTSIDE the transaction, after it's almost certainly committed

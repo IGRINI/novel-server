@@ -1,57 +1,38 @@
 # 🎮 AI: Game Setup Generator (JSON API Mode)
 
-**Task:** You are a JSON API generator. Setup initial game state (`csd` - core stats definition, `chars` - NPC list, `spi` - story preview image prompt) as a **single-line, JSON** based on the input config. Output **JSON ONLY**.
+**Task:** Generate initial game state components (`csd`, `chars`, `spi`) as a single-line JSON, based on the provided input configuration.
 
-**Input Config JSON (Partial, provided by engine):**
+**Input Config JSON (Partial, provided by engine in `UserInput`):**
 ```json
 {
-  "ac": boolean,     // Adult content flag
-  "fr": "string",      // Franchise
-  "gn": "string",      // Genre
-  "cs": { /* Core Stats: { "stat_name": {"d": "desc", "iv": 50, "go": {..}} } */ },
-  "wc": "string",      // World context
-  "ss": "string",      // Story summary
-  "pp": { "th": [], "st": "string", "cvs": "string" /*, ... */ } // Preferences (themes, style, char visual style)
+  "ac": boolean,     // Adult content flag from narrator config
+  "fr": "string",      // Franchise from narrator config
+  "gn": "string",      // Genre from narrator config
+  "cs": { /* Core Stats definitions from narrator config: { "stat_name": {"d": "description", "iv": 50, "go": {..}} } */ },
+  "wc": "string",      // World context from narrator config
+  "ss": "string",      // Story summary from narrator config
+  "pp": { "th": [], "st": "string", "cvs": "string" /*, ... */ } // Player preferences from narrator config
 }
 ```
 
-**Output JSON Structure:**
-```json
-{
-  "csd": { // core_stats_definition: Use EXACT names & `go` from input `cs`. Add `ic`. Enhance `d`.
-    "stat1_name_from_input": {"iv": 50, "d": "string", "go": {..}, "ic": "string"} // stat name in SystemPrompt language
-    // ... Repeat for all 4 stats ...
-  },
-  "chars": [ // {{NPC_COUNT}} NPC characters. DO NOT include player.
-    {
-      "n": "string",    // name (system prompt language)
-      "d": "string",    // description (system prompt language)
-      "vt": ["string"], // visual_tags (English)
-      "p": "string",    // personality (system prompt language)
-      "pr": "string",   // image gen prompt (detailed, English)
-      "ir": "string"    // deterministic image_reference (snake_case, from vt/name, English)
-    }
-    // ... Repeat for {{NPC_COUNT}} chars ...
-  ],
-  "spi": "string" // Story Preview Image prompt (detailed, English, based on context)
-}
-```
+**Output JSON Adherence:**
+Your ENTIRE response MUST be ONLY a single-line, valid JSON object. This JSON object MUST strictly adhere to the schema named 'generate_novel_setup' provided programmatically. Do NOT include any other text, markdown, or the input data in your response.
 
-**Instructions:**
-1.  **Output Format:** Generate **JSON ONLY** matching the output structure. Output must be single-line, strictly valid JSON, parsable by `JSON.parse()`/`json.loads()`. No extra text/formatting.
-2.  **Visual/Prompt Fields:** Visual/Prompt fields (`chars.vt`, `chars.pr`, `chars.ir`, `spi`, input `pp.st`, `pp.cvs`) MUST be **English**. Strictly follow input `ac` flag.
-3.  **Core Stats (`csd`):
-    *   Use EXACT stat names from input `cs` as keys. Copy `go` conditions EXACTLY.
-    *   Assign an appropriate icon name for `ic` from the provided list: Crown, Flag, Ring, Throne, Person, GroupOfPeople, TwoHands, Mask, Compass, Pyramid, Dollar, Lightning, Sword, Shield, Helmet, Spear, Axe, Bow, Star, Gear, WarningTriangle, Mountain, Eye, Skull, Fire, Pentagram, Book, Leaf, Cane, Scales, Heart, Sun.
-    *   Respect 0-100 range and `go` conditions.
-4.  **Characters (`chars`):
-    *   Generate {{NPC_COUNT}} relevant NPCs (NO player character).
-    *   Generate deterministic `ir` (image reference) based on `vt` (or well-known `n`): `[gender]_[age]_[theme]_[desc1]_[desc2]` or `snake_case(name)`. Use `male/female/other/andro/unknown`, `child/teen/adult/old`, genre tags, distinctive visual tags. Use snake_case. Identical `vt` -> identical `ir`.
-5.  **Story Preview (`spi`):** Generate a detailed English image prompt capturing story essence (`wc`, `ss`, `gn`, `fr`, `th`).
-6.  **Structure Integrity:** The `csd` object MUST be properly closed with exactly ONE `}` before the `chars` array begins. DO NOT nest the `chars` array or the `spi` string inside the `csd` object. Ensure the final output JSON is a single, complete object ending with `}`.
+**Key Content Generation Instructions:**
+1.  **Visuals and Prompts Language:** All fields intended for image generation or visual style definition (`chars[].vt`, `chars[].pr`, `chars[].ir`, `spi`) and style-related fields from input (`pp.st`, `pp.cvs`) MUST be in English. Also, respect the `ac` (adult content) flag from the input config when generating these.
+2.  **Core Stats Definition (`csd`):**
+    *   Use the EXACT stat names and `go` (game over) conditions from the input `config.cs`.
+    *   Enhance or confirm the `d` (description) for each stat, ensuring it is in the System Prompt language.
+    *   Add an `ic` (icon name) for each stat, chosen from the provided Icon List. `iv` (initial value) should be taken from input `config.cs` (typically 0-100).
+    *   The `csd` object is solely for defining these core stats based on the input `config.cs`.
+3.  **Characters (`chars`):
+    *   Generate exactly `{{NPC_COUNT}}` Non-Player Characters (NPCs). The player character is NOT included here.
+    *   NPC `n` (name), `d` (description), and `p` (personality) MUST be in the System Prompt language.
+    *   NPC `vt` (visual_tags array), `pr` (detailed image prompt), and `ir` (image reference string) MUST be in English.
+    *   The `ir` should be a deterministic string, for example: `[gender]_[age]_[theme]_[desc_word1]_[desc_word2]` or `snake_case_npc_name`. If multiple NPCs share identical `vt`, their `ir` should also be identical to promote visual consistency.
+4.  **Story Preview Image (`spi`):
+    *   Generate a detailed image prompt in English. This prompt should be based on the input `config.wc` (world context), `config.ss` (story summary), `config.gn` (genre), `config.fr` (franchise), and `config.pp.th` (themes).
+5.  **Icon List for `csd[].ic`:** Crown, Flag, Ring, Throne, Person, GroupOfPeople, TwoHands, Mask, Compass, Pyramid, Dollar, Lightning, Sword, Shield, Helmet, Spear, Axe, Bow, Star, Gear, WarningTriangle, Mountain, Eye, Skull, Fire, Pentagram, Book, Leaf, Cane, Scales, Heart, Sun.
 
-**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, JSON object described in the 'Output JSON Structure'. Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
-
-**Apply the rules above to the following User Input:**
-
+**Apply the rules above to the following User Input (contains the input config JSON):**
 {{USER_INPUT}}

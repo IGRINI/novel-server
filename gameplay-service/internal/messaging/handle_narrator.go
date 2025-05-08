@@ -13,7 +13,7 @@ import (
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
 	"novel-server/shared/notifications"
-	"novel-server/shared/utils"
+	"novel-server/shared/schemas"
 )
 
 func (p *NotificationProcessor) publishClientDraftUpdate(ctx context.Context, storyConfig *sharedModels.StoryConfig, errorMsg *string) {
@@ -102,32 +102,65 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 		}
 
 		if parseErr == nil {
-			config.Config = json.RawMessage(rawGeneratedText)
-			config.Status = sharedModels.StatusDraft
-
-			var generatedFields struct {
-				Title       string `json:"t"`
-				Description string `json:"sd"`
-			}
-			if errUnmarshalFields := json.Unmarshal([]byte(rawGeneratedText), &generatedFields); errUnmarshalFields != nil {
-				p.logger.Warn("NARRATOR UNMARSHAL (Optional fields): Failed to extract 't' or 'sd' from validated JSON",
-					zap.String("task_id", taskID),
-					zap.String("story_config_id", storyConfigID.String()),
-					zap.Error(errUnmarshalFields),
-					zap.String("json_snippet", utils.StringShort(rawGeneratedText, 100)),
-				)
-				config.Title = ""
-				config.Description = ""
+			// Парсинг plain-текста в структуру Config
+			cfgObj, initialStats, errParse := schemas.ParseNarratorPlain(rawGeneratedText)
+			if errParse != nil {
+				p.logger.Error("Failed to parse narrator plain text", zap.String("task_id", taskID), zap.String("story_config_id", storyConfigID.String()), zap.Error(errParse))
+				config.Status = sharedModels.StatusError
+				parseErr = fmt.Errorf("failed to parse narrator output: %w", errParse)
 			} else {
-				config.Title = generatedFields.Title
-				config.Description = generatedFields.Description
-				p.logger.Info("Successfully updated StoryConfig Title, Description from generated JSON",
-					zap.String("task_id", taskID),
-					zap.String("story_config_id", storyConfigID.String()),
-					zap.String("new_title", config.Title),
-				)
+				// ensure exactly 4 core stats parsed
+				if len(initialStats) != 4 {
+					parseErr = fmt.Errorf("expected exactly 4 core stats, but found %d", len(initialStats))
+				} else {
+					// логируем распарсенные статы для отладки
+					p.logger.Debug("Parsed core stats from narrator output", zap.Any("stats", initialStats))
+				}
+				if parseErr == nil {
+					// Преобразуем cfgObj в map[string]interface{} для добавления поля "cs"
+					cfgMap := make(map[string]interface{})
+					tempCfgJSON, errMarshalCfg := json.Marshal(cfgObj)
+					if errMarshalCfg != nil {
+						p.logger.Error("Failed to marshal cfgObj to temp JSON", zap.String("task_id", taskID), zap.Error(errMarshalCfg))
+						parseErr = fmt.Errorf("failed to temp marshal cfgObj: %w", errMarshalCfg)
+					} else {
+						if errUnmarshal := json.Unmarshal(tempCfgJSON, &cfgMap); errUnmarshal != nil {
+							p.logger.Error("Failed to unmarshal temp JSON to map", zap.String("task_id", taskID), zap.Error(errUnmarshal))
+							parseErr = fmt.Errorf("failed to unmarshal temp cfgObj to map: %w", errUnmarshal)
+						}
+					}
+
+					if parseErr == nil {
+						coreStatsMap := make(map[string]interface{})
+						for _, stat := range initialStats {
+							coreStatsMap[stat.Name] = map[string]interface{}{
+								"d":  stat.Description,
+								"iv": 50, // Значение по умолчанию
+								"go": map[string]interface{}{
+									"min": false, // Значение по умолчанию
+									"max": false, // Значение по умолчанию
+								},
+							}
+						}
+						cfgMap["cs"] = coreStatsMap
+
+						// Финальный маршалинг в JSON для сохранения
+						finalCfgJSON, errMarshalFinal := json.Marshal(cfgMap)
+						if errMarshalFinal != nil {
+							p.logger.Error("Failed to marshal final config map", zap.String("task_id", taskID), zap.String("story_config_id", storyConfigID.String()), zap.Error(errMarshalFinal))
+							config.Status = sharedModels.StatusError
+							parseErr = fmt.Errorf("failed to marshal final config map: %w", errMarshalFinal)
+						} else {
+							config.Config = json.RawMessage(finalCfgJSON)
+							config.Status = sharedModels.StatusDraft
+							config.Title = cfgObj.Title                  // Берем из оригинального cfgObj
+							config.Description = cfgObj.ShortDescription // Берем из оригинального cfgObj
+							config.UpdatedAt = time.Now().UTC()
+							p.logger.Info("Successfully updated StoryConfig with cs field from parsed narrator output", zap.String("task_id", taskID), zap.String("story_config_id", storyConfigID.String()), zap.String("new_title", config.Title))
+						}
+					}
+				}
 			}
-			config.UpdatedAt = time.Now().UTC()
 		} else {
 			p.logger.Error("Processing Narrator failed before JSON handling",
 				zap.String("task_id", taskID),

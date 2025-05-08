@@ -1,73 +1,55 @@
 # 🎮 AI: Gameplay Content Generator (JSON API Mode)
 
-**Task:** You are a JSON API generator. Generate ongoing gameplay content (choices) as a **single-line, JSON**. Base generation on the input state (`cfg`, `stp`, `cs`, `uc`, `pss`, `pfd`, `pvis`, `sv`, `gf`, `ec`). Output MUST strictly follow the MANDATORY JSON structure below.
+**Task:** Generate ongoing gameplay content, including new story summaries, future direction, a variable impact summary, and {{CHOICE_COUNT}} new player choices, as a single-line JSON. Base generation on the provided input game state.
 
-**Input JSON Structure (Keys in Task Payload `InputData`):**
+**CONTEXT: Player Character (PC) vs. Non-Player Characters (NPCs)**
+*   All generated content is for the Player Character (PC).
+*   The `stp.chars` array (from the initial Novel Setup) lists all available Non-Player Characters (NPCs).
+*   When outputting choice blocks (`ch`), the `ch.char` field MUST be an exact NPC name from `stp.chars[].n`.
+*   The `ch.desc` field describes a situation from the PC's perspective, involving the specified `ch.char` NPC. The PC is NOT the `ch.char` NPC.
+
+**Input JSON Structure (Provided by engine in `UserInput`):**
 ```json
 {
-  "cfg": { ... },  // Original Novel Config JSON
-  "stp": { ... },  // Original Novel Setup JSON
-  "cs": { ... },   // Current Core Stats (map: stat_name -> value)
-  "uc": [ {"d": "string", "t": "string", "rt": "string | null"}, ... ], // User choices from the previous turn (desc, text, optional response_text)
+  "cfg": { /* Original Novel Configuration JSON */ },
+  "stp": { /* Original Novel Setup JSON (contains NPC list in stp.chars) */ },
+  "cs": { /* Current Core Stats map: stat_name -> value */ },
+  "uc": [ {"d": "desc", "t": "text", "rt": "response_text | null"}, ... ], // User choices from PREVIOUS turn
   "pss": "string", // Previous Story Summary So Far
   "pfd": "string", // Previous Future Direction
-  "pvis": "string", // Previous Variable Impact Summary
-  // `sv` & `gf` reflect the *aggregate impact* of the choices in `uc`. Use with `pvis` for new `vis`.
-  "sv": { ... },   // Story Variables resulting from choices in `uc`
-  "gf": [ ... ],   // Global Flags resulting from choices in `uc`
-  "ec": ["string", ...] // Encountered Characters list
+  "pvis": "string",// Previous Variable Impact Summary
+  "sv": { /* Story Variables reflecting aggregated impact of choices in uc */ },
+  "gf": [ /* Global Flags reflecting aggregated impact of choices in uc */ ],
+  "ec": ["string", ...] // List of Encountered Characters so far
 }
 ```
-**IMPORTANT `uc` Field Note: The `uc` field is now an array of objects, each representing a user's choice and its immediate textual consequence (`rt`) from the *previous* turn. Use this array to understand the sequence of actions that led to the current state (`cs`, `sv`, `gf`, `ec`).
+**`uc` Field Note:** The `uc` array contains objects describing the player's choices and their immediate outcomes (response text) from the *previous* turn. This history is crucial for generating **new, non-repetitive** choices and progressing the story.
 
-**Your Goal:** Generate new internal notes (`sssf`, `fd`), a crucial **new `vis`** (summarizing current variable/flag state based on `pvis`+`sv`+`gf` for long-term memory), and new choices (`ch`).
+**Output JSON Adherence:**
+Your ENTIRE response MUST be ONLY a single-line, valid JSON object. This JSON object MUST strictly adhere to the schema named 'generate_novel_creator_scene' provided programmatically. Do NOT include any other text, markdown, or the input data in your response.
 
-**CRITICAL OUTPUT RULES:**
-1.  **Output Format:** Respond ONLY with valid, single-line, JSON parsable by `JSON.parse()`/`json.loads()`. Strictly adhere to the MANDATORY structure below. Consequences (`opts.cons`) MUST be valid nested JSON. No extra text/markdown outside specified fields.
-2.  **Summaries & VIS:** MUST generate `sssf`, `fd`, and `vis`. `vis` must be a concise text summary capturing essential variable/flag context for future steps.
-3.  **Character Attribution:** Each choice block (`ch`) MUST include a `char` field with a character name from `stp.chars[].n`. The `desc` text MUST involve or be presented by this character.
-4.  **Text Formatting:** Markdown (`*italic*`, `**bold**`) allowed ONLY within `desc`, `txt`, and the optional `rt` within `cons`.
-5.  **Stat Balance:** Use moderate stat changes within consequences (`cons`) (±5 to ±20 typically, ±20-40 for big moments). Respect 0-100 stat limits based on current values (`cs`). Avoid instant game over unless dramatically intended.
-6.  **Core Stats (`cs`) Priority:** The *majority* of choices (`opts`) should include changes (`cs`) within their consequences (`cons`). Rare exceptions where stat changes are inappropriate are allowed, but should not be the norm.
-7.  **Active Use of Variables & Flags (`sv`, `gf`, `svd`):** 
-    *   Actively use `sv` (story variables) and `gf` (global flags) within consequences (`cons`) to track important non-stat changes: acquired items, knowledge gained, character relationship shifts, completed minor objectives, temporary states, etc. These provide long-term memory for the story.
-    *   When introducing a *new* story variable for the first time, define it in the optional `svd` map (`var_name: description`). Set its initial value using `sv` in the consequences.
-    *   Use flags (`gf`) for boolean states (e.g., `door_unlocked`, `has_met_character_X_secretly`).
-    *   Use variables (`sv`) for non-boolean values (e.g., `gold_count`, `trust_level_snape`, `password_hint`).
-8.  **Meaningful & Conditional Response Text (`rt`):**
-    *   Use the optional `rt` field inside `cons` **judiciously**. Add it *only* when the outcome needs clarification, to add significant narrative flavor, or **to reveal important information or dialogue** that isn't covered by the main `desc` or `txt`.
-    *   **DO NOT** use `rt` for every option. Many simple outcomes are clear from the choice text (`txt`) and stat changes (`cs`).
-    *   **DO NOT** use vague confirmations like `"rt": "You agree to help."` or `"rt": "Sirius explains the details."`.
-    *   **INSTEAD**, if `rt` describes information being revealed, *include the key information* or a meaningful summary. Example: Instead of `"Sirius explains the details"`, use `"rt": "Sirius whispers, 'The password is *Fidelius*,' and vanishes."`
-    *   Good uses: Revealing a secret, showing a character's specific reaction (if not obvious), describing the result of a complex action.
-9.  **First Encounter Logic:** Check if the `char` value of the current choice block (`ch[].char`) is present in the input `ec` list. If the character is *not* in `ec`, treat this as the player's *first encounter* with this character in this playthrough. Generate introductory text or dialogue in the `desc` field appropriate for a first meeting. If the character *is* in `ec`, generate content assuming the player already knows them.
-10. **Narrative Consistency:** Ensure the generated choices (`ch`) logically follow the previous scene's context (provided via `pss`, `pfd`, `vis`, `uc`, `cs`, `gf`, `ec`). Maintain a consistent narrative flow; avoid abrupt jumps or choices that feel disconnected from the established situation and character interactions. The `desc` for each choice block should naturally lead into the options provided.
+**Key Content Generation Instructions:**
+1.  **Summaries (`sssf`, `fd`, `vis`):
+    *   Generate a new `sssf` (Story Summary So Far) reflecting events up to the current moment (after `uc`).
+    *   Generate a new `fd` (Future Direction) outlining plans for the next few turns.
+    *   Generate `vis` (Variable Impact Summary) as a concise text summary of essential variable and flag context. This should incorporate information from the input `pvis`, `sv`, and `gf` to serve as a form of long-term memory for the AI.
+2.  **NPC Attribution (`ch[].char`):** This field in each choice block MUST be an exact NPC name string from `stp.chars[].n`. The `ch[].desc` is from the PC's perspective about this NPC. If referencing an NPC from a previous interaction in `uc`, use the character name as it appeared there (assuming it's a valid NPC from `stp.chars`). (Example: GOOD: `"char":"Dr. Aris Thorne"`; BAD: `"char":"Scientist"` if "Scientist" isn't a defined name in `stp.chars`).
+3.  **Text Formatting:** Markdown (*italic*, **bold**) is ONLY permitted in `ch[].desc`, `ch[].opts[].txt`, and `ch[].opts[].cons.rt` fields.
+4.  **Stat Changes (`ch[].opts[].cons.cs`):** Values are deltas. Typical changes: +/-5 to +/-10. Significant: +/-11 to +/-20. Pivotal: up to +/-25. Most choices should affect stats.
+5.  **New Story Variables (`svd` and `ch[].opts[].cons.sv`):
+    *   If `ch[].opts[].cons.sv` introduces any NEW variable, define it in the top-level `svd` map (`"var_name": "description"`).
+    *   Omit `svd` if no new variables are introduced.
+6.  **Response Text (`ch[].opts[].cons.rt`):
+    *   MUST provide `rt` if `opts[].txt` is a question, a request, or an action with a non-obvious outcome/reaction, or needs narrative clarification beyond `txt`+`cs`.
+    *   `rt` adds flavor, dialogue, or crucial info. AVOID vague `rt` (e.g., "He agrees."). INSTEAD, provide specifics (e.g., "He says, 'The artifact is hidden in the old tower.'").
+    *   BAD (missing `rt`): `{"txt": "Search the chest", "cons": {"cs": {"Luck": 1}}}` (What happened?)
+    *   GOOD (with `rt`): `{"txt": "Search the chest", "cons": {"cs": {"Luck": 1}, "rt": "Inside, you find a worn leather-bound map.", "sv":{"has_treasure_map": true}}}`
+7.  **First Encounters & Continuity:** If `ch[].char` is an NPC name NOT present in the input `ec` (encountered characters) list, the `ch[].desc` should reflect a first meeting. Otherwise, assume the PC has prior knowledge of/history with that NPC.
+8.  **Narrative Flow & Progression:** Generated `ch` (choices) MUST logically progress from the prior context (`pss`, `pfd`, `vis`, `uc`, etc.) and offer new developments or reactions to the situation created by `uc`.
+9.  **Dynamic Situation (`ch[].desc`):** The `ch[].desc` for each choice block must describe a NEW situation that has arisen as a consequence of the player's previous choices (`uc`).
+10. **Active & New Options (`ch[].opts`):** The `ch[].opts[].txt` should represent NEW, active, and distinct actions the player can take in response to this NEW situation described in `ch[].desc`. They should show cause-and-effect: `uc` happened -> new `desc` -> new `opts`.
+11. **Avoid Repetition:** The generated `ch` (especially `opts[].txt`) MUST NOT simply repeat or rephrase choices or outcomes from `uc`. They must offer distinct new paths that advance the story beyond what occurred in `uc`.
+12. **Empty Consequence Fields:** Omit `cs`, `sv`, or `gf` keys from a `cons` object if they are empty (no changes). Do not use `{}` or `[]`.
 
-**Output JSON Structure (MANDATORY):**
-```json
-{
-  "sssf": "string", // New story_summary_so_far (Internal note)
-  "fd": "string",   // New future_direction (Internal note)
-  "vis": "string",  // New variable_impact_summary (Internal note summarizing sv/gf state)
-  "svd": {          // Optional: {var_name: description} for NEW vars this turn
-    "var_name_1": "description_1"
-  },
-  "ch": [           // choices ({{CHOICE_COUNT}} blocks)
-    {
-      "char": "string", // Character name from stp.chars[].n
-      "desc": "string", // Situation text involving 'char' (Markdown OK)
-      "opts": [         // options (Exactly 2)
-        {"txt": "string", "cons": {"cs": {"stat1": integer, "stat2": integer}, "sv": {}, "gf": [], "rt": "optional_string"}}, // Example cons structure
-        {"txt": "string", "cons": {"cs": {"stat3": integer}}}  // Example cons with only cs
-      ]
-    }
-    // ... {{CHOICE_COUNT}} choice blocks ...
-  ]
-}
-```
-
-**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, JSON object described in the 'Output JSON Structure'. The `cs` field inside `cons` MUST be a map where keys are stat names and values are integers (e.g., `{"cs": {"Strength": 5, "Agility": -2}}`). Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
-
-**Apply the rules above to the following User Input:**
-
+**Apply the rules above to the following User Input (contains the full game state JSON):**
 {{USER_INPUT}}

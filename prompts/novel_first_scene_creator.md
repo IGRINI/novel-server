@@ -1,65 +1,46 @@
 # 🎮 AI: First Scene Generator (JSON API Mode)
 
-**Task:** You are a JSON API generator. Generate the initial exactly {{CHOICE_COUNT}} choices/events for a new game as a **single-line, JSON**. Base generation on the input `NovelConfig` (`cfg`) and `NovelSetup` (`stp`). Output MUST strictly follow the MANDATORY JSON structure below.
+**Task:** Generate the initial {{CHOICE_COUNT}} choices/events for a new game as a single-line JSON. This involves creating the story's starting situation, future direction, and player choices based on the input `NovelConfig` (`cfg`) and `NovelSetup` (`stp`).
 
-**Input JSON Structure (Keys in Task Payload `InputData`):**
+**CONTEXT: Player Character (PC) vs. Non-Player Characters (NPCs)**
+*   All generated content should be from the perspective of the Player Character (PC), whose details are in `cfg.pn` (player name) and `cfg.p_desc` (player description).
+*   The `stp.chars` array lists all available Non-Player Characters (NPCs) for interaction.
+*   When outputting choice blocks (`ch`), the `ch.char` field MUST be an exact NPC name from `stp.chars[].n`.
+*   The `ch.desc` field describes a situation from the PC's perspective, involving the specified `ch.char` NPC. The PC is NOT the `ch.char` NPC.
+
+**Input JSON Structure (Provided by engine in `UserInput`):**
 ```json
 {
-  "cfg": { ... },  // Original Novel Config JSON
-  "stp": { ... },  // Original Novel Setup JSON (contains characters `chars`, etc.)
-  "ec": []          // <<< ADDED: Encountered Characters (always empty for first scene)
+  "cfg": { /* Original Novel Configuration JSON (player details, world, etc.) */ },
+  "stp": { /* Original Novel Setup JSON (NPC list in stp.chars, core stat defs, etc.) */ }
 }
 ```
 
-**CRITICAL OUTPUT RULES:**
-1.  **Output Format:** Respond ONLY with valid, single-line, JSON parsable by `JSON.parse()`/`json.loads()`. Strictly adhere to the MANDATORY structure below. Consequences (`opts.cons`) MUST be valid nested JSON. No extra text/markdown outside specified fields.
-2.  **Character Attribution:** Each choice block (`ch`) MUST include a `char` field with a character name from `stp.chars[].n`. The `desc` text MUST involve or be presented by this character. (Note: The input `ec` list will always be empty, so treat all characters as first encounters).
-3.  **Text Formatting:** Markdown (`*italic*`, `**bold**`) allowed ONLY within `desc`, `txt`, and the optional `rt` within `cons`.
-4.  **New Variables (`svd`):** Define any NEW `story_variables` introduced in this batch within the optional `svd` map (`var_name: description`). Omit `svd` if no new vars.
-5.  **Stat Balance:** Use moderate stat changes (±5 to ±20 typically, ±20-40 for big moments). Respect 0-100 limits and initial values (`iv`) from setup. Avoid instant game over unless dramatically intended.
-6.  **Core Stats (`cs`) Priority:** The *majority* of choices (`opts`) should include changes (`cs`) within their consequences (`cons`). Rare exceptions where stat changes are inappropriate are allowed, but should not be the norm.
-7.  **Meaningful & Conditional Response Text (`rt`):**
-    *   Use the optional `rt` field inside `cons` **judiciously**. Add it *only* when the outcome needs clarification, to add significant narrative flavor, or **to reveal important information or dialogue** that isn't covered by the main `desc` or `txt`.
-    *   **DO NOT** use `rt` for every option. Many simple outcomes are clear from the choice text (`txt`) and stat changes (`cs`).
-    *   **DO NOT** use vague confirmations like `"rt": "You agree to help."`.
-    *   **INSTEAD**, if `rt` describes information being revealed, *include the key information* or a meaningful summary. Example: `"rt": "Hagrid tells you the creature is a Blast-Ended Skrewt and needs careful handling."`.
-    *   Good uses: Revealing a secret, showing a character's specific reaction (if not obvious), describing the result of a complex action.
-8.  **Active Use of Variables & Flags (`sv`, `gf`, `svd`):** 
-    *   Actively use `sv` (story variables) and `gf` (global flags) within consequences (`cons`), even in the first scene, to track important non-stat changes: initial items, knowledge, relationship statuses, objectives, temporary states.
-    *   Define any *new* variables introduced in this first scene in the optional `svd` map (`var_name: description`) and set their initial value using `sv`.
-    *   Use flags (`gf`) for boolean states (e.g., `has_received_map`, `knows_about_curse`).
-    *   Use variables (`sv`) for non-boolean values (e.g., `starting_gold`, `first_impression_malfoy`).
-9.  **Narrative Immersion and Cohesion:** The initial {{CHOICE_COUNT}} choices should form a cohesive introductory sequence. Introduce the setting, the initial situation, and key starting characters. Choices should logically follow one another, and the consequences of earlier choices in this initial batch might influence the setup or options of later choices within the same batch to create an immersive and connected opening.
+**Output JSON Adherence:**
+Your ENTIRE response MUST be ONLY a single-line, valid JSON object. This JSON object MUST strictly adhere to the schema named 'generate_novel_first_scene' provided programmatically. Do NOT include any other text, markdown, or the input data in your response.
 
-**Output JSON Structure (MANDATORY):**
-```json
-{
-  "sssf": "string", // story_summary_so_far (Initial situation)
-  "fd": "string",   // future_direction (Plan for this batch)
-  "svd": {          // Optional: {var_name: description} for NEW vars
-    "var_name_1": "description_1"
-  },
-  "ch": [           // choices ({{CHOICE_COUNT}} blocks)
-    {
-      "char": "string", // Character name from stp.chars[].n
-      "desc": "string", // Situation text involving 'char' (Markdown OK)
-      "opts": [         // options (Exactly 2)
-        {
-          "txt": "string", // Choice 1 text (Markdown OK)
-          "cons": {"cs": {"stat1": integer, "stat2": integer}, "sv": {}, "gf": [], "rt": "optional_string"}
-        },
-        {
-          "txt": "string", // Choice 2 text (Markdown OK)
-          "cons": {"cs": {"stat3": integer}}
-        }
-      ]
-    }
-    // ... {{CHOICE_COUNT}} choice blocks ...
-  ]
-}
-```
+**Key Content Generation Instructions:**
+1.  **NPC Attribution (`ch[].char`):** This field in each choice block MUST be an exact NPC name string found within the input `stp.chars[].n` array. The `ch[].desc` is then from the PC's point of view, concerning this NPC. (Example: GOOD: `"char":"Sergeant Rex"` if Sergeant Rex is defined in `stp.chars`; BAD: `"char":"Guard"` if "Guard" is not a defined NPC name in `stp.chars`).
+2.  **Text Formatting:** Markdown (specifically *italic* and **bold**) is ONLY permitted in the `ch[].desc`, `ch[].opts[].txt`, and `ch[].opts[].cons.rt` fields.
+3.  **New Story Variables (`svd` and `ch[].opts[].cons.sv`):
+    *   If any choice option (`ch[].opts[]`) introduces a NEW story variable through its `cons.sv` field, that new variable's name and a brief description MUST be defined in the top-level `svd` (story variable definitions) object (e.g., `"svd": {"new_item_acquired": "Tracks if player found the mystic orb"}`).
+    *   If no new variables are introduced by any choices, the `svd` field should be omitted from the output JSON entirely.
+4.  **Stat Changes (`ch[].opts[].cons.cs`):
+    *   Values in `cs` (core stats) represent CHANGES (deltas) to the player's stats, not absolute values (e.g., `{"Courage": 10}` means Courage increases by 10).
+    *   Typical changes should be in the range of +/-5 to +/-10. More significant narrative moments might warrant changes of +/-11 to +/-20. Pivotal, rare events could go up to +/-25. The game engine will handle clamping values between 0 and 100.
+    *   The primary focus is on the amount of change. Avoid instant game over scenarios from a single choice unless it's a highly justifiable and dramatic narrative beat.
+    *   Most choice options (`ch[].opts[]`) should ideally result in some change to core stats.
+5.  **Response Text (`ch[].opts[].cons.rt`):
+    *   You MUST provide `rt` (response text) if the player's choice (`opts[].txt`) is a direct question to an NPC, a request made to an NPC, or an action whose outcome or immediate NPC reaction isn't obvious from `opts[].txt` and `opts[].cons.cs` alone.
+    *   `rt` adds flavor, NPC dialogue, or crucial information. It clarifies the immediate result of the choice.
+    *   DO NOT use `rt` for simple confirmations of the choice text. AVOID vague `rt` like "You agree." or "He notices." INSTEAD, provide specific information (e.g., "Hagrid tells you it's a rare Blast-Ended Skrewt he's breeding.").
+    *   BAD Example (missing `rt`): `{"txt": "Search the old desk", "cons": {"cs": {"Intellect": 1}}}` (What did they find? Or was there nothing?)
+    *   GOOD Example (with `rt`): `{"txt": "Search the old desk", "cons": {"cs": {"Intellect": 1}, "rt": "You find a tarnished silver key tucked beneath a loose floorboard.", "sv":{"has_silver_key": true}}}`
+6.  **Story Variables and Global Flags (`ch[].opts[].cons.sv`, `ch[].opts[].cons.gf`):
+    *   Actively use `sv` (story variables object, e.g., `{"knows_secret_knock": true}`) and `gf` (global flags array, e.g., `["village_alarm_raised"]`) to reflect the consequences of choices, such as acquiring items, learning information, or changing the state of the world.
+    *   Remember to define NEW variables introduced via `sv` in the top-level `svd` field (see rule #3).
+7.  **Narrative Cohesion for First Scene:** The initial {{CHOICE_COUNT}} choice blocks should form a cohesive and engaging introduction to the game. They should establish the setting, the player's immediate situation, and potentially introduce one or more key NPCs. Choices should flow logically and offer genuinely different paths or interactions to immediately immerse the player.
+8.  **Empty Consequence Fields:** If a choice option results in no changes to core stats, no story variable modifications, and no global flags being set, then the corresponding keys (`cs`, `sv`, `gf`) should be OMITTED from that `cons` object. Do not include them as empty objects (`{}`) or empty arrays (`[]`).
 
-**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, JSON object described in the 'Output JSON Structure'. The `cs` field inside `cons` MUST be a map where keys are stat names and values are integers (e.g., `{"cs": {"Strength": 5, "Agility": -2}}`). Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
-
-**Apply the rules above to the following User Input:**
+**Apply the rules above to the following User Input (contains the `cfg` and `stp` JSON objects):**
 {{USER_INPUT}}

@@ -2,9 +2,9 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
+	"novel-server/shared/models"
 	"novel-server/story-generator/internal/config"
 	"novel-server/story-generator/internal/service"
 	"slices"
@@ -34,7 +34,6 @@ func (h *APIHandler) GetPort() string {
 
 // RegisterRoutes регистрирует все HTTP пути для API.
 func (h *APIHandler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/generate/stream", h.corsMiddleware(h.HandleGenerateStream))
 	mux.HandleFunc("/generate", h.corsMiddleware(h.HandleGenerate))
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -100,74 +99,6 @@ type generateStreamRequest struct {
 	TopP        *float64 `json:"top_p,omitempty"`
 }
 
-// HandleGenerateStream обрабатывает POST /generate/stream
-func (h *APIHandler) HandleGenerateStream(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var reqPayload generateStreamRequest
-	if err := json.NewDecoder(r.Body).Decode(&reqPayload); err != nil {
-		http.Error(w, "Ошибка чтения тела запроса: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	defer r.Body.Close()
-
-	log.Printf("API: Получен запрос на /generate/stream (System: %d chars, User: %d chars, Temp: %v, MaxTokens: %v, TopP: %v)",
-		len(reqPayload.SystemPrompt), len(reqPayload.UserPrompt), reqPayload.Temperature, reqPayload.MaxTokens, reqPayload.TopP)
-
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	genParams := service.GenerationParams{
-		Temperature: reqPayload.Temperature,
-		MaxTokens:   reqPayload.MaxTokens,
-		TopP:        reqPayload.TopP,
-	}
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		log.Println("API: Ошибка - ResponseWriter не поддерживает Flusher")
-		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
-		return
-	}
-
-	log.Println("API: Начинаем стримить ответ клиенту...")
-
-	usageInfo, err := h.aiClient.GenerateTextStream(r.Context(), "api_user", reqPayload.SystemPrompt, reqPayload.UserPrompt, genParams, func(chunk string) error {
-		_, writeErr := fmt.Fprint(w, chunk)
-		if writeErr != nil {
-			log.Printf("API: Ошибка записи клиенту (в callback): %v", writeErr)
-			return writeErr
-		}
-		flusher.Flush()
-		return nil
-	})
-
-	if err != nil {
-		log.Printf("API: Ошибка во время стриминга от AI или при записи клиенту: %v", err)
-		return
-	} else {
-		log.Printf("API: Стриминг клиенту успешно завершен. Usage: PromptTokens=%d, CompletionTokens=%d, TotalTokens=%d, Cost=%.6f USD",
-			usageInfo.PromptTokens,
-			usageInfo.CompletionTokens,
-			usageInfo.TotalTokens,
-			usageInfo.EstimatedCostUSD)
-	}
-}
-
-// escapeSSEData больше не нужна
-/*
-func escapeSSEData(data string) string {
-	data = strings.ReplaceAll(data, "\r", "")
-	data = strings.ReplaceAll(data, "\n", "\ndata: ")
-	return data
-}
-*/
-
-// HandleGenerate обрабатывает POST /generate (не-стриминговый)
 func (h *APIHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
@@ -190,7 +121,7 @@ func (h *APIHandler) HandleGenerate(w http.ResponseWriter, r *http.Request) {
 		TopP:        reqPayload.TopP,
 	}
 
-	generatedText, usageInfo, err := h.aiClient.GenerateText(r.Context(), "api_user", reqPayload.SystemPrompt, reqPayload.UserPrompt, genParams)
+	generatedText, usageInfo, err := h.aiClient.GenerateText(r.Context(), "api_user", reqPayload.SystemPrompt, reqPayload.UserPrompt, models.PromptType(""), genParams)
 	if err != nil {
 		log.Printf("API: Ошибка генерации текста от AI: %v", err)
 		http.Error(w, "Ошибка генерации текста от AI: "+err.Error(), http.StatusInternalServerError)

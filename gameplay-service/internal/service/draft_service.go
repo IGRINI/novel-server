@@ -10,6 +10,7 @@ import (
 	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
+	"novel-server/shared/schemas"
 	"time"
 
 	"github.com/google/uuid"
@@ -210,27 +211,18 @@ func (s *draftServiceImpl) ReviseDraft(ctx context.Context, id uuid.UUID, userID
 		return fmt.Errorf("cannot revise draft %s: previous config is missing", config.ID.String())
 	}
 
-	// Распарсиваем текущий конфиг
-	var currentConfigMap map[string]interface{}
-	if errUnmarshal := json.Unmarshal(config.Config, &currentConfigMap); errUnmarshal != nil {
-		log.Error("Cannot revise draft: failed to unmarshal existing config JSON",
+	// Генерируем plain-текст текущего конфига
+	var cfgObj sharedModels.Config
+	if errUnmarshal := json.Unmarshal(config.Config, &cfgObj); errUnmarshal != nil {
+		log.Error("Cannot revise draft: failed to unmarshal existing config JSON for formatting",
 			zap.String("draftID", config.ID.String()),
 			zap.Error(errUnmarshal))
 		return fmt.Errorf("cannot revise draft %s: invalid existing config JSON: %w", config.ID.String(), errUnmarshal)
 	}
-
-	// Добавляем поле ur с текстом ревизии
-	currentConfigMap["ur"] = revisionPrompt
-
-	// Запарсиваем обратно в JSON для UserInput
-	userInputBytes, errMarshal := json.Marshal(currentConfigMap)
-	if errMarshal != nil {
-		log.Error("Cannot revise draft: failed to marshal updated config JSON for UserInput",
-			zap.String("draftID", config.ID.String()),
-			zap.Error(errMarshal))
-		return fmt.Errorf("cannot revise draft %s: failed to prepare input for AI: %w", config.ID.String(), errMarshal)
-	}
-	userInputForTask = string(userInputBytes)
+	// Здесь stats пока не сохраняются, передаем пустой слайс
+	plainConfig := schemas.FormatNarratorPlain(&cfgObj)
+	// Комбинируем plain-config и инструкции игрока
+	userInputForTask = plainConfig + "\n" + revisionPrompt
 	// <<< Конец новой логики >>>
 
 	generationPayload := sharedMessaging.GenerationTaskPayload{
@@ -366,20 +358,16 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 					return fmt.Errorf("cannot retry revision %s: previous config is missing", config.ID.String())
 				}
 
-				var currentConfigMap map[string]interface{}
-				if errUnmarshal := json.Unmarshal(config.Config, &currentConfigMap); errUnmarshal != nil {
-					log.Error("Cannot retry revision: failed to unmarshal existing config JSON", zap.Error(errUnmarshal))
+				var cfgObj sharedModels.Config
+				if errUnmarshal := json.Unmarshal(config.Config, &cfgObj); errUnmarshal != nil {
+					log.Error("Cannot retry revision: failed to unmarshal existing config JSON for formatting",
+						zap.String("draftID", config.ID.String()),
+						zap.Error(errUnmarshal))
 					return fmt.Errorf("cannot retry revision %s: invalid existing config JSON: %w", config.ID.String(), errUnmarshal)
 				}
-
-				currentConfigMap["ur"] = lastUserInput
-
-				userInputBytes, errMarshal := json.Marshal(currentConfigMap)
-				if errMarshal != nil {
-					log.Error("Cannot retry revision: failed to marshal updated config JSON for UserInput", zap.Error(errMarshal))
-					return fmt.Errorf("cannot retry revision %s: failed to prepare input for AI: %w", config.ID.String(), errMarshal)
-				}
-				userInputForTask = string(userInputBytes)
+				// Stats здесь не используются для NarratorReviser, передаем nil
+				plainConfig := schemas.FormatNarratorPlain(&cfgObj)
+				userInputForTask = plainConfig + "\n" + lastUserInput
 			}
 		} else {
 			log.Error("Failed to unmarshal UserInput or UserInput is empty for retry", zap.Error(err))

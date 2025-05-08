@@ -17,6 +17,7 @@ import (
 	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
+	"novel-server/shared/schemas"
 )
 
 // Типы обновлений для ClientStoryUpdate
@@ -629,8 +630,8 @@ func (p *NotificationProcessor) checkStoryReadinessAfterImage(ctx context.Contex
 			// Возможно, стоит сбросить флаг AreImagesPending в Error? Пока нет.
 			return
 		}
-		if errUnmarshal := json.Unmarshal(story.Setup, &setupContent); errUnmarshal != nil {
-			log.Error("Failed to unmarshal Setup JSON for PublishedStory, cannot verify all images.", zap.Error(errUnmarshal))
+		if errUnmarshalSetup := json.Unmarshal(story.Setup, &setupContent); errUnmarshalSetup != nil {
+			log.Error("Cannot publish first scene task: Failed to unmarshal setup JSON", zap.Error(errUnmarshalSetup))
 			return
 		}
 
@@ -767,47 +768,19 @@ func (p *NotificationProcessor) publishFirstSceneTaskInternal(ctx context.Contex
 		return errors.New("setup is nil or empty")
 	}
 
-	// Распарсиваем Setup для получения упрощенной структуры
+	// Распарсиваем Setup для получения структурированных данных
 	var setupContent sharedModels.NovelSetupContent
 	if errUnmarshalSetup := json.Unmarshal(story.Setup, &setupContent); errUnmarshalSetup != nil {
 		log.Error("Cannot publish first scene task: Failed to unmarshal setup JSON", zap.Error(errUnmarshalSetup))
 		return fmt.Errorf("failed to unmarshal setup JSON: %w", errUnmarshalSetup)
 	}
 
-	var simplifiedSetup map[string]interface{}
-	simplifiedChars := make([]map[string]string, 0, len(setupContent.Characters))
-	for _, char := range setupContent.Characters {
-		simplifiedChar := map[string]string{"n": char.Name, "d": char.Description}
-		if char.Personality != "" {
-			simplifiedChar["p"] = char.Personality
-		}
-		simplifiedChars = append(simplifiedChars, simplifiedChar)
-	}
-	simplifiedSetup = map[string]interface{}{
-		"chars": simplifiedChars,
-		"csd":   setupContent.CoreStatsDefinition,
-	}
-
-	// Создаем минимальный конфиг
-	minimalConfig := ToMinimalConfigForFirstScene(story.Config) // Используем существующую функцию из пакета
-
-	// Собираем combinedInputMap
-	combinedInputMap := make(map[string]interface{})
-	combinedInputMap["cfg"] = minimalConfig
-	combinedInputMap["stp"] = simplifiedSetup
-	combinedInputMap["sv"] = make(map[string]interface{})    // Пустые начальные значения
-	combinedInputMap["gf"] = []string{}                      // Пустые начальные значения
-	combinedInputMap["uc"] = []sharedModels.UserChoiceInfo{} // Пустые начальные значения
-	combinedInputMap["pss"] = ""                             // Пустые начальные значения
-	combinedInputMap["pfd"] = ""                             // Пустые начальные значения
-	combinedInputMap["pvis"] = ""                            // Пустые начальные значения
-
-	combinedInputBytes, errMarshal := json.Marshal(combinedInputMap)
-	if errMarshal != nil {
-		log.Error("Failed to marshal combined input map for first scene task", zap.Error(errMarshal))
-		return fmt.Errorf("failed to marshal combined input map: %w", errMarshal)
-	}
-	combinedInputJSON := string(combinedInputBytes)
+	// Генерируем plain-текст для первой сцены: комбинируем конфиг и setup
+	var fullConfig sharedModels.Config
+	_ = json.Unmarshal(story.Config, &fullConfig)
+	configPlain := schemas.FormatNarratorPlain(&fullConfig)
+	setupPlain := schemas.FormatNovelSetupForScene(&fullConfig, &setupContent)
+	userInput := configPlain + "\n" + setupPlain
 
 	// Используем язык из истории
 	storyLanguage := story.Language
@@ -822,7 +795,7 @@ func (p *NotificationProcessor) publishFirstSceneTaskInternal(ctx context.Contex
 		UserID:           story.UserID.String(),
 		PromptType:       sharedModels.PromptTypeNovelFirstSceneCreator,
 		PublishedStoryID: story.ID.String(),
-		UserInput:        combinedInputJSON, // <<< Правильное поле
+		UserInput:        userInput,
 		StateHash:        sharedModels.InitialStateHash,
 		Language:         storyLanguage,
 	}

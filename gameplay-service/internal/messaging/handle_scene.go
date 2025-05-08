@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"novel-server/shared/constants"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
 	"novel-server/shared/notifications"
+	"novel-server/shared/schemas"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -78,7 +80,61 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 			return p.handleSceneGenerationError(operationCtx, notification, publishedStoryID, fetchErr.Error(), logWithState)
 		}
 
-		sceneContentJSON := json.RawMessage(rawGeneratedText)
+		// Парсинг плейн-текста сцены/финала
+		var parsedScene *sharedModels.SceneContent
+		var errParseScene error
+		if notification.PromptType == sharedModels.PromptTypeNovelGameOverCreator {
+			parsedScene, errParseScene = schemas.ParseGameOverPlain(rawGeneratedText)
+		} else {
+			// Загружаем PublishedStory для доступа к Setup
+			publishedStory, errPub := p.publishedRepo.GetByID(operationCtx, p.db, publishedStoryID)
+			if errPub != nil {
+				logWithState.Error("Failed to load PublishedStory for scene parsing", zap.Error(errPub))
+				return p.handleSceneGenerationError(operationCtx, notification, publishedStoryID, fmt.Sprintf("failed to get published story: %v", errPub), logWithState)
+			}
+			// Статназвания из setup
+			var setupContent sharedModels.NovelSetupContent
+			_ = json.Unmarshal(publishedStory.Setup, &setupContent) // игнорируем ошибку, setup уже валидирован
+			expectedChoiceCount := len(setupContent.Characters)
+			statNames := make([]string, 0, len(setupContent.CoreStatsDefinition))
+			for name := range setupContent.CoreStatsDefinition {
+				statNames = append(statNames, name)
+			}
+			sort.Strings(statNames)
+			// Имена переменных из предыдущей сцены
+			var varNames []string
+			prevScene, errPrev := p.sceneRepo.FindByStoryAndHash(operationCtx, p.db, publishedStoryID, notification.StateHash)
+			if errPrev == nil {
+				var prevContent sharedModels.SceneContent
+				_ = json.Unmarshal(prevScene.Content, &prevContent)
+				for name := range prevContent.StoryVariableDefs {
+					varNames = append(varNames, name)
+				}
+				sort.Strings(varNames)
+			}
+			if notification.PromptType == sharedModels.PromptTypeNovelFirstSceneCreator {
+				parsedScene, errParseScene = schemas.ParseFirstScenePlain(rawGeneratedText, expectedChoiceCount, statNames, varNames)
+			} else {
+				parsedScene, errParseScene = schemas.ParseNovelCreatorPlain(rawGeneratedText, expectedChoiceCount, statNames, varNames)
+			}
+		}
+		if errParseScene != nil {
+			logWithState.Error("Failed to parse scene plain text", zap.Error(errParseScene))
+			return p.handleSceneGenerationError(operationCtx, notification, publishedStoryID, fmt.Sprintf("parse error: %v", errParseScene), logWithState)
+		}
+		sceneContentJSON, errMarshal := json.Marshal(parsedScene)
+		if errMarshal != nil {
+			logWithState.Error("Failed to marshal parsed scene content", zap.Error(errMarshal))
+			return p.handleSceneGenerationError(operationCtx, notification, publishedStoryID, fmt.Sprintf("marshal error: %v", errMarshal), logWithState)
+		}
+		scene := &sharedModels.StoryScene{
+			ID:               uuid.New(),
+			PublishedStoryID: publishedStoryID,
+			StateHash:        notification.StateHash,
+			Content:          sceneContentJSON,
+			CreatedAt:        time.Now().UTC(),
+		}
+
 		var endingText *string
 		isGameOverScene := notification.PromptType == sharedModels.PromptTypeNovelGameOverCreator
 
@@ -92,14 +148,6 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 			} else if errUnmarshal != nil {
 				logWithState.Warn("Failed to extract optional EndingText ('et') from GameOver JSON", zap.Error(errUnmarshal))
 			}
-		}
-
-		scene := &sharedModels.StoryScene{
-			ID:               uuid.New(),
-			PublishedStoryID: publishedStoryID,
-			StateHash:        notification.StateHash,
-			Content:          sceneContentJSON,
-			CreatedAt:        time.Now().UTC(),
 		}
 
 		var finalPlayerStatus sharedModels.PlayerStatus

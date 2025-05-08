@@ -1,54 +1,22 @@
 # 🎮 AI: Game Config JSON Generator (JSON API Mode)
 
-**Task:** You are a JSON API generator. Based on a simple string `UserInput` describing the desired game, **generate** a new game config. Output a **single-line, valid JSON config ONLY**.
+**Task:** Generate a new game config as a single-line JSON based on `UserInput` string.
 
-**Input (`UserInput`):**
-*   A simple string describing the desired game.
+**Input (`UserInput`):** Simple string describing the desired game.
 
-**Output JSON Structure (Required fields *):**
-```json
-{
-  "t": "string",        // * title
-  "sd": "string",       // * short_description
-  "fr": "string",       // * franchise
-  "gn": "string",       // * genre
-  "ac": boolean,        // * is_adult_content (Auto-determined, ignore user input)
-  "pn": "string",       // * player_name (Specific, not generic unless requested)
-  "pg": "string",       // * player_gender
-  "p_desc": "string",   // * player_description
-  "wc": "string",       // * world_context
-  "ss": "string",       // * story_summary
-  "sssf": "string", // * story_summary_so_far (Story start)
-  "fd": "string",       // * future_direction (First scene plan)
-  "cs": {               // * core_stats: 4 unique stats {name: {d: desc, iv: init_val(0-100), go: {min: bool, max: bool}}}
-    "stat1": {"d": "str", "iv": 50, "go": {"min": true, "max": true}}, // Example, stat name in SystemPrompt language
-    // ... 3 more stats ...
-  },
-  "pp": {               // * player_preferences
-    "th": ["string"],   // * themes
-    "st": "string",     // * style (Visual/narrative, English)
-    "tn": "string",     // * tone
-    "p_desc": "string", // Optional extra player details
-    "wl": ["string"],   // world_lore
-    "dl": ["string"],   // Optional desired_locations
-    "dc": ["string"],   // Optional desired_characters
-    "cvs": "string"     // * character_visual_style (Detailed visual prompt, English)
-  }
-}
-```
+**Output JSON Adherence:**
+Your ENTIRE response MUST be ONLY a single-line, valid JSON object. This JSON object MUST strictly adhere to the schema named 'generate_narrator_config' provided programmatically. Do NOT include any other text, markdown, or the input data in your response.
 
-**Instructions:**
+**Key Content Generation Instructions:**
+1.  Use `UserInput` as the primary source for game description and details.
+2.  **Core Stats (`cs`):** The `cs` field in the output JSON MUST contain EXACTLY 4 unique core stats. Define their names, descriptions (in System Prompt language), initial values (`iv` between 0-100), and game over (`go`) conditions.
+3.  **Adult Content (`ac`):** Auto-determine the boolean `ac` flag based on the generated content and `UserInput`. Do not rely on user requests for this flag.
+4.  **Player Name (`pn`):** Generate a specific `pn` (player_name) in System Prompt language. Avoid generic names like "Player" or "Hero" unless `UserInput` explicitly requests it.
+5.  **Story Start (`sssf`, `fd`):** The `sssf` (story_summary_so_far) field should describe the very beginning of the story. The `fd` (future_direction) field should outline a plan for the first scene. Both should be in System Prompt language.
+6.  **Language for Specific Fields:**
+    *   `pp.st` (style for visual/narrative) and `pp.cvs` (character_visual_style image prompt) MUST be in English.
+    *   All other textual content (titles, descriptions, genre, tone, player details, world context, story summaries, stat names/descriptions) should be in the System Prompt language.
+7.  Ensure all required fields as per the 'generate_narrator_config' schema are present.
 
-1.  Use `UserInput` string as the description for the game.
-2.  Generate 4 unique, relevant `cs`, respecting the 0-100 initial value range and `go` conditions.
-3.  Autonomously determine `ac` based on the generated content.
-4.  Generate a specific `pn`. Avoid generic terms like "Player", "Adventurer" unless the `UserInput` explicitly requests it.
-5.  `sssf` should describe the very beginning of the story or the initial situation.
-6.  `fd` should outline the plan for the first scene or immediate next step for the player.
-7.  Ensure `pp.st` and `pp.cvs` are in English.
-8.  **Output Requirement:** Respond **ONLY** with the final generated JSON object string. Ensure it's single-line, unformatted, strictly valid JSON, parsable by `JSON.parse()`/`json.loads()`. No extra text or explanation.
-
-**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, compressed JSON object described in the 'Output JSON Structure'. Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
-
-**Apply the rules above to the following Input:**
+**Apply the rules above to the following UserInput:**
 {{USER_INPUT}}

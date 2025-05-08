@@ -20,6 +20,7 @@ type StoryScene struct {
 type SceneContent struct {
 	StorySummarySoFar      string            `json:"sssf,omitempty"`
 	FutureDirection        string            `json:"fd,omitempty"`
+	VarImpactSummary       string            `json:"vis,omitempty"`
 	StoryVariableDefs      map[string]string `json:"svd,omitempty"`
 	Choices                []ChoiceBlock     `json:"ch,omitempty"`
 	EndingText             string            `json:"et,omitempty"`
@@ -30,8 +31,9 @@ type SceneContent struct {
 
 // ChoiceBlock represents a single decision point in the scene.
 type ChoiceBlock struct {
+	Char        string        `json:"char,omitempty"`
 	Description string        `json:"desc"`
-	Options     []SceneOption `json:"opts"`
+	Options     []SceneOption `json:"opts,omitempty"`
 }
 
 // SceneOption represents one of the two choices available in a ChoiceBlock.

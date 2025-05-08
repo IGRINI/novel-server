@@ -1,38 +1,40 @@
 # 🎮 AI: Continuation Scenario Generator (JSON API Mode)
 
-**Task:** You are a JSON API generator. Generate the **initial gameplay content** for a **continuation scenario** as a **single-line, JSON**. Base generation on the final state of the previous run (`cfg`, `stp`, `lst`, `rsn`, `ec`). Output MUST strictly follow the MANDATORY JSON structure below.
+**Task:** Generate initial gameplay for a continuation scenario as a single-line JSON. Use input (`cfg`, `stp`, `lst`, `rsn`, `uc`, `ec`). Output MUST be JSON matching structure below.
+
+**CONTEXT: New PC vs. NPCs**
+*   Generating first scene for a NEW Player Character (PC) (described in `npd`, stats in `csr`).
+*   `stp.chars` lists Non-Player Characters (NPCs).
+*   Output `ch.char` MUST be an NPC name from `stp.chars`.
+*   Output `ch.desc` is from NEW PC's perspective, involving the NPC. NEW PC IS NOT THE NPC.
 
 **Input JSON Structure (Keys in Task Payload `InputData`):**
 ```json
 {
-  "cfg": { ... },  // Original Novel Config JSON (keys assumed)
-  "stp": { ... },  // Original Novel Setup JSON (keys assumed)
+  "cfg": { ... },  // Original Novel Config JSON
+  "stp": { ... },  // Original Novel Setup JSON
   "lst": { ... },  // Final NovelState of previous run (keys: cs, gf, sv, pss, pfd, god?, cc: true)
-  "rsn": { "sn": "string", "cond": "string", "val": number }, // Reason for game over (stat_name, condition, value)
-  "uc": [ {"d": "string", "t": "string", "rt": "string | null"}, ... ], // User choices from the final turn of the *previous* character
+  "rsn": { "sn": "string", "cond": "string", "val": number }, // Reason for game over
+  "uc": [ {"d": "string", "t": "string", "rt": "string | null"}, ... ], // User choices from *previous* character's final turn
   "ec": []          // Encountered Characters (always empty for continuation start)
 }
 ```
+**`uc` Field Note:** `uc` shows *previous* PC's last actions. Use for context in transition text (`etp`).
 
-**IMPORTANT `uc` Field Note: The `uc` field provides the sequence of actions the *previous* character took on their very last turn, leading to the game over described in `rsn` and `lst`. Use this for context when writing the transition text (`etp`).
-
-**Your Goal:** Create the transition narrative (`etp`), define the new starting state (`npd`, `csr`), generate internal notes (`sssf`, `fd`), and the first set of choices (`ch`) for the new character.
+**Goal:** Create transition (`etp`), new start state (`npd`, `csr`), internal notes (`sssf`, `fd`), first choices (`ch`) for new PC.
 
 **CRITICAL OUTPUT RULES:**
-1.  **Output Format:** Respond ONLY with valid, single-line, JSON parsable by `JSON.parse()`/`json.loads()`. Strictly adhere to the MANDATORY structure below. Consequences (`cons`) MUST be valid nested JSON. No extra text/markdown outside specified fields.
-2.  **Mandatory Fields:** MUST generate `sssf`, `fd`, `npd`, `csr`, `etp`, `ch`.
-3.  **New Choices (`ch`):** Generate choices relevant to the *new* character's start.
-4.  **Character Attribution (`char`):** Each choice block (`ch`) MUST include `char` field with a character name from `stp.chars[].n`. `desc` MUST involve this character. (Note: The input `ec` list will always be empty, so treat all characters as first encounters for the new protagonist).
-5.  **Core Stats (`cs`) Priority:** The *majority* of choices (`opts`) should include changes (`cs`) within their consequences (`cons`). Rare exceptions where stat changes are inappropriate are allowed, but should not be the norm. Respect the values from `csr`.
-6.  **Text Formatting:** Markdown (`*italic*`, `**bold**`) allowed ONLY within `npd`, `etp`, `desc`, `txt`, and the optional `rt` inside `cons`.
-7.  **Active Use of Variables & Flags (`sv`, `gf` - in subsequent choices):** While the *first* choices for the new character might not heavily use `sv`/`gf`, remember to actively use them in consequences (`cons`) later in the playthrough to track important non-stat changes: items, knowledge, relationships, etc.
-8.  **Meaningful & Conditional Response Text (`rt`):**
-    *   Use `rt` **judiciously** in consequences (`cons`), only when needed for clarity, significant narrative flavor, or revealing crucial info/dialogue not in `desc`/`txt`.
-    *   **DO NOT** overuse `rt` for simple outcomes or vague confirmations (e.g., `"You nod."`).
-    *   If `rt` reveals information, make it specific. Instead of `"He tells you the plan"`, use `"rt": "He explains the plan involves sneaking through the kitchens at midnight."`.
-    *   Good uses: Revealing secrets, character reactions, results of complex actions.
-9.  **Internal Notes (`vis`, `svd`):** Usually omit `vis` and `svd` for the very first continuation scene.
-10. **Narrative Cohesion:** The generated transition (`etp`) and the initial choices (`ch`) for the new character should form a cohesive starting point. Ensure the choices logically follow the setup provided (`npd`, `csr`) and the context of the previous character's ending (`etp`), creating a consistent narrative flow for the new beginning.
+1.  **Output:** Single-line, valid JSON only, matching structure below. `opts.cons` is nested JSON. No extra text/markdown.
+2.  **Mandatory Fields:** Generate `sssf`, `fd`, `npd`, `csr`, `etp`, `ch`.
+3.  **New Choices (`ch`):** For *new* PC, reflecting their perspective (`npd`, `csr`). Fresh start, distinct from previous PC's final actions (`uc`).
+4.  **NPC Attribution (`ch.char`):** MUST be an exact NPC name from `stp.chars[].n`. `ch.desc` is from NEW PC's perspective about this NPC. NEW PC IS NOT `ch.char` NPC. If referencing `uc` interaction, use `uc[].char`. Forbidden: `char` not in `stp.chars[].n`. (Example: GOOD: `"char":"Elias Thorne"` if in `stp.chars`; BAD: `"char":"Old Man"` if not).
+5.  **Stat Changes (`opts.cons.cs`):** Values are CHANGES (deltas) to NEW PC's `csr` stats, not absolute. E.g., `{"Courage": 10}` = Courage +10. Changes typically ±5 to ±10; significant moments ±11 to ±20; rare pivotal ±25. Clamp to 0-100. Avoid instant game over. Focus on change amount.
+6.  **Text Formatting:** Markdown (*italic*, **bold**) only in `npd`, `etp`, `desc`, `txt`, `cons.rt`.
+7.  **Variables/Flags (`sv`, `gf` in later choices):** Use in `cons` for items, knowledge, etc. `cons.gf` MUST be string array (e.g., `["flag"]`). `cons.sv` MUST be object (e.g., `{"var": val}`).
+8.  **Response Text (`opts.cons.rt`):** ALWAYS add `rt` if `opts.txt` is: a direct question to NPC; a request to NPC; an action with non-obvious outcome/reaction; or needs narrative clarification beyond `txt`+`cs`. `rt` adds flavor, dialogue, or info not in `desc`/`txt`. DO NOT use for simple confirmations. AVOID VAGUE `rt` (e.g., "He agrees"). INSTEAD, provide key info (e.g., "He says, 'The plan is X...'"). BAD: `{"txt": "Inspect device", "cons": {"cs": {"Intellect": 1}}}` (Needs `rt`). GOOD: `{"txt": "Inspect device", "cons": {"cs": {"Intellect": 1}, "rt": "Device hums, inscription found.", "gf":["found_inscription"]}}`.
+9.  **Initial Internal Notes (`vis`, `svd`):** For THIS first scene of continuation, **OMIT `vis` and `svd` fields.** New vars can be introduced later.
+10. **Narrative Cohesion:** `etp` and initial `ch` for new PC must form a cohesive start. Choices follow `npd`, `csr`, and previous PC's ending (`etp`). Offer distinct interaction types.
+11. **Empty `cons` Fields:** Omit `cs`, `sv`, or `gf` keys from `cons` if they are empty (no changes/vars/flags). Do not use `{}` or `[]`.
 
 **Output JSON Structure (MANDATORY):**
 ```json
@@ -47,19 +49,18 @@
       "char": "string", // Character name from stp.chars[].n
       "desc": "string", // Situation text involving 'char' (Markdown OK)
       "opts": [         // options (Exactly 2)
-        {"txt": "string", "cons": {"cs": {"stat1": integer, "stat2": integer}, "sv": {}, "gf": [], "rt": "optional_string"}}, // Example cons structure
-        {"txt": "string", "cons": {"cs": {"stat3": integer}}}  // Example cons with only cs
+        {"txt": "string", "cons": {"cs": {"stat1": 5, "stat2": -2}, "sv": {"new_goal": "Find the artifact"}, "gf": ["started_new_life"], "rt": "optional_string"}}, 
+        {"txt": "string", "cons": {"cs": {"stat3": 10}}}  // Example cons with only cs (sv and gf are omitted if empty)
       ]
     }
     // ... {{CHOICE_COUNT}} choice blocks ...
   ]
-  // "vis": "string", // Usually omit
-  // "svd": {},       // Usually omit
+  // "vis": "string", // STRICTLY OMIT FOR THIS PROMPT
+  // "svd": {},       // STRICTLY OMIT FOR THIS PROMPT
 }
 ```
 
-**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, JSON object described in the 'Output JSON Structure'. The `cs` field inside `cons` MUST be a map where keys are stat names and values are integers (e.g., `{"cs": {"Strength": 5, "Agility": -2}}`). Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
+**Reminder:** Output MUST be ONLY the single, valid, JSON. `cons.cs` is map: `{"stat": change_val}`. No input data, markdown, titles, or other text.
 
 **Apply the rules above to the following User Input:**
-
 {{USER_INPUT}}

@@ -4,7 +4,6 @@ import (
 	// Для рендеринга шаблона
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -12,16 +11,17 @@ import (
 	sharedInterfaces "novel-server/shared/interfaces" // <<< Используем этот импорт
 	"novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
-	"novel-server/shared/utils" // <<< CORRECTED import path for utils
 
+	// <<< CORRECTED import path for utils
 	// Импортируем конфиг для AIMaxAttempts
 	// Добавляем модель
 	// "novel-server/story-generator/internal/repository" // <<< Удаляем старый импорт
 	"novel-server/story-generator/internal/service" // Для шаблонизации промтов
-	"strings"                                       // <<< ДОБАВЛЕНО: для strings.Replace >>>
+	// <<< ДОБАВЛЕНО: для strings.Replace >>>
 	"time"
 
 	// "novel-server/story-generator/internal/model" // <<< Удаляем импорт model
+
 	"github.com/google/uuid"
 )
 
@@ -129,10 +129,9 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 	var completedAt time.Time
 	var finalUsageInfo service.UsageInfo
 	var systemPrompt string
-	var language string       // <<< Перенесено сюда
-	var promptKey string      // <<< Перенесено сюда
-	var promptText string     // <<< Перенесено сюда
-	var userInputForAI string // <<< Перенесено сюда
+	var language string   // <<< Перенесено сюда
+	var promptKey string  // <<< Перенесено сюда
+	var promptText string // <<< Перенесено сюда
 
 	// Defer для записи общей длительности задачи и отправки метрик
 	defer func() {
@@ -189,15 +188,10 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 	} else {
 		// <<< Промпт получен, продолжаем обработку >>>
 
-		// <<< Заменяем плейсхолдер {{USER_INPUT}} >>>
-		userInputForAI = strings.Replace(promptText, "{{USER_INPUT}}", payload.UserInput, 1)
-		if userInputForAI == promptText && strings.Contains(promptText, "{{USER_INPUT}}") {
-			// Если плейсхолдер был, но замена не произошла (например, UserInput пуст)
-			log.Printf("[TaskID: %s][WARN] Placeholder {{USER_INPUT}} не был заменен в промпте типа '%s'. Возможно, UserInput пуст.", payload.TaskID, payload.PromptType)
-			// Решаем, что делать дальше: либо ошибка, либо использовать промпт как есть
-			// Пока оставим как есть, AI получит промпт с незамененным плейсхолдером или без него.
-		}
-		log.Printf("[TaskID: %s] Final UserInput for AI (length: %d).", payload.TaskID, len(userInputForAI))
+		// Use promptText as system prompt and raw UserInput as user input
+		systemPromptForAI := promptText
+		actualUserInput := payload.UserInput
+		log.Printf("[TaskID: %s] Final UserInput for AI (length: %d).", payload.TaskID, len(actualUserInput))
 
 		// --- Этап 3: Вызов AI API с ретраями (только если промпт загружен) ---
 		if payload.UserInput == "" && payload.PromptType != "" { // TODO: Уточнить, всегда ли нужен UserInput?
@@ -216,10 +210,12 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 
 				var attemptUsageInfo service.UsageInfo
 				var attemptErr error
+
 				aiResponse, attemptUsageInfo, attemptErr = h.aiClient.GenerateText(ctx,
 					payload.UserID,
-					systemPrompt, // <<< ИСПОЛЬЗУЕМ ПОЛУЧЕННЫЙ СИСТЕМНЫЙ ПРОМПТ
-					userInputForAI,
+					systemPromptForAI,
+					actualUserInput,
+					payload.PromptType,
 					service.GenerationParams{})
 				cancel()
 
@@ -227,6 +223,8 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 				aiStatusLabel := "success"
 
 				if attemptErr == nil {
+					finalUsageInfo = attemptUsageInfo
+					processingErr = nil
 					log.Printf("[TaskID: %s] AI API успешно ответил (Попытка %d). Время ответа: %v", payload.TaskID, attempt, aiCallDuration)
 					log.Printf("[TaskID: %s] Raw AI Response (length: %d): %s", payload.TaskID, len(aiResponse), aiResponse)
 					MetricsRecordAIRequest("unknown", aiStatusLabel, aiCallDuration)
@@ -236,54 +234,7 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 						log.Printf("[TaskID: %s][Attempt %d Metrics] Tokens: P=%d, C=%d. Cost: %.6f USD",
 							payload.TaskID, attempt, attemptUsageInfo.PromptTokens, attemptUsageInfo.CompletionTokens, attemptUsageInfo.EstimatedCostUSD)
 					}
-					finalUsageInfo = attemptUsageInfo
-					processingErr = nil
-
-					// <<< MODIFIED: Add explicit BEFORE/AFTER logging for ExtractJsonContent >>>
-					originalAIResponse := aiResponse // Keep original
-
-					// --- Log BEFORE extraction ---
-					log.Printf("[TaskID: %s] BEFORE ExtractJsonContent. Raw AI Response (length: %d): %s", payload.TaskID, len(originalAIResponse), originalAIResponse)
-
-					extractedJSON := utils.ExtractJsonContent(originalAIResponse) // Always pass original here
-
-					// --- Log AFTER extraction ---
-					log.Printf("[TaskID: %s] AFTER ExtractJsonContent. Extracted JSON (length: %d): %s", payload.TaskID, len(extractedJSON), extractedJSON)
-
-					if extractedJSON == "" {
-						log.Printf("[TaskID: %s][WARN] ExtractJsonContent returned empty string, using original AI response.", payload.TaskID)
-						// Keep original aiResponse (which is originalAIResponse)
-						aiResponse = originalAIResponse
-					} else {
-						if extractedJSON != originalAIResponse {
-							log.Printf("[TaskID: %s] ExtractJsonContent modified the AI response.", payload.TaskID)
-						} else {
-							log.Printf("[TaskID: %s] ExtractJsonContent did not modify the AI response.", payload.TaskID)
-						}
-						aiResponse = extractedJSON // Use the potentially cleaned JSON moving forward
-					}
-					// <<< END MODIFIED >>>
-
-					// <<< ДОБАВЛЕНО: Валидация JSON структуры >>>
-					validationStartTime := time.Now()
-					validateErr := validateAIResponseJSON(payload.PromptType, []byte(aiResponse))
-					if validateErr != nil {
-						log.Printf("[TaskID: %s] ОШИБКА ВАЛИДАЦИИ JSON (PromptType: %s): %v. JSON: %s",
-							payload.TaskID, payload.PromptType, validateErr, aiResponse)
-						MetricsIncrementTaskFailed("json_validation_error")
-						processingErr = fmt.Errorf("ошибка валидации JSON ответа AI: %w", validateErr)
-						// Прерываем успешный путь и переходим к сохранению ошибки
-						log.Printf("[TaskID: %s] JSON Validation took: %v", payload.TaskID, time.Since(validationStartTime))
-						break // Выходим из цикла ретраев, так как ответ получен, но он невалиден
-					} else {
-						log.Printf("[TaskID: %s] JSON структура успешно валидирована для PromptType: %s. Validation took: %v",
-							payload.TaskID, payload.PromptType, time.Since(validationStartTime))
-					}
-					// <<< КОНЕЦ ВАЛИДАЦИИ >>>
-
-					// Log the response *after* potential extraction - REMOVED as redundant now
-					// log.Printf("[TaskID: %s] Final AI Response used (length: %d): %s", payload.TaskID, len(aiResponse), aiResponse)
-					break
+					break // success, skip JSON validation and exit retry loop
 				}
 
 				aiStatusLabel = "error"
@@ -528,168 +479,4 @@ func (h *TaskHandler) notify(ctx context.Context, payload messaging.GenerationTa
 		log.Printf("[TaskID: %s] Уведомление об ошибке отправлено (Error: '%s', GID: '%s').", payload.TaskID, errorDetails, notification.GameStateID)
 	}
 	return nil
-}
-
-// float64Ptr возвращает указатель на float64
-func float64Ptr(f float64) *float64 {
-	return &f
-}
-
-// <<< ДОБАВЛЕНО: Функция валидации JSON >>>
-// validateAIResponseJSON проверяет, соответствует ли JSON ответа AI ожидаемой структуре для данного PromptType.
-func validateAIResponseJSON(promptType sharedModels.PromptType, jsonData []byte) error {
-	if len(jsonData) == 0 {
-		return errors.New("JSON data is empty")
-	}
-
-	switch promptType {
-	case sharedModels.PromptTypeNarrator, sharedModels.PromptTypeNarratorReviser:
-		var v NarratorValidation
-		if err := json.Unmarshal(jsonData, &v); err != nil {
-			return fmt.Errorf("failed to unmarshal into NarratorValidation: %w", err)
-		}
-		// Дополнительные проверки, если нужны (например, что title не пустой)
-		if v.Title == nil {
-			return errors.New("missing required field 't' (title)")
-		}
-		if v.Description == nil {
-			return errors.New("missing required field 'sd' (short_description)")
-		}
-		// Можно добавить проверку на пустые строки, если требуется
-		// if *v.Title == "" {
-		// 	return errors.New("field 't' (title) cannot be empty")
-		// }
-		// if *v.Description == "" {
-		// 	return errors.New("field 'sd' (short_description) cannot be empty")
-		// }
-
-	case sharedModels.PromptTypeNovelSetup:
-		var v sharedModels.NovelSetupContent // Используем напрямую shared модель
-		if err := json.Unmarshal(jsonData, &v); err != nil {
-			return fmt.Errorf("failed to unmarshal into NovelSetupContent: %w", err)
-		}
-		// Проверяем обязательные поля NovelSetupContent
-		if v.CoreStatsDefinition == nil {
-			return errors.New("missing required field 'csd' (core_stats_definition)")
-		}
-		if len(v.CoreStatsDefinition) == 0 { // Или другое условие, если пустой объект допустим
-			return errors.New("field 'csd' cannot be empty")
-		}
-		if v.Characters == nil {
-			// Считаем пустой список персонажей допустимым, но не nil
-			return errors.New("missing required field 'chars' (characters)")
-		}
-		// if len(v.Characters) == 0 { // Раскомментировать, если пустой список недопустим
-		// 	return errors.New("field 'chars' cannot be empty")
-		// }
-		if v.StoryPreviewImagePrompt == "" {
-			// Допустим пустой промпт для превью? Если нет - раскомментировать.
-			// return errors.New("missing or empty required field 'spi' (story_preview_image_prompt)")
-		}
-
-	case sharedModels.PromptTypeNovelFirstSceneCreator:
-		var v SceneValidation // Используем общую структуру для сцен
-		if err := json.Unmarshal(jsonData, &v); err != nil {
-			return fmt.Errorf("failed to unmarshal into SceneValidation (FirstScene): %w", err)
-		}
-		// Проверяем обязательные поля для первой сцены
-		if v.StorySummarySoFar == nil {
-			return errors.New("missing required field 'sssf' (story_summary_so_far)")
-		}
-		if v.FutureDirection == nil {
-			return errors.New("missing required field 'fd' (future_direction)")
-		}
-		if v.Choices == nil {
-			return errors.New("missing required field 'ch' (choices)")
-		}
-		if len(v.Choices) == 0 {
-			return errors.New("field 'ch' (choices) cannot be empty for the first scene")
-		}
-
-	case sharedModels.PromptTypeNovelCreator:
-		var v SceneValidation // Используем общую структуру для сцен
-		if err := json.Unmarshal(jsonData, &v); err != nil {
-			return fmt.Errorf("failed to unmarshal into SceneValidation (Creator): %w", err)
-		}
-		// Проверяем обязательные поля для обычной сцены
-		if v.StorySummarySoFar == nil {
-			return errors.New("missing required field 'sssf' (story_summary_so_far)")
-		}
-		if v.FutureDirection == nil {
-			return errors.New("missing required field 'fd' (future_direction)")
-		}
-		// vis опционален, но 'ch' обязателен
-		if v.Choices == nil {
-			return errors.New("missing required field 'ch' (choices)")
-		}
-		if len(v.Choices) == 0 {
-			return errors.New("field 'ch' (choices) cannot be empty for a scene")
-		}
-
-	// case sharedModels.PromptTypeNovelContinueCreator: // <<< ЗАКОММЕНТИРОВАНО ИЗ-ЗА ОТСУТСТВИЯ КОНСТАНТЫ
-	// 	var v ContinueValidation
-	// 	if err := json.Unmarshal(jsonData, &v); err != nil {
-	// 		return errors.New("failed to unmarshal into ContinueValidation: %w", err)
-	// 	}
-	// 	// Проверяем обязательные поля для продолжения
-	// 	if v.StorySummarySoFar == nil {
-	// 		return errors.New("missing required field 'sssf'")
-	// 	}
-	// 	if v.FutureDirection == nil {
-	// 		return errors.New("missing required field 'fd'")
-	// 	}
-	// 	if v.NewPlayerDesc == nil {
-	// 		return errors.New("missing required field 'npd'")
-	// 	}
-	// 	if len(v.CoreStatsReset) == 0 || string(v.CoreStatsReset) == "null" || string(v.CoreStatsReset) == "{}" { // Проверяем, что не пустой/null/{}
-	// 		return errors.New("missing or empty required field 'csr'")
-	// 	}
-	// 	if v.EndingTextPrev == nil {
-	// 		return errors.New("missing required field 'etp'")
-	// 	}
-	// 	if v.Choices == nil {
-	// 		return errors.New("missing required field 'ch'")
-	// 	}
-	// 	if len(v.Choices) == 0 {
-	// 		return errors.New("field 'ch' cannot be empty for continuation")
-	// 	}
-
-	case sharedModels.PromptTypeNovelGameOverCreator:
-		var v GameOverValidation
-		if err := json.Unmarshal(jsonData, &v); err != nil {
-			// Попробуем распарсить как обычную сцену, если как GameOver не вышло
-			// (Иногда AI может вернуть полную структуру сцены вместо простого {"et": "..."})
-			var vScene SceneValidation
-			if errScene := json.Unmarshal(jsonData, &vScene); errScene != nil {
-				// Если и как сцена не парсится, возвращаем исходную ошибку GameOver
-				return fmt.Errorf("failed to unmarshal into GameOverValidation or SceneValidation: %w (primary: %v)", err, errScene)
-			}
-			// Если распарсилось как сцена, проверяем ее валидность для случая GameOver
-			if vScene.Choices == nil {
-				return errors.New("missing required field 'ch' (choices) when parsed as SceneValidation for GameOver")
-			}
-			if len(vScene.Choices) == 0 {
-				return errors.New("field 'ch' (choices) cannot be empty when parsed as SceneValidation for GameOver")
-			}
-			// Если структура сцены валидна, считаем это успехом валидации для GameOver
-			log.Printf("[validateAIResponseJSON] Parsed GameOver response as SceneValidation structure successfully.")
-
-		} else {
-			// Распарсилось как GameOverValidation, проверяем наличие хотя бы одного поля
-			if v.EndingText == nil && v.Choices == nil {
-				return errors.New("response for GameOver must contain either 'et' or 'ch' field")
-			}
-			// Если есть Choices, они не должны быть пустым массивом
-			if v.Choices != nil && len(v.Choices) == 0 {
-				return errors.New("field 'ch' cannot be an empty array for GameOver")
-			}
-		}
-
-	default:
-		log.Printf("[validateAIResponseJSON] No validation defined for PromptType: %s. Skipping validation.", promptType)
-		// Или вернуть ошибку, если валидация обязательна для всех типов
-		// return fmt.Errorf("no validation rule defined for PromptType %s", promptType)
-	}
-
-	return nil // Валидация прошла успешно
 }

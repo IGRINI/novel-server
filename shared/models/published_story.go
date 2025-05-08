@@ -15,14 +15,10 @@ const (
 	StatusDraft             StoryStatus = "draft"               // Черновик, доступен для редактирования
 	StatusSetupPending      StoryStatus = "setup_pending"       // Ожидает генерации Setup
 	StatusFirstScenePending StoryStatus = "first_scene_pending" // Setup готов, ожидает генерации 1й сцены
-	// StatusGeneratingScene   StoryStatus = "generating_scene"    // УДАЛЕНО: Статус генерации сцены для игрока
-	StatusInitialGeneration StoryStatus = "initial_generation" // Идет первоначальная генерация (Setup и/или 1я сцена)
-	StatusGenerating        StoryStatus = "generating"         // Идет генерация (для черновика StoryConfig)
-	StatusReady             StoryStatus = "ready"              // Готова к игре (Setup и 1я сцена сгенерированы успешно)
-	// StatusGameOverPending   StoryStatus = "game_over_pending"   // УДАЛЕНО: Статус ожидания концовки для игрока
-	StatusError StoryStatus = "error" // Ошибка при первоначальной генерации Setup или 1й сцены
-	// StatusCompleted         StoryStatus = "completed"           // УДАЛЕНО: Статус завершения игры для игрока
-	// StatusRevising          StoryStatus = "revising"            // (Возможно) Отдельный статус для ревизии, если нужно - пока убрал для ясности
+	StatusInitialGeneration StoryStatus = "initial_generation"  // Идет первоначальная генерация (Setup и/или 1я сцена)
+	StatusGenerating        StoryStatus = "generating"          // Идет генерация (для черновика StoryConfig)
+	StatusReady             StoryStatus = "ready"               // Готова к игре (Setup и 1я сцена сгенерированы успешно)
+	StatusError             StoryStatus = "error"               // Ошибка при первоначальной генерации Setup или 1й сцены
 )
 
 // PublishedStory представляет опубликованную историю в базе данных.
@@ -51,13 +47,13 @@ type PublishedStory struct {
 // CharacterDefinition represents a character described in the setup JSON.
 // Uses specific json tags for compact storage.
 type CharacterDefinition struct {
-	Name        string   `json:"n"`            // name
-	Description string   `json:"d"`            // description
-	VisualTags  []string `json:"vt,omitempty"` // visual_tags (English)
-	Personality string   `json:"p,omitempty"`  // personality (optional)
-	Prompt      string   `json:"pr,omitempty"` // prompt (English)
-	NegPrompt   string   `json:"np,omitempty"` // negative_prompt (English)
-	ImageRef    string   `json:"ir,omitempty"` // image_reference (the unique ID used for the image file/URL)
+	Name             string `json:"n"`              // name
+	Description      string `json:"d"`              // description
+	Personality      string `json:"p,omitempty"`    // personality (optional)
+	Prompt           string `json:"pr,omitempty"`   // prompt (English) - This is AI's image prompt for the character
+	ImageRef         string `json:"ir,omitempty"`   // image_reference (the unique ID used for the image file/URL)
+	Relationships    string `json:"rel,omitempty"`  // ADDED for novel_setup_test.md output
+	AttitudeToPlayer string `json:"attp,omitempty"` // ADDED for novel_setup_test.md output
 }
 
 // NovelSetupContent defines the expected structure of the JSON stored in PublishedStory.Setup.
@@ -66,7 +62,9 @@ type NovelSetupContent struct {
 	CoreStatsDefinition     map[string]StatDefinition `json:"csd"`             // core_stats_definition
 	Characters              []CharacterDefinition     `json:"chars,omitempty"` // characters (NEW)
 	StoryPreviewImagePrompt string                    `json:"spi,omitempty"`   // <<< ДОБАВЛЕНО
-	// TODO: Добавить другие поля из setup по мере необходимости (backgrounds и т.д.)
+	StorySummarySoFar       string                    `json:"sssf,omitempty"`  // ADDED for novel_setup_test.md output
+	FutureDirection         string                    `json:"fd,omitempty"`    // ADDED for novel_setup_test.md output
+
 }
 
 // GameOverConditions defines the game over conditions based on min/max values.
@@ -97,22 +95,35 @@ type PlayerPrefs struct {
 	Style                string   `json:"st,omitempty"`     // Style (Visual/narrative, English)
 }
 
+// CoreStatDefForConfig используется внутри models.Config для вывода Narrator
+type CoreStatDefForConfig struct {
+	Description        string                      `json:"d"`
+	InitialValue       int                         `json:"iv"`
+	GameOverConditions GameOverConditionsForConfig `json:"go"`
+}
+
+// GameOverConditionsForConfig используется внутри CoreStatDefForConfig
+type GameOverConditionsForConfig struct {
+	Min bool `json:"min"`
+	Max bool `json:"max"`
+}
+
 // Config defines the structure expected within PublishedStory.Config (JSONB).
 // Based on the AI prompt format (compressed keys where applicable).
 type Config struct {
-	Language         string      `json:"ln,omitempty"`     // Language code (e.g., "en", "ru")
-	Genre            string      `json:"gn,omitempty"`     // Genre
-	IsAdultContent   bool        `json:"ac,omitempty"`     // Adult content flag
-	Title            string      `json:"t,omitempty"`      // Title generated by AI
-	ShortDescription string      `json:"sd,omitempty"`     // Short description generated by AI
-	PlayerName       string      `json:"pn,omitempty"`     // Player Name
-	PlayerGender     string      `json:"pg,omitempty"`     // Player Gender
-	PlayerDesc       string      `json:"p_desc,omitempty"` // Player Description (main)
-	WorldContext     string      `json:"wc,omitempty"`     // World Context
-	StorySummary     string      `json:"ss,omitempty"`     // Story Summary
-	PlayerPrefs      PlayerPrefs `json:"pp,omitempty"`     // Player Preferences struct
-	// Поля sssf и fd не храним в конфиге, они генерируются на лету.
-	// Поле cs (core_stats) тоже не храним здесь, оно определяется в setup.
+	Language         string                          `json:"ln,omitempty"`     // Language code (e.g., "en", "ru")
+	Genre            string                          `json:"gn,omitempty"`     // Genre
+	IsAdultContent   bool                            `json:"ac,omitempty"`     // Adult content flag
+	Title            string                          `json:"t,omitempty"`      // Title generated by AI
+	ShortDescription string                          `json:"sd,omitempty"`     // Short description generated by AI
+	PlayerName       string                          `json:"pn,omitempty"`     // Player Name
+	PlayerGender     string                          `json:"pg,omitempty"`     // Player Gender
+	PlayerDesc       string                          `json:"p_desc,omitempty"` // Player Description (main)
+	WorldContext     string                          `json:"wc,omitempty"`     // World Context
+	StorySummary     string                          `json:"ss,omitempty"`     // Story Summary
+	PlayerPrefs      PlayerPrefs                     `json:"pp,omitempty"`     // Player Preferences struct
+	Franchise        string                          `json:"fr,omitempty"`     // ADDED for narrator_test.md output
+	CoreStats        map[string]CoreStatDefForConfig `json:"cs,omitempty"`     // <--- НОВОЕ ПОЛЕ
 }
 
 type PublishedStorySummary struct {

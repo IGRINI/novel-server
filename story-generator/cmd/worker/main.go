@@ -105,7 +105,7 @@ func main() {
 
 	// --- Инициализация AI клиента ---
 	sugar.Info("Инициализация AI клиента...")
-	aiClient, err := internalService.NewAIClient(configService)
+	aiClient, err := internalService.NewAIClient(configService, dynamicConfigRepo, dbPool)
 	if err != nil {
 		sugar.Fatalf("Ошибка инициализации AI клиента: %v", err)
 	}
