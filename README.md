@@ -6,20 +6,26 @@
 
 Проект использует микросервисную архитектуру, управляемую через Docker Compose. Включает следующие сервисы:
 
-*   **api-gateway (Traefik):** Единая точка входа для всех HTTP и WebSocket запросов. Маршрутизирует запросы к соответствующим внутренним сервисам.
-*   **auth:** Сервис аутентификации и авторизации пользователей (регистрация, вход, управление токенами).
-*   **story-generator:** Воркер, отвечающий за генерацию контента новеллы с помощью AI по запросам из очереди.
-*   **websocket-service:** Управляет WebSocket соединениями для отправки уведомлений пользователям в реальном времени (например, о завершении генерации).
-*   **postgres:** База данных PostgreSQL для хранения данных пользователей, результатов генерации и т.д.
-*   **redis:** Кэш Redis (используется сервисом `auth` для хранения сессий/отозванных токенов).
-*   **rabbitmq:** Брокер сообщений RabbitMQ для асинхронного взаимодействия между сервисами (постановка задач генерации, отправка уведомлений).
-*   **migrate:** Сервис для применения миграций базы данных.
+*   **api-gateway (Traefik):** Единая точка входа для всех HTTP и WebSocket запросов. Маршрутирует запросы к соответствующим внутренним сервисам. Осуществляет терминирование SSL.
+*   **auth:** Сервис аутентификации и авторизации пользователей (регистрация, вход, управление токенами, получение информации о пользователе).
+*   **gameplay-service:** Основной сервис, управляющий логикой создания черновиков, публикации историй, прохождения игры (сцены, выборы), лайками и списком историй. Взаимодействует с другими сервисами.
+*   **story-generator:** Воркер, отвечающий за генерацию контента новеллы (начальный конфиг, setup, сцены, концовки) с помощью AI по запросам из очереди RabbitMQ.
+*   **image-generator:** Воркер, отвечающий за генерацию изображений (обложки историй, портреты персонажей) по запросам из очереди RabbitMQ.
+*   **websocket-service:** Управляет WebSocket соединениями для отправки уведомлений пользователям в реальном времени о статусе генерации и других событиях. Получает события из RabbitMQ.
+*   **notification-service:** Отвечает за отправку Push-уведомлений пользователям через FCM/APNS. Получает события из RabbitMQ.
+*   **admin-service:** Веб-интерфейс и API для администрирования (управление пользователями, историями, просмотр логов и т.д.). (Может быть опциональным в зависимости от развертывания).
+*   **postgres:** База данных PostgreSQL для хранения данных пользователей, черновиков, опубликованных историй, прогресса игры, лайков, ссылок на изображения и т.д.
+*   **redis:** Кэш Redis (используется сервисом `auth` для хранения сессий/отозванных токенов и, возможно, другими сервисами для кэширования).
+*   **rabbitmq:** Брокер сообщений RabbitMQ для асинхронного взаимодействия между сервисами (постановка задач генерации контента/изображений, отправка событий для WebSocket и Push).
+*   **migrate:** Сервис для применения миграций базы данных при старте.
+*   **prometheus:** Сбор метрик сервисов.
+*   **grafana:** Визуализация метрик (дашборды).
 
 ## Запуск проекта
 
 1.  **Установите Docker и Docker Compose.**
 2.  **Создайте файл `.env`** в корне проекта на основе примера `.env.example` (если он есть) или скопируйте существующий `.env`.
-    *   **Важно:** Убедитесь, что установлены `JWT_SECRET`, `PASSWORD_SALT`, `DB_PASSWORD`, `AI_API_KEY` и другие необходимые секреты.
+    *   **Важно:** Убедитесь, что установлены `JWT_SECRET`, `PASSWORD_SALT`, `DB_PASSWORD`, `AI_API_KEY` и другие необходимые секреты. Обратите внимание на конфигурацию AI провайдера (`AI_CLIENT_TYPE`, `AI_BASE_URL`, `AI_MODEL`).
 3.  **Запустите все сервисы:**
     ```bash
     docker-compose up --build -d
@@ -28,23 +34,23 @@
     *   Флаг `-d` запускает контейнеры в фоновом режиме.
 
 4.  **Остановка сервисов:**
-```bash
+    ```bash
     docker-compose down
     ```
 
 ## Доступ к API
 
-Все запросы к бэкенду должны отправляться через API Gateway (Traefik). Убедитесь, что порт Traefik (по умолчанию 8080, но может быть изменен в `docker-compose.yml` в секции `ports` для `api-gateway`) доступен.
+Все запросы к бэкенду должны отправляться через API Gateway (Traefik). Убедитесь, что порт Traefik (по умолчанию 8080 для HTTP и 443 для HTTPS, если настроен) доступен.
 
-*   **Базовый URL API (HTTP):** `http://<ваш_хост>:<порт_traefik_web>`
-*   **WebSocket URL:** `ws://<ваш_хост>:<порт_traefik_web>/ws`
-*   **Traefik Dashboard:** `http://<ваш_хост>:<порт_traefik_dashboard>` (по умолчанию порт 8888)
+*   **Базовый URL API (HTTPS):** `https://crion.space` (пример, используйте ваш домен/IP)
+*   **WebSocket URL:** `wss://crion.space/ws` (пример, используйте ваш домен/IP)
+*   **Traefik Dashboard:** `http://<ваш_хост>:<порт_traefik_dashboard>` (по умолчанию порт 8888, доступен локально или через VPN)
 
 ### Генерация и доступ к изображениям
 
-Сгенерированные изображения (превью историй и портреты персонажей) сохраняются локально и доступны через API Gateway по следующему базовому URL:
+Сгенерированные изображения (превью историй и портреты персонажей) сохраняются локально в volume, который пробрасывается в контейнер `api-gateway`. Доступ к ним осуществляется через API Gateway.
 
-*   **Базовый URL изображений:** `https://crion.space/generated-images`
+*   **Базовый URL изображений:** `https://crion.space/generated-images` (пример, используйте ваш домен/IP)
 
 Конкретные URL формируются и используются следующим образом:
 
@@ -52,13 +58,13 @@
     *   Формат URL: `[Базовый URL изображений]/history_preview_{publishedStoryID}.jpg`
     *   Пример: `https://crion.space/generated-images/history_preview_a1b2c3d4-e5f6-7890-1234-567890abcdef.jpg`
     *   Где `{publishedStoryID}` - это UUID опубликованной истории.
+    *   URL возвращается в API ответах, где это применимо (например, в списках историй).
 
 *   **Изображение персонажа:**
-    *   **Получение URL:** Бэкенд **не** возвращает готовые URL изображений персонажей. Клиент должен:
-        1.  Получить поле `imageReference` из данных Setup истории (например, через `GET /api/published-stories/:story_id` в поле `characters[].imageReference`).
+    *   **Получение URL:** Бэкенд **не** возвращает готовые URL изображений персонажей в списках или деталях истории. Клиент должен:
+        1.  Получить поле `imageReference` из данных **Setup** истории (например, через `GET /api/v1/published-stories/:story_id` в поле `characters[].imageReference`). Это поле содержит уникальный идентификатор изображения персонажа (например, `ch_male_adult_wizard_...`).
         2.  Самостоятельно сконструировать полный URL, используя базовый URL изображений и полученный `imageReference`.
     *   Формат URL: `[Базовый URL изображений]/{imageReference}.jpg`
-    *   Где `{imageReference}` - это уникальный идентификатор (например, `ch_male_adult_wizard_...`).
     *   Пример: `https://crion.space/generated-images/ch_male_adult_wizard_abc123.jpg`
 
 ### Аутентификация
@@ -69,7 +75,7 @@
 
 ### Основные эндпоинты
 
-Ниже описаны основные эндпоинты, доступные для взаимодействия с пользователем и между сервисами. Маршрутизация осуществляется через API Gateway (Traefik).
+Ниже описаны основные эндпоинты, доступные для взаимодействия с пользователем и между сервисами. Маршрутизация осуществляется через API Gateway (Traefik). Все ключи в JSON запросах и ответах используют **snake_case**.
 
 ---
 
@@ -132,7 +138,7 @@
 *   **`POST /auth/refresh`**
     *   Описание: Обновление пары access/refresh токенов.
     *   Аутентификация: **Не требуется.**
-    *   **Rate Limit:** (Общий лимит API Gameplay Service, если проксируется через него, или без лимита, если идет напрямую в Auth)
+    *   **Rate Limit:** (Общий лимит API Gameplay Service)
     *   Тело запроса (`application/json`):
         ```json
         {
@@ -283,7 +289,7 @@
 ##### Черновики историй (`/api/v1/stories`)
 
 *   **`POST /api/v1/stories/generate`**
-    *   Описание: Запуск генерации **нового** черновика истории на основе промпта.
+    *   Описание: Запуск генерации **нового** черновика истории на основе промпта. Возвращает ID черновика. Генерация происходит асинхронно. Клиент должен слушать WebSocket для получения результата.
     *   Аутентификация: **Требуется.**
     *   **Rate Limit:** User-лимит (20/мин).
     *   Тело запроса (`application/json`):
@@ -297,7 +303,15 @@
         ```json
         {
           "id": "uuid-string", // (обязательно, string, UUID) ID созданного черновика
-          "status": "generating" // (обязательно, string)
+          "user_id": "uuid-string", // UUID пользователя
+          "title": "", // Изначально пустые
+          "description": "",
+          "user_input": ["..."], // JSON массив с начальным prompt
+          "config": null, // null до завершения генерации
+          "status": "generating", // (обязательно, string)
+          "language": "string",
+          "created_at": "timestamp",
+          "updated_at": "timestamp"
         }
         ```
     *   Ответ при ошибке:
@@ -320,7 +334,7 @@
               "id": "uuid-string", // (обязательно, string, UUID)
               "title": "string", // (обязательно, string, может быть пустым "")
               "description": "string", // (обязательно, string, может быть user_input)
-              "created_at": "timestamp", // (обязательно, string, timestamp)
+              "created_at": "timestamp-string", // (обязательно, string, timestamp)
               "status": "generating | draft | error" // (обязательно, string)
             }
             /* ... */
@@ -334,45 +348,41 @@
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 *   **`GET /api/v1/stories/:id`**
-    *   Описание: Получение детальной информации о **своем** черновике по его UUID. Возвращает либо базовую информацию (если генерация не завершена/ошибка), либо распарсенный конфиг.
+    *   Описание: Получение детальной информации о **своем** черновике по его UUID. Возвращает распарсенный конфиг, если он готов (`status: "draft"`).
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:id` (обязательно, string, UUID) - UUID черновика (`StoryConfig`).
-    *   Ответ при успехе (`200 OK`):
-        *   **Статус `generating` или `error`:** `StoryConfigDetail`
-            ```json
-            {
-              "id": "uuid-string", // (обязательно, string, UUID)
-              "created_at": "timestamp", // (обязательно, string, timestamp)
-              "status": "generating | error", // (обязательно, string)
-              "config": null // (обязательно, null) Поле config будет null
-            }
-            ```
-        *   **Статус `draft`:** `StoryConfigParsedDetail` (распарсенные поля из `config`)
-            ```json
-            {
-              "title": "string", // (обязательно, string)
-              "short_description": "string", // (обязательно, string)
-              "franchise": "string | null", // (опционально, string или null, зависит от генерации)
-              "genre": "string", // (обязательно, string)
-              "language": "string", // (обязательно, string)
-              "is_adult_content": false, // (обязательно, boolean)
-              "player_name": "string", // (обязательно, string)
-              "player_description": "string", // (обязательно, string)
-              "world_context": "string", // (обязательно, string)
-              "story_summary": "string", // (обязательно, string)
-              "core_stats": { // (обязательно, object) Словарь статов
-                "stat_key_1": { // (обязательно, object)
-                  "description": "string", // (обязательно, string)
-                  "initial_value": 10, // (обязательно, integer)
-                  "game_over_conditions": { // (обязательно, object)
-                    "min": false, // (обязательно, boolean) true, если Game Over при мин. значении
-                    "max": false  // (обязательно, boolean) true, если Game Over при макс. значении
-                  }
-                },
-                "stat_key_2": { ... } // (обязательно, object)
-              }
-            }
-            ```
+    *   Ответ при успехе (`200 OK`): Объект `StoryConfigParsedDetail`.
+        ```json
+        {
+          "title": "string", // (обязательно, string)
+          "short_description": "string", // (обязательно, string)
+          "franchise": "string | null", // (опционально, string или null, зависит от генерации)
+          "genre": "string", // (обязательно, string)
+          "language": "string", // (обязательно, string)
+          "is_adult_content": false, // (обязательно, boolean)
+          "player_name": "string", // (обязательно, string) Protagonist Name
+          "player_description": "string", // (обязательно, string) Protagonist Description
+          "world_context": "string", // (обязательно, string)
+          "story_summary": "string", // (обязательно, string)
+          "core_stats": { // (обязательно, object) Словарь статов: имя -> описание
+            "stat_key_1": { // (обязательно, object)
+              "description": "string" // (обязательно, string) Описание из вывода Narrator
+              // InitialValue и GameOverConditions здесь отсутствуют, т.к. это черновик
+            },
+            "stat_key_2": { ... }
+          },
+          "player_preferences": { // (обязательно, object) Protagonist Preferences
+            "th": ["string"], // (опционально, array) Themes
+            "st": "string",   // (опционально, string) Style
+            "wl": ["string"], // (опционально, array) World Lore
+            "dt": "string",   // (опционально, string) Protagonist Details
+            "dl": "string",   // (опционально, string) Desired Locations (comma-separated)
+            "dc": "string"    // (опционально, string) Desired Characters (comma-separated)
+          },
+          "status": "draft | generating | error" // (обязательно, string) Текущий статус черновика
+        }
+        ```
+        *   **Примечание:** Если `status` черновика не `draft` (например, `generating` или `error`), поля, зависящие от сгенерированного `config` (такие как `title`, `core_stats`, `player_preferences` и т.д.) могут отсутствовать или быть `null`/пустыми. Клиент должен проверять статус.
     *   Ответ при ошибке:
         *   `400 Bad Request`: Невалидный UUID.
         *   `401 Unauthorized`: Невалидный токен.
@@ -381,8 +391,9 @@
         *   `500 Internal Server Error`: Ошибка парсинга JSON конфига или другая внутренняя ошибка.
 
 *   **`POST /api/v1/stories/:id/revise`**
-    *   Описание: Запуск задачи на **перегенерацию** существующего черновика на основе новой инструкции.
+    *   Описание: Запуск задачи на **перегенерацию** существующего черновика на основе новой инструкции. Черновик должен быть в статусе `draft` или `error`.
     *   Аутентификация: **Требуется.**
+    *   **Rate Limit:** User-лимит (20/мин).
     *   Параметр пути: `:id` (обязательно, string, UUID) - UUID черновика (`StoryConfig`).
     *   Тело запроса (`application/json`):
         ```json
@@ -390,21 +401,22 @@
           "revision_prompt": "Текст инструкции для изменения..." // (обязательно, string)
         }
         ```
-    *   Ответ при успехе (`202 Accepted`): **Пустое тело.** Статус черновика изменится на `generating`.
+    *   Ответ при успехе (`202 Accepted`): **Пустое тело.** Статус черновика асинхронно изменится на `generating`.
     *   Ответ при ошибке:
         *   `400 Bad Request`: Невалидный UUID или тело запроса (отсутствует `revision_prompt`).
         *   `401 Unauthorized`: Невалидный токен.
         *   `403 Forbidden`: Попытка доступа к чужому черновику.
         *   `404 Not Found`: Черновик не найден.
-        *   `409 Conflict` (`{"message": "Story config is not in draft state" | "User already has an active generation task"}`): Черновик не готов к ревизии или у пользователя уже есть задача.
+        *   `409 Conflict` (`{"message": "Story config is not in a state that allows revision" | "User already has an active generation task"}`): Черновик не готов к ревизии или у пользователя уже есть задача.
         *   `500 Internal Server Error`: Ошибка при обновлении БД или постановке задачи.
 
 *   **`POST /api/v1/stories/:id/publish`**
-    *   Описание: Публикация готового черновика. Создает запись `PublishedStory` и первую сцену на основе конфига.
+    *   Описание: Публикация готового черновика (`status: "draft"`). Создает запись `PublishedStory` и запускает асинхронную генерацию `NovelSetup` и первой сцены.
     *   Аутентификация: **Требуется.**
+    *   **Rate Limit:** User-лимит (20/мин).
     *   Параметр пути: `:id` (обязательно, string, UUID) - UUID черновика (`StoryConfig`).
     *   Тело запроса: Нет.
-    *   Ответ при успехе (`201 Created`):
+    *   Ответ при успехе (`202 Accepted`): Возвращает ID созданной опубликованной истории. Статус опубликованной истории будет `setup_pending` или `initial_generation`.
         ```json
         {
           "published_story_id": "uuid-string" // (обязательно, string, UUID)
@@ -421,6 +433,7 @@
 *   **`POST /api/v1/stories/drafts/:draft_id/retry`**
     *   Описание: Повторный запуск задачи генерации для черновика, который завершился с ошибкой (`status: "error"`).
     *   Аутентификация: **Требуется.**
+    *   **Rate Limit:** User-лимит (20/мин).
     *   Параметр пути: `:draft_id` (обязательно, string, UUID) - UUID черновика (`StoryConfig`).
     *   Тело запроса: Нет.
     *   Ответ при успехе (`202 Accepted`): **Пустое тело.** Статус черновика асинхронно изменится на `generating`.
@@ -453,7 +466,8 @@
     *   Query параметры:
         *   `limit` (опционально, int, default=10, max=100).
         *   `cursor` (опционально, string).
-    *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`. Структура ответа **аналогична** `GET /api/v1/published-stories/me`, но содержит только истории, где у пользователя есть сохранения.
+        *   `filter_adult` (опционально, boolean, default=false): Если true, исключает истории с контентом 18+.
+    *   Ответ при успехе (`200 OK`): Пагинированный список `PublishedStorySummaryWithProgress`.
         ```json
         {
           "data": [ // (обязательно, array)
@@ -466,11 +480,11 @@
               "published_at": "timestamp-string", // (обязательно, string, timestamp)
               "is_adult_content": false, // (обязательно, boolean)
               "likes_count": 123, // (обязательно, integer >= 0)
-              "is_liked": true, // (обязательно, boolean)
-              "has_player_progress": true, // (обязательно, boolean) Всегда true для этого эндпоинта
-              "status": "ready | error | ...", // (обязательно, string)
+              "is_liked": true, // (обязательно, boolean) Лайкнул ли *текущий* пользователь
+              "has_player_progress": true, // (обязательно, boolean) Есть ли у *текущего* пользователя сохранения
+              "status": "ready | error | setup_pending | ...", // (обязательно, string) Статус истории
               "is_public": true, // (обязательно, boolean)
-              "cover_image_url": "https://... | null", // (опционально, string URL или null, поле может отсутствовать)
+              "cover_image_url": "https://.../history_preview_...jpg | null", // (опционально, string URL или null)
               "player_game_status": "playing | completed | error | null", // (опционально, string или null) Статус последнего не-error сохранения игрока
               "player_game_state_id": "uuid-string | null" // (опционально, string UUID или null) ID сохранения игрока
             }
@@ -490,30 +504,12 @@
     *   Query параметры:
         *   `limit` (опционально, int, default=10, max=100).
         *   `cursor` (опционально, string).
-    *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`. Структура ответа **аналогична** `GET /api/v1/published-stories/me`.
+        *   `filter_adult` (опционально, boolean, default=false): Если true, исключает истории с контентом 18+.
+    *   Ответ при успехе (`200 OK`): Пагинированный список `PublishedStorySummaryWithProgress`. Структура ответа **аналогична** `GET /api/v1/published-stories/me`.
         ```json
         {
-          "data": [ // (обязательно, array) Массив может быть пустым []
-            {
-              "id": "uuid-string", // (обязательно, string, UUID)
-              "title": "string", // (обязательно, string)
-              "short_description": "string | null", // (опционально, string или null)
-              "author_id": "uuid-string", // (обязательно, string, UUID)
-              "author_name": "string", // (обязательно, string)
-              "published_at": "timestamp-string", // (обязательно, string, timestamp)
-              "is_adult_content": false, // (обязательно, boolean)
-              "likes_count": 123, // (обязательно, integer >= 0)
-              "is_liked": false, // (обязательно, boolean) Лайкнул ли *текущий* пользователь
-              "has_player_progress": true, // (обязательно, boolean) Есть ли у *текущего* пользователя сохранения
-              "status": "ready | error | ...", // (обязательно, string)
-              "is_public": true, // (обязательно, boolean) Всегда true для этого эндпоинта
-              "cover_image_url": "https://.../history_preview_...jpg | null", // (опционально, string URL или null) Поле может отсутствовать, если null (`omitempty`)
-              "player_game_status": "playing | completed | error | null", // (опционально, string или null) Статус последнего не-error сохранения игрока
-              "player_game_state_id": "uuid-string | null" // (опционально, string UUID или null) ID сохранения игрока
-            }
-            /* ... */
-          ],
-          "next_cursor": "string | null" // (обязательно, string или null)
+          "data": [ /* ... */ ],
+          "next_cursor": "string | null"
         }
         ```
     *   Ответ при ошибке:
@@ -542,37 +538,43 @@
           "short_description": "Исследуйте тайны старого поместья...", // (обязательно, string)
           "genre": "детектив", // (обязательно, string)
           "language": "ru", // (обязательно, string)
-          "player_name": "Сыщик", // (обязательно, string) Имя ГГ по умолчанию
-          "core_stats": { // (обязательно, object) Статы по умолчанию
+          "protagonist_name": "Сыщик", // (обязательно, string) Имя ГГ (Protagonist Name)
+          "protagonist_description": "Описание ГГ", // (обязательно, string)
+          "world_context": "Контекст мира", // (обязательно, string)
+          "story_summary": "Общее саммари", // (обязательно, string)
+          "core_stats": { // (обязательно, object) Статы с деталями из NovelSetup
             "sanity": { // (обязательно, object)
-                "description": "Рассудок", // (обязательно, string)
+                "description": "Рассудок (детальное описание из setup)", // (обязательно, string)
                 "initial_value": 10, // (обязательно, integer)
                 "game_over_min": true, // (обязательно, boolean)
                 "game_over_max": false, // (обязательно, boolean)
-                "icon": "brain" // (опционально, string, может отсутствовать)
+                "icon": "brain" // (опционально, string)
             },
-            "clues": { ... } // (обязательно, object)
+            "clues": { /* ... */ }
           },
-          "characters": [ // (обязательно, array) Массив персонажей, может быть пустым []
+          "characters": [ // (обязательно, array) Массив персонажей из NovelSetup, может быть пустым []
             {
               "name": "Дворецкий", // (обязательно, string)
               "description": "Верный слуга... или нет?", // (обязательно, string)
               "personality": "Загадочный", // (опционально, string)
-              "image_reference": "ch_butler_ref_123 | null" // (опционально, string или null/отсутствует)
+              "image_reference": "ch_butler_ref_123" // (опционально, string) Идентификатор для построения URL клиентом
             }
+            /* ... */
           ],
-          "cover_image_url": "https://.../history_preview_...jpg | null", // (опционально, string URL или null) Поле может отсутствовать, если null (`omitempty`)
+          "cover_image_url": "https://.../history_preview_...jpg | null", // (опционально, string URL или null)
           "game_states": [ // (обязательно, array) Массив сохранений *текущего* пользователя, может быть пустым []
             {
               "id": "game-state-uuid-1", // (обязательно, string, UUID) ID сохранения
-              "last_activity_at": "2024-04-20T10:30:00Z", // (обязательно, string, timestamp)
+              "last_activity_at": "timestamp-string", // (обязательно, string, timestamp)
               "scene_index": 5, // (обязательно, integer) Индекс последней *завершенной* сцены
-              "current_scene_summary": "Вы стоите перед туманными воротами..." // (обязательно, string) Краткое описание текущей сцены (может быть пустым?)
+              "current_scene_summary": "Краткое описание сцены 10...", // (обязательно, string)
+              "player_status": "playing | completed | error" // (обязательно, string) Статус этого сохранения
             }
             /* ... */
           ]
         }
         ```
+        *   **Примечание:** Поля `core_stats` и `characters` будут доступны только если статус истории `ready` или `error` (т.е. генерация `NovelSetup` завершена, успешно или нет). Если статус `setup_pending` или подобный, эти поля могут быть `null` или пустыми. Клиент должен проверять статус истории.
     *   Ответ при ошибке:
         *   `400 Bad Request`: Невалидный UUID.
         *   `401 Unauthorized`: Невалидный токен.
@@ -589,9 +591,10 @@
         [ // (обязательно, array) Массив может быть пустым []
           {
             "id": "game-state-uuid-1", // (обязательно, string, UUID)
-            "last_activity_at": "2024-04-20T10:30:00Z", // (обязательно, string, timestamp)
+            "last_activity_at": "timestamp-string", // (обязательно, string, timestamp)
             "scene_index": 5, // (обязательно, integer)
-            "current_scene_summary": "Краткое описание сцены 10..." // (обязательно, string)
+            "current_scene_summary": "Краткое описание сцены 10...", // (обязательно, string)
+            "player_status": "playing | completed | error" // (обязательно, string)
           }
           /* ... */
         ]
@@ -630,7 +633,7 @@
                   "text": "Текст опции 1", // (обязательно, string)
                   "consequences": { // (опционально, object, может быть null/отсутствовать)
                     "response_text": "Текст-реакция на выбор | null", // (опционально, string или null/отсутствует)
-                    "stat_changes": { "Wealth": -15, "Army": 5 } // (опционально, object, может быть null/отсутствовать) Ключи - ID статов, значения - изменения
+                    "stat_changes": { "sanity": -15, "clues": 5 } // (опционально, object, может быть null/отсутствовать) Ключи - ID статов, значения - изменения
                   }
                 },
                 {
@@ -663,6 +666,7 @@
 *   **`POST /api/v1/published-stories/:story_id/gamestates/:game_state_id/choice`**
     *   Описание: Отправка выбора игрока для текущей сцены в **конкретном состоянии игры**. Запускает асинхронную генерацию следующей сцены/концовки.
     *   Аутентификация: **Требуется.**
+    *   **Rate Limit:** User-лимит (20/мин).
     *   Параметры пути:
         *   `:story_id` (обязательно, string, UUID) - UUID опубликованной истории.
         *   `:game_state_id` (обязательно, string, UUID) - UUID состояния игры.
@@ -674,7 +678,7 @@
           "selected_option_indices": [ 0, 1 ]
         }
         ```
-    *   Ответ при успехе (`200 OK`): **Пустое тело.**
+    *   Ответ при успехе (`200 OK`): **Пустое тело.** Статус `PlayerGameState` изменится на `generating_scene` или `game_over_pending`. Клиент должен ждать WebSocket уведомления.
     *   Ответ при ошибке:
         *   `400 Bad Request`: Невалидный UUID `game_state_id`, невалидное тело запроса (неверное кол-во индексов, индексы вне диапазона).
         *   `401 Unauthorized`: Невалидный токен.
@@ -734,14 +738,16 @@
         *   `500 Internal Server Error`: Внутренняя ошибка сервера при удалении.
 
 *   **`POST /api/v1/published-stories/:story_id/retry`**
-    *   Описание: Повторный запуск **начальных** шагов генерации для опубликованной истории с ошибкой (`status: "error"` или похожий) или отсутствующими компонентами.
+    *   Описание: Повторный запуск **начальных** шагов генерации для опубликованной истории с ошибкой (`status: "error"` или похожий) или отсутствующими компонентами (setup, первая сцена).
     *   Аутентификация: **Требуется.**
+    *   **Rate Limit:** User-лимит (20/мин).
     *   Параметр пути: `:story_id` (обязательно, string, UUID) - UUID опубликованной истории.
     *   Тело запроса: Нет.
-    *   Ответ при успехе (`202 Accepted`): **Пустое тело.** Статус истории асинхронно изменится.
+    *   Ответ при успехе (`202 Accepted`): **Пустое тело.** Статус истории асинхронно изменится на соответствующий (например, `setup_pending` или `first_scene_pending`).
     *   Ответ при ошибке:
         *   `400 Bad Request`: Невалидный UUID.
         *   `401 Unauthorized`: Невалидный токен.
+        *   `403 Forbidden`: Попытка ретрая чужой истории (если проверка добавлена).
         *   `404 Not Found`: История не найдена.
         *   `409 Conflict` (`{"message": "..."}`): История не в статусе, допускающем ретрай.
         *   `500 Internal Server Error`: Ошибка при обновлении статуса или постановке задачи.
@@ -749,6 +755,7 @@
 *   **`POST /api/v1/published-stories/:story_id/gamestates/:game_state_id/retry`**
     *   Описание: Повторный запуск генерации **конкретной** сцены для состояния игры с ошибкой (`playerStatus: "error"`).
     *   Аутентификация: **Требуется.**
+    *   **Rate Limit:** User-лимит (20/мин).
     *   Параметры пути:
         *   `:story_id` (обязательно, string, UUID) - UUID опубликованной истории.
         *   `:game_state_id` (обязательно, string, UUID) - UUID состояния игры.
@@ -763,7 +770,7 @@
         *   `500 Internal Server Error`: Ошибка при обновлении статуса или постановке задачи.
 
 *   **`PATCH /api/v1/published-stories/:story_id/visibility`**
-    *   Описание: Изменение видимости **своей** опубликованной истории.
+    *   Описание: Изменение видимости **своей** опубликованной истории. История должна быть в статусе `ready`. Истории с контентом 18+ не могут быть сделаны публичными.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:story_id` (обязательно, string, UUID) - UUID опубликованной истории.
     *   Тело запроса (`application/json`):
@@ -778,11 +785,11 @@
         *   `401 Unauthorized`: Невалидный токен.
         *   `403 Forbidden`: Попытка изменить видимость чужой истории.
         *   `404 Not Found`: История не найдена.
-        *   `409 Conflict` (`{"message": "..."}`): История не готова к публикации или контент 18+ не может быть сделан публичным.
+        *   `409 Conflict` (`{"message": "Story is not ready yet" | "Cannot make adult content public"}`): История не готова к публикации или контент 18+.
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 *   **`POST /api/v1/published-stories/:story_id/gamestates`**
-    *   Описание: Создание нового состояния игры (сохранения) для **текущего пользователя** в указанной опубликованной истории (при нажатии "Начать игру"). Может быть создан только один слот сохранения на пользователя на историю.
+    *   Описание: Создание нового состояния игры (сохранения) для **текущего пользователя** в указанной опубликованной истории (при нажатии "Начать игру"). Может быть создан только один слот сохранения на пользователя на историю. История должна быть в статусе `ready`.
     *   Аутентификация: **Требуется.**
     *   Параметр пути: `:story_id` (обязательно, string, UUID) - UUID опубликованной истории.
     *   Тело запроса: Нет.
@@ -793,19 +800,20 @@
           "player_id": "uuid-string", // (обязательно, string, UUID) ID пользователя
           "published_story_id": "uuid-string", // (обязательно, string, UUID) ID истории
           "player_progress_id": "uuid-string", // (обязательно, string, UUID) ID связанного узла прогресса
-          "current_scene_id": "uuid-string | null", // (опционально, string UUID или null) ID текущей сцены (null если еще не сгенерирована)
-          "player_status": "generating_scene | playing", // (обязательно, string) Статус сохранения
+          "current_scene_id": "uuid-string | null", // (опционально, string UUID или null) ID текущей сцены (первой сцены истории)
+          "player_status": "playing", // (обязательно, string) Статус сохранения
           "started_at": "timestamp-string", // (обязательно, string, timestamp)
           "last_activity_at": "timestamp-string", // (обязательно, string, timestamp)
-          "error_details": "string | null", // (опционально, string или null) Описание ошибки, если status = error
-          "completed_at": "timestamp-string | null" // (опционально, string timestamp или null) Время завершения игры
+          "error_details": null, // (опционально, string или null)
+          "completed_at": null, // (опционально, string timestamp или null)
+          "ending_text": null // (опционально, string или null)
         }
         ```
     *   Ответ при ошибке:
         *   `400 Bad Request`: Невалидный UUID `story_id`.
         *   `401 Unauthorized`: Невалидный токен.
         *   `404 Not Found`: Опубликованная история не найдена.
-        *   `409 Conflict` (`{"code": "SAVE_SLOT_EXISTS", ...}` | `{"code": "STORY_NOT_READY", ...}`): Слот сохранения уже существует для этого пользователя/истории, или история еще не готова к игре.
+        *   `409 Conflict` (`{"code": "SAVE_SLOT_EXISTS", ...}` | `{"code": "STORY_NOT_READY", ...}`): Слот сохранения уже существует для этого пользователя/истории, или история еще не готова к игре (статус не `ready`).
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 *   **`GET /api/v1/published-stories/me/progress`**
@@ -815,29 +823,10 @@
         *   `limit` (опционально, int, default=10, max=100).
         *   `cursor` (опционально, string).
         *   `filter_adult` (опционально, boolean, default=false): Если true, исключает истории с контентом 18+.
-    *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`. Структура ответа **аналогична** `GET /api/v1/published-stories/me`, но содержит только истории, где у пользователя есть сохранения.
+    *   Ответ при успехе (`200 OK`): Пагинированный список `PublishedStorySummaryWithProgress`. Структура ответа **аналогична** `GET /api/v1/published-stories/me`.
         ```json
         {
-          "data": [
-            {
-              "id": "uuid-string",
-              "title": "string",
-              "short_description": "string | null",
-              "author_id": "uuid-string",
-              "author_name": "string",
-              "published_at": "timestamp-string",
-              "is_adult_content": false,
-              "likes_count": 123,
-              "is_liked": true,
-              "has_player_progress": true, // Всегда true для этого эндпоинта
-              "status": "ready | error | ...",
-              "is_public": true,
-              "cover_image_url": "https://... | null",
-              "player_game_status": "playing | completed | error | null", // (опционально, string или null) Статус последнего не-error сохранения игрока
-              "player_game_state_id": "uuid-string | null" // (опционально, string UUID или null) ID сохранения игрока
-            }
-            /* ... */
-          ],
+          "data": [ /* ... */ ],
           "next_cursor": "string | null"
         }
         ```
@@ -852,29 +841,10 @@
     *   Query параметры:
         *   `limit` (опционально, int, default=10, max=100).
         *   `cursor` (опционально, string).
-    *   Ответ при успехе (`200 OK`): Пагинированный список `sharedModels.PublishedStorySummaryWithProgress`. Структура ответа **аналогична** `GET /api/v1/published-stories/me`.
+    *   Ответ при успехе (`200 OK`): Пагинированный список `PublishedStorySummaryWithProgress`. Структура ответа **аналогична** `GET /api/v1/published-stories/me`.
         ```json
         {
-          "data": [
-            {
-              "id": "uuid-string",
-              "title": "string",
-              "short_description": "string | null",
-              "author_id": "uuid-string",
-              "author_name": "string",
-              "published_at": "timestamp-string",
-              "is_adult_content": false,
-              "likes_count": 123,
-              "is_liked": true, // Всегда true для этого эндпоинта
-              "has_player_progress": true,
-              "status": "ready | error | ...",
-              "is_public": true,
-              "cover_image_url": "https://... | null",
-              "player_game_status": "playing | completed | error | null", // (опционально, string или null) Статус последнего не-error сохранения игрока
-              "player_game_state_id": "uuid-string | null" // (опционально, string UUID или null) ID сохранения игрока
-            }
-            /* ... */
-          ],
+          "data": [ /* ... */ ],
           "next_cursor": "string | null"
         }
         ```
@@ -891,9 +861,9 @@
 
 Предоставляет WebSocket соединение для получения уведомлений в реальном времени.
 
-*   **URL:** `ws://<ваш_хост>:<порт_traefik_web>/ws?token=<ваш_access_token>`
+*   **URL:** `wss://crion.space/ws?token=<ваш_access_token>` (пример, используйте ваш настроенный URL)
 *   **Аутентификация:** Через query-параметр `token`.
-*   **Сообщения от сервера:** Сервер отправляет JSON-сообщения в плоской структуре. Основное поле `update_type` определяет тип события.
+*   **Сообщения от сервера:** Сервер отправляет JSON-сообщения. Основное поле `update_type` определяет тип события. Все ключи в JSON - **snake_case**.
     *   **Обновление Черновика (`draft`):**
         *   Описание: Отправляется после завершения генерации или ревизии черновика (успешно или с ошибкой).
         *   Структура (`sharedModels.ClientStoryUpdate`):
@@ -906,8 +876,8 @@
           "error_details": "Сообщение об ошибке | null" // Опционально, только при status = error
         }
         ```
-    *   **Общее обновление Истории (`story`):**
-        *   Описание: Отправляется при изменении статуса опубликованной истории (PublishedStory), например, после генерации Setup, сцены, концовки, изображений, или при возникновении ошибки.
+    *   **Общее обновление Опубликованной Истории (`story`):**
+        *   Описание: Отправляется при изменении статуса PublishedStory (например, после генерации Setup, изображений, или при ошибке).
         *   Структура (`sharedModels.ClientStoryUpdate`):
         ```json
         {
@@ -917,25 +887,27 @@
           "status": "string", // Новый статус PublishedStory (ready, error, setup_pending, first_scene_pending, images_pending, etc.)
           // --- Опциональные поля (зависят от причины обновления) ---
           "error_details": "Сообщение об ошибке | null",
-          "story_title": "Заголовок Истории | null",
-          "scene_id": "uuid-string | null", // ID последней сгенерированной сцены/концовки
-          "state_hash": "string | null", // Хэш состояния, связанный со сценой
-          "ending_text": "Текст концовки | null", // Если игра завершена
+          "story_title": "Заголовок Истории | null", // Может отправляться для удобства клиента
           "is_public": true | false | null, // Текущая публичность
           "cover_image_url": "URL | null" // URL обложки, если готова
+          // Поля scene_id, state_hash, ending_text здесь НЕ ожидаются.
         }
         ```
     *   **Обновление Состояния Игры (`game_state`):**
-        *   Описание: Отправляется при изменении статуса конкретного сохранения (PlayerGameState), обычно после успешной генерации сцены или при ошибке.
+        *   Описание: Отправляется при изменении статуса PlayerGameState, обычно после успешной генерации сцены/концовки или при ошибке генерации сцены.
         *   Структура (`sharedModels.ClientStoryUpdate`):
         ```json
         {
           "id": "uuid-string", // ID Состояния Игры (GameStateID)!
           "user_id": "uuid-string", // ID пользователя (Игнорируется клиентом)
           "update_type": "game_state", // Тип обновления
-          "status": "playing | completed | error | ...", // Новый статус PlayerGameState
-          "scene_id": "uuid-string | null", // ID сцены, которая стала текущей (при успехе)
+          "status": "playing | completed | error | generating_scene | game_over_pending", // Новый статус PlayerGameState
+          // --- Поля, определяющие результат ---
+          "scene_id": "uuid-string | null", // ID сцены, которая стала текущей (при успехе: status='playing' или 'completed')
+          "state_hash": "string | null", // Хэш состояния, связанный с новой сценой (при успехе)
+          "ending_text": "Текст концовки | null", // Если игра завершена (status='completed')
           "error_details": "Сообщение об ошибке | null" // Опционально, при status = error
+          // Поле story_title здесь не ожидается.
         }
         ```
 *   **Сообщения от клиента:** Не предусмотрены (только установка соединения).
@@ -953,10 +925,10 @@
 Бэкенд (`notification-service`) теперь отправляет **только data-only** push-уведомления. Это значит, что стандартные поля `notification.title` и `notification.body` **не отправляются**. Вместо этого весь необходимый контент передается в специальном `data` payload, который включает:
 
 *   `loc_key`: Ключ строки локализации (например, `notification_scene_ready`). Используйте константу `constants.PushLocKey` для самого ключа (`"loc_key"`).
-*   `loc_arg_*`: Аргументы, которые нужно подставить в строку локализации (например, `loc_arg_story_title`). Используйте константы `constants.PushLocArg*`.
+*   `loc_arg_*`: Аргументы, которые нужно подставить в строку локализации (например, `loc_arg_story_title`). Используйте константы `constants.PushLocArg*` (например, `constants.PushLocArgStoryTitle`). Все ключи аргументов - **snake_case**.
 *   `fallback_title`: Запасной заголовок на случай, если локализация не удалась.
 *   `fallback_body`: Запасное тело сообщения.
-*   Другие необходимые данные (`story_config_id`, `published_story_id` и т.д.).
+*   Другие необходимые данные (`story_config_id`, `published_story_id` и т.д.). Все ключи - **snake_case**.
 
 **Задача клиента:**
 
@@ -970,88 +942,86 @@
 
 **Типы уведомлений и их данные:**
 
-Ниже перечислены основные события, по которым отправляются push-уведомления, и данные, которые они содержат в `data` payload.
+Ниже перечислены основные события, по которым отправляются push-уведомления, и данные, которые они содержат в `data` payload. Все ключи - **snake_case**.
 
 *   **Черновик готов:**
-    *   `loc_key`: `notification_draft_ready` (константа `constants.PushLocKeyDraftReady`)
+    *   `loc_key`: `notification_draft_ready` (`constants.PushLocKeyDraftReady`)
     *   `data`:
         ```json
         {
           "story_config_id": "uuid-string",
-          "event_type": "draft_ready", // Обновлено
+          "event_type": "draft_ready",
           "loc_key": "notification_draft_ready",
-          "loc_arg_story_title": "Название Черновика", // Исправлено на snake_case
+          "loc_arg_story_title": "Название Черновика",
           "fallback_title": "Черновик готов!",
-          "fallback_body": "Ваш черновик \"Название Черновика\" готов к настройке.",
-          "title": "Название Черновика" // Добавлено для консистентности
+          "fallback_body": "Ваш черновик "Название Черновика" готов к настройке.",
+          "title": "Название Черновика"
         }
         ```
 *   **Setup готов (ожидание первой сцены):**
-    *   `loc_key`: `notification_setup_ready` (константа `constants.PushLocKeySetupReady`)
+    *   `loc_key`: `notification_setup_ready` (`constants.PushLocKeySetupReady`)
     *   `data`:
         ```json
         {
           "published_story_id": "uuid-string",
-          "event_type": "setup_pending", // Обновлено
+          "event_type": "setup_pending",
           "loc_key": "notification_setup_ready",
-          "loc_arg_story_title": "Название Истории", // Исправлено на snake_case
-          "fallback_title": "История \"Название Истории\" почти готова...",
+          "loc_arg_story_title": "Название Истории",
+          "fallback_title": "История "Название Истории" почти готова...",
           "fallback_body": "Скоро можно будет начать играть!",
-          "title": "Название Истории" // Добавлено для консистентности
+          "title": "Название Истории"
         }
         ```
 *   **История готова к игре:** (После генерации Setup, первой сцены и всех изображений)
-    *   `loc_key`: `notification_story_ready` (константа `constants.PushLocKeyStoryReady`)
+    *   `loc_key`: `notification_story_ready` (`constants.PushLocKeyStoryReady`)
     *   `data`:
         ```json
         {
           "published_story_id": "uuid-string",
-          "event_type": "story_ready", // Обновлено
+          "event_type": "story_ready",
           "loc_key": "notification_story_ready",
-          "loc_arg_story_title": "Название Истории", // Исправлено на snake_case
+          "loc_arg_story_title": "Название Истории",
           "fallback_title": "История готова!",
-          "fallback_body": "Ваша история \"Название Истории\" готова к игре!",
+          "fallback_body": "Ваша история "Название Истории" готова к игре!",
           "title": "Название Истории",
-          "author_name": "Имя Автора" // Уже было snake_case
+          "author_name": "Имя Автора"
         }
         ```
-*   **Новая сцена готова:** (Пример основан на предположении, т.к. функция не найдена)
-    *   `loc_key`: `notification_scene_ready` (константа `constants.PushLocKeySceneReady`)
+*   **Новая сцена готова:**
+    *   `loc_key`: `notification_scene_ready` (`constants.PushLocKeySceneReady`)
     *   `data`:
         ```json
         {
           "published_story_id": "uuid-string",
-          "game_state_id": "uuid-string", // snake_case
-          "scene_id": "uuid-string", // snake_case
-          "event_type": "scene_ready", // Обновлено
+          "game_state_id": "uuid-string",
+          "scene_id": "uuid-string",
+          "event_type": "scene_ready",
           "loc_key": "notification_scene_ready",
-          "loc_arg_story_title": "Название Истории", // Исправлено на snake_case
+          "loc_arg_story_title": "Название Истории",
           "fallback_title": "Новая сцена готова!",
-          "fallback_body": "Новая сцена в истории \"Название Истории\" готова!",
-          "title": "Название Истории" // Добавлено для консистентности
-          // "author_name": "Имя Автора" // Возможно, тоже нужно? Зависит от реализации BuildSceneReadyPushPayload
+          "fallback_body": "Новая сцена в истории "Название Истории" готова!",
+          "title": "Название Истории",
+          "author_name": "Имя Автора" // Добавлено
         }
         ```
-*   **Игра завершена (Game Over):** (Пример основан на предположении)
-    *   `loc_key`: `notification_game_over` (константа `constants.PushLocKeyGameOver`)
+*   **Игра завершена (Game Over):**
+    *   `loc_key`: `notification_game_over` (`constants.PushLocKeyGameOver`)
     *   `data`:
         ```json
         {
           "published_story_id": "uuid-string",
-          "game_state_id": "uuid-string", // snake_case
-          "scene_id": "uuid-string", // ID сцены с концовкой (snake_case)
-          "event_type": "game_over", // Обновлено
+          "game_state_id": "uuid-string",
+          "scene_id": "uuid-string", // ID сцены с концовкой
+          "event_type": "game_over",
           "loc_key": "notification_game_over",
-          "loc_arg_story_title": "Название Истории", // Исправлено на snake_case
-          "loc_arg_ending_text": "Текст концовки...", // snake_case
+          "loc_arg_story_title": "Название Истории",
+          "loc_arg_ending_text": "Текст концовки...",
           "fallback_title": "Игра завершена!",
-          "fallback_body": "История \"Название Истории\" завершена.",
-          "title": "Название Истории" // Добавлено для консистентности
-          // "author_name": "Имя Автора" // Возможно, тоже нужно?
+          "fallback_body": "История "Название Истории" завершена.",
+          "title": "Название Истории",
+          "author_name": "Имя Автора" // Добавлено
         }
         ```
-
-**Примечание:** Ключи аргументов (`loc_arg_story_title`, `loc_arg_ending_text`), ключи fallback (`fallback_title`, `fallback_body`) и основной ключ `loc_key` теперь должны быть консистентными.
 
 ---
 
@@ -1067,19 +1037,18 @@
         ```json
         {
           "id": "new-game-state-uuid", // ID созданного состояния
-          // ... другие поля PlayerGameState ...
-          "player_status": "generating_scene | playing" // Статус
+          // ... другие поля PlayerGameState, включая player_status='playing'
         }
         ```
     *   Клиент **сохраняет** полученный `id` (это `game_state_id` для дальнейших запросов).
-    *   **Важно:** Если `player_status` равен `generating_scene`, клиент должен подождать WebSocket-события `scene_generated`, прежде чем запрашивать сцену. Если статус `playing`, можно сразу переходить к шагу 2.
+    *   Теперь можно сразу переходить к шагу 2 (запрос первой сцены), так как статус `playing`.
 
 2.  **Запрос текущей сцены:**
     *   Клиент использует сохраненный `game_state_id` и отправляет запрос:
         *   `GET /api/v1/published-stories/:story_id/gamestates/:game_state_id/scene`
-    *   Сервер возвращает текущую сцену (`200 OK`, см. описание DTO `GameSceneResponseDTO` выше, теперь полностью в `snake_case`) или ошибку:
-        *   `409 Conflict`: Если сцена или концовка еще генерируется (`generating_scene` или `game_over_pending`). Клиент должен подождать WebSocket-события.
-        *   `404 Not Found`: Состояние игры не найдено (маловероятно, если ID был только что получен).
+    *   Сервер возвращает текущую сцену (`200 OK`, см. описание DTO `GameSceneResponseDTO` выше) или ошибку:
+        *   `409 Conflict`: Если сцена еще генерируется (статус `generating_scene` или `game_over_pending`). Клиент должен подождать WebSocket-события.
+        *   `404 Not Found`: Состояние игры не найдено.
         *   `5xx`: Внутренняя ошибка.
 
 3.  **Отображение сцены и выбор игрока:**
@@ -1087,35 +1056,35 @@
     *   Если есть поле `choices`, отображает текст (`description`) и варианты (`options[].text`).
     *   Если есть поле `ending_text`, отображает текст концовки.
     *   Если есть поле `continuation`, обрабатывает переход к новому персонажу.
-    *   Пользователь делает выбор (нажимает на один из вариантов в блоке `choices`). Клиент запоминает индекс(ы) выбранного варианта (например, `[0]` или `[1]`, если выбор был во втором блоке `choices`).
+    *   Пользователь делает выбор (нажимает на один из вариантов в блоке `choices`). Клиент запоминает индекс(ы) выбранного варианта (например, `[0]` или `[1]`).
 
 4.  **Отправка выбора:**
     *   Клиент отправляет сделанный выбор на сервер:
         *   `POST /api/v1/published-stories/:story_id/gamestates/:game_state_id/choice`
-        *   Тело запроса: `{"selected_option_indices": [ index1, index2, ...]}` (поле уже в `snake_case`)
-    *   Сервер принимает выбор (`200 OK`), обновляет внутреннее состояние прогресса и **асинхронно** запускает задачу на генерацию следующей сцены или концовки.
+        *   Тело запроса: `{"selected_option_indices": [ index1, index2, ...]}`
+    *   Сервер принимает выбор (`200 OK`), обновляет статус `PlayerGameState` на `generating_scene` (или `game_over_pending`) и **асинхронно** запускает задачу на генерацию следующей сцены или концовки.
 
 5.  **Ожидание следующей сцены/концовки (WebSocket):**
-    *   Клиент **обязательно** должен слушать WebSocket-события после отправки выбора. Сервер отправит сообщение типа `story_update` для уведомления о результате.
-    *   **Тип События:** `story_update` (тип `sharedModels.UpdateTypeStory`)
+    *   Клиент **обязательно** должен слушать WebSocket-события после отправки выбора. Сервер отправит сообщение типа `game_state`.
+    *   **Тип События:** `game_state` (`sharedModels.UpdateTypeGameState`)
     *   **Payload (`sharedModels.ClientStoryUpdate`):**
         ```json
         {
-          "id": "uuid-string", // ID опубликованной истории (PublishedStoryID)
+          "id": "game-state-uuid", // ID Состояния Игры
           "user_id": "uuid-string", // ID пользователя (Игнорируется клиентом)
-          "update_type": "story",
-          "status": "string", // Новый статус PublishedStory (ready, error, etc.)
-          // --- Поля, определяющие результат для GameState ---
-          "scene_id": "uuid-string | null", // ID последней сгенерированной сцены/концовки (если успех)
-          "state_hash": "string | null", // Хэш состояния, связанный с этой сценой (если успех)
-          "ending_text": "Текст концовки | null", // Если игра завершена
-          "error_details": "Сообщение об ошибке | null" // Если произошла ошибка генерации
+          "update_type": "game_state",
+          "status": "playing | completed | error", // Новый статус PlayerGameState
+          // --- Поля, определяющие результат ---
+          "scene_id": "uuid-string | null", // ID новой сцены/концовки (если успех)
+          "state_hash": "string | null", // Хэш состояния, связанный с новой сценой (если успех)
+          "ending_text": "Текст концовки | null", // Если игра завершена (status='completed')
+          "error_details": "Сообщение об ошибке | null" // Если произошла ошибка генерации (status='error')
         }
         ```
     *   **Действия клиента:**
-        *   **При Успехе (Сцена/Концовка Готова):** Если в payload присутствуют `scene_id` и `state_hash`, значит генерация завершена. Клиент должен **перейти к шагу 2** (Запрос текущей сцены с тем же `game_state_id`). Если также присутствует `ending_text`, игра завершена.
-        *   **При Ошибке:** Если `status` в payload равен `error` и присутствует `error_details`, произошла ошибка генерации. Клиент должен показать пользователю сообщение об ошибке (из `error_details`). Можно предложить кнопку "Попробовать снова", которая вызовет:
+        *   **При Успехе (Сцена/Концовка Готова):** Если `status` равен `playing` или `completed`, значит генерация завершена. Клиент должен **перейти к шагу 2** (Запрос текущей сцены с тем же `game_state_id`). Если `status` = `completed`, игра завершена.
+        *   **При Ошибке:** Если `status` равен `error` и присутствует `error_details`, произошла ошибка генерации. Клиент должен показать пользователю сообщение об ошибке. Можно предложить кнопку "Попробовать снова", которая вызовет:
             *   `POST /api/v1/published-stories/:story_id/gamestates/:game_state_id/retry`
             После успешного ответа `202 Accepted` на ретрай, клиент снова **переходит к шагу 5** (Ожидание WebSocket).
 
-6.  **Цикл:** Шаги 2-5 повторяются, пока не будет получена сцена с `ending_text`.
+6.  **Цикл:** Шаги 2-5 повторяются, пока `status` в WebSocket-сообщении не станет `completed`.

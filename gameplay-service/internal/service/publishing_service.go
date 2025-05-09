@@ -12,6 +12,7 @@ import (
 	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
+	"novel-server/shared/utils"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -154,17 +155,39 @@ func (s *publishingServiceImpl) PublishDraft(ctx context.Context, draftID uuid.U
 
 	// 6. Send task for Setup generation (outside the transaction, after commit)
 	taskID := uuid.New().String()
-	configJSONString := string(newPublishedStory.Config) // Конфиг истории как строка
+	// Десериализуем конфиг для передачи в формате текста
+	var deserializedConfig sharedModels.Config
+	var configUserInput string
+	if errUnmarshal := json.Unmarshal(newPublishedStory.Config, &deserializedConfig); errUnmarshal != nil {
+		// Логируем ошибку, но НЕ прерываем транзакцию, так как commit уже близко
+		// Задача не будет отправлена, если парсинг не удался.
+		s.logger.Error("Failed to unmarshal Config JSON before publishing Setup task. Task will NOT be sent.",
+			zap.String("publishedStoryID", newPublishedStory.ID.String()),
+			zap.Error(errUnmarshal),
+		)
+	} else {
+		configUserInput = utils.FormatConfigToString(deserializedConfig, "")
+	}
+
 	setupPayload := sharedMessaging.GenerationTaskPayload{
 		TaskID:           taskID,
 		UserID:           newPublishedStory.UserID.String(),
 		PromptType:       sharedModels.PromptTypeNovelSetup,
-		UserInput:        configJSONString,              // <-- Передаем JSON конфиг сюда
+		UserInput:        configUserInput,               // <-- Используем форматированный текст
 		PublishedStoryID: newPublishedStory.ID.String(), // Link to published story
+		Language:         newPublishedStory.Language,    // <<< Передаем язык >>>
 	}
 
 	// Publish task OUTSIDE the transaction, after it's almost certainly committed
 	go func(payload sharedMessaging.GenerationTaskPayload) {
+		// <<< Добавляем проверку, что UserInput не пустой (на случай ошибки парсинга) >>>
+		if payload.UserInput == "" {
+			s.logger.Error("CRITICAL: Cannot publish setup generation task because UserInput is empty (likely due to prior JSON unmarshal error)",
+				zap.String("publishedStoryID", payload.PublishedStoryID),
+				zap.String("taskID", payload.TaskID),
+			)
+			return
+		}
 		publishCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := s.publisher.PublishGenerationTask(publishCtx, payload); err != nil {

@@ -102,26 +102,23 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 		}
 
 		if parseErr == nil {
-			config.Config = json.RawMessage(rawGeneratedText)
-			config.Status = sharedModels.StatusDraft
-
-			var generatedFields struct {
-				Title       string `json:"t"`
-				Description string `json:"sd"`
-			}
-			if errUnmarshalFields := json.Unmarshal([]byte(rawGeneratedText), &generatedFields); errUnmarshalFields != nil {
-				p.logger.Warn("NARRATOR UNMARSHAL (Optional fields): Failed to extract 't' or 'sd' from validated JSON",
+			var tempConfigForValidation sharedModels.Config
+			if errValidate := json.Unmarshal([]byte(rawGeneratedText), &tempConfigForValidation); errValidate != nil {
+				p.logger.Error("NARRATOR UNMARSHAL (Full Config): Failed to validate generated JSON against sharedModels.Config",
 					zap.String("task_id", taskID),
 					zap.String("story_config_id", storyConfigID.String()),
-					zap.Error(errUnmarshalFields),
-					zap.String("json_snippet", utils.StringShort(rawGeneratedText, 100)),
+					zap.Error(errValidate),
+					zap.String("json_snippet", utils.StringShort(rawGeneratedText, 200)),
 				)
-				config.Title = ""
-				config.Description = ""
+				config.Status = sharedModels.StatusError
+				parseErr = fmt.Errorf("generated JSON validation failed: %w", errValidate)
 			} else {
-				config.Title = generatedFields.Title
-				config.Description = generatedFields.Description
-				p.logger.Info("Successfully updated StoryConfig Title, Description from generated JSON",
+				config.Config = json.RawMessage(rawGeneratedText)
+				config.Status = sharedModels.StatusDraft
+
+				config.Title = tempConfigForValidation.Title
+				config.Description = tempConfigForValidation.ShortDescription
+				p.logger.Info("Successfully validated and updated StoryConfig Title, Description from generated JSON",
 					zap.String("task_id", taskID),
 					zap.String("story_config_id", storyConfigID.String()),
 					zap.String("new_title", config.Title),

@@ -73,11 +73,6 @@ services:
       - postgres_data:/var/lib/postgresql/data
     secrets:
       - db_password
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
     networks:
       - novel_network
 
@@ -90,11 +85,6 @@ services:
       - "${REDIS_PORT}:6379"
     volumes:
       - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
     networks:
       - novel_network
 
@@ -151,12 +141,6 @@ services:
         target: /run/secrets/password_pepper
       - source: inter_service_secret
         target: /run/secrets/inter_service_secret
-    healthcheck: # <<< ВОЗВРАЩАЕМ HEALTHCHECK
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s # Даем 30 секунд на старт перед первыми проверками
     ports:
       - "${AUTH_SERVER_PORT}:8081"
     # labels: # <<< УДАЛЯЕМ LABELS ПОЛНОСТЬЮ
@@ -190,13 +174,6 @@ services:
         target: /run/secrets/jwt_secret
       - source: inter_service_secret
         target: /run/secrets/inter_service_secret
-    # <<< Добавляем Healthcheck с GET запросом >>>
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:${GAMEPLAY_SERVER_PORT}/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s # Даем время на старт
     # ports: # Убираем публикацию порта наружу
     #   - "${GAMEPLAY_SERVER_PORT:-8082}:${GAMEPLAY_SERVER_PORT:-8082}"
     # labels: # <<< УДАЛЯЕМ LABELS ПОЛНОСТЬЮ
@@ -239,12 +216,6 @@ services:
       - postgres
     networks:
       - novel_network
-    healthcheck: # <<< Возвращаем правильный Healthcheck для admin-service
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8084/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s # Даем время на запуск
     volumes:
       - ./admin-service:/app/admin-service # Volume mounting for hot-reloading
       - ./shared:/app/shared # Mount shared directory
@@ -270,11 +241,6 @@ services:
       - rabbitmq_data:/var/lib/rabbitmq/
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
-    healthcheck:
-      test: rabbitmq-diagnostics -q ping
-      interval: 10s
-      timeout: 5s
-      retries: 5
     networks:
       - novel_network
 
@@ -311,7 +277,6 @@ services:
         target: /run/secrets/ai_api_key
     networks:
       - novel_network
-    # Нет healthcheck, так как это воркер
 
   # Сервис WebSocket уведомлений
   websocket-service:

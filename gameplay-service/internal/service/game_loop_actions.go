@@ -225,7 +225,6 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		PublishedStoryID:      currentProgress.PublishedStoryID,
 		CoreStats:             make(map[string]int),
 		StoryVariables:        make(map[string]interface{}),
-		GlobalFlags:           make([]string, 0, len(currentProgress.GlobalFlags)),
 		SceneIndex:            currentProgress.SceneIndex + 1,
 		EncounteredCharacters: make([]string, 0, len(currentProgress.EncounteredCharacters)),
 	}
@@ -235,7 +234,6 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	for k, v := range currentProgress.StoryVariables {
 		nextProgress.StoryVariables[k] = v
 	}
-	nextProgress.GlobalFlags = append(nextProgress.GlobalFlags, currentProgress.GlobalFlags...)
 	nextProgress.EncounteredCharacters = append(nextProgress.EncounteredCharacters, currentProgress.EncounteredCharacters...)
 
 	var isGameOver bool
@@ -305,10 +303,9 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 			zap.String("previousHash", currentProgress.CurrentStateHash),
 			zap.Any("coreStats", nextProgress.CoreStats),
 			zap.Any("storyVars", nextProgress.StoryVariables),
-			zap.Strings("globalFlags", nextProgress.GlobalFlags),
 		)
 
-		finalStateHash, hashErr := calculateStateHash(currentProgress.CurrentStateHash, nextProgress.CoreStats, nextProgress.StoryVariables, nextProgress.GlobalFlags)
+		finalStateHash, hashErr := calculateStateHash(currentProgress.CurrentStateHash, nextProgress.CoreStats, nextProgress.StoryVariables)
 		if hashErr != nil {
 			s.logger.Error("Failed to calculate final state hash before game over", append(logFields, zap.Error(hashErr))...)
 			err = models.ErrInternalServer
@@ -324,7 +321,6 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 			s.logger.Debug("Final progress node before game over already exists", append(logFields, zap.String("progressID", finalProgressNodeID.String()))...)
 		} else if errors.Is(errFind, models.ErrNotFound) || errors.Is(errFind, pgx.ErrNoRows) {
 			nextProgress.StoryVariables = make(map[string]interface{})
-			nextProgress.GlobalFlags = clearTransientFlags(nextProgress.GlobalFlags)
 
 			nextProgress.UserID = gameState.PlayerID
 
@@ -385,9 +381,8 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		zap.String("previousHash", currentProgress.CurrentStateHash),
 		zap.Any("coreStats", nextProgress.CoreStats),
 		zap.Any("storyVars", nextProgress.StoryVariables),
-		zap.Strings("globalFlags", nextProgress.GlobalFlags),
 	)
-	nextStateHash, hashErr := calculateStateHash(currentProgress.CurrentStateHash, nextProgress.CoreStats, nextProgress.StoryVariables, nextProgress.GlobalFlags)
+	nextStateHash, hashErr := calculateStateHash(currentProgress.CurrentStateHash, nextProgress.CoreStats, nextProgress.StoryVariables)
 	if hashErr != nil {
 		s.logger.Error("Failed to calculate next state hash", append(logFields, zap.Error(hashErr))...)
 		err = models.ErrInternalServer
@@ -406,8 +401,7 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 	progressToUpsert.UserID = gameState.PlayerID // Ensure UserID is set
 	progressToUpsert.PublishedStoryID = gameState.PublishedStoryID
 	// Clear transient fields before potentially saving a new node
-	progressToUpsert.StoryVariables = make(map[string]interface{}) // Clear potentially large transient vars
-	progressToUpsert.GlobalFlags = clearTransientFlags(progressToUpsert.GlobalFlags)
+	progressToUpsert.StoryVariables = make(map[string]interface{})          // Clear potentially large transient vars
 	progressToUpsert.LastStorySummary = currentProgress.CurrentSceneSummary // Use previous scene summary as last summary
 	// TODO: Fill LastFutureDirection and LastVarImpactSummary if available from generation result
 

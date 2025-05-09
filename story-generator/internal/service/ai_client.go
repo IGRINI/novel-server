@@ -187,6 +187,9 @@ func (c *openAIClient) GenerateText(ctx context.Context, userID string, systemPr
 		Temperature: finalTemperature,
 		MaxTokens:   intVal(params.MaxTokens),
 		TopP:        float32Val(params.TopP),
+		ResponseFormat: &openaigo.ChatCompletionResponseFormat{
+			Type: openaigo.ChatCompletionResponseFormatTypeJSONObject,
+		},
 	}
 	requestJSON, _ := json.Marshal(request)
 	log.Printf("[DEBUG] OpenAI Request Body: %s", string(requestJSON))

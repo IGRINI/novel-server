@@ -53,7 +53,7 @@ func ToMinimalConfigForScene(fullCfg *Config) MinimalConfigForScene {
 	}
 	return MinimalConfigForScene{
 		Genre:      fullCfg.Genre,
-		PlayerName: fullCfg.PlayerName,
+		PlayerName: fullCfg.ProtagonistName,
 	}
 }
 

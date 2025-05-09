@@ -12,6 +12,7 @@ import (
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
 	"novel-server/shared/notifications"
+	"novel-server/shared/utils"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -23,6 +24,94 @@ func stringRef(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// --- Структуры для валидации JSON ответа AI (скопированы из story-generator/internal/worker/handler.go или аналогичные) ---
+// Это нужно, чтобы gameplay-service мог валидировать JSON от генератора перед сохранением.
+// В идеале, эти структуры должны быть в shared/models, если они используются в нескольких местах.
+// Пока для простоты определим их здесь.
+
+// SceneValidation используется для проверки структуры ответа NovelCreator и NovelFirstSceneCreator
+type SceneValidation struct {
+	StorySummarySoFar *string           `json:"sssf"`
+	FutureDirection   *string           `json:"fd"`
+	Choices           []json.RawMessage `json:"ch"`
+	// vis и svd опциональны
+}
+
+// GameOverValidation используется для проверки структуры ответа NovelGameOverCreator
+type GameOverValidation struct {
+	EndingText *string           `json:"et"`
+	Choices    []json.RawMessage `json:"ch"`
+}
+
+// validateSceneJSONContent проверяет JSON сцены перед сохранением.
+// Возвращает ошибку, если JSON не соответствует ожидаемой структуре для данного PromptType.
+func validateSceneJSONContent(promptType sharedModels.PromptType, jsonData []byte, logger *zap.Logger) error {
+	if len(jsonData) == 0 {
+		return errors.New("JSON data for scene is empty")
+	}
+
+	switch promptType {
+	case sharedModels.PromptTypeNovelFirstSceneCreator, sharedModels.PromptTypeNovelCreator:
+		var v SceneValidation
+		if err := json.Unmarshal(jsonData, &v); err != nil {
+			return fmt.Errorf("failed to unmarshal into SceneValidation (type: %s): %w", promptType, err)
+		}
+		if v.StorySummarySoFar == nil {
+			return fmt.Errorf("SceneValidation: missing required field 'sssf' (type: %s)", promptType)
+		}
+		if v.FutureDirection == nil {
+			return fmt.Errorf("SceneValidation: missing required field 'fd' (type: %s)", promptType)
+		}
+		if v.Choices == nil {
+			return fmt.Errorf("SceneValidation: missing required field 'ch' (type: %s)", promptType)
+		}
+		if len(v.Choices) == 0 && promptType == sharedModels.PromptTypeNovelFirstSceneCreator {
+			return fmt.Errorf("SceneValidation: field 'ch' (choices) cannot be empty for FirstScene (type: %s)", promptType)
+		}
+		if len(v.Choices) == 0 && promptType == sharedModels.PromptTypeNovelCreator { // Для обычных сцен тоже не должен быть пустым
+			return fmt.Errorf("SceneValidation: field 'ch' (choices) cannot be empty for Scene (type: %s)", promptType)
+		}
+
+	case sharedModels.PromptTypeNovelGameOverCreator:
+		var v GameOverValidation
+		if errUnmarshalGameOver := json.Unmarshal(jsonData, &v); errUnmarshalGameOver != nil {
+			// Попытка отката: AI мог вернуть полную структуру сцены для GameOver
+			logger.Warn("Failed to unmarshal into GameOverValidation, trying SceneValidation as fallback for GameOver prompt",
+				zap.String("promptType", string(promptType)),
+				zap.Error(errUnmarshalGameOver),
+			)
+			var vScene SceneValidation
+			if errUnmarshalScene := json.Unmarshal(jsonData, &vScene); errUnmarshalScene != nil {
+				return fmt.Errorf("failed to unmarshal into GameOverValidation or SceneValidation (type: %s): %w (primary: %v)", promptType, errUnmarshalGameOver, errUnmarshalScene)
+			}
+			// Если распарсилось как сцена, проверяем её валидность для случая GameOver
+			if vScene.Choices == nil {
+				return fmt.Errorf("SceneValidation (for GameOver): missing required field 'ch' (type: %s)", promptType)
+			}
+			if len(vScene.Choices) == 0 {
+				return fmt.Errorf("SceneValidation (for GameOver): field 'ch' (choices) cannot be empty (type: %s)", promptType)
+			}
+			logger.Info("Successfully validated GameOver prompt as SceneValidation structure after primary unmarshal failed.", zap.String("promptType", string(promptType)))
+			return nil // Валидация прошла через fallback
+		}
+		// Если успешно распарсилось в GameOverValidation
+		if v.EndingText == nil && v.Choices == nil {
+			return fmt.Errorf("GameOverValidation: response must contain either 'et' or 'ch' field (type: %s)", promptType)
+		}
+		if v.Choices != nil && len(v.Choices) == 0 {
+			return fmt.Errorf("GameOverValidation: field 'ch' cannot be an empty array (type: %s)", promptType)
+		}
+	// TODO: Добавить кейс для sharedModels.PromptTypeNovelContinueCreator, если он используется и имеет свою структуру
+	default:
+		logger.Warn("No specific JSON validation defined for scene PromptType, skipping validation.",
+			zap.String("promptType", string(promptType)),
+		)
+		// Можно вернуть ошибку, если валидация обязательна для всех типов
+		// return fmt.Errorf("no validation rule defined for scene PromptType %s", promptType)
+	}
+	return nil
 }
 
 // handleSceneGenerationNotification обрабатывает уведомления об успешной или неуспешной генерации сцены/концовки.
@@ -77,6 +166,16 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 			logWithState.Error("Error during data fetching, handling as generation error", zap.Error(fetchErr))
 			return p.handleSceneGenerationError(operationCtx, notification, publishedStoryID, fetchErr.Error(), logWithState)
 		}
+
+		if errValidate := validateSceneJSONContent(notification.PromptType, []byte(rawGeneratedText), logWithState); errValidate != nil {
+			logWithState.Error("SCENE JSON VALIDATION ERROR: Generated content is not valid for the prompt type",
+				zap.Error(errValidate),
+				zap.String("json_snippet", utils.StringShort(rawGeneratedText, 200)), // utils.StringShort должно быть доступно
+			)
+			// Обрабатываем как ошибку генерации
+			return p.handleSceneGenerationError(operationCtx, notification, publishedStoryID, fmt.Sprintf("generated scene JSON validation failed: %v", errValidate), logWithState)
+		}
+		logWithState.Info("Scene JSON validated successfully.")
 
 		sceneContentJSON := json.RawMessage(rawGeneratedText)
 		var endingText *string

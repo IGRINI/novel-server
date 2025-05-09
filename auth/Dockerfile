@@ -24,7 +24,6 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /auth-service ./auth/c
 # Этап 2: Создание минимального образа
 FROM alpine:latest
 
-# Устанавливаем корневые сертификаты и wget для healthcheck
 RUN apk --no-cache add ca-certificates wget
 
 WORKDIR /app
@@ -42,6 +41,3 @@ COPY --from=builder /auth-service .
 
 # Команда для запуска сервиса
 ENTRYPOINT ["/app/auth-service"]
-
-# Используем wget для healthcheck и переменную окружения для порта
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD wget -q -O /dev/null http://localhost:${AUTH_SERVER_PORT:-8081}/health || exit 1 

@@ -105,6 +105,7 @@ func (h *AdminHandler) RegisterRoutes(router *gin.Engine, loginRateLimiter gin.H
 			userGroup.GET("/drafts", h.listUserDrafts)
 			userGroup.GET("/drafts/:draft_id", h.showDraftDetailsPage)
 			userGroup.POST("/drafts/:draft_id", h.handleUpdateDraft)
+			userGroup.DELETE("/drafts/:draft_id", h.handleDeleteDraft)
 			userGroup.GET("/stories", h.listUserStories)
 			storyGroup := userGroup.Group("/stories/:story_id")
 			{
@@ -112,9 +113,13 @@ func (h *AdminHandler) RegisterRoutes(router *gin.Engine, loginRateLimiter gin.H
 				storyGroup.POST("", h.handleUpdateStory)
 				storyGroup.POST("/scenes/:scene_id", h.handleUpdateScene)
 				storyGroup.POST("/scenes/:scene_id/delete", h.handleDeleteScene)
+				storyGroup.DELETE("/scenes/:scene_id", h.handleDeleteSceneAPI)
 				storyGroup.GET("/progress/:progress_id/edit", h.showEditPlayerProgressPage)
 				storyGroup.POST("/progress/:progress_id", h.handleUpdatePlayerProgress)
+				storyGroup.DELETE("/progress/:progress_id", h.handleDeletePlayerProgress)
+				storyGroup.DELETE("/players/:player_id", h.handleDeletePlayerGameState)
 			}
+			userGroup.DELETE("/stories/:story_id", h.handleDeleteStory)
 			userGroup.POST("/send-notification", h.handleSendUserNotification)
 		}
 
@@ -359,4 +364,94 @@ func (h *AdminHandler) handleGetPromptAPI(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, prompt) // Возвращаем найденный промпт
+}
+
+// handleDeleteSceneAPI обрабатывает HTMX DELETE для удаления сцены.
+func (h *AdminHandler) handleDeleteSceneAPI(c *gin.Context) {
+	sceneIDParam := c.Param("scene_id")
+	sceneID, err := uuid.Parse(sceneIDParam)
+	if err != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	adminToken, err := c.Cookie("admin_session")
+	if err != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	err = h.gameplayClient.DeleteSceneInternal(c.Request.Context(), sceneID, adminToken)
+	if err != nil {
+		if errors.Is(err, models.ErrNotFound) {
+			c.Status(http.StatusNotFound)
+		} else if errors.Is(err, models.ErrForbidden) {
+			c.Status(http.StatusForbidden)
+		} else {
+			h.logger.Error("Failed to delete scene via gameplay service", zap.Error(err), zap.String("sceneID", sceneIDParam))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete scene"})
+		}
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// handleDeletePlayerProgress обрабатывает HTMX DELETE для удаления прогресса игрока.
+func (h *AdminHandler) handleDeletePlayerProgress(c *gin.Context) {
+	progressIDParam := c.Param("progress_id")
+	progressID, err := uuid.Parse(progressIDParam)
+	if err != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	adminToken, err := c.Cookie("admin_session")
+	if err != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	err = h.gameplayClient.DeletePlayerProgressInternal(c.Request.Context(), progressID, adminToken)
+	if err != nil {
+		if errors.Is(err, models.ErrPlayerProgressNotFound) {
+			c.Status(http.StatusNotFound)
+		} else if errors.Is(err, models.ErrForbidden) {
+			c.Status(http.StatusForbidden)
+		} else {
+			h.logger.Error("Failed to delete player progress via gameplay service", zap.Error(err), zap.String("progressID", progressIDParam))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete player progress"})
+		}
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// handleDeletePlayerGameState обрабатывает HTMX DELETE для удаления состояния игрока (GameState).
+func (h *AdminHandler) handleDeletePlayerGameState(c *gin.Context) {
+	storyIDParam := c.Param("story_id")
+	playerIDParam := c.Param("player_id")
+	storyID, err := uuid.Parse(storyIDParam)
+	if err != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	playerID, err := uuid.Parse(playerIDParam)
+	if err != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	adminToken, err := c.Cookie("admin_session")
+	if err != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	err = h.gameplayClient.DeleteStoryPlayerInternal(c.Request.Context(), storyID, playerID, adminToken)
+	if err != nil {
+		if errors.Is(err, models.ErrNotFound) {
+			c.Status(http.StatusNotFound)
+		} else if errors.Is(err, models.ErrForbidden) {
+			c.Status(http.StatusForbidden)
+		} else {
+			h.logger.Error("Failed to delete player game state via gameplay service", zap.Error(err), zap.String("playerID", playerIDParam))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete player game state"})
+		}
+		return
+	}
+	c.Status(http.StatusNoContent)
 }

@@ -105,9 +105,13 @@
                                     <td>
                                         <button class="cta-button cta-button--secondary btn-sm" onclick="showSceneContent('{{ .ID }}')">Показать/Редактировать JSON</button>
                                         <textarea id="scene-{{ .ID }}" style="display: none;">{{ .Content | bytesToString }}</textarea>
-                                        <form action="/admin/users/{{ $.TargetUser.ID }}/stories/{{ $.Story.ID }}/scenes/{{ .ID }}/delete" method="post" style="display: inline;" onsubmit="return confirm('Вы уверены, что хотите удалить эту сцену?');">
-                                            <button type="submit" class="cta-button cta-button--danger btn-sm">Удалить</button>
-                                        </form>
+                                        <button class="cta-button cta-button--danger btn-sm"
+                                                hx-delete="/admin/users/{{$.TargetUser.ID}}/stories/{{$.Story.ID}}/scenes/{{.ID}}"
+                                                hx-confirm="Вы уверены, что хотите удалить сцену {{ .ID }}?"
+                                                hx-target="closest tr"
+                                                hx-swap="outerHTML">
+                                            Удалить
+                                        </button>
                                     </td>
                                 </tr>
                             {{ else }}
@@ -147,10 +151,22 @@
                                     <td><small>{{ $state.LastActivityAt | formatAsDateTime }}</small></td>
                                     <td>
                                         {{ if $state.PlayerProgressID }}
-                                            <a href="/admin/users/{{ $.TargetUser.ID }}/stories/{{ $.Story.ID }}/progress/{{ $state.PlayerProgressID }}/edit" class="cta-button cta-button--secondary btn-sm">Редактировать прогресс</a>
-                                        {{ else }}
-                                            (Нет ID прогресса)
+                                            <a href="/admin/users/{{ $.TargetUser.ID }}/stories/{{ $.Story.ID }}/progress/{{ $state.PlayerProgressID }}/edit" class="cta-button cta-button--secondary btn-sm" style="margin-right: 0.5rem;">Редактировать прогресс</a>
+                                            <button class="cta-button cta-button--danger btn-sm" style="margin-right: 0.5rem;"
+                                                    hx-delete="/admin/users/{{$.TargetUser.ID}}/stories/{{$.Story.ID}}/progress/{{ $state.PlayerProgressID }}"
+                                                    hx-confirm="Вы уверены, что хотите удалить прогресс {{ $state.PlayerProgressID }}?"
+                                                    hx-target="closest tr"
+                                                    hx-swap="outerHTML">
+                                                Удалить прогресс
+                                            </button>
                                         {{ end }}
+                                        <button class="cta-button cta-button--danger btn-sm"
+                                                hx-delete="/admin/users/{{$.TargetUser.ID}}/stories/{{$.Story.ID}}/players/{{ $state.PlayerID }}"
+                                                hx-confirm="Вы уверены, что хотите удалить состояние игрока {{ $state.PlayerID }}?"
+                                                hx-target="closest tr"
+                                                hx-swap="outerHTML">
+                                            Удалить состояние
+                                        </button>
                                     </td>
                                 </tr>
                             {{ else }}
@@ -169,26 +185,17 @@
         <div class="system-message system-message--info">Информация об истории недоступна.</div>
     {{ end }}
 
-    <!-- Модальное окно для показа/редактирования JSON сцены -->
-    <div class="modal fade" id="sceneJsonModal" tabindex="-1" aria-labelledby="sceneJsonModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-lg modal-dialog-scrollable">
-            <div class="modal-content" style="background-color: var(--card-background); border: 1px solid rgba(0, 195, 253, 0.2);">
-                <div class="modal-header" style="border-bottom: 1px solid rgba(0, 195, 253, 0.15);">
-                    <h5 class="modal-title" id="sceneJsonModalLabel" style="color: var(--primary-color);">Содержимое сцены</h5>
-                    <button type="button" class="cta-button cta-button--secondary" data-bs-dismiss="modal" aria-label="Close" style="padding: 0.2em 0.5em; font-size: 1.2rem; line-height: 1;">X</button>
-                </div>
-                <div class="modal-body data-form" style="color: var(--text-color);">
-                    <input type="hidden" id="currentSceneId">
-                    <textarea id="sceneJsonContentEditable" rows="20"></textarea>
-                    <div id="sceneSaveStatus" class="mt-2"></div>
-                </div>
-                <div class="modal-footer" style="border-top: 1px solid rgba(0, 195, 253, 0.15); display: flex; gap: 0.5rem;">
-                    <button type="button" class="cta-button cta-button--secondary" data-bs-dismiss="modal">Закрыть</button>
-                    <button type="button" class="cta-button cta-button--secondary" onclick="formatSceneJson()">Форматировать</button>
-                    <button type="button" class="cta-button cta-button--primary" onclick="saveSceneContent()">Сохранить контент</button>
-                </div>
-            </div>
-        </div>
+    <!-- Панель редактирования сцены снизу -->
+    <div id="sceneJsonPanel" style="display:none; position:fixed; bottom:0; left:0; width:100%; max-height:50%; overflow:auto; background:var(--card-background); border-top:1px solid rgba(0,0,0,0.1); padding:1rem; z-index:1000;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h5 style="margin:0;">Содержимое сцены <span id="scenePanelTitle"></span></h5>
+        <button class="cta-button cta-button--secondary" onclick="hideScenePanel()">Закрыть</button>
+      </div>
+      <textarea id="scenePanelJsonContentEditable" rows="15" style="width:100%; margin-top:0.5rem;"></textarea>
+      <div style="margin-top:0.5rem;">
+        <button class="cta-button cta-button--secondary" onclick="formatScenePanelJson()">Форматировать</button>
+        <button class="cta-button cta-button--primary" onclick="saveScenePanelContent()">Сохранить</button>
+      </div>
     </div>
 
     <a href="/admin/users/{{ .TargetUser.ID }}/stories" class="cta-button cta-button--secondary mt-3">Назад к списку историй</a>
@@ -202,117 +209,57 @@ function formatJsonTextarea(textareaId) {
             const jsonObject = JSON.parse(textarea.value);
             textarea.value = JSON.stringify(jsonObject, null, 2);
         } catch (e) {
-            console.warn(`Could not parse JSON in textarea #${textareaId}:`, e);
-            alert(`Некорректный JSON в поле ${textareaId}! Пожалуйста, исправьте перед сохранением.`);
+            alert(`Некорректный JSON в поле ${textareaId}!`);
         }
     }
 }
 
-document.addEventListener('DOMContentLoaded', (event) => {
+document.addEventListener('DOMContentLoaded', () => {
     formatJsonTextarea('configJson');
     formatJsonTextarea('setupJson');
 });
 
-let sceneModalInstance = null;
-
-function getSceneModalInstance() {
-    if (!sceneModalInstance && window.bootstrap) {
-        sceneModalInstance = new bootstrap.Modal(document.getElementById('sceneJsonModal'));
-    } else if (!window.bootstrap) {
-        console.error('Bootstrap JS not found for modal functionality.');
-    }
-    return sceneModalInstance;
-}
-
-function formatSceneJson() {
-    const textarea = document.getElementById('sceneJsonContentEditable');
-    if (textarea && textarea.value.trim()) {
-        try {
-            const jsonObject = JSON.parse(textarea.value);
-            textarea.value = JSON.stringify(jsonObject, null, 2);
-        } catch (e) {
-            console.warn(`Could not parse JSON in scene modal:`, e);
-            alert('Некорректный JSON! Пожалуйста, исправьте.');
-        }
+function formatScenePanelJson() {
+    const ta = document.getElementById('scenePanelJsonContentEditable');
+    try {
+        const obj = JSON.parse(ta.value);
+        ta.value = JSON.stringify(obj, null, 2);
+    } catch {
+        alert('Некорректный JSON!');
     }
 }
 
 function showSceneContent(sceneId) {
-    const originalTextarea = document.getElementById(`scene-${sceneId}`);
-    const editableTextarea = document.getElementById('sceneJsonContentEditable');
-    const modalTitle = document.getElementById('sceneJsonModalLabel');
-    const currentSceneIdInput = document.getElementById('currentSceneId');
-    const saveStatusDiv = document.getElementById('sceneSaveStatus');
-
-    modalTitle.textContent = `Содержимое сцены ${sceneId}`;
-    editableTextarea.value = originalTextarea ? originalTextarea.value : '';
-    currentSceneIdInput.value = sceneId;
-    saveStatusDiv.innerHTML = '';
-
-    formatSceneJson();
-
-    const modal = getSceneModalInstance();
-    if (modal) {
-        modal.show();
-    } else {
-        const modalElement = document.getElementById('sceneJsonModal');
-        if (modalElement) modalElement.style.display = 'block';
-    }
+    const orig = document.getElementById(`scene-${sceneId}`);
+    const panel = document.getElementById('sceneJsonPanel');
+    const ta = document.getElementById('scenePanelJsonContentEditable');
+    const title = document.getElementById('scenePanelTitle');
+    ta.value = orig ? orig.value : '';
+    title.textContent = sceneId;
+    panel.style.display = 'block';
 }
 
-function saveSceneContent() {
-    const sceneId = document.getElementById('currentSceneId').value;
-    const contentJson = document.getElementById('sceneJsonContentEditable').value;
-    const saveStatusDiv = document.getElementById('sceneSaveStatus');
-    saveStatusDiv.innerHTML = '<span class="text-info">Сохранение...</span>';
+function hideScenePanel() {
+    document.getElementById('sceneJsonPanel').style.display = 'none';
+}
 
-    try {
-        JSON.parse(contentJson);
-    } catch (e) {
-        saveStatusDiv.innerHTML = '<span class="text-danger">Ошибка: Некорректный JSON!</span>';
-        return;
-    }
-
-    const storyId = '{{ .Story.ID }}';
+function saveScenePanelContent() {
+    const sceneId = document.getElementById('scenePanelTitle').textContent;
+    const contentJson = document.getElementById('scenePanelJsonContentEditable').value;
+    try { JSON.parse(contentJson); } catch { alert('Некорректный JSON!'); return; }
     const userId = '{{ .TargetUser.ID }}';
-    const url = `/admin/users/${userId}/stories/${storyId}/scenes/${sceneId}`;
-
-    fetch(url, {
-        method: 'POST', 
-        headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-        },
-        body: JSON.stringify({ contentJson: contentJson })
+    const storyId = '{{ .Story.ID }}';
+    fetch(`/admin/users/${userId}/stories/${storyId}/scenes/${sceneId}`, {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json','Accept':'application/json' },
+        body: JSON.stringify({ contentJson })
     })
-    .then(response => {
-        if (!response.ok) {
-            return response.json().then(errData => {
-                throw new Error(errData.error || `Ошибка сети: ${response.status}`);
-            }).catch(() => {
-                throw new Error(`Ошибка сети: ${response.status}`);
-            });
-        }
-        return response.json(); 
+    .then(res => {
+        if (!res.ok) throw new Error();
+        document.getElementById(`scene-${sceneId}`).value = contentJson;
+        hideScenePanel();
     })
-    .then(data => {
-        saveStatusDiv.innerHTML = '<span class="text-success">Успешно сохранено!</span>';
-        const originalTextarea = document.getElementById(`scene-${sceneId}`);
-        if(originalTextarea) {
-            originalTextarea.value = contentJson; 
-        }
-        const modal = getSceneModalInstance();
-        if (modal) {
-            setTimeout(() => modal.hide(), 1500);
-        } else {
-            const modalElement = document.getElementById('sceneJsonModal');
-            if (modalElement) modalElement.style.display = 'none';
-        }
-    })
-    .catch(error => {
-        console.error('Error saving scene content:', error);
-        saveStatusDiv.innerHTML = `<span class="text-danger">Ошибка сохранения: ${error.message}</span>`;
-    });
+    .catch(() => alert('Ошибка сохранения сцены'));
 }
 </script>
 

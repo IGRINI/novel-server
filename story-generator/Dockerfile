@@ -38,5 +38,3 @@ COPY --from=builder /story-worker .
 
 # Команда для запуска воркера
 ENTRYPOINT ["/app/story-worker"]
-
-# HEALTHCHECK убран, т.к. воркеры обычно не имеют HTTP эндпоинта для проверки 

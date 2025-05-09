@@ -15,6 +15,7 @@ import (
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
 	"novel-server/shared/notifications"
+	"novel-server/shared/utils"
 )
 
 func (p *NotificationProcessor) publishStoryUpdateViaRabbitMQ(ctx context.Context, story *sharedModels.PublishedStory, eventType string, errorMsg *string) {
@@ -108,7 +109,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 		}
 
 		if parseErr != nil {
-			p.logger.Error("Processing NovelSetup failed before JSON handling",
+			p.logger.Error("Processing NovelSetup failed before JSON handling (fetch error)",
 				zap.String("task_id", taskID),
 				zap.String("published_story_id", publishedStoryID.String()),
 				zap.Error(parseErr),
@@ -135,46 +136,44 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 			return parseErr
 		}
 
+		// Теперь валидируем JSON от AI перед его использованием
 		var setupContent sharedModels.NovelSetupContent
 		setupBytes := []byte(rawGeneratedText)
-		p.logger.Debug("Attempting to unmarshal setupBytes into NovelSetupContent (assuming pre-validated JSON)",
+
+		p.logger.Debug("Attempting to unmarshal setupBytes into NovelSetupContent for validation",
 			zap.String("task_id", taskID),
 			zap.String("published_story_id", publishedStoryID.String()),
-			zap.ByteString("json_bytes", setupBytes),
+			// Не логируем полные setupBytes здесь, может быть большим
 		)
+
 		if errUnmarshalSetup := json.Unmarshal(setupBytes, &setupContent); errUnmarshalSetup != nil {
-			p.logger.Error("SETUP UNMARSHAL ERROR (post-generator): Failed to decode setup JSON into NovelSetupContent struct (should have been validated by generator)",
+			p.logger.Error("SETUP UNMARSHAL ERROR (Validation): Failed to decode setup JSON into NovelSetupContent struct",
 				zap.String("task_id", taskID),
 				zap.String("published_story_id", publishedStoryID.String()),
 				zap.Error(errUnmarshalSetup),
-				zap.ByteString("problematic_bytes", setupBytes),
+				zap.String("json_snippet", utils.StringShort(rawGeneratedText, 200)), // Исправлено на utils.StringShort
 			)
-			parseErr = fmt.Errorf("internal error processing setup: unexpected JSON structure from generator: %w", errUnmarshalSetup)
+			parseErr = fmt.Errorf("generated setup JSON validation failed: %w", errUnmarshalSetup)
 			errDetails := parseErr.Error()
 
 			dbCtxUpdateStory, cancelUpdateStory := context.WithTimeout(ctx, 10*time.Second)
-			defer cancelUpdateStory()
+			// defer cancelUpdateStory() // defer здесь не нужен, так как мы выходим из функции
 			if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtxUpdateStory, p.db, publishedStoryID, sharedModels.StatusError, false, false, &errDetails); errUpdateStory != nil {
-				p.logger.Error("CRITICAL ERROR: Failed to update PublishedStory status to Error after initial setup processing error",
+				p.logger.Error("CRITICAL ERROR: Failed to update PublishedStory status to Error after setup JSON validation error",
 					zap.String("task_id", taskID),
 					zap.String("published_story_id", publishedStoryID.String()),
 					zap.Error(errUpdateStory),
 				)
-			} else {
-				p.logger.Info("PublishedStory status updated to Error due to initial setup processing error",
-					zap.String("task_id", taskID),
-					zap.String("published_story_id", publishedStoryID.String()),
-				)
 			}
-
+			cancelUpdateStory() // Вызываем cancel вручную перед выходом
 			// Отправка WebSocket уведомления об ошибке обработки
 			go p.publishStoryUpdateViaRabbitMQ(ctx, publishedStory, constants.WSEventSetupError, &errDetails)
-			return parseErr
+			return parseErr // Возвращаем ошибку валидации
 		} else {
-			p.logger.Info("Successfully unmarshalled setup JSON (post-generator)", zap.String("task_id", taskID))
+			p.logger.Info("Successfully validated setup JSON by unmarshalling into NovelSetupContent", zap.String("task_id", taskID))
+			// JSON валиден, теперь можно его сохранять и использовать setupContent
 
 			var fullConfig sharedModels.Config
-			var characterVisualStyle string
 			var storyStyle string
 			var needsPreviewImage bool = false
 			var needsCharacterImages bool = false
@@ -183,11 +182,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 			if errCfg := json.Unmarshal(publishedStory.Config, &fullConfig); errCfg != nil {
 				p.logger.Warn("Failed to unmarshal config JSON to get CharacterVisualStyle/Style", zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()), zap.Error(errCfg))
 			} else {
-				characterVisualStyle = fullConfig.PlayerPrefs.CharacterVisualStyle
 				storyStyle = fullConfig.PlayerPrefs.Style
-				if characterVisualStyle != "" {
-					characterVisualStyle = ", " + characterVisualStyle
-				}
 				if storyStyle != "" {
 					storyStyle = ", " + storyStyle
 				}
@@ -223,7 +218,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 					p.logger.Debug("Character image needs generation", zap.String("image_ref", correctedRef))
 					needsCharacterImages = true
 					characterIDForTask := uuid.New()
-					fullCharacterPrompt := charData.Prompt + characterVisualStyle
+					fullCharacterPrompt := charData.Prompt
 					imageTask := sharedMessaging.CharacterImageTaskPayload{
 						TaskID:           characterIDForTask.String(),
 						CharacterID:      characterIDForTask,
@@ -292,7 +287,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 					if needsPreviewImage {
 						previewImageRef := fmt.Sprintf("history_preview_%s", publishedStoryID.String())
 						basePreviewPrompt := setupContent.StoryPreviewImagePrompt
-						fullPreviewPromptWithStyles := basePreviewPrompt + storyStyle + characterVisualStyle
+						fullPreviewPromptWithStyles := basePreviewPrompt + storyStyle
 						previewTask := sharedMessaging.CharacterImageTaskPayload{
 							TaskID:           uuid.New().String(),
 							CharacterID:      publishedStoryID,

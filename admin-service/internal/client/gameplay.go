@@ -48,4 +48,10 @@ type GameplayServiceClient interface {
 	DeleteDraft(ctx context.Context, userID, draftID uuid.UUID) error
 	RetryDraftGeneration(ctx context.Context, userID, draftID uuid.UUID) error
 	DeletePublishedStory(ctx context.Context, userID, storyID uuid.UUID) error
+
+	// <<< ДОБАВЛЕНО: Удаление прогресса игрока через внутренний API >>>
+	DeletePlayerProgressInternal(ctx context.Context, progressID uuid.UUID, adminAccessToken string) error
+
+	// <<< ДОБАВЛЕНО: Удаление состояния игрока (GameState) через внутренний API >>>
+	DeleteStoryPlayerInternal(ctx context.Context, storyID, playerID uuid.UUID, adminAccessToken string) error
 }

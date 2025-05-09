@@ -38,6 +38,3 @@ COPY --from=builder /websocket-server .
 
 # Устанавливаем команду для запуска приложения
 CMD ["/app/websocket-server"]
-
-# Определяем порт для health check (должен совпадать с портом в приложении)
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD wget --spider -q http://localhost:9092/health || exit 1 

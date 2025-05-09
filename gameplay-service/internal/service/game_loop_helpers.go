@@ -11,13 +11,15 @@ import (
 	"sort"
 	"strings"
 
+	"novel-server/shared/utils"
+
 	"github.com/google/uuid"
 )
 
 // --- Helper Functions ---
 
 // calculateStateHash calculates a deterministic state hash, including the previous state hash.
-func calculateStateHash(previousHash string, coreStats map[string]int, storyVars map[string]interface{}, globalFlags []string) (string, error) {
+func calculateStateHash(previousHash string, coreStats map[string]int, storyVars map[string]interface{}) (string, error) {
 	stateMap := make(map[string]interface{})
 
 	stateMap["_ph"] = previousHash
@@ -31,15 +33,6 @@ func calculateStateHash(previousHash string, coreStats map[string]int, storyVars
 			stateMap["sv_"+k] = v
 		}
 	}
-
-	nonTransientFlags := make([]string, 0, len(globalFlags))
-	for _, flag := range globalFlags {
-		if !strings.HasPrefix(flag, "_") {
-			nonTransientFlags = append(nonTransientFlags, flag)
-		}
-	}
-	sort.Strings(nonTransientFlags)
-	stateMap["gf"] = nonTransientFlags
 
 	keys := make([]string, 0, len(stateMap))
 	for k := range stateMap {
@@ -85,9 +78,6 @@ func applyConsequences(progress *models.PlayerProgress, cons models.Consequences
 	if progress.StoryVariables == nil {
 		progress.StoryVariables = make(map[string]interface{})
 	}
-	if progress.GlobalFlags == nil {
-		progress.GlobalFlags = []string{}
-	}
 
 	if cons.CoreStatsChange != nil {
 		for statName, change := range cons.CoreStatsChange {
@@ -101,33 +91,6 @@ func applyConsequences(progress *models.PlayerProgress, cons models.Consequences
 				delete(progress.StoryVariables, varName)
 			} else {
 				progress.StoryVariables[varName] = value
-			}
-		}
-	}
-
-	if len(cons.GlobalFlagsRemove) > 0 {
-		flagsToRemove := make(map[string]struct{}, len(cons.GlobalFlagsRemove))
-		for _, flag := range cons.GlobalFlagsRemove {
-			flagsToRemove[flag] = struct{}{}
-		}
-		newFlags := make([]string, 0, len(progress.GlobalFlags))
-		for _, flag := range progress.GlobalFlags {
-			if _, found := flagsToRemove[flag]; !found {
-				newFlags = append(newFlags, flag)
-			}
-		}
-		progress.GlobalFlags = newFlags
-	}
-
-	if len(cons.GlobalFlags) > 0 {
-		existingFlags := make(map[string]struct{}, len(progress.GlobalFlags))
-		for _, flag := range progress.GlobalFlags {
-			existingFlags[flag] = struct{}{}
-		}
-		for _, flagToAdd := range cons.GlobalFlags {
-			if _, found := existingFlags[flagToAdd]; !found {
-				progress.GlobalFlags = append(progress.GlobalFlags, flagToAdd)
-				existingFlags[flagToAdd] = struct{}{}
 			}
 		}
 	}
@@ -180,56 +143,35 @@ func createGenerationPayload(
 		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Setup JSON: %w", err)
 	}
 
-	minimalConfig := models.ToMinimalConfigForScene(&fullConfig)
-	minimalSetup := models.ToMinimalSetupForScene(&fullSetup)
-
-	compressedInputData := make(map[string]interface{})
-
-	compressedInputData["cfg"] = minimalConfig
-	compressedInputData["stp"] = minimalSetup
-
-	if progress.CoreStats != nil {
-		compressedInputData["cs"] = progress.CoreStats
-	}
-	nonTransientFlags := make([]string, 0, len(progress.GlobalFlags))
-	for _, flag := range progress.GlobalFlags {
-		if !strings.HasPrefix(flag, "_") {
-			nonTransientFlags = append(nonTransientFlags, flag)
-		}
-	}
-	sort.Strings(nonTransientFlags)
-	compressedInputData["gf"] = nonTransientFlags
-
-	compressedInputData["pss"] = progress.LastStorySummary
-	compressedInputData["pfd"] = progress.LastFutureDirection
-	compressedInputData["pvis"] = progress.LastVarImpactSummary
-
-	nonTransientVars := make(map[string]interface{})
+	// Собираем текущие переменные без временных (начинающихся с _)
+	currentNonTransientVars := make(map[string]interface{})
 	if progress.StoryVariables != nil {
 		for k, v := range progress.StoryVariables {
 			if v != nil && !strings.HasPrefix(k, "_") {
-				nonTransientVars[k] = v
+				currentNonTransientVars[k] = v
 			}
 		}
 	}
-	compressedInputData["sv"] = nonTransientVars
-	compressedInputData["ec"] = progress.EncounteredCharacters
 
-	compressedInputData["uc"] = madeChoicesInfo
-
-	userInputBytes, errMarshal := json.Marshal(compressedInputData)
-	if errMarshal != nil {
-		log.Printf("ERROR: Failed to marshal compressedInputData for generation task StoryID %s: %v", story.ID, errMarshal)
-		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error marshaling input data: %w", errMarshal)
-	}
-	userInputJSON := string(userInputBytes)
+	// Используем новый универсальный форматтер
+	userInputString := utils.FormatFullGameStateToString(
+		fullConfig,
+		fullSetup,
+		progress.CoreStats,
+		madeChoicesInfo,
+		derefStringPtr(progress.LastStorySummary),
+		derefStringPtr(progress.LastFutureDirection),
+		derefStringPtr(progress.LastVarImpactSummary),
+		currentNonTransientVars,
+		progress.EncounteredCharacters,
+	)
 
 	payload := sharedMessaging.GenerationTaskPayload{
 		TaskID:           uuid.New().String(),
 		UserID:           userID.String(),
 		PublishedStoryID: story.ID.String(),
 		PromptType:       promptType,
-		UserInput:        userInputJSON,
+		UserInput:        userInputString,
 		StateHash:        currentStateHash,
 		Language:         language,
 	}
@@ -238,6 +180,8 @@ func createGenerationPayload(
 }
 
 // clearTransientFlags removes flags starting with "_" from the slice.
+// Теперь не нужна, т.к. gf не используется.
+/*
 func clearTransientFlags(flags []string) []string {
 	if flags == nil {
 		return nil
@@ -249,6 +193,15 @@ func clearTransientFlags(flags []string) []string {
 		}
 	}
 	return newFlags
+}
+*/
+
+// derefStringPtr безопасное разыменовывание *string
+func derefStringPtr(s *string) string {
+	if s != nil {
+		return *s
+	}
+	return ""
 }
 
 // createInitialSceneGenerationPayload создает payload для генерации *первой* сцены истории.
@@ -274,41 +227,36 @@ func createInitialSceneGenerationPayload(
 		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Setup JSON: %w", err)
 	}
 
-	minimalConfig := models.ToMinimalConfigForScene(&fullConfig)
-	minimalSetup := models.ToMinimalSetupForScene(&fullSetup)
-
+	// Начальные значения для динамических полей
 	initialCoreStats := make(map[string]int)
 	if fullSetup.CoreStatsDefinition != nil {
 		for statName, definition := range fullSetup.CoreStatsDefinition {
 			initialCoreStats[statName] = definition.Initial
 		}
 	}
+	initialStoryVars := make(map[string]interface{}) // Пусто
+	initialChoices := []models.UserChoiceInfo{}      // Пусто
+	initialEncChars := []string{}                    // Пусто
 
-	compressedInputData := make(map[string]interface{})
-	compressedInputData["cfg"] = minimalConfig
-	compressedInputData["stp"] = minimalSetup
-	compressedInputData["cs"] = initialCoreStats
-	compressedInputData["sv"] = make(map[string]interface{})
-	compressedInputData["gf"] = []string{}
-	compressedInputData["uc"] = make(map[string]string)
-	compressedInputData["pss"] = ""
-	compressedInputData["pfd"] = ""
-	compressedInputData["pvis"] = ""
-	compressedInputData["ec"] = []string{}
-
-	userInputBytes, errMarshal := json.Marshal(compressedInputData)
-	if errMarshal != nil {
-		log.Printf("ERROR: Failed to marshal compressedInputData for initial scene generation task StoryID %s: %v", story.ID, errMarshal)
-		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error marshaling input data: %w", errMarshal)
-	}
-	userInputJSON := string(userInputBytes)
+	// Используем новый универсальный форматтер с начальными/пустыми значениями
+	userInputString := utils.FormatFullGameStateToString(
+		fullConfig,
+		fullSetup,
+		initialCoreStats,
+		initialChoices,
+		"", // previousSSS
+		"", // previousFD
+		"", // previousVIS
+		initialStoryVars,
+		initialEncChars,
+	)
 
 	payload := sharedMessaging.GenerationTaskPayload{
 		TaskID:           uuid.New().String(),
 		UserID:           userID.String(),
 		PublishedStoryID: story.ID.String(),
 		PromptType:       models.PromptTypeNovelFirstSceneCreator,
-		UserInput:        userInputJSON,
+		UserInput:        userInputString, // Помещаем отформатированный текст сюда
 		StateHash:        models.InitialStateHash,
 		Language:         language,
 	}

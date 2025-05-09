@@ -18,10 +18,12 @@ import (
 	// Добавляем модель
 	// "novel-server/story-generator/internal/repository" // <<< Удаляем старый импорт
 	"novel-server/story-generator/internal/service" // Для шаблонизации промтов
-	"strings"                                       // <<< ДОБАВЛЕНО: для strings.Replace >>>
+	// <<< ДОБАВЛЕНО: для strings.Replace >>>
 	"time"
 
 	// "novel-server/story-generator/internal/model" // <<< Удаляем импорт model
+	"strings"
+
 	"github.com/google/uuid"
 )
 
@@ -128,11 +130,9 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 	var processingErr error
 	var completedAt time.Time
 	var finalUsageInfo service.UsageInfo
-	var systemPrompt string
-	var language string       // <<< Перенесено сюда
-	var promptKey string      // <<< Перенесено сюда
-	var promptText string     // <<< Перенесено сюда
-	var userInputForAI string // <<< Перенесено сюда
+	var language string   // <<< Перенесено сюда
+	var promptKey string  // <<< Перенесено сюда
+	var promptText string // <<< Перенесено сюда
 
 	// Defer для записи общей длительности задачи и отправки метрик
 	defer func() {
@@ -150,29 +150,6 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 		log.Printf("[TaskID: %s] Завершение обработки задачи. Статус: %s. Общее время: %v.", payload.TaskID, taskStatus, duration)
 	}()
 
-	// --- Этап 1: Получение системного промпта (с учетом языка из payload) ---
-	systemPromptLang := payload.Language // Используем язык из payload
-	if systemPromptLang == "" {
-		systemPromptLang = "en" // Запасной язык, если в payload пусто (НУЖНО ЛИ?)
-		log.Printf("[TaskID: %s][WARN] Язык в payload пуст, используется запасной язык '%s' для системного промпта.", payload.TaskID, systemPromptLang)
-	}
-	systemPrompt, err = h.prompts.GetPrompt(context.Background(), systemPromptKey, systemPromptLang)
-	if err != nil {
-		log.Printf("[TaskID: %s] Критическая ошибка: не удалось получить системный промпт (%s/%s): %v",
-			payload.TaskID, systemPromptLang, systemPromptKey, err)
-		MetricsIncrementTaskFailed("system_prompt_missing")
-		processingErr = fmt.Errorf("failed to get system prompt '%s/%s': %w", systemPromptLang, systemPromptKey, err)
-		goto SaveAndNotify // Используем goto для перехода к сохранению ошибки
-	}
-	if systemPrompt == "" {
-		log.Printf("[TaskID: %s] Критическая ошибка: системный промпт (%s/%s) пуст.",
-			payload.TaskID, systemPromptLang, systemPromptKey)
-		MetricsIncrementTaskFailed("system_prompt_empty")
-		processingErr = fmt.Errorf("system prompt '%s/%s' is empty", systemPromptLang, systemPromptKey)
-		goto SaveAndNotify // Используем goto для перехода к сохранению ошибки
-	}
-	log.Printf("[TaskID: %s] Системный промпт '%s/%s' успешно получен.", payload.TaskID, systemPromptLang, systemPromptKey)
-
 	// --- Этап 2: Получение промпта задачи ---
 	language = payload.Language // <<< Используем язык из payload >>>
 	if language == "" {         // <<< Добавляем fallback и здесь >>>
@@ -180,138 +157,161 @@ func (h *TaskHandler) Handle(payload messaging.GenerationTaskPayload) (err error
 		log.Printf("[TaskID: %s][WARN] Язык в payload пуст, используется запасной язык '%s' для промпта задачи.", payload.TaskID, language)
 	}
 	promptKey = string(payload.PromptType) // <<< Используем PromptType как ключ
-	promptText, err = h.prompts.GetPrompt(context.Background(), promptKey, language)
+	// ВСЕГДА ЗАПРАШИВАЕМ ПРОМПТ НА АНГЛИЙСКОМ
+	basePromptText, err := h.prompts.GetPrompt(context.Background(), promptKey, "en")
 	if err != nil {
-		log.Printf("[TaskID: %s] Ошибка получения промпта из кэша: %v. key='%s', lang='%s'", payload.TaskID, err, promptKey, language)
+		log.Printf("[TaskID: %s] Ошибка получения базового (en) промпта из кэша: %v. key='%s', lang='en'", payload.TaskID, err, promptKey)
 		MetricsIncrementTaskFailed("prompt_cache_miss")
-		processingErr = fmt.Errorf("failed to get prompt '%s/%s': %w", language, promptKey, err)
+		processingErr = fmt.Errorf("failed to get base prompt 'en/%s': %w", promptKey, err)
 		// Ошибка получения промпта - дальше не идем, сразу сохраняем/уведомляем
 	} else {
 		// <<< Промпт получен, продолжаем обработку >>>
 
-		// <<< Заменяем плейсхолдер {{USER_INPUT}} >>>
-		userInputForAI = strings.Replace(promptText, "{{USER_INPUT}}", payload.UserInput, 1)
-		if userInputForAI == promptText && strings.Contains(promptText, "{{USER_INPUT}}") {
-			// Если плейсхолдер был, но замена не произошла (например, UserInput пуст)
-			log.Printf("[TaskID: %s][WARN] Placeholder {{USER_INPUT}} не был заменен в промпте типа '%s'. Возможно, UserInput пуст.", payload.TaskID, payload.PromptType)
-			// Решаем, что делать дальше: либо ошибка, либо использовать промпт как есть
-			// Пока оставим как есть, AI получит промпт с незамененным плейсхолдером или без него.
+		// Определяем инструкцию для языка
+		langInstruction := getLanguageInstruction(language)
+		promptText = strings.Replace(basePromptText, "{{LANGUAGE_DEFINITION}}", langInstruction, 1)
+		if promptText == basePromptText && strings.Contains(basePromptText, "{{LANGUAGE_DEFINITION}}") {
+			log.Printf("[TaskID: %s][WARN] Placeholder {{LANGUAGE_DEFINITION}} не был заменен в промпте '%s' для языка '%s'. Убедитесь, что плейсхолдер присутствует в 'en' версии промпта.", payload.TaskID, promptKey, language)
+		} else if promptText != basePromptText {
+			log.Printf("[TaskID: %s] Placeholder {{LANGUAGE_DEFINITION}} успешно заменен на '%s' для языка '%s'.", payload.TaskID, langInstruction, language)
 		}
-		log.Printf("[TaskID: %s] Final UserInput for AI (length: %d).", payload.TaskID, len(userInputForAI))
+
+		// <<< Заменяем плейсхолдер {{USER_INPUT}} --- ЭТА ЛОГИКА УДАЛЕНА >>>
+		// userInputForAI = strings.Replace(promptText, "{{USER_INPUT}}", payload.UserInput, 1)
+		// if userInputForAI == promptText && strings.Contains(promptText, "{{USER_INPUT}}") {
+		// 	// Если плейсхолдер был, но замена не произошла (например, UserInput пуст)
+		// 	log.Printf("[TaskID: %s][WARN] Placeholder {{USER_INPUT}} не был заменен в промпте типа '%s'. Возможно, UserInput пуст.", payload.TaskID, payload.PromptType)
+		// 	// Решаем, что делать дальше: либо ошибка, либо использовать промпт как есть
+		// 	// Пока оставим как есть, AI получит промпт с незамененным плейсхолдером или без него.
+		// }
+		// log.Printf("[TaskID: %s] Final UserInput for AI (length: %d).", payload.TaskID, len(userInputForAI))
+		log.Printf("[TaskID: %s] Prompt text (to be used as system prompt, length: %d). User input (to be used as user input, length: %d)", payload.TaskID, len(promptText), len(payload.UserInput))
 
 		// --- Этап 3: Вызов AI API с ретраями (только если промпт загружен) ---
-		if payload.UserInput == "" && payload.PromptType != "" { // TODO: Уточнить, всегда ли нужен UserInput?
-			processingErr = fmt.Errorf("ошибка: userInput пуст для PromptType '%s'", payload.PromptType)
-			log.Printf("[TaskID: %s] %v", payload.TaskID, processingErr)
-			MetricsIncrementTaskFailed("user_input_empty")
-			err = fmt.Errorf("ошибка валидации: %w", processingErr)
-			// <<< УДАЛЕНО: return err >>>
-		} else {
-			baseDelay := h.baseRetryDelay
+		if payload.UserInput == "" && payload.PromptType != "" { // TODO: Уточнить, всегда ли нужен UserInput? Рассмотреть случаи, когда UserInput может быть пустым, но это валидно.
+			// Если UserInput пуст, но тип промпта предполагает его наличие (например, все кроме начального Narrator),
+			// это может быть ошибкой или просто означать, что пользователь ничего не ввел.
+			// Для некоторых PromptType пустой UserInput может быть валидным.
+			// Пока оставим как есть, но стоит пересмотреть эту логику.
+			// Если UserInput не обязателен для данного PromptType, то ошибку генерировать не нужно.
+			// Возможно, стоит передавать promptText как userInput, если payload.UserInput пуст, а systemPrompt оставить пустым или базовым?
+			// Текущая логика: если payload.UserInput пуст, он и передается пустым.
+			// Если это проблема, AI вернет ошибку, или это будет обработано на уровне логики AI.
+			// Оставим лог для информации, если payload.UserInput пуст.
+			log.Printf("[TaskID: %s] UserInput is empty for PromptType '%s'. Proceeding with empty user input to AI.", payload.TaskID, payload.PromptType)
+			// processingErr = fmt.Errorf("ошибка: userInput пуст для PromptType '%s'", payload.PromptType)
+			// log.Printf("[TaskID: %s] %v", payload.TaskID, processingErr)
+			// MetricsIncrementTaskFailed("user_input_empty")
+			// err = fmt.Errorf("ошибка валидации: %w", processingErr)
+			// // <<< УДАЛЕНО: return err >>>
+		}
+		// Старая проверка на пустой UserInput закомментирована, так как UserInput может быть опциональным.
+		// AI клиент сам разберется с пустым UserInput, если это проблема для конкретной модели/задачи.
+		// else {
+		baseDelay := h.baseRetryDelay
 
-			for attempt := 1; attempt <= h.maxAttempts; attempt++ {
-				aiCallStartTime := time.Now()
-				log.Printf("[TaskID: %s] Вызов AI API (Попытка %d/%d)...", payload.TaskID, attempt, h.maxAttempts)
-				ctx, cancel := context.WithTimeout(context.Background(), h.aiTimeout)
+		for attempt := 1; attempt <= h.maxAttempts; attempt++ {
+			aiCallStartTime := time.Now()
+			log.Printf("[TaskID: %s] Вызов AI API (Попытка %d/%d)...", payload.TaskID, attempt, h.maxAttempts)
+			ctx, cancel := context.WithTimeout(context.Background(), h.aiTimeout)
 
-				var attemptUsageInfo service.UsageInfo
-				var attemptErr error
-				aiResponse, attemptUsageInfo, attemptErr = h.aiClient.GenerateText(ctx,
-					payload.UserID,
-					systemPrompt, // <<< ИСПОЛЬЗУЕМ ПОЛУЧЕННЫЙ СИСТЕМНЫЙ ПРОМПТ
-					userInputForAI,
-					service.GenerationParams{})
-				cancel()
+			var attemptUsageInfo service.UsageInfo
+			var attemptErr error
+			// ИЗМЕНЕН ВЫЗОВ: promptText передается как systemPrompt, payload.UserInput как userInput
+			aiResponse, attemptUsageInfo, attemptErr = h.aiClient.GenerateText(ctx,
+				payload.UserID,
+				promptText,        // <<< ИСПОЛЬЗУЕМ promptText КАК systemPrompt
+				payload.UserInput, // <<< ИСПОЛЬЗУЕМ payload.UserInput КАК userInput
+				service.GenerationParams{})
+			cancel()
 
-				aiCallDuration := time.Since(aiCallStartTime)
-				aiStatusLabel := "success"
+			aiCallDuration := time.Since(aiCallStartTime)
+			aiStatusLabel := "success"
 
-				if attemptErr == nil {
-					log.Printf("[TaskID: %s] AI API успешно ответил (Попытка %d). Время ответа: %v", payload.TaskID, attempt, aiCallDuration)
-					log.Printf("[TaskID: %s] Raw AI Response (length: %d): %s", payload.TaskID, len(aiResponse), aiResponse)
-					MetricsRecordAIRequest("unknown", aiStatusLabel, aiCallDuration)
-					if attemptUsageInfo.TotalTokens > 0 || attemptUsageInfo.EstimatedCostUSD > 0 {
-						MetricsRecordAITokens("unknown", float64(attemptUsageInfo.PromptTokens), float64(attemptUsageInfo.CompletionTokens))
-						MetricsAddAICost("unknown", attemptUsageInfo.EstimatedCostUSD)
-						log.Printf("[TaskID: %s][Attempt %d Metrics] Tokens: P=%d, C=%d. Cost: %.6f USD",
-							payload.TaskID, attempt, attemptUsageInfo.PromptTokens, attemptUsageInfo.CompletionTokens, attemptUsageInfo.EstimatedCostUSD)
-					}
-					finalUsageInfo = attemptUsageInfo
-					processingErr = nil
-
-					// <<< MODIFIED: Add explicit BEFORE/AFTER logging for ExtractJsonContent >>>
-					originalAIResponse := aiResponse // Keep original
-
-					// --- Log BEFORE extraction ---
-					log.Printf("[TaskID: %s] BEFORE ExtractJsonContent. Raw AI Response (length: %d): %s", payload.TaskID, len(originalAIResponse), originalAIResponse)
-
-					extractedJSON := utils.ExtractJsonContent(originalAIResponse) // Always pass original here
-
-					// --- Log AFTER extraction ---
-					log.Printf("[TaskID: %s] AFTER ExtractJsonContent. Extracted JSON (length: %d): %s", payload.TaskID, len(extractedJSON), extractedJSON)
-
-					if extractedJSON == "" {
-						log.Printf("[TaskID: %s][WARN] ExtractJsonContent returned empty string, using original AI response.", payload.TaskID)
-						// Keep original aiResponse (which is originalAIResponse)
-						aiResponse = originalAIResponse
-					} else {
-						if extractedJSON != originalAIResponse {
-							log.Printf("[TaskID: %s] ExtractJsonContent modified the AI response.", payload.TaskID)
-						} else {
-							log.Printf("[TaskID: %s] ExtractJsonContent did not modify the AI response.", payload.TaskID)
-						}
-						aiResponse = extractedJSON // Use the potentially cleaned JSON moving forward
-					}
-					// <<< END MODIFIED >>>
-
-					// <<< ДОБАВЛЕНО: Валидация JSON структуры >>>
-					validationStartTime := time.Now()
-					validateErr := validateAIResponseJSON(payload.PromptType, []byte(aiResponse))
-					if validateErr != nil {
-						log.Printf("[TaskID: %s] ОШИБКА ВАЛИДАЦИИ JSON (PromptType: %s): %v. JSON: %s",
-							payload.TaskID, payload.PromptType, validateErr, aiResponse)
-						MetricsIncrementTaskFailed("json_validation_error")
-						processingErr = fmt.Errorf("ошибка валидации JSON ответа AI: %w", validateErr)
-						// Прерываем успешный путь и переходим к сохранению ошибки
-						log.Printf("[TaskID: %s] JSON Validation took: %v", payload.TaskID, time.Since(validationStartTime))
-						break // Выходим из цикла ретраев, так как ответ получен, но он невалиден
-					} else {
-						log.Printf("[TaskID: %s] JSON структура успешно валидирована для PromptType: %s. Validation took: %v",
-							payload.TaskID, payload.PromptType, time.Since(validationStartTime))
-					}
-					// <<< КОНЕЦ ВАЛИДАЦИИ >>>
-
-					// Log the response *after* potential extraction - REMOVED as redundant now
-					// log.Printf("[TaskID: %s] Final AI Response used (length: %d): %s", payload.TaskID, len(aiResponse), aiResponse)
-					break
-				}
-
-				aiStatusLabel = "error"
-				processingErr = attemptErr
-				log.Printf("[TaskID: %s] Ошибка вызова AI API (Попытка %d/%d, время: %v): %v", payload.TaskID, attempt, h.maxAttempts, aiCallDuration, processingErr)
+			if attemptErr == nil {
+				log.Printf("[TaskID: %s] AI API успешно ответил (Попытка %d). Время ответа: %v", payload.TaskID, attempt, aiCallDuration)
+				log.Printf("[TaskID: %s] Raw AI Response (length: %d): %s", payload.TaskID, len(aiResponse), aiResponse)
 				MetricsRecordAIRequest("unknown", aiStatusLabel, aiCallDuration)
-
-				if attempt == h.maxAttempts {
-					log.Printf("[TaskID: %s] Достигнуто максимальное количество попыток (%d) вызова AI.", payload.TaskID, h.maxAttempts)
-					MetricsIncrementTaskFailed("ai_error")
-					// Не устанавливаем err здесь, processingErr уже содержит ошибку
-					break // Выходим из цикла ретраев после последней неудачной попытки
+				if attemptUsageInfo.TotalTokens > 0 || attemptUsageInfo.EstimatedCostUSD > 0 {
+					MetricsRecordAITokens("unknown", float64(attemptUsageInfo.PromptTokens), float64(attemptUsageInfo.CompletionTokens))
+					MetricsAddAICost("unknown", attemptUsageInfo.EstimatedCostUSD)
+					log.Printf("[TaskID: %s][Attempt %d Metrics] Tokens: P=%d, C=%d. Cost: %.6f USD",
+						payload.TaskID, attempt, attemptUsageInfo.PromptTokens, attemptUsageInfo.CompletionTokens, attemptUsageInfo.EstimatedCostUSD)
 				}
+				finalUsageInfo = attemptUsageInfo
+				processingErr = nil
 
-				delay := float64(baseDelay) * math.Pow(2, float64(attempt-1))
-				jitter := delay * 0.1
-				delay += jitter * (rand.Float64()*2 - 1)
-				waitDuration := time.Duration(delay)
-				if waitDuration < baseDelay {
-					waitDuration = baseDelay
+				// <<< MODIFIED: Add explicit BEFORE/AFTER logging for ExtractJsonContent >>>
+				originalAIResponse := aiResponse // Keep original
+
+				// --- Log BEFORE extraction ---
+				log.Printf("[TaskID: %s] BEFORE ExtractJsonContent. Raw AI Response (length: %d): %s", payload.TaskID, len(originalAIResponse), originalAIResponse)
+
+				extractedJSON := utils.ExtractJsonContent(originalAIResponse) // Always pass original here
+
+				// --- Log AFTER extraction ---
+				log.Printf("[TaskID: %s] AFTER ExtractJsonContent. Extracted JSON (length: %d): %s", payload.TaskID, len(extractedJSON), extractedJSON)
+
+				if extractedJSON == "" {
+					log.Printf("[TaskID: %s][WARN] ExtractJsonContent returned empty string, using original AI response.", payload.TaskID)
+					// Keep original aiResponse (which is originalAIResponse)
+					aiResponse = originalAIResponse
+				} else {
+					if extractedJSON != originalAIResponse {
+						log.Printf("[TaskID: %s] ExtractJsonContent modified the AI response.", payload.TaskID)
+					} else {
+						log.Printf("[TaskID: %s] ExtractJsonContent did not modify the AI response.", payload.TaskID)
+					}
+					aiResponse = extractedJSON // Use the potentially cleaned JSON moving forward
 				}
-				log.Printf("[TaskID: %s] Ожидание %v перед следующей попыткой...", payload.TaskID, waitDuration)
-				time.Sleep(waitDuration)
+				// <<< END MODIFIED >>>
+
+				// <<< ДОБАВЛЕНО: Валидация JSON структуры >>>
+				validationStartTime := time.Now()
+				validateErr := validateAIResponseJSON(payload.PromptType, []byte(aiResponse))
+				if validateErr != nil {
+					log.Printf("[TaskID: %s] ОШИБКА ВАЛИДАЦИИ JSON (PromptType: %s): %v. JSON: %s",
+						payload.TaskID, payload.PromptType, validateErr, aiResponse)
+					MetricsIncrementTaskFailed("json_validation_error")
+					processingErr = fmt.Errorf("ошибка валидации JSON ответа AI: %w", validateErr)
+					// Прерываем успешный путь и переходим к сохранению ошибки
+					log.Printf("[TaskID: %s] JSON Validation took: %v", payload.TaskID, time.Since(validationStartTime))
+					break // Выходим из цикла ретраев, так как ответ получен, но он невалиден
+				} else {
+					log.Printf("[TaskID: %s] JSON структура успешно валидирована для PromptType: %s. Validation took: %v",
+						payload.TaskID, payload.PromptType, time.Since(validationStartTime))
+				}
+				// <<< КОНЕЦ ВАЛИДАЦИИ >>>
+
+				// Log the response *after* potential extraction - REMOVED as redundant now
+				// log.Printf("[TaskID: %s] Final AI Response used (length: %d): %s", payload.TaskID, len(aiResponse), aiResponse)
+				break
 			}
+
+			aiStatusLabel = "error"
+			processingErr = attemptErr
+			log.Printf("[TaskID: %s] Ошибка вызова AI API (Попытка %d/%d, время: %v): %v", payload.TaskID, attempt, h.maxAttempts, aiCallDuration, processingErr)
+			MetricsRecordAIRequest("unknown", aiStatusLabel, aiCallDuration)
+
+			if attempt == h.maxAttempts {
+				log.Printf("[TaskID: %s] Достигнуто максимальное количество попыток (%d) вызова AI.", payload.TaskID, h.maxAttempts)
+				MetricsIncrementTaskFailed("ai_error")
+				// Не устанавливаем err здесь, processingErr уже содержит ошибку
+				break // Выходим из цикла ретраев после последней неудачной попытки
+			}
+
+			delay := float64(baseDelay) * math.Pow(2, float64(attempt-1))
+			jitter := delay * 0.1
+			delay += jitter * (rand.Float64()*2 - 1)
+			waitDuration := time.Duration(delay)
+			if waitDuration < baseDelay {
+				waitDuration = baseDelay
+			}
+			log.Printf("[TaskID: %s] Ожидание %v перед следующей попыткой...", payload.TaskID, waitDuration)
+			time.Sleep(waitDuration)
 		}
 	} // <<< Конец блока else (обработка после успешного получения промпта задачи) >>>
 
-SaveAndNotify: // Метка для перехода при ошибке получения промптов
 	// --- Этап N: Сохранение результата и отправка уведомления --- //
 	completedAt = time.Now() // Обновляем время завершения перед сохранением
 	processingDuration := completedAt.Sub(taskStartTime)
@@ -692,4 +692,31 @@ func validateAIResponseJSON(promptType sharedModels.PromptType, jsonData []byte)
 	}
 
 	return nil // Валидация прошла успешно
+}
+
+// getLanguageInstruction возвращает строку с инструкцией для AI на основе кода языка.
+func getLanguageInstruction(langCode string) string {
+	switch langCode {
+	case "en":
+		return "RESPOND ONLY IN ENGLISH."
+	case "fr":
+		return "RESPOND ONLY IN FRENCH."
+	case "de":
+		return "RESPOND ONLY IN GERMAN."
+	case "es":
+		return "RESPOND ONLY IN SPANISH."
+	case "it":
+		return "RESPOND ONLY IN ITALIAN."
+	case "pt":
+		return "RESPOND ONLY IN PORTUGUESE."
+	case "ru":
+		return "RESPOND ONLY IN RUSSIAN."
+	case "zh":
+		return "RESPOND ONLY IN CHINESE."
+	case "ja":
+		return "RESPOND ONLY IN JAPANESE."
+	default:
+		log.Printf("[WARN] Неизвестный код языка '%s' для getLanguageInstruction, используется английский по умолчанию.", langCode)
+		return "RESPOND ONLY IN ENGLISH." // По умолчанию английский
+	}
 }

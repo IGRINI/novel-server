@@ -17,6 +17,7 @@ import (
 	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
+	"novel-server/shared/utils"
 )
 
 // Типы обновлений для ClientStoryUpdate
@@ -32,12 +33,10 @@ const (
 // MinimalConfigForFirstScene - структура для минимального конфига, отправляемого для PromptTypeNovelFirstSceneCreator
 // Содержит только поля, необходимые этому промпту
 type MinimalConfigForFirstScene struct {
-	Language       string                   `json:"ln,omitempty"`
 	IsAdultContent bool                     `json:"ac,omitempty"`
 	Genre          string                   `json:"gn,omitempty"`
 	PlayerName     string                   `json:"pn,omitempty"`
-	PlayerGender   string                   `json:"pg,omitempty"`
-	PlayerDesc     string                   `json:"p_desc,omitempty"`
+	PlayerDesc     string                   `json:"pd,omitempty"`
 	WorldContext   string                   `json:"wc,omitempty"`
 	StorySummary   string                   `json:"ss,omitempty"`
 	PlayerPrefs    sharedModels.PlayerPrefs `json:"pp,omitempty"` // Используем существующую структуру
@@ -50,12 +49,10 @@ func ToMinimalConfigForFirstScene(configBytes []byte) MinimalConfigForFirstScene
 
 	// Используем структуру PlayerPrefs напрямую
 	return MinimalConfigForFirstScene{
-		Language:       fullConfig.Language,
 		IsAdultContent: fullConfig.IsAdultContent,
 		Genre:          fullConfig.Genre,
-		PlayerName:     fullConfig.PlayerName,
-		PlayerGender:   fullConfig.PlayerGender,
-		PlayerDesc:     fullConfig.PlayerDesc,
+		PlayerName:     fullConfig.ProtagonistName,
+		PlayerDesc:     fullConfig.ProtagonistDescription,
 		WorldContext:   fullConfig.WorldContext,
 		StorySummary:   fullConfig.StorySummary,
 		PlayerPrefs:    fullConfig.PlayerPrefs, // Передаем всю структуру PlayerPrefs
@@ -767,47 +764,22 @@ func (p *NotificationProcessor) publishFirstSceneTaskInternal(ctx context.Contex
 		return errors.New("setup is nil or empty")
 	}
 
-	// Распарсиваем Setup для получения упрощенной структуры
+	// Распарсиваем Config
+	var configData sharedModels.Config
+	if errUnmarshalConfig := json.Unmarshal(story.Config, &configData); errUnmarshalConfig != nil {
+		log.Error("Cannot publish first scene task: Failed to unmarshal Config JSON", zap.Error(errUnmarshalConfig))
+		return fmt.Errorf("failed to unmarshal config JSON: %w", errUnmarshalConfig)
+	}
+
+	// Распарсиваем Setup
 	var setupContent sharedModels.NovelSetupContent
 	if errUnmarshalSetup := json.Unmarshal(story.Setup, &setupContent); errUnmarshalSetup != nil {
 		log.Error("Cannot publish first scene task: Failed to unmarshal setup JSON", zap.Error(errUnmarshalSetup))
 		return fmt.Errorf("failed to unmarshal setup JSON: %w", errUnmarshalSetup)
 	}
 
-	var simplifiedSetup map[string]interface{}
-	simplifiedChars := make([]map[string]string, 0, len(setupContent.Characters))
-	for _, char := range setupContent.Characters {
-		simplifiedChar := map[string]string{"n": char.Name, "d": char.Description}
-		if char.Personality != "" {
-			simplifiedChar["p"] = char.Personality
-		}
-		simplifiedChars = append(simplifiedChars, simplifiedChar)
-	}
-	simplifiedSetup = map[string]interface{}{
-		"chars": simplifiedChars,
-		"csd":   setupContent.CoreStatsDefinition,
-	}
-
-	// Создаем минимальный конфиг
-	minimalConfig := ToMinimalConfigForFirstScene(story.Config) // Используем существующую функцию из пакета
-
-	// Собираем combinedInputMap
-	combinedInputMap := make(map[string]interface{})
-	combinedInputMap["cfg"] = minimalConfig
-	combinedInputMap["stp"] = simplifiedSetup
-	combinedInputMap["sv"] = make(map[string]interface{})    // Пустые начальные значения
-	combinedInputMap["gf"] = []string{}                      // Пустые начальные значения
-	combinedInputMap["uc"] = []sharedModels.UserChoiceInfo{} // Пустые начальные значения
-	combinedInputMap["pss"] = ""                             // Пустые начальные значения
-	combinedInputMap["pfd"] = ""                             // Пустые начальные значения
-	combinedInputMap["pvis"] = ""                            // Пустые начальные значения
-
-	combinedInputBytes, errMarshal := json.Marshal(combinedInputMap)
-	if errMarshal != nil {
-		log.Error("Failed to marshal combined input map for first scene task", zap.Error(errMarshal))
-		return fmt.Errorf("failed to marshal combined input map: %w", errMarshal)
-	}
-	combinedInputJSON := string(combinedInputBytes)
+	// Используем новый форматтер для UserInput
+	combinedInputString := utils.FormatConfigAndSetupToString(configData, setupContent)
 
 	// Используем язык из истории
 	storyLanguage := story.Language
@@ -822,7 +794,7 @@ func (p *NotificationProcessor) publishFirstSceneTaskInternal(ctx context.Contex
 		UserID:           story.UserID.String(),
 		PromptType:       sharedModels.PromptTypeNovelFirstSceneCreator,
 		PublishedStoryID: story.ID.String(),
-		UserInput:        combinedInputJSON, // <<< Правильное поле
+		UserInput:        combinedInputString, // <<< Используем форматированную строку
 		StateHash:        sharedModels.InitialStateHash,
 		Language:         storyLanguage,
 	}

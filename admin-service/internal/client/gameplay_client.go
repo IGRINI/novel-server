@@ -744,6 +744,72 @@ func (c *gameplayClient) UpdatePlayerProgressInternal(ctx context.Context, progr
 	return nil
 }
 
+// DeletePlayerProgressInternal удаляет прогресс игрока через внутренний API.
+func (c *gameplayClient) DeletePlayerProgressInternal(ctx context.Context, progressID uuid.UUID, adminAccessToken string) error {
+	deleteURL := fmt.Sprintf("%s/internal/player-progress/%s", c.baseURL, progressID.String())
+	log := c.logger.With(zap.String("url", deleteURL), zap.String("progressID", progressID.String()))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, deleteURL, nil)
+	if err != nil {
+		log.Error("Failed to create delete player progress HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.doAdminRequest(ctx, req, adminAccessToken)
+	if err != nil {
+		log.Error("HTTP request for delete player progress failed", zap.Error(err))
+		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		log.Warn("Player progress not found for deletion", zap.Int("status", resp.StatusCode))
+		return models.ErrPlayerProgressNotFound
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Warn("Received non-OK status for delete player progress", zap.Int("status", resp.StatusCode), zap.ByteString("body", bodyBytes))
+		return fmt.Errorf("received unexpected status %d from gameplay service for delete player progress", resp.StatusCode)
+	}
+
+	log.Info("Player progress deleted successfully")
+	return nil
+}
+
+// DeleteStoryPlayerInternal удаляет состояние игрока (GameState) через внутренний API.
+func (c *gameplayClient) DeleteStoryPlayerInternal(ctx context.Context, storyID, playerID uuid.UUID, adminAccessToken string) error {
+	deleteURL := fmt.Sprintf("%s/internal/stories/%s/players/%s", c.baseURL, storyID.String(), playerID.String())
+	log := c.logger.With(zap.String("url", deleteURL), zap.String("storyID", storyID.String()), zap.String("playerID", playerID.String()))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, deleteURL, nil)
+	if err != nil {
+		log.Error("Failed to create delete player game state HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.doAdminRequest(ctx, req, adminAccessToken)
+	if err != nil {
+		log.Error("HTTP request for delete player game state failed", zap.Error(err))
+		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		log.Warn("Player game state not found for deletion", zap.Int("status", resp.StatusCode))
+		return models.ErrNotFound
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Warn("Received non-OK status for delete player game state", zap.Int("status", resp.StatusCode), zap.ByteString("body", bodyBytes))
+		return fmt.Errorf("received unexpected status %d from gameplay service for delete player game state", resp.StatusCode)
+	}
+
+	log.Info("Player game state deleted successfully")
+	return nil
+}
+
 // GetActiveStoryCount получает количество активных (готовых к игре) историй из gameplay-service.
 func (c *gameplayClient) GetActiveStoryCount(ctx context.Context, adminAccessToken string) (int, error) {
 	countURL := fmt.Sprintf("%s/internal/stories/active/count", c.baseURL)

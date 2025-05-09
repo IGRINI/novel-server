@@ -86,7 +86,7 @@ func (h *GameplayHandler) getStoryConfig(c *gin.Context) { // <<< *gin.Context
 	}
 
 	// Проверяем, есть ли сам конфиг
-	if config.Config == nil || len(config.Config) == 0 {
+	if len(config.Config) == 0 {
 		detail := StoryConfigDetail{
 			ID:        config.ID.String(),
 			CreatedAt: config.CreatedAt,
@@ -98,63 +98,77 @@ func (h *GameplayHandler) getStoryConfig(c *gin.Context) { // <<< *gin.Context
 		return
 	}
 
-	// Определяем внутреннюю структуру для анмаршалинга JSON из config.Config
-	// Используем теги json, соответствующие сжатым ключам из промпта narrator.md
-	type internalCoreStat struct {
-		D  string `json:"d"`
-		Iv int    `json:"iv"`
-		Go struct {
-			Min bool `json:"min"`
-			Max bool `json:"max"`
-		} `json:"go"`
-	}
-	type internalConfig struct {
-		T     string                      `json:"t"`
-		Sd    string                      `json:"sd"`
-		Fr    string                      `json:"fr"`
-		Gn    string                      `json:"gn"`
-		Ac    bool                        `json:"ac"`
-		Pn    string                      `json:"pn"`
-		PDesc string                      `json:"p_desc"`
-		Wc    string                      `json:"wc"`
-		Ss    string                      `json:"ss"`
-		Cs    map[string]internalCoreStat `json:"cs"`
-	}
-
-	var parsedInternal internalConfig
-	if err := json.Unmarshal(config.Config, &parsedInternal); err != nil {
-		h.logger.Error("Failed to unmarshal story config JSON", zap.String("storyID", id.String()), zap.Error(err))
-		// Создаем ошибку для handleServiceError
-		parsingErr := fmt.Errorf("failed to parse internal story config for story %s", id.String())
-		handleServiceError(c, parsingErr, h.logger) // Это приведет к 500 Internal Error
+	// Сначала анмаршалим в sharedModels.Config, чтобы получить вывод AI как есть
+	var actualUserConfig sharedModels.Config
+	if err := json.Unmarshal(config.Config, &actualUserConfig); err != nil {
+		h.logger.Error("Failed to unmarshal StoryConfig.Config into sharedModels.Config",
+			zap.String("storyID", id.String()),
+			zap.Error(err),
+		)
+		handleServiceError(c, fmt.Errorf("failed to parse base story config for story %s: %w", id.String(), err), h.logger)
 		return
 	}
 
-	// Преобразуем внутреннюю структуру в публичный DTO
-	publicDetail := StoryConfigParsedDetail{
-		Title:             parsedInternal.T,
-		ShortDescription:  parsedInternal.Sd,
-		Franchise:         parsedInternal.Fr,
-		Genre:             parsedInternal.Gn,
-		IsAdultContent:    parsedInternal.Ac,
-		PlayerName:        parsedInternal.Pn,
-		PlayerDescription: parsedInternal.PDesc,
-		WorldContext:      parsedInternal.Wc,
-		StorySummary:      parsedInternal.Ss,
-		CoreStats:         make(map[string]parsedCoreStat, len(parsedInternal.Cs)),
+	// Структуры для ответа клиенту (эти определения могут быть вынесены на уровень пакета, если используются в других местах)
+	type parsedCoreStat struct {
+		Description        string                   `json:"description"`
+		InitialValue       int                      `json:"initial_value,omitempty"`        // omitempty, если может не быть
+		GameOverConditions parsedGameOverConditions `json:"game_over_conditions,omitempty"` // omitempty, если может не быть
+	}
+	type StoryConfigParsedDetail struct {
+		Title             string                    `json:"title"`
+		ShortDescription  string                    `json:"short_description"`
+		Franchise         string                    `json:"franchise,omitempty"`
+		Genre             string                    `json:"genre"`
+		Language          string                    `json:"language"` // Добавим язык из StoryConfig
+		IsAdultContent    bool                      `json:"is_adult_content"`
+		PlayerName        string                    `json:"player_name"`        // ProtagonistName
+		PlayerDescription string                    `json:"player_description"` // ProtagonistDescription
+		WorldContext      string                    `json:"world_context"`
+		StorySummary      string                    `json:"story_summary"`
+		CoreStats         map[string]parsedCoreStat `json:"core_stats"`
+		PlayerPrefs       sharedModels.PlayerPrefs  `json:"player_preferences"` // Добавим PlayerPrefs
+		// Статус черновика
+		Status sharedModels.StoryStatus `json:"status"`
 	}
 
-	// Преобразуем карту статов
-	for name, internalStat := range parsedInternal.Cs {
-		publicDetail.CoreStats[name] = parsedCoreStat{
-			Description:  internalStat.D,
-			InitialValue: internalStat.Iv,
-			GameOverConditions: parsedGameOverConditions{
-				Min: internalStat.Go.Min,
-				Max: internalStat.Go.Max,
-			},
+	// Заполняем publicDetail из actualUserConfig
+	publicDetail := StoryConfigParsedDetail{
+		Title:             actualUserConfig.Title,
+		ShortDescription:  actualUserConfig.ShortDescription,
+		Franchise:         actualUserConfig.Franchise,
+		Genre:             actualUserConfig.Genre,
+		Language:          config.Language, // Язык берем из основного объекта StoryConfig
+		IsAdultContent:    actualUserConfig.IsAdultContent,
+		PlayerName:        actualUserConfig.ProtagonistName,
+		PlayerDescription: actualUserConfig.ProtagonistDescription,
+		WorldContext:      actualUserConfig.WorldContext,
+		StorySummary:      actualUserConfig.StorySummary,
+		CoreStats:         make(map[string]parsedCoreStat),
+		PlayerPrefs:       actualUserConfig.PlayerPrefs,
+		Status:            config.Status, // Статус берем из основного объекта StoryConfig
+	}
+
+	// Заполняем CoreStats. На этом этапе у нас есть только описания из вывода Narrator.
+	// InitialValue и GameOverConditions появятся после генерации NovelSetup.
+	// Для черновика мы можем либо не показывать их, либо показывать с нулевыми/дефолтными значениями.
+	// Здесь я просто передаю описание.
+	if actualUserConfig.CoreStats != nil {
+		for name, description := range actualUserConfig.CoreStats {
+			publicDetail.CoreStats[name] = parsedCoreStat{
+				Description: description,
+				// InitialValue и GameOverConditions здесь не заполняем,
+				// так как их нет в sharedModels.Config от Narrator.
+				// Они появятся позже из NovelSetupContent.
+				// Если этот эндпоинт ДОЛЖЕН их показывать, ему нужно грузить и парсить Setup.
+			}
 		}
 	}
+
+	// TODO: Если это черновик, который уже прошел этап Setup (т.е. есть PublishedStory и в нем есть Setup),
+	// то нужно загрузить PublishedStory.Setup, анмаршалить его в NovelSetupContent
+	// и обогатить publicDetail.CoreStats полями InitialValue и GameOverConditions.
+	// Это выходит за рамки исправления текущей ошибки анмаршалинга.
 
 	c.JSON(http.StatusOK, publicDetail)
 }

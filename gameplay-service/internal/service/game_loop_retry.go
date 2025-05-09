@@ -8,6 +8,8 @@ import (
 	"novel-server/shared/database"
 	sharedMessaging "novel-server/shared/messaging"
 	"novel-server/shared/models"
+	sharedModels "novel-server/shared/models"
+	"novel-server/shared/utils"
 	"time"
 
 	"github.com/google/uuid"
@@ -132,13 +134,23 @@ func (s *gameLoopServiceImpl) RetryGenerationForGameState(ctx context.Context, u
 			}
 		}
 
+		// Десериализуем конфиг для FormatConfigToString
+		var deserializedConfig sharedModels.Config
+		var configUserInput string
+		if errUnmarshal := json.Unmarshal(publishedStory.Config, &deserializedConfig); errUnmarshal != nil {
+			log.Error("Failed to unmarshal Config for Setup retry payload creation", zap.Error(errUnmarshal))
+			// Не устанавливаем err, чтобы позволить транзакции откатиться
+			// Задача все равно не будет отправлена из-за пустого UserInput
+		} else {
+			configUserInput = utils.FormatConfigToString(deserializedConfig, "")
+		}
+
 		taskID := uuid.New().String()
-		configJSONString := string(publishedStory.Config)
 		setupPayloadLocal := sharedMessaging.GenerationTaskPayload{
 			TaskID:           taskID,
 			UserID:           publishedStory.UserID.String(),
 			PromptType:       models.PromptTypeNovelSetup,
-			UserInput:        configJSONString,
+			UserInput:        configUserInput, // Используем форматированную строку
 			PublishedStoryID: publishedStory.ID.String(),
 			Language:         publishedStory.Language,
 		}
@@ -210,6 +222,33 @@ func (s *gameLoopServiceImpl) RetryGenerationForGameState(ctx context.Context, u
 			return err
 		}
 		generationPayloadLocal.GameStateID = gameStateID.String()
+
+		// <<< НАЧАЛО: Перезапись UserInput >>>
+		var parsedCfg models.Config
+		var parsedStp models.NovelSetupContent
+		var formatErr error
+
+		if errCfg := json.Unmarshal(publishedStory.Config, &parsedCfg); errCfg != nil {
+			formatErr = fmt.Errorf("failed to unmarshal config for formatting: %w", errCfg)
+		} else if errStp := json.Unmarshal(publishedStory.Setup, &parsedStp); errStp != nil {
+			formatErr = fmt.Errorf("failed to unmarshal setup for formatting: %w", errStp)
+		}
+
+		if formatErr != nil {
+			log.Error("Failed to prepare data for formatting UserInput, cannot publish task", zap.Error(formatErr))
+			errMsg := fmt.Sprintf("Failed to format input: %v", formatErr)
+			gameState.PlayerStatus = models.PlayerStatusError
+			gameState.ErrorDetails = &errMsg
+			if _, saveErr := gameStateRepoTx.Save(context.Background(), tx, gameState); saveErr != nil {
+				log.Error("Failed to update game state to Error after formatting error", zap.Error(saveErr))
+			}
+			err = models.ErrInternalServer
+			return err
+		} else {
+			generationPayloadLocal.UserInput = utils.FormatConfigAndSetupToString(parsedCfg, parsedStp)
+		}
+		// <<< КОНЕЦ: Перезапись UserInput >>>
+
 		generationPayload = &generationPayloadLocal
 
 		log.Info("Scene/Game Over generation task payload created for post-commit publish", zap.String("taskID", generationPayload.TaskID), zap.String("promptType", string(generationPayload.PromptType)))
@@ -353,13 +392,23 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 			return err
 		}
 
+		// Десериализуем конфиг для FormatConfigToString
+		var deserializedConfig sharedModels.Config
+		var configUserInput string
+		if errUnmarshal := json.Unmarshal(publishedStory.Config, &deserializedConfig); errUnmarshal != nil {
+			log.Error("Failed to unmarshal Config for Setup retry payload creation", zap.Error(errUnmarshal))
+			// Не устанавливаем err, чтобы позволить транзакции откатиться
+			// Задача все равно не будет отправлена из-за пустого UserInput
+		} else {
+			configUserInput = utils.FormatConfigToString(deserializedConfig, "")
+		}
+
 		taskID := uuid.New().String()
-		configJSONString := string(publishedStory.Config)
 		setupPayloadLocal := sharedMessaging.GenerationTaskPayload{
 			TaskID:           taskID,
 			UserID:           publishedStory.UserID.String(),
 			PromptType:       models.PromptTypeNovelSetup,
-			UserInput:        configJSONString,
+			UserInput:        configUserInput, // Используем форматированную строку
 			PublishedStoryID: publishedStory.ID.String(),
 			Language:         publishedStory.Language,
 		}
@@ -387,6 +436,31 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 			err = fmt.Errorf("failed to create generation payload: %w", errPayload)
 			return err
 		}
+
+		// <<< НАЧАЛО: Перезапись UserInput >>>
+		var parsedCfgRetry models.Config
+		var parsedStpRetry models.NovelSetupContent
+		var formatErrRetry error
+
+		if errCfg := json.Unmarshal(publishedStory.Config, &parsedCfgRetry); errCfg != nil {
+			formatErrRetry = fmt.Errorf("failed to unmarshal config for formatting (retry): %w", errCfg)
+		} else if errStp := json.Unmarshal(publishedStory.Setup, &parsedStpRetry); errStp != nil {
+			formatErrRetry = fmt.Errorf("failed to unmarshal setup for formatting (retry): %w", errStp)
+		}
+
+		if formatErrRetry != nil {
+			log.Error("Failed to prepare data for formatting UserInput (retry), cannot publish task", zap.Error(formatErrRetry))
+			errMsg := fmt.Sprintf("Failed to format input (retry): %v", formatErrRetry)
+			if errUpdate := publishedRepoTx.UpdateStatusFlagsAndDetails(context.Background(), tx, storyID, publishedStory.Status, false, publishedStory.AreImagesPending, &errMsg); errUpdate != nil {
+				log.Error("Failed to update story status to Error after formatting error (retry)", zap.Error(errUpdate))
+			}
+			err = models.ErrInternalServer
+			return err
+		} else {
+			payloadLocal.UserInput = utils.FormatConfigAndSetupToString(parsedCfgRetry, parsedStpRetry)
+		}
+		// <<< КОНЕЦ: Перезапись UserInput >>>
+
 		initialScenePayload = &payloadLocal
 
 		log.Info("Initial scene task payload created for post-commit publish", zap.String("taskID", initialScenePayload.TaskID))
@@ -418,18 +492,14 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 		}
 
 		var fullConfig models.Config
-		var characterVisualStyle, storyStyle string
+		var storyStyle string
 		if errUnmarshalConfig := json.Unmarshal(publishedStory.Config, &fullConfig); errUnmarshalConfig == nil {
-			characterVisualStyle = fullConfig.PlayerPrefs.CharacterVisualStyle
 			storyStyle = fullConfig.PlayerPrefs.Style
-			if characterVisualStyle != "" {
-				characterVisualStyle = ", " + characterVisualStyle
-			}
 			if storyStyle != "" {
 				storyStyle = ", " + storyStyle
 			}
 		}
-		reconstructedCoverPrompt := setupContent.StoryPreviewImagePrompt + storyStyle + characterVisualStyle + previewStyleSuffix
+		reconstructedCoverPrompt := setupContent.StoryPreviewImagePrompt + storyStyle + previewStyleSuffix
 
 		if !publishedStory.AreImagesPending {
 			if errUpdate := publishedRepoTx.UpdateStatusFlagsAndDetails(ctx, tx, storyID, publishedStory.Status, publishedStory.IsFirstScenePending, true, nil); errUpdate != nil {

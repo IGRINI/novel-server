@@ -19,7 +19,7 @@ This AI MUST primarily use the following fields to generate the **first scene**:
 
 **From `cfg` (NovelConfig):**
 *   `ln`: Language for all generated narrative text.
-*   `pn`, `pg`, `p_desc`: Player information for context.
+*   `pn`, `pg`, `pd`: Player information for context.
 *   `wc`, `ss`, `sssf`, `fd`: World context, story summary, starting situation, and initial direction defined by the Narrator. These are crucial for setting the scene.
 *   `pp.st`, `pp.tn`, `pp.cvs`: Style, tone, and visual guidelines.
 

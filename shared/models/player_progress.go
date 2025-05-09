@@ -13,7 +13,6 @@ type PlayerProgress struct {
 	PublishedStoryID uuid.UUID              `db:"published_story_id" json:"publishedStoryId"` // Nullable in DB, kept for potential direct lookups
 	CoreStats        map[string]int         `db:"core_stats" json:"coreStats"`
 	StoryVariables   map[string]interface{} `db:"story_variables" json:"story_variables"`
-	GlobalFlags      []string               `db:"global_flags" json:"global_flags"`
 	CurrentStateHash string                 `db:"current_state_hash" json:"current_state_hash"`
 	SceneIndex       int                    `db:"scene_index" json:"scene_index"`
 	// Поля для хранения последних сводок от AI

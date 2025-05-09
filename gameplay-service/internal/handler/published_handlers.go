@@ -8,6 +8,7 @@ import (
 	"novel-server/gameplay-service/internal/service" // Добавляем импорт сервиса
 	sharedModels "novel-server/shared/models"
 	"novel-server/shared/utils"
+	"sort"
 	"strconv"
 	"time"
 
@@ -156,17 +157,15 @@ func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
 		return // Ошибка уже обработана
 	}
 
-	// <<< ДОБАВЛЕНО: Получаем userID для проверки прав (хотя сам сервис может это делать) >>>
 	userID, err := getUserIDFromContext(c)
 	if err != nil {
-		// Ошибка уже обработана
 		return
 	}
 
-	log := h.logger.With(zap.String("gameStateID", gameStateID.String()), zap.Stringer("userID", userID)) // Логируем gameStateID и userID
+	log := h.logger.With(zap.String("gameStateID", gameStateID.String()), zap.Stringer("userID", userID))
 	log.Info("getPublishedStoryScene called")
 
-	// <<< ИЗМЕНЕНО: Вызываем GetStoryScene с userID и gameStateID >>>
+	// 1. Получаем сцену
 	scene, err := h.service.GetStoryScene(c.Request.Context(), userID, gameStateID)
 	if err != nil {
 		log.Error("Error calling GetStoryScene service", zap.Error(err))
@@ -174,37 +173,76 @@ func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
 		return
 	}
 
-	// <<< ЭТАП 2: Парсинг извлеченного JSON в map >>>
-	var rawContent map[string]json.RawMessage
-	// <<< ИЗМЕНЕНО: Теперь парсим scene.Content напрямую >>>
-	if err := json.Unmarshal(scene.Content, &rawContent); err != nil {
-		log.Error("Failed to unmarshal scene content",
-			zap.String("sceneID", scene.ID.String()),
-			zap.String("rawContent", utils.StringShort(string(scene.Content), 500)), // Логируем исходный контент
-			zap.Error(err),
-		)
-		handleServiceError(c, fmt.Errorf("internal error: failed to parse scene content"), h.logger) // Обновлено сообщение об ошибке
+	// 2. Получаем опубликованную историю для доступа к Setup
+	// <<< ИЗМЕНЕНО: Вызываем внутренний метод сервиса для получения полной модели >>>
+	publishedStory, err := h.StoryBrowsingSvc.GetPublishedStoryDetailsInternal(c.Request.Context(), scene.PublishedStoryID) // Используем внутренний метод
+	if err != nil {
+		log.Error("Error calling GetPublishedStoryDetailsInternal service", zap.Stringer("publishedStoryID", scene.PublishedStoryID), zap.Error(err)) // <<< ИЗМЕНЕНО: Имя метода в логе
+		handleServiceError(c, err, h.logger)                                                                                                          // Обработка ошибок (NotFound, Forbidden, Internal)
+		return
+	}
+	if len(publishedStory.Setup) == 0 { // <<< Теперь используем поле Setup напрямую
+		log.Error("Published story Setup is missing or empty", zap.Stringer("publishedStoryID", scene.PublishedStoryID))
+		handleServiceError(c, errors.New("internal error: story setup data is missing"), h.logger)
 		return
 	}
 
-	// <<< ИЗМЕНЕНО: Получаем прогресс по userID и gameStateID >>>
+	// 3. Парсим Setup для создания маппингов
+	var setupContent sharedModels.NovelSetupContent
+	if err = json.Unmarshal(publishedStory.Setup, &setupContent); err != nil { // <<< Используем поле Setup напрямую
+		log.Error("Failed to unmarshal published story Setup JSON", zap.Stringer("publishedStoryID", scene.PublishedStoryID), zap.Error(err))
+		handleServiceError(c, errors.New("internal error: could not parse story setup"), h.logger)
+		return
+	}
+
+	// Создаем маппинги индекс -> имя
+	characterIndexToName := make(map[int]string)
+	for i, char := range setupContent.Characters {
+		characterIndexToName[i] = char.Name
+	}
+
+	statIndexToName := make(map[int]string)
+	statNameToIndex := make(map[string]int) // Для обратного поиска при необходимости
+	if len(setupContent.CoreStatsDefinition) > 0 {
+		statNames := make([]string, 0, len(setupContent.CoreStatsDefinition))
+		for name := range setupContent.CoreStatsDefinition {
+			statNames = append(statNames, name)
+		}
+		sort.Strings(statNames) // Важно сортировать так же, как в форматтере!
+		for i, name := range statNames {
+			statIndexToName[i] = name
+			statNameToIndex[name] = i
+		}
+	}
+
+	// 4. Парсим JSON сцены
+	var rawContent map[string]json.RawMessage
+	if err := json.Unmarshal(scene.Content, &rawContent); err != nil {
+		log.Error("Failed to unmarshal scene content",
+			zap.String("sceneID", scene.ID.String()),
+			zap.String("rawContent", utils.StringShort(string(scene.Content), 500)),
+			zap.Error(err),
+		)
+		handleServiceError(c, fmt.Errorf("internal error: failed to parse scene content"), h.logger)
+		return
+	}
+
+	// 5. Получаем прогресс игрока
 	playerProgress, err := h.service.GetPlayerProgress(c.Request.Context(), userID, gameStateID)
 	if err != nil {
-		// Ошибка здесь означает реальную проблему
 		h.logger.Error("Failed to get player progress for game state", zap.String("gameStateID", gameStateID.String()), zap.Error(err))
 		handleServiceError(c, fmt.Errorf("internal error: failed to get player progress data: %w", err), h.logger)
 		return
 	}
 
-	// Формируем DTO ответа (используем GameSceneResponseDTO из dto.go)
+	// 6. Формируем DTO ответа
 	responseDTO := GameSceneResponseDTO{
 		ID:               scene.ID,
-		PublishedStoryID: scene.PublishedStoryID, // Оставляем PublishedStoryID для контекста на клиенте
-		GameStateID:      gameStateID,            // <<< ИЗМЕНЕНО/ДОБАВЛЕНО: Передаем ID состояния игры (убедитесь, что поле есть в DTO)
-		// CurrentStats будет заполнено ниже
+		PublishedStoryID: scene.PublishedStoryID,
+		GameStateID:      gameStateID,
 	}
 
-	// Заполнение CurrentStats
+	// Заполнение CurrentStats (используем имена статов)
 	responseDTO.CurrentStats = make(map[string]int)
 	if playerProgress != nil && playerProgress.CoreStats != nil {
 		for statName, statValue := range playerProgress.CoreStats {
@@ -214,31 +252,29 @@ func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
 
 	// Парсим и добавляем блоки выборов ('ch') или данные продолжения/концовки
 	if chJSON, ok := rawContent["ch"]; ok {
-		parseChoicesBlock(chJSON, &responseDTO, scene.ID.String(), log)
+		// Передаем маппинги в parseChoicesBlock
+		parseChoicesBlock(chJSON, &responseDTO, scene.ID.String(), log, characterIndexToName, statIndexToName)
 	} else if etJSON, ok := rawContent["et"]; ok {
 		var endingText string
 		if errUnmarshal := json.Unmarshal(etJSON, &endingText); errUnmarshal == nil {
 			responseDTO.EndingText = &endingText
 		} else {
 			log.Error("Failed to unmarshal ending text ('et')", zap.String("sceneID", scene.ID.String()), zap.Error(errUnmarshal))
-			// Не возвращаем ошибку, просто не будет текста концовки
 		}
-	} else if _, ok := rawContent["npd"]; ok { // npdJSON -> _
-		// parseContinuationBlock(rawContent, &responseDTO, log) // <<< ЗАКОММЕНТИРОВАНО: Функция не определена
-		log.Warn("Continuation block 'npd' found but parseContinuationBlock is commented out", zap.String("sceneID", scene.ID.String())) // Добавим лог
 	} else {
-		log.Warn("Scene content does not match expected types (choices, ending, continuation)", zap.String("sceneID", scene.ID.String()))
+		log.Warn("Scene content does not match expected types (choices, ending)", zap.String("sceneID", scene.ID.String()))
 	}
 
-	log.Info("Successfully prepared scene response")
+	log.Info("Successfully prepared scene response with name lookups")
 	c.JSON(http.StatusOK, responseDTO)
 }
 
 // <<< ДОБАВЛЕНО: Вспомогательная функция для парсинга блока 'ch' >>>
-func parseChoicesBlock(chJSON json.RawMessage, responseDTO *GameSceneResponseDTO, sceneID string, log *zap.Logger) {
+// <<< ИЗМЕНЕНА СИГНАТУРА: Принимает маппинги индексов >>>
+func parseChoicesBlock(chJSON json.RawMessage, responseDTO *GameSceneResponseDTO, sceneID string, log *zap.Logger, charIdxToName map[int]string, statIdxToName map[int]string) {
 	// Временная структура для парсинга блока 'ch'
 	type rawChoiceBlock struct {
-		Char        string `json:"char"` // <<< ПОЛЕ ДЛЯ ПАРСИНГА
+		CharIndex   int    `json:"char"` // <<< ПОЛЕ ДЛЯ ПАРСИНГА - ИНДЕКС
 		Description string `json:"desc"`
 		Options     []struct {
 			Text         string          `json:"txt"`
@@ -257,7 +293,7 @@ func parseChoicesBlock(chJSON json.RawMessage, responseDTO *GameSceneResponseDTO
 	responseDTO.Choices = make([]ChoiceBlockDTO, len(rawChoices))
 	for i, rawChoice := range rawChoices {
 		choiceDTO := ChoiceBlockDTO{
-			CharacterName: rawChoice.Char, // <<< КОПИРУЕМ ИМЯ ПЕРСОНАЖА
+			CharacterName: charIdxToName[rawChoice.CharIndex], // <<< КОПИРУЕМ ИМЯ ПЕРСОНАЖА
 			Description:   rawChoice.Description,
 			Options:       make([]ChoiceOptionDTO, len(rawChoice.Options)),
 		}
@@ -285,11 +321,31 @@ func parseChoicesBlock(chJSON json.RawMessage, responseDTO *GameSceneResponseDTO
 					// Извлекаем cs (бывший cs_chg)
 					if csChgJSON, ok := consMap["cs"]; ok { // <<< ИСПРАВЛЕНО: Ищем "cs"
 						// <<< ИЗМЕНЕНО НАЗАД: Ожидаем map[string]int >>>
-						var statChanges map[string]int
-						if errUnmarshal := json.Unmarshal(csChgJSON, &statChanges); errUnmarshal == nil && len(statChanges) > 0 {
-							// Используем поле StatChanges из ConsequencesDTO
-							preview.StatChanges = statChanges
-							hasData = true
+						var statChangesFromAI map[string]int // Ключи здесь - это строковые индексы статов
+						if errUnmarshal := json.Unmarshal(csChgJSON, &statChangesFromAI); errUnmarshal == nil && len(statChangesFromAI) > 0 {
+							resolvedStatChanges := make(map[string]int)
+							for statIdxStr, value := range statChangesFromAI {
+								statIdx, errConv := strconv.Atoi(statIdxStr)
+								if errConv == nil {
+									if statName, found := statIdxToName[statIdx]; found {
+										resolvedStatChanges[statName] = value
+									} else {
+										log.Warn("Stat index from AI not found in mapping", zap.String("sceneID", sceneID), zap.String("statIndexString", statIdxStr))
+										// Если имя не найдено, можно либо пропустить, либо добавить с индексом в качестве ключа.
+										// Для безопасности, пока просто логируем и пропускаем.
+									}
+								} else {
+									log.Warn("Failed to convert stat index string to int", zap.String("sceneID", sceneID), zap.String("statIndexString", statIdxStr), zap.Error(errConv))
+								}
+							}
+
+							if len(resolvedStatChanges) > 0 {
+								preview.StatChanges = resolvedStatChanges
+								hasData = true
+							} else if len(statChangesFromAI) > 0 {
+								// Этот лог сработает, если statChangesFromAI не пуст, но resolvedStatChanges пуст (например, все индексы были невалидны)
+								log.Warn("No stat changes were resolved to names", zap.String("sceneID", sceneID), zap.Any("originalStatChangesFromAI", statChangesFromAI))
+							}
 						} else if errUnmarshal != nil {
 							log.Warn("Failed to unmarshal cs content into map[string]int", zap.String("sceneID", sceneID), zap.Error(errUnmarshal))
 						}

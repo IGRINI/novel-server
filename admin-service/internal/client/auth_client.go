@@ -191,7 +191,7 @@ func (c *authClient) GetUserCount(ctx context.Context, adminAccessToken string) 
 // ListUsers - вызывает эндпоинт /internal/auth/users в auth-service с параметрами пагинации.
 func (c *authClient) ListUsers(ctx context.Context, limit int, afterCursor string, adminAccessToken string) ([]models.User, string, error) {
 	listURL := c.baseURL + "/internal/auth/users"
-	log := c.logger.With(zap.String("url", listURL), zap.Int("limit", limit), zap.String("after", afterCursor))
+	log := c.logger.With(zap.String("url", listURL), zap.Int("limit", limit), zap.String("cursor", afterCursor))
 
 	u, err := url.Parse(listURL)
 	if err != nil {
@@ -201,7 +201,7 @@ func (c *authClient) ListUsers(ctx context.Context, limit int, afterCursor strin
 	q := u.Query()
 	q.Set("limit", strconv.Itoa(limit))
 	if afterCursor != "" {
-		q.Set("after", afterCursor)
+		q.Set("cursor", afterCursor)
 	}
 	u.RawQuery = q.Encode()
 	finalURL := u.String()

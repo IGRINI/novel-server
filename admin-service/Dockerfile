@@ -20,7 +20,6 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /admin-server ./admin-
 # --- Этап выполнения ---
 FROM alpine:latest
 
-# Устанавливаем корневые сертификаты и wget для healthcheck
 RUN apk --no-cache add ca-certificates wget
 
 WORKDIR /app
@@ -44,6 +43,3 @@ EXPOSE 9094
 
 # Команда для запуска приложения
 ENTRYPOINT ["/app/admin-server"]
-
-# Healthcheck (используем wget, который установили)
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 CMD wget -q -O /dev/null http://localhost:${ADMIN_SERVER_PORT:-8084}/health || exit 1 
