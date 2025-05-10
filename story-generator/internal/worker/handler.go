@@ -698,25 +698,25 @@ func validateAIResponseJSON(promptType sharedModels.PromptType, jsonData []byte)
 func getLanguageInstruction(langCode string) string {
 	switch langCode {
 	case "en":
-		return "RESPOND ONLY IN ENGLISH."
+		return "RESPOND ONLY IN ENGLISH. ANSWER ONLY IN ENGLISH."
 	case "fr":
-		return "RESPOND ONLY IN FRENCH."
+		return "RESPOND ONLY IN FRENCH. RÉPONDS UNIQUEMENT EN FRANÇAIS."
 	case "de":
-		return "RESPOND ONLY IN GERMAN."
+		return "RESPOND ONLY IN GERMAN. ANTWORTE NUR AUF DEUTSCH."
 	case "es":
-		return "RESPOND ONLY IN SPANISH."
+		return "RESPOND ONLY IN SPANISH. RESPONDE SOLO EN ESPAÑOL."
 	case "it":
-		return "RESPOND ONLY IN ITALIAN."
+		return "RESPOND ONLY IN ITALIAN. RISPONDI SOLO IN ITALIANO."
 	case "pt":
-		return "RESPOND ONLY IN PORTUGUESE."
+		return "RESPOND ONLY IN PORTUGUESE. RESPONDA SOMENTE EM PORTUGUÊS."
 	case "ru":
-		return "RESPOND ONLY IN RUSSIAN."
+		return "RESPOND ONLY IN RUSSIAN. ОТВЕЧАЙ ТОЛЬКО НА РУССКОМ."
 	case "zh":
-		return "RESPOND ONLY IN CHINESE."
+		return "RESPOND ONLY IN CHINESE. 只用中文回答."
 	case "ja":
-		return "RESPOND ONLY IN JAPANESE."
+		return "RESPOND ONLY IN JAPANESE. 日本語でのみ回答してください。"
 	default:
 		log.Printf("[WARN] Неизвестный код языка '%s' для getLanguageInstruction, используется английский по умолчанию.", langCode)
-		return "RESPOND ONLY IN ENGLISH." // По умолчанию английский
+		return "RESPOND ONLY IN ENGLISH. ANSWER ONLY IN ENGLISH." // По умолчанию английский
 	}
 }

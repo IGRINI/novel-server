@@ -247,4 +247,11 @@ body {
     --text-color-muted: #aaaaaa;
     --primary-color: #00c3fd;
     --glow-effect: 0 0 10px rgba(0,195,253,0.7);
+}
+
+/* Фильтр таблиц */
+.table-with-filter .table-filter {
+    width: 100%;
+    max-width: 300px;
+    margin-bottom: 0.75rem;
 } 

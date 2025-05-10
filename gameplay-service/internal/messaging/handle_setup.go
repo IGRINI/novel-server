@@ -223,7 +223,6 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 						TaskID:           characterIDForTask.String(),
 						CharacterID:      characterIDForTask,
 						Prompt:           fullCharacterPrompt,
-						NegativePrompt:   charData.NegPrompt,
 						ImageReference:   correctedRef,
 						Ratio:            "2:3",
 						PublishedStoryID: publishedStoryID,

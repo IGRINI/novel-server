@@ -2,17 +2,19 @@
 
 {{ define "title" }}Управление Промптами{{ end }}
 
+{{ define "breadcrumbs" }}
+<nav class="breadcrumbs">
+    <ul>
+        <li><a href="/admin/dashboard">Дашборд</a></li>
+        <li>Управление Промптами</li>
+    </ul>
+</nav>
+{{ end }}
+
 {{ define "content" }}
 {{/* Убраны дублирующиеся <!DOCTYPE>, <html>, <head>, <body> и ссылки на Bootstrap */}}
 
 <div class="app-container">
-    <nav class="breadcrumbs">
-        <ul>
-            <li><a href="/admin/dashboard">Дашборд</a></li>
-            <li>Управление Промптами</li>
-        </ul>
-    </nav>
-
     <h1>Управление Промптами</h1>
 
     <!-- Flash Message Display -->
@@ -46,7 +48,10 @@
                 <tbody>
                 {{ range .promptKeys }}
                 <tr>
-                    <td>{{ . }}</td>
+                    <td>
+                        <code>{{ . }}</code>
+                        <button type="button" class="cta-button cta-button--secondary btn-sm ms-2" onclick="copyToClipboard('{{ . }}')">Копировать</button>
+                    </td>
                     <td>
                         <div class="button-group" style="justify-content: flex-start;">
                             {{/* Ссылка на редактирование ведет на новую страницу по ключу */}}

@@ -13,7 +13,7 @@ type sceneContentChoices struct {
 type sceneChoice struct {
 	Description string        `json:"desc"`
 	Options     []sceneOption `json:"opts"` // Expecting exactly 2 options
-	Char        string        `json:"char"`
+	Char        int           `json:"char"`
 }
 
 // sceneOption represents a single option within a choice block.

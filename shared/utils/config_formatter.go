@@ -68,8 +68,8 @@ func FormatConfigToString(config models.Config, userRevision string) string {
 		if config.PlayerPrefs.Style != "" {
 			sb.WriteString(fmt.Sprintf("  Visual Style: %s\n", config.PlayerPrefs.Style))
 		}
-		if len(config.PlayerPrefs.WorldLore) > 0 {
-			sb.WriteString(fmt.Sprintf("  World Lore: %s\n", strings.Join(config.PlayerPrefs.WorldLore, ", ")))
+		if config.PlayerPrefs.WorldLore != "" {
+			sb.WriteString(fmt.Sprintf("  World Lore: %s\n", config.PlayerPrefs.WorldLore))
 		}
 		if config.PlayerPrefs.PlayerDescription != "" {
 			sb.WriteString(fmt.Sprintf("  Extra Player Details: %s\n", config.PlayerPrefs.PlayerDescription))
@@ -141,8 +141,8 @@ func FormatConfigAndSetupToString(config models.Config, setup models.NovelSetupC
 		if config.PlayerPrefs.Style != "" {
 			sb.WriteString(fmt.Sprintf("  Visual Style: %s\n", config.PlayerPrefs.Style))
 		}
-		if len(config.PlayerPrefs.WorldLore) > 0 {
-			sb.WriteString(fmt.Sprintf("  World Lore: %s\n", strings.Join(config.PlayerPrefs.WorldLore, ", ")))
+		if config.PlayerPrefs.WorldLore != "" {
+			sb.WriteString(fmt.Sprintf("  World Lore: %s\n", config.PlayerPrefs.WorldLore))
 		}
 		if config.PlayerPrefs.PlayerDescription != "" {
 			sb.WriteString(fmt.Sprintf("  Extra Player Details: %s\n", config.PlayerPrefs.PlayerDescription))
@@ -250,8 +250,8 @@ func FormatFullGameStateToString(
 	if config.PlayerPrefs.Style != "" {
 		prefsFields = append(prefsFields, fmt.Sprintf("  Visual Style: %s", config.PlayerPrefs.Style))
 	}
-	if len(config.PlayerPrefs.WorldLore) > 0 {
-		prefsFields = append(prefsFields, fmt.Sprintf("  World Lore: %s", strings.Join(config.PlayerPrefs.WorldLore, ", ")))
+	if config.PlayerPrefs.WorldLore != "" {
+		prefsFields = append(prefsFields, fmt.Sprintf("  World Lore: %s", config.PlayerPrefs.WorldLore))
 	}
 	if config.PlayerPrefs.PlayerDescription != "" {
 		prefsFields = append(prefsFields, fmt.Sprintf("  Extra Player Details: %s", config.PlayerPrefs.PlayerDescription))
@@ -299,9 +299,6 @@ func FormatFullGameStateToString(
 			}
 			if char.Personality != "" {
 				sb.WriteString(fmt.Sprintf("    Personality: %s\n", char.Personality))
-			}
-			if char.ImageRef != "" {
-				sb.WriteString(fmt.Sprintf("    Image Ref: %s\n", char.ImageRef))
 			}
 		}
 	}
@@ -376,8 +373,6 @@ func FormatFullGameStateToString(
 				sb.WriteString(fmt.Sprintf("    Chosen Option: %s\n", choice.Text))
 				if choice.ResponseText != nil && *choice.ResponseText != "" {
 					sb.WriteString(fmt.Sprintf("    Result Text: %s\n", *choice.ResponseText))
-				} else {
-					sb.WriteString("    Result Text: (None)\n")
 				}
 			}
 		}

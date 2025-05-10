@@ -186,7 +186,9 @@ func (h *GameplayHandler) RegisterRoutes(router gin.IRouter, generalRL, generati
 	internalGroup.Use(h.InternalAuthMiddleware())
 	{
 		internalGroup.GET("/users/:user_id/drafts", h.listUserDraftsInternal)
+		internalGroup.DELETE("/users/:user_id/drafts/:draft_id", h.deleteDraftInternal)
 		internalGroup.GET("/users/:user_id/stories", h.listUserStoriesInternal)
+		internalGroup.DELETE("/users/:user_id/stories/:story_id", h.deletePublishedStoryInternal)
 		internalGroup.GET("/drafts/:draft_id", h.getDraftDetailsInternal)
 		internalGroup.GET("/stories/:story_id", h.getPublishedStoryDetailsInternal)
 		internalGroup.GET("/stories/:story_id/scenes", h.listStoryScenesInternal)
@@ -711,4 +713,42 @@ func parsePaginationParams(c *gin.Context, defaultLimit int, maxLimit int, logge
 
 	// Курсор не требует специальной валидации здесь, если пуст - то пуст.
 	return limit, cursor, true
+}
+
+// deleteDraftInternal удаляет черновик пользователя через внутренний API.
+func (h *GameplayHandler) deleteDraftInternal(c *gin.Context) {
+	// Парсим ID пользователя и черновика
+	userID, ok := parseUUIDParam(c, "user_id", h.logger)
+	if !ok {
+		return
+	}
+	draftID, ok2 := parseUUIDParam(c, "draft_id", h.logger)
+	if !ok2 {
+		return
+	}
+	// Вызываем сервис удаления
+	if err := h.service.DeleteDraft(c.Request.Context(), draftID, userID); err != nil {
+		handleServiceError(c, err, h.logger)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// deletePublishedStoryInternal удаляет опубликованную историю пользователя через внутренний API.
+func (h *GameplayHandler) deletePublishedStoryInternal(c *gin.Context) {
+	// Парсим ID пользователя и истории
+	userID, ok := parseUUIDParam(c, "user_id", h.logger)
+	if !ok {
+		return
+	}
+	storyID, ok := parseUUIDParam(c, "story_id", h.logger)
+	if !ok {
+		return
+	}
+	// Вызываем сервис удаления опубликованной истории
+	if err := h.service.DeletePublishedStory(c.Request.Context(), storyID, userID); err != nil {
+		handleServiceError(c, err, h.logger)
+		return
+	}
+	c.Status(http.StatusNoContent)
 }

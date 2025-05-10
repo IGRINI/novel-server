@@ -2,16 +2,18 @@
 
 {{ define "title" }}Создать новый ключ промпта{{ end }}
 
+{{ define "breadcrumbs" }}
+<nav class="breadcrumbs">
+    <ul>
+        <li><a href="/admin/dashboard">Дашборд</a></li>
+        <li><a href="/admin/prompts">Промпты</a></li>
+        <li>Создать новый ключ</li>
+    </ul>
+</nav>
+{{ end }}
+
 {{ define "content" }}
 <div class="app-container">
-    <nav class="breadcrumbs">
-        <ul>
-            <li><a href="/admin/dashboard">Дашборд</a></li>
-            <li><a href="/admin/prompts">Промпты</a></li>
-            <li>Создать новый ключ</li>
-        </ul>
-    </nav>
-
     <h1>Создать новый ключ промпта</h1>
 
     {{ if .flashMessage }}

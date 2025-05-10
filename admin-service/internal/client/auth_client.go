@@ -526,7 +526,7 @@ type refreshTokenResponse struct {
 
 // RefreshAdminToken отправляет запрос на обновление токенов в auth-service.
 func (c *authClient) RefreshAdminToken(ctx context.Context, refreshToken string) (*models.TokenDetails, *models.Claims, error) {
-	refreshURL := c.baseURL + "/internal/auth/token/refresh"
+	refreshURL := c.baseURL + "/internal/auth/token/refresh/admin"
 	log := c.logger.With(zap.String("url", refreshURL))
 
 	reqPayload := refreshTokenRequest{RefreshToken: refreshToken}

@@ -2,6 +2,7 @@
 
 {{ define "content" }}
 <div class="app-container">
+    <div id="page-data" data-user-id="{{ .TargetUser.ID }}" data-story-id="{{ .Story.ID }}"></div>
     <h2>{{ .PageTitle }}</h2>
 
     {{ if .URLQuery.Get "success" }}
@@ -200,67 +201,4 @@
 
     <a href="/admin/users/{{ .TargetUser.ID }}/stories" class="cta-button cta-button--secondary mt-3">Назад к списку историй</a>
 </div>
-
-<script>
-function formatJsonTextarea(textareaId) {
-    const textarea = document.getElementById(textareaId);
-    if (textarea && textarea.value.trim()) {
-        try {
-            const jsonObject = JSON.parse(textarea.value);
-            textarea.value = JSON.stringify(jsonObject, null, 2);
-        } catch (e) {
-            alert(`Некорректный JSON в поле ${textareaId}!`);
-        }
-    }
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-    formatJsonTextarea('configJson');
-    formatJsonTextarea('setupJson');
-});
-
-function formatScenePanelJson() {
-    const ta = document.getElementById('scenePanelJsonContentEditable');
-    try {
-        const obj = JSON.parse(ta.value);
-        ta.value = JSON.stringify(obj, null, 2);
-    } catch {
-        alert('Некорректный JSON!');
-    }
-}
-
-function showSceneContent(sceneId) {
-    const orig = document.getElementById(`scene-${sceneId}`);
-    const panel = document.getElementById('sceneJsonPanel');
-    const ta = document.getElementById('scenePanelJsonContentEditable');
-    const title = document.getElementById('scenePanelTitle');
-    ta.value = orig ? orig.value : '';
-    title.textContent = sceneId;
-    panel.style.display = 'block';
-}
-
-function hideScenePanel() {
-    document.getElementById('sceneJsonPanel').style.display = 'none';
-}
-
-function saveScenePanelContent() {
-    const sceneId = document.getElementById('scenePanelTitle').textContent;
-    const contentJson = document.getElementById('scenePanelJsonContentEditable').value;
-    try { JSON.parse(contentJson); } catch { alert('Некорректный JSON!'); return; }
-    const userId = '{{ .TargetUser.ID }}';
-    const storyId = '{{ .Story.ID }}';
-    fetch(`/admin/users/${userId}/stories/${storyId}/scenes/${sceneId}`, {
-        method: 'POST',
-        headers: { 'Content-Type':'application/json','Accept':'application/json' },
-        body: JSON.stringify({ contentJson })
-    })
-    .then(res => {
-        if (!res.ok) throw new Error();
-        document.getElementById(`scene-${sceneId}`).value = contentJson;
-        hideScenePanel();
-    })
-    .catch(() => alert('Ошибка сохранения сцены'));
-}
-</script>
-
 {{ end }} 

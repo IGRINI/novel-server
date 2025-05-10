@@ -61,49 +61,6 @@ func (c *gameplayClient) SetInterServiceToken(token string) {
 	c.interServiceToken = token
 }
 
-// doRequestWithTokenRefresh выполняет HTTP запрос с автоматическим обновлением токена при получении 401
-func (c *gameplayClient) doRequestWithTokenRefresh(ctx context.Context, req *http.Request) (*http.Response, error) {
-	// Добавляем текущий токен в запрос
-	c.mu.RLock()
-	token := c.interServiceToken
-	c.mu.RUnlock()
-
-	if token != "" {
-		req.Header.Set("X-Internal-Service-Token", token)
-	} else {
-		c.logger.Warn("Inter-service token is not set, request might fail")
-	}
-
-	// Выполняем запрос
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute request: %w", err)
-	}
-
-	// Если получили 401, пробуем обновить токен и повторить запрос
-	if resp.StatusCode == http.StatusUnauthorized {
-		resp.Body.Close() // Закрываем тело первого ответа
-
-		// Пробуем получить новый токен через authClient
-		newToken, err := c.authClient.GenerateInterServiceToken(ctx, "admin-service")
-		if err != nil {
-			return nil, fmt.Errorf("failed to refresh inter-service token: %w", err)
-		}
-
-		// Устанавливаем новый токен
-		c.SetInterServiceToken(newToken)
-
-		// Создаем новый запрос с тем же контекстом и телом
-		newReq := req.Clone(ctx)
-		newReq.Header.Set("X-Internal-Service-Token", newToken)
-
-		// Повторяем запрос с новым токеном
-		return c.httpClient.Do(newReq)
-	}
-
-	return resp, nil
-}
-
 // doAdminRequest выполняет HTTP запрос с добавлением заголовка X-Admin-Authorization
 func (c *gameplayClient) doAdminRequest(ctx context.Context, req *http.Request, adminAccessToken string) (*http.Response, error) {
 	// Добавляем админский токен в заголовок
@@ -980,5 +937,78 @@ func (c *gameplayClient) DeletePublishedStory(ctx context.Context, userID, story
 	}
 
 	log.Info("Published story deleted successfully via gameplay-service")
+	return nil
+}
+
+// <<< ДОБАВЛЕНО: Internal delete of published story for admin use >>>
+func (c *gameplayClient) DeletePublishedStoryInternal(ctx context.Context, userID, storyID uuid.UUID, adminAccessToken string) error {
+	deleteURL := fmt.Sprintf("%s/internal/users/%s/stories/%s", c.baseURL, userID.String(), storyID.String())
+	log := c.logger.With(zap.String("url", deleteURL), zap.String("storyID", storyID.String()), zap.String("userID", userID.String()))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, deleteURL, nil)
+	if err != nil {
+		log.Error("Failed to create delete published story (internal) HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Accept", "application/json")
+
+	log.Debug("Sending delete published story (internal) request to gameplay-service")
+	resp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
+	if err != nil {
+		log.Error("HTTP request for delete published story (internal) failed", zap.Error(err))
+		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		log.Warn("Published story not found for deletion (internal)", zap.Int("status", resp.StatusCode))
+		return models.ErrNotFound
+	}
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Warn("Received non-OK status for delete published story (internal)", zap.Int("status", resp.StatusCode), zap.ByteString("body", bodyBytes))
+		if resp.StatusCode == http.StatusForbidden {
+			return models.ErrForbidden
+		}
+		return fmt.Errorf("received unexpected status %d from gameplay service for delete published story (internal)", resp.StatusCode)
+	}
+
+	log.Info("Published story deleted successfully via internal API")
+	return nil
+}
+
+// <<< ДОБАВЛЕНО: Internal delete of draft for admin use >>>
+func (c *gameplayClient) DeleteDraftInternal(ctx context.Context, userID, draftID uuid.UUID, adminAccessToken string) error {
+	deleteURL := fmt.Sprintf("%s/internal/users/%s/drafts/%s", c.baseURL, userID.String(), draftID.String())
+	log := c.logger.With(zap.String("url", deleteURL), zap.String("draftID", draftID.String()), zap.String("userID", userID.String()))
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, deleteURL, nil)
+	if err != nil {
+		log.Error("Failed to create delete draft (internal) HTTP request", zap.Error(err))
+		return fmt.Errorf("internal error creating request: %w", err)
+	}
+	httpReq.Header.Set("Accept", "application/json")
+
+	log.Debug("Sending delete draft (internal) request to gameplay-service")
+	resp, err := c.doAdminRequest(ctx, httpReq, adminAccessToken)
+	if err != nil {
+		log.Error("HTTP request for delete draft (internal) failed", zap.Error(err))
+		return fmt.Errorf("failed to communicate with gameplay service: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		log.Warn("Draft not found for deletion (internal)", zap.Int("status", resp.StatusCode))
+		return models.ErrNotFound
+	}
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		log.Warn("Received non-OK status for delete draft (internal)", zap.Int("status", resp.StatusCode), zap.ByteString("body", bodyBytes))
+		if resp.StatusCode == http.StatusForbidden {
+			return models.ErrForbidden
+		}
+		return fmt.Errorf("received unexpected status %d from gameplay service for delete draft (internal)", resp.StatusCode)
+	}
+	log.Info("Draft deleted successfully via internal API")
 	return nil
 }

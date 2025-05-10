@@ -1,0 +1,80 @@
+Title: Вечеринка у салюта
+
+Short Description: Комедийная игра о приключениях друзей и девушек на вечеринке под салютом.
+
+Genre: Комедия/Приключения
+
+Protagonist Name: Макс
+
+Protagonist Description: Веселый парень, любитель вечеринок и юмора.
+
+World Context: Городская ночь с яркими салютами и шумными улицами.
+
+Story Summary: Три друга пропустили фейерверк и, пройдя через ночные приключения и веселье, узнают ценность дружбы и встречи с девушками.
+
+Adult Content: true
+
+Player Preferences:
+
+  Tags for Story: дружба, вечеринка, юмор, романтика
+
+  Visual Style: неоновый, яркий, комедийный
+
+  World Lore: города с ночными улицами, парки и места для вечеринок
+
+  Extra Player Details: загадочный парень с чувством юмора
+
+  Desired Locations: вечеринка, городские улицы, площадки для салютов
+
+  Desired Characters: девушки, друзья
+
+
+Core Stats Definition (from Setup):
+
+  Stat Index 0: дружба
+
+    Description: Степень прочности дружеских уз, влияет на поддержку и доверие между персонажами, повышается с совместными приключениями.
+
+    Initial Value: 75
+
+    Game Over on Min: false
+
+    Game Over on Max: true
+
+    Icon: Heart
+
+  Stat Index 1: приключение
+
+    Description: Интенсивность неожиданных событий, увеличивается при насыщенных ночных приключениях, создает динамику.
+
+    Initial Value: 85
+
+    Game Over on Min: false
+
+    Game Over on Max: true
+
+    Icon: Bolt
+
+  Stat Index 2: романтика
+
+    Description: Возможность романтических моментов и отношений, способствует развитию любовных линий и эмоциональных связей.
+
+    Initial Value: 60
+
+    Game Over on Min: false
+
+    Game Over on Max: true
+
+    Icon: Ring
+
+  Stat Index 3: смешность
+
+    Description: Степень комичности ситуаций, вызывающих улыбку, повышается с юмористическими событиями, добавляет легкости игре.
+
+    Initial Value: 80
+
+    Game Over on Min: false
+
+    Game Over on Max: true
+
+    Icon: Clown

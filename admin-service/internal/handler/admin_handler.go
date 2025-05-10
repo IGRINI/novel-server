@@ -73,8 +73,10 @@ func (h *AdminHandler) RegisterRoutes(router *gin.Engine, loginRateLimiter gin.H
 	router.GET("/login", h.showLoginPage)
 	router.POST("/login", loginRateLimiter, h.handleLogin)
 
-	// Группа для защищенных роутов админки (префикс /admin удаляется Traefik)
-	adminGroup := router.Group("/", h.AuthMiddleware) // <<< ВОЗВРАЩАЕМ: Базовый путь теперь "/"
+	// Группа для защищенных роутов админки (префикс "/admin" удаляется Traefik)
+	adminGroup := router.Group("/", h.AuthMiddleware) // <<< Базовый путь теперь "/"
+	// Защищённая раздача статических ресурсов админки под /assets
+	adminGroup.Static("/assets", "./web/static")
 	{
 		adminGroup.GET("/dashboard", h.GetDashboardData)
 		adminGroup.GET("/users", h.listUsers)

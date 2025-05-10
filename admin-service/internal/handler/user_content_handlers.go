@@ -42,14 +42,16 @@ func (h *AdminHandler) listUserDrafts(c *gin.Context) {
 		log.Error("Failed to get admin_session cookie", zap.Error(cookieErr))
 		userErr = fmt.Errorf("failed to get admin session: %w", cookieErr)
 	} else {
-		users, _, listUsersErr := h.authClient.ListUsers(ctx, 1, fmt.Sprintf("id:%s", targetUserID.String()), adminToken)
-		if listUsersErr != nil {
-			userErr = fmt.Errorf("failed to list users to find target: %w", listUsersErr)
-			log.Error("Failed to get target user details via ListUsers", zap.Error(userErr))
-		} else if len(users) == 0 {
-			userErr = sharedModels.ErrUserNotFound
+		userDetail, getErr := h.authClient.GetUserInfo(ctx, targetUserID, adminToken)
+		if getErr != nil {
+			if errors.Is(getErr, sharedModels.ErrUserNotFound) {
+				userErr = sharedModels.ErrUserNotFound
+			} else {
+				userErr = fmt.Errorf("failed to get user details: %w", getErr)
+				log.Error("Failed to get target user details via GetUserInfo", zap.Error(userErr))
+			}
 		} else {
-			targetUser = &users[0]
+			targetUser = userDetail
 		}
 	}
 	var drafts []sharedModels.StoryConfig
@@ -119,14 +121,16 @@ func (h *AdminHandler) showDraftDetailsPage(c *gin.Context) {
 		log.Error("Failed to get admin_session cookie", zap.Error(cookieErr))
 		userErr = fmt.Errorf("failed to get admin session: %w", cookieErr)
 	} else {
-		users, _, listUsersErr := h.authClient.ListUsers(ctx, 1, fmt.Sprintf("id:%s", targetUserID.String()), adminToken)
-		if listUsersErr != nil {
-			userErr = fmt.Errorf("failed to list users to find target: %w", listUsersErr)
-			log.Error("Failed to get target user details via ListUsers", zap.Error(userErr))
-		} else if len(users) == 0 {
-			userErr = sharedModels.ErrUserNotFound
+		userDetail, getErr := h.authClient.GetUserInfo(ctx, targetUserID, adminToken)
+		if getErr != nil {
+			if errors.Is(getErr, sharedModels.ErrUserNotFound) {
+				userErr = sharedModels.ErrUserNotFound
+			} else {
+				userErr = fmt.Errorf("failed to get user details: %w", getErr)
+				log.Error("Failed to get target user details via GetUserInfo", zap.Error(userErr))
+			}
 		} else {
-			targetUser = &users[0]
+			targetUser = userDetail
 		}
 	}
 
@@ -218,14 +222,16 @@ func (h *AdminHandler) listUserStories(c *gin.Context) {
 		log.Error("Failed to get admin_session cookie", zap.Error(cookieErr))
 		userErr = fmt.Errorf("failed to get admin session: %w", cookieErr)
 	} else {
-		users, _, listUsersErr := h.authClient.ListUsers(ctx, 1, fmt.Sprintf("id:%s", targetUserID.String()), adminToken)
-		if listUsersErr != nil {
-			userErr = fmt.Errorf("failed to list users: %w", listUsersErr)
-			log.Error("Failed to get target user details via ListUsers", zap.Error(userErr))
-		} else if len(users) == 0 {
-			userErr = sharedModels.ErrUserNotFound
+		userDetail, getErr := h.authClient.GetUserInfo(ctx, targetUserID, adminToken)
+		if getErr != nil {
+			if errors.Is(getErr, sharedModels.ErrUserNotFound) {
+				userErr = sharedModels.ErrUserNotFound
+			} else {
+				userErr = fmt.Errorf("failed to get user details: %w", getErr)
+				log.Error("Failed to get target user details via GetUserInfo", zap.Error(userErr))
+			}
 		} else {
-			targetUser = &users[0]
+			targetUser = userDetail
 		}
 	}
 	var stories []*sharedModels.PublishedStory
@@ -291,14 +297,16 @@ func (h *AdminHandler) showPublishedStoryDetailsPage(c *gin.Context) {
 		log.Error("Failed to get admin_session cookie", zap.Error(cookieErr))
 		userErr = fmt.Errorf("failed to get admin session: %w", cookieErr)
 	} else {
-		users, _, listUsersErr := h.authClient.ListUsers(ctx, 1, fmt.Sprintf("id:%s", targetUserID.String()), adminToken)
-		if listUsersErr != nil {
-			userErr = fmt.Errorf("failed to list users: %w", listUsersErr)
-			log.Error("Failed to get target user details via ListUsers", zap.Error(userErr))
-		} else if len(users) == 0 {
-			userErr = sharedModels.ErrUserNotFound
+		userDetail, getErr := h.authClient.GetUserInfo(ctx, targetUserID, adminToken)
+		if getErr != nil {
+			if errors.Is(getErr, sharedModels.ErrUserNotFound) {
+				userErr = sharedModels.ErrUserNotFound
+			} else {
+				userErr = fmt.Errorf("failed to get user details: %w", getErr)
+				log.Error("Failed to get target user details via GetUserInfo", zap.Error(userErr))
+			}
 		} else {
-			targetUser = &users[0]
+			targetUser = userDetail
 		}
 	}
 
@@ -877,8 +885,9 @@ func (h *AdminHandler) handleDeleteDraft(c *gin.Context) {
 	}
 	log = log.With(zap.String("userID", userID.String()), zap.String("draftID", draftID.String()))
 
-	log.Info("Attempting to delete draft")
-	err = h.gameplayClient.DeleteDraft(ctx, userID, draftID)
+	log.Info("Attempting to delete draft via internal API")
+	adminToken, _ := c.Cookie("admin_session")
+	err = h.gameplayClient.DeleteDraftInternal(ctx, userID, draftID, adminToken)
 
 	if err != nil {
 		log.Error("Failed to delete draft via gameplay service", zap.Error(err))
@@ -895,53 +904,6 @@ func (h *AdminHandler) handleDeleteDraft(c *gin.Context) {
 
 	log.Info("Draft deleted successfully")
 	// Возвращаем 200 OK с пустым телом, чтобы HTMX удалил строку
-	c.Status(http.StatusOK)
-}
-
-// <<< ДОБАВЛЕНО: Обработчик повторной генерации черновика >>>
-func (h *AdminHandler) handleRetryDraft(c *gin.Context) {
-	ctx := c.Request.Context()
-	log := h.logger.With(zap.String("handler", "handleRetryDraft"))
-
-	targetUserIDStr := c.Param("user_id")
-	userID, err := uuid.Parse(targetUserIDStr)
-	if err != nil {
-		log.Warn("Invalid user ID format for retry draft", zap.Error(err))
-		c.Status(http.StatusBadRequest)
-		return
-	}
-	draftIDStr := c.Param("draft_id")
-	draftID, err := uuid.Parse(draftIDStr)
-	if err != nil {
-		log.Warn("Invalid draft ID format for retry draft", zap.Error(err))
-		c.Status(http.StatusBadRequest)
-		return
-	}
-	log = log.With(zap.String("userID", userID.String()), zap.String("draftID", draftID.String()))
-
-	log.Info("Attempting to retry draft generation")
-	err = h.gameplayClient.RetryDraftGeneration(ctx, userID, draftID)
-
-	if err != nil {
-		log.Error("Failed to retry draft generation via gameplay service", zap.Error(err))
-		// Возвращаем соответствующий статус ошибки
-		if errors.Is(err, sharedModels.ErrNotFound) {
-			c.Status(http.StatusNotFound)
-		} else if errors.Is(err, sharedModels.ErrForbidden) {
-			c.Status(http.StatusForbidden)
-		} else if errors.Is(err, sharedModels.ErrCannotRetry) || errors.Is(err, sharedModels.ErrUserHasActiveGeneration) {
-			c.Status(http.StatusConflict)
-		} else {
-			c.Status(http.StatusInternalServerError)
-		}
-		// Можно добавить сообщение в заголовок HX-Trigger для toast
-		// c.Header("HX-Trigger", `{"showToast": {"message": "Ошибка: ..."}}`)
-		return
-	}
-
-	log.Info("Retry draft generation request sent successfully")
-	// TODO: Как лучше обновить UI? Просто 200 OK? Или редирект? Или обновить строку?
-	// Пока просто возвращаем 200 OK. Возможно, потребуется HX-Refresh.
 	c.Status(http.StatusOK)
 }
 
@@ -966,8 +928,9 @@ func (h *AdminHandler) handleDeleteStory(c *gin.Context) {
 	}
 	log = log.With(zap.String("userID", userID.String()), zap.String("storyID", storyID.String()))
 
-	log.Info("Attempting to delete published story")
-	err = h.gameplayClient.DeletePublishedStory(ctx, userID, storyID)
+	log.Info("Attempting to delete published story via internal API")
+	adminToken, _ := c.Cookie("admin_session")
+	err = h.gameplayClient.DeletePublishedStoryInternal(ctx, userID, storyID, adminToken)
 
 	if err != nil {
 		log.Error("Failed to delete published story via gameplay service", zap.Error(err))

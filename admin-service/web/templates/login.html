@@ -3,6 +3,13 @@
 {{ define "title" }}Вход{{ end }}
 
 {{ define "content" }}
+    <style>
+      body { display: flex; align-items: center; justify-content: center; height: 100vh; background-color: #1a1a1a; margin: 0; }
+      .data-form { background-color: #2b2b2b; padding: 2rem; border-radius: 8px; color: #fff; width: 100%; max-width: 360px; box-sizing: border-box; }
+      .data-form input { width: 100%; padding: 0.5rem; margin-top: 0.5rem; background: #3c3c3c; border: 1px solid #444; border-radius: 4px; color: #fff; box-sizing: border-box; }
+      .data-form button { width: 100%; padding: 0.75rem; margin-top: 1rem; background: #0066ff; border: none; border-radius: 4px; color: #fff; cursor: pointer; }
+      .system-message--error { color: #ff4c4c; margin-top: 1rem; }
+    </style>
     <form id="login-form" class="data-form" hx-post="/login" hx-target="#login-form" hx-swap="outerHTML">
         <h1>Вход</h1>
         <label for="username">Имя пользователя (или Email):</label>

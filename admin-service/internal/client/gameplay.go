@@ -54,4 +54,10 @@ type GameplayServiceClient interface {
 
 	// <<< ДОБАВЛЕНО: Удаление состояния игрока (GameState) через внутренний API >>>
 	DeleteStoryPlayerInternal(ctx context.Context, storyID, playerID uuid.UUID, adminAccessToken string) error
+
+	// <<< ДОБАВЛЕНО: Internal delete of published story for admin use >>>
+	DeletePublishedStoryInternal(ctx context.Context, userID, storyID uuid.UUID, adminAccessToken string) error
+
+	// <<< ДОБАВЛЕНО: Internal delete of draft for admin use >>>
+	DeleteDraftInternal(ctx context.Context, userID, draftID uuid.UUID, adminAccessToken string) error
 }

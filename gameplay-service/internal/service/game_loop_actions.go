@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"novel-server/shared/database"
 	"novel-server/shared/models"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -265,18 +266,17 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 		})
 		statCausingGameOver, gameOverTriggered := applyConsequences(nextProgress, selectedOption.Consequences, &setupContent)
 
-		if choiceBlock.Char != "" {
-			charFound := false
-			for _, encounteredChar := range nextProgress.EncounteredCharacters {
-				if encounteredChar == choiceBlock.Char {
-					charFound = true
-					break
-				}
+		charStr := strconv.Itoa(choiceBlock.Char)
+		charFound := false
+		for _, encounteredChar := range nextProgress.EncounteredCharacters {
+			if encounteredChar == charStr {
+				charFound = true
+				break
 			}
-			if !charFound {
-				nextProgress.EncounteredCharacters = append(nextProgress.EncounteredCharacters, choiceBlock.Char)
-				s.logger.Debug("Added new encountered character", append(logFields, zap.String("character", choiceBlock.Char))...)
-			}
+		}
+		if !charFound {
+			nextProgress.EncounteredCharacters = append(nextProgress.EncounteredCharacters, charStr)
+			s.logger.Debug("Added new encountered character", append(logFields, zap.String("character", charStr))...)
 		}
 
 		if gameOverTriggered {

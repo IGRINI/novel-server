@@ -56,7 +56,6 @@ type CharacterDefinition struct {
 	VisualTags  string `json:"vt,omitempty"` // visual_tags (English)
 	Personality string `json:"p,omitempty"`  // personality (optional)
 	Prompt      string `json:"pr,omitempty"` // prompt (English)
-	NegPrompt   string `json:"np,omitempty"` // negative_prompt (English)
 	ImageRef    string `json:"ir,omitempty"` // image_reference (the unique ID used for the image file/URL)
 }
 
@@ -91,7 +90,7 @@ type StatDefinition struct {
 type PlayerPrefs struct {
 	Themes            []string `json:"th,omitempty"` // Themes
 	PlayerDescription string   `json:"dt,omitempty"` // Optional extra player details
-	WorldLore         []string `json:"wl,omitempty"` // Optional world_lore
+	WorldLore         string   `json:"wl,omitempty"` // Optional world_lore
 	DesiredLocations  string   `json:"dl,omitempty"` // Optional desired locations, comma-separated if multiple
 	DesiredCharacters string   `json:"dc,omitempty"` // Optional desired characters, comma-separated if multiple
 	Style             string   `json:"st,omitempty"` // Style (Visual/narrative, English)

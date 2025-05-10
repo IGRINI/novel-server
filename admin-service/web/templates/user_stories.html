@@ -2,16 +2,18 @@
 
 {{ define "title" }}{{ .PageTitle }}{{ end }}
 
-{{ define "content" }}
-    <nav class="breadcrumbs">
-        <ul>
-            <li><a href="/admin/dashboard">Дашборд</a></li>
-            <li><a href="/admin/users">Пользователи</a></li>
-            <li><a href="/admin/users/{{ .TargetUser.ID }}/edit">{{ .TargetUser.Username }}</a></li>
-            <li>Опубликованные истории</li>
-        </ul>
-    </nav>
+{{ define "breadcrumbs" }}
+<nav class="breadcrumbs">
+    <ul>
+        <li><a href="/admin/dashboard">Дашборд</a></li>
+        <li><a href="/admin/users">Пользователи</a></li>
+        <li><a href="/admin/users/{{ .TargetUser.ID }}/edit">{{ .TargetUser.Username }}</a></li>
+        <li>Опубликованные истории</li>
+    </ul>
+</nav>
+{{ end }}
 
+{{ define "content" }}
     <h1>{{ .PageTitle }}</h1>
 
     {{ if .Error }}

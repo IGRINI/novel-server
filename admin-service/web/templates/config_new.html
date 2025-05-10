@@ -2,16 +2,18 @@
 
 {{ define "title" }}Создать новую настройку{{ end }}
 
+{{ define "breadcrumbs" }}
+<nav class="breadcrumbs">
+    <ul>
+        <li><a href="/admin/dashboard">Дашборд</a></li>
+        <li><a href="/admin/configs">Конфигурация</a></li>
+        <li>Создать настройку</li>
+    </ul>
+</nav>
+{{ end }}
+
 {{ define "content" }}
 <div class="app-container">
-    <nav class="breadcrumbs">
-        <ul>
-            <li><a href="/admin/dashboard">Дашборд</a></li>
-            <li><a href="/admin/configs">Конфигурация</a></li>
-            <li>Создать настройку</li>
-        </ul>
-    </nav>
-
     <h1>Создать новую настройку</h1>
 
     <!-- Flash Message Display -->

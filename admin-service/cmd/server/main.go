@@ -541,9 +541,8 @@ func main() {
 	router.HTMLRender = multiRenderer
 	sugar.Info("HTML рендерер настроен", zap.String("templatesDir", templatesDir))
 
-	// Статические файлы
-	router.Static("/static", "./web/static")
-	// Пытаемся отдать стиль лендинга из shared
+	// Статические файлы общего назначения (landing page, shared)
+	// Стилевой файл для лендинга
 	router.StaticFile("/style.css", "../shared/static/style.css")
 	sugar.Info("Настроена раздача статических файлов")
 

@@ -16,6 +16,7 @@ import (
 func (h *AdminHandler) authMiddleware(c *gin.Context) {
 	log := h.logger.With(zap.String("middleware", "authMiddleware"))
 	var claims *sharedModels.Claims
+	var adminToken string   // сохранённый в контекст токен доступа администратора
 	var tokenRefreshed bool // Флаг, указывающий, был ли токен обновлен
 
 	cookie, err := c.Cookie("admin_session")
@@ -40,31 +41,24 @@ func (h *AdminHandler) authMiddleware(c *gin.Context) {
 		log.Debug("Finished validating admin token via auth-service", zap.Duration("duration", duration), zap.Error(err))
 
 		if err == nil {
-			// Токен валиден, проверяем роль и пропускаем
+			// Токен валиден, проверяем роль
 			if !sharedModels.HasRole(claims.Roles, sharedModels.RoleAdmin) {
-				log.Warn("User without admin role tried to access admin area after token validation, returning 404", zap.String("userID", claims.UserID.String()), zap.Strings("roles", claims.Roles))
+				log.Warn("User without admin role after token validation, returning 404", zap.String("userID", claims.UserID.String()), zap.Strings("roles", claims.Roles))
 				c.String(http.StatusNotFound, "404 page not found")
 				c.Abort()
 				return
 			}
-			// Устанавливаем данные в контекст
+			// Устанавливаем данные и токен в контекст
 			c.Set(string(sharedModels.UserContextKey), claims.UserID)
 			c.Set(string(sharedModels.RolesContextKey), claims.Roles)
-			log.Debug("Auth middleware passed (existing valid token), proceeding to next handler", zap.String("userID", claims.UserID.String()))
+			adminToken = tokenString
+			c.Set("admin_token", adminToken)
+			log.Debug("Auth middleware passed (token valid), proceeding to next handler", zap.String("userID", claims.UserID.String()))
 			c.Next()
-			return // Выходим, т.к. аутентификация успешна
-		}
-
-		// Если ошибка валидации - НЕ ErrTokenExpired, то выходим
-		if !errors.Is(err, sharedModels.ErrTokenExpired) {
-			log.Warn("Token validation failed via auth-service (not expired error), returning 404", zap.Error(err))
-			c.String(http.StatusNotFound, "404 page not found")
-			c.Abort()
 			return
 		}
-
-		// Если ошибка = ErrTokenExpired, продолжаем ниже для попытки обновления
-		log.Info("Access token expired, proceeding to refresh")
+		// Валидация не удалась (включая истекший или неверный токен): пытаемся обновить
+		log.Warn("Admin token validation failed, attempting refresh", zap.Error(err))
 	}
 
 	// Сюда попадаем, если admin_session отсутствует ИЛИ если она истекла
@@ -110,6 +104,8 @@ func (h *AdminHandler) authMiddleware(c *gin.Context) {
 	// Все проверки пройдены (токен был обновлен и роль верна)
 	c.Set(string(sharedModels.UserContextKey), claims.UserID)
 	c.Set(string(sharedModels.RolesContextKey), claims.Roles)
+	adminToken = newTokens.AccessToken // сохраняем новый токен после обновления
+	c.Set("admin_token", adminToken)
 
 	logMsg := "Auth middleware passed"
 	if tokenRefreshed {

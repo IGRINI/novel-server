@@ -9,6 +9,7 @@ import (
 	sharedMessaging "novel-server/shared/messaging"
 	"novel-server/shared/models"
 	"sort"
+	"strconv"
 	"strings"
 
 	"novel-server/shared/utils"
@@ -80,8 +81,20 @@ func applyConsequences(progress *models.PlayerProgress, cons models.Consequences
 	}
 
 	if cons.CoreStatsChange != nil {
-		for statName, change := range cons.CoreStatsChange {
-			progress.CoreStats[statName] += change
+		// build sorted stat keys from setup definition
+		statKeys := make([]string, 0, len(setup.CoreStatsDefinition))
+		for name := range setup.CoreStatsDefinition {
+			statKeys = append(statKeys, name)
+		}
+		sort.Strings(statKeys)
+		for key, change := range cons.CoreStatsChange {
+			if idx, err := strconv.Atoi(key); err == nil && idx >= 0 && idx < len(statKeys) {
+				statName := statKeys[idx]
+				progress.CoreStats[statName] += change
+			} else {
+				// fallback: treat key as stat name
+				progress.CoreStats[key] += change
+			}
 		}
 	}
 
