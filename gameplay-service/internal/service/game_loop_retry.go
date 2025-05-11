@@ -265,7 +265,6 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 	var initialScenePayload *sharedMessaging.GenerationTaskPayload
 	var coverImageBatchPayload *sharedMessaging.CharacterImageTaskBatchPayload
 	var clientUpdatePayload *models.ClientStoryUpdate
-	var protagonistGoalPayload *sharedMessaging.GenerationTaskPayload
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -279,7 +278,7 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 			err = fmt.Errorf("panic during RetryInitialGeneration: %v", r)
 		} else if err != nil {
 			log.Warn("Rolling back transaction due to error during RetryInitialGeneration", zap.Error(err))
-			if rollbackErr := tx.Rollback(context.Background()); rollbackErr != nil {
+			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
 				log.Error("Failed to rollback RetryInitialGeneration transaction", zap.Error(rollbackErr))
 			}
 		} else {
@@ -290,13 +289,7 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 			} else {
 				log.Info("RetryInitialGeneration transaction committed successfully")
 				bgCtx := context.Background()
-
-				if protagonistGoalPayload != nil {
-					log.Info("Publishing protagonist goal generation task (retry) after commit", zap.String("taskID", protagonistGoalPayload.TaskID))
-					if errPub := s.publisher.PublishGenerationTask(bgCtx, *protagonistGoalPayload); errPub != nil {
-						log.Error("Error publishing retry protagonist goal generation task POST-COMMIT", zap.Error(errPub))
-					}
-				} else if setupPayload != nil {
+				if setupPayload != nil {
 					log.Info("Publishing setup generation task (retry) after commit", zap.String("taskID", setupPayload.TaskID))
 					if errPub := s.publisher.PublishGenerationTask(bgCtx, *setupPayload); errPub != nil {
 						log.Error("Error publishing retry setup generation task POST-COMMIT", zap.Error(errPub))
@@ -315,10 +308,10 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 					log.Info("Sending ClientStoryUpdate (Story Status Corrected) after commit", zap.String("storyID", clientUpdatePayload.ID))
 					if s.clientPub != nil {
 						wsCtx, wsCancel := context.WithTimeout(bgCtx, 10*time.Second)
-						defer wsCancel()
 						if errWs := s.clientPub.PublishClientUpdate(wsCtx, *clientUpdatePayload); errWs != nil {
 							log.Error("Error sending ClientStoryUpdate (Story Status Corrected) POST-COMMIT", zap.Error(errWs))
 						}
+						wsCancel()
 					} else {
 						log.Warn("ClientUpdatePublisher (clientPub) is nil in gameLoopServiceImpl. Cannot send WebSocket update for status correction POST-COMMIT.")
 					}
@@ -349,63 +342,6 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 		return err
 	}
 
-	if len(publishedStory.Config) == 0 {
-		log.Error("CRITICAL: Story Config is nil or empty, cannot retry any initial generation.")
-		errMsg := "Cannot retry: Story Config is missing"
-		if errUpdate := publishedRepoTx.UpdateStatusFlagsAndDetails(context.Background(), tx, storyID, models.StatusError, false, false, &errMsg); errUpdate != nil {
-			log.Error("Failed to update story status to Error after discovering missing config for initial retry", zap.Error(errUpdate))
-		}
-		err = models.ErrInternalServer
-		return err
-	}
-
-	isProtagonistGoalMissing := false
-	if val, ok := publishedStory.ExtraData["protagonist_goal_text"]; !ok || val == "" {
-		isProtagonistGoalMissing = true
-	}
-
-	if isProtagonistGoalMissing {
-		log.Info("Protagonist Goal is missing or was invalid, retrying protagonist goal generation")
-
-		log.Info("Updating story status to SetupPending before protagonist goal retry task publish")
-		if errUpdate := publishedRepoTx.UpdateStatusFlagsAndDetails(ctx, tx, storyID, models.StatusSetupPending, false, false, nil); errUpdate != nil {
-			log.Error("Failed to update story status to SetupPending before protagonist goal retry task publish", zap.Error(errUpdate))
-			err = fmt.Errorf("failed to update story status for protagonist goal retry: %w", errUpdate)
-			return err
-		}
-
-		var deserializedConfig sharedModels.Config
-		if errUnmarshal := json.Unmarshal(publishedStory.Config, &deserializedConfig); errUnmarshal != nil {
-			log.Error("Failed to unmarshal Config for Protagonist Goal retry payload creation", zap.Error(errUnmarshal))
-			err = fmt.Errorf("failed to unmarshal config for goal retry: %w", errUnmarshal)
-			errMsg := err.Error()
-			publishedRepoTx.UpdateStatusFlagsAndDetails(context.Background(), tx, storyID, models.StatusError, false, false, &errMsg)
-			return err
-		}
-		configUserInput := utils.FormatConfigToString(deserializedConfig, "")
-		if configUserInput == "" {
-			log.Error("Formatted config user input is empty for Protagonist Goal retry")
-			err = fmt.Errorf("formatted config user input is empty for goal retry")
-			errMsg := err.Error()
-			publishedRepoTx.UpdateStatusFlagsAndDetails(context.Background(), tx, storyID, models.StatusError, false, false, &errMsg)
-			return err
-		}
-
-		taskID := uuid.New().String()
-		protagonistGoalPayloadLocal := sharedMessaging.GenerationTaskPayload{
-			TaskID:           taskID,
-			UserID:           publishedStory.UserID.String(),
-			PromptType:       "NovelProtagonistGoal",
-			UserInput:        configUserInput,
-			PublishedStoryID: publishedStory.ID.String(),
-			Language:         publishedStory.Language,
-		}
-		protagonistGoalPayload = &protagonistGoalPayloadLocal
-
-		log.Info("Protagonist Goal generation task payload created for post-commit publish", zap.String("taskID", taskID))
-		return nil
-	}
-
 	setupIsValid := false
 	initialSceneIsValid := false
 	sceneExists := false
@@ -414,13 +350,9 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 	if len(publishedStory.Setup) > 0 {
 		var setupContent models.NovelSetupContent
 		if errUnmarshalSetup := json.Unmarshal(publishedStory.Setup, &setupContent); errUnmarshalSetup == nil {
-			if setupContent.StorySummarySoFar != nil && setupContent.InitialSceneText != "" {
-				setupIsValid = true
-			} else if publishedStory.Status == models.StatusError {
-				log.Warn("Invalid or incomplete Setup JSON/Content for story in Error status, will attempt setup regeneration.", zap.Any("setupContentPreview", firstFewCharacters(string(publishedStory.Setup), 100)))
-			}
+			setupIsValid = true
 		} else if publishedStory.Status == models.StatusError {
-			log.Error("Invalid Setup JSON structure for story in Error status, will attempt setup regeneration.", zap.Error(errUnmarshalSetup), zap.String("setupJsonPreview", firstFewCharacters(string(publishedStory.Setup), 100)))
+			log.Error("Invalid Setup JSON for story in Error status, will attempt setup regeneration.", zap.Error(errUnmarshalSetup))
 		}
 	}
 
@@ -432,7 +364,7 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 			if len(scene.Content) > 0 && json.Valid(scene.Content) {
 				initialSceneIsValid = true
 			} else if publishedStory.Status == models.StatusError {
-				log.Warn("Initial scene content is empty or invalid JSON for story in Error status, will retry scene generation.", zap.String("sceneID", initialSceneID.String()))
+				log.Warn("Initial scene content is empty or invalid for story in Error status, will retry scene generation.", zap.String("sceneID", initialSceneID.String()))
 			}
 		} else if !errors.Is(errScene, pgx.ErrNoRows) && !errors.Is(errScene, models.ErrNotFound) {
 			log.Error("Failed to check for initial scene existence during retry", zap.Error(errScene))
@@ -442,196 +374,165 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 	}
 
 	if !setupIsValid {
-		log.Info("Setup is missing or was invalid, retrying setup generation (first scene text)")
-		var protagonistGoalText string
-		if val, ok := publishedStory.ExtraData["protagonist_goal_text"].(string); ok {
-			protagonistGoalText = val
-		} else {
-			log.Error("Protagonist Goal Text not found or not a string in ExtraData, though it was expected for Setup retry.")
-			err = fmt.Errorf("protagonist goal text missing for setup retry step")
-			errMsg := err.Error()
-			publishedRepoTx.UpdateStatusFlagsAndDetails(context.Background(), tx, storyID, models.StatusError, false, false, &errMsg)
-			return err
-		}
-		if protagonistGoalText == "" {
-			log.Error("Protagonist Goal Text is empty, though it was expected for Setup retry.")
-			err = fmt.Errorf("protagonist goal text is empty for setup retry step")
-			errMsg := err.Error()
-			publishedRepoTx.UpdateStatusFlagsAndDetails(context.Background(), tx, storyID, models.StatusError, false, false, &errMsg)
+		log.Info("Setup is missing or was invalid, retrying setup generation")
+		if len(publishedStory.Config) == 0 {
+			log.Error("CRITICAL: Story Config is nil or empty, cannot retry Setup generation.")
+			errMsg := "Cannot retry Setup: Story Config is missing"
+			if errUpdate := publishedRepoTx.UpdateStatusFlagsAndDetails(context.Background(), tx, storyID, models.StatusError, false, false, &errMsg); errUpdate != nil {
+				log.Error("Failed to update story status to Error after discovering missing config for setup retry", zap.Error(errUpdate))
+			}
+			err = models.ErrInternalServer
 			return err
 		}
 
-		log.Info("Updating story status to SetupPending before setup (first scene text) retry task publish")
-		if errUpdate := publishedRepoTx.UpdateStatusFlagsAndDetails(ctx, tx, storyID, models.StatusSetupPending, true, publishedStory.AreImagesPending, nil); errUpdate != nil {
+		log.Info("Updating story status to SetupPending before setup retry task publish")
+		if errUpdate := publishedRepoTx.UpdateStatusFlagsAndDetails(ctx, tx, storyID, models.StatusSetupPending, false, false, nil); errUpdate != nil {
 			log.Error("Failed to update story status to SetupPending before setup retry task publish", zap.Error(errUpdate))
 			err = fmt.Errorf("failed to update story status for setup retry: %w", errUpdate)
 			return err
 		}
 
+		// Десериализуем конфиг для FormatConfigToString
 		var deserializedConfig sharedModels.Config
+		var configUserInput string
 		if errUnmarshal := json.Unmarshal(publishedStory.Config, &deserializedConfig); errUnmarshal != nil {
-			log.Error("Failed to unmarshal Config for Setup (first scene text) retry payload creation", zap.Error(errUnmarshal))
-			err = fmt.Errorf("failed to unmarshal config for setup text retry: %w", errUnmarshal)
-			errMsg := err.Error()
-			publishedRepoTx.UpdateStatusFlagsAndDetails(context.Background(), tx, storyID, models.StatusError, false, publishedStory.AreImagesPending, &errMsg)
-			return err
+			log.Error("Failed to unmarshal Config for Setup retry payload creation", zap.Error(errUnmarshal))
+			// Не устанавливаем err, чтобы позволить транзакции откатиться
+			// Задача все равно не будет отправлена из-за пустого UserInput
+		} else {
+			configUserInput = utils.FormatConfigToString(deserializedConfig, "")
 		}
-		configPart := utils.FormatConfigToString(deserializedConfig, "")
-		userInputForSetup := configPart + "\n\nProtagonist's Main Goal:\n" + protagonistGoalText
 
 		taskID := uuid.New().String()
 		setupPayloadLocal := sharedMessaging.GenerationTaskPayload{
 			TaskID:           taskID,
 			UserID:           publishedStory.UserID.String(),
 			PromptType:       models.PromptTypeNovelSetup,
-			UserInput:        userInputForSetup,
+			UserInput:        configUserInput, // Используем форматированную строку
 			PublishedStoryID: publishedStory.ID.String(),
 			Language:         publishedStory.Language,
 		}
 		setupPayload = &setupPayloadLocal
 
-		log.Info("Setup (first scene text) generation task payload created for post-commit publish", zap.String("taskID", taskID))
+		log.Info("Setup generation task payload created for post-commit publish", zap.String("taskID", taskID))
 		return nil
 	}
 
-	if !initialSceneIsValid {
-		log.Info("Initial scene JSON is missing or was invalid, retrying first scene JSON generation")
-
+	if !sceneExists || !initialSceneIsValid {
+		log.Info("Initial scene is missing or was invalid, retrying first scene generation")
 		if errUpdate := publishedRepoTx.UpdateStatusFlagsAndDetails(ctx, tx, storyID, models.StatusFirstScenePending, true, publishedStory.AreImagesPending, nil); errUpdate != nil {
-			log.Error("Failed to update story status to FirstScenePending before initial scene JSON retry", zap.Error(errUpdate))
-			err = fmt.Errorf("failed to update story status for scene JSON retry: %w", errUpdate)
+			log.Error("Failed to update story status to FirstScenePending before retry", zap.Error(errUpdate))
+			err = fmt.Errorf("failed to update story status: %w", errUpdate)
 			return err
 		}
 
-		var setupContentForJsonPackaging models.NovelSetupContent
-		if errUnmarshal := json.Unmarshal(publishedStory.Setup, &setupContentForJsonPackaging); errUnmarshal != nil {
-			log.Error("Failed to unmarshal Setup to get text for JSON packaging retry", zap.Error(errUnmarshal))
-			err = fmt.Errorf("failed to get setup text for JSON packaging retry: %w", errUnmarshal)
-			errMsg := err.Error()
-			publishedRepoTx.UpdateStatusFlagsAndDetails(context.Background(), tx, storyID, models.StatusError, false, publishedStory.AreImagesPending, &errMsg)
+		payloadLocal, errPayload := createInitialSceneGenerationPayload(userID, publishedStory, publishedStory.Language)
+		if errPayload != nil {
+			log.Error("Failed to create initial scene generation payload for retry", zap.Error(errPayload))
+			errMsg := fmt.Sprintf("Failed to create initial scene payload: %v", errPayload)
+			if errUpdate := publishedRepoTx.UpdateStatusFlagsAndDetails(context.Background(), tx, storyID, publishedStory.Status, false, publishedStory.AreImagesPending, &errMsg); errUpdate != nil {
+				log.Error("Failed to revert IsFirstScenePending after payload creation error", zap.Error(errUpdate))
+			}
+			err = fmt.Errorf("failed to create generation payload: %w", errPayload)
 			return err
 		}
 
-		userInputForInitialSceneJson := setupContentForJsonPackaging.InitialSceneText
-		if userInputForInitialSceneJson == "" {
-			log.Error("Initial scene text from Setup is empty for JSON packaging retry")
-			err = fmt.Errorf("initial scene text for JSON packaging is empty")
-			errMsg := err.Error()
-			publishedRepoTx.UpdateStatusFlagsAndDetails(context.Background(), tx, storyID, models.StatusError, false, publishedStory.AreImagesPending, &errMsg)
-			return err
+		// <<< НАЧАЛО: Перезапись UserInput >>>
+		var parsedCfgRetry models.Config
+		var parsedStpRetry models.NovelSetupContent
+		var formatErrRetry error
+
+		if errCfg := json.Unmarshal(publishedStory.Config, &parsedCfgRetry); errCfg != nil {
+			formatErrRetry = fmt.Errorf("failed to unmarshal config for formatting (retry): %w", errCfg)
+		} else if errStp := json.Unmarshal(publishedStory.Setup, &parsedStpRetry); errStp != nil {
+			formatErrRetry = fmt.Errorf("failed to unmarshal setup for formatting (retry): %w", errStp)
 		}
 
-		var deserializedConfigForStats sharedModels.Config
-		var statsStringForJsonPrompt string
-		if errUnmarshal := json.Unmarshal(publishedStory.Config, &deserializedConfigForStats); errUnmarshal == nil {
-			statsStringForJsonPrompt = utils.FormatCoreStatsForJsonPrompt(deserializedConfigForStats.CoreStats)
-			userInputForInitialSceneJson = statsStringForJsonPrompt + "\n\n" + userInputForInitialSceneJson
+		if formatErrRetry != nil {
+			log.Error("Failed to prepare data for formatting UserInput (retry), cannot publish task", zap.Error(formatErrRetry))
+			errMsg := fmt.Sprintf("Failed to format input (retry): %v", formatErrRetry)
+			if errUpdate := publishedRepoTx.UpdateStatusFlagsAndDetails(context.Background(), tx, storyID, publishedStory.Status, false, publishedStory.AreImagesPending, &errMsg); errUpdate != nil {
+				log.Error("Failed to update story status to Error after formatting error (retry)", zap.Error(errUpdate))
+			}
+			err = models.ErrInternalServer
+			return err
 		} else {
-			log.Warn("Could not unmarshal config to get stats for initial scene JSON prompt", zap.Error(errUnmarshal))
+			payloadLocal.UserInput = utils.FormatConfigAndSetupToString(parsedCfgRetry, parsedStpRetry)
 		}
+		// <<< КОНЕЦ: Перезапись UserInput >>>
 
-		taskID := uuid.New().String()
-		initialScenePayloadLocal := sharedMessaging.GenerationTaskPayload{
-			TaskID:           taskID,
-			UserID:           userID.String(),
-			PromptType:       models.PromptTypeNovelFirstSceneCreator,
-			UserInput:        userInputForInitialSceneJson,
-			PublishedStoryID: storyID.String(),
-			Language:         publishedStory.Language,
-			StateHash:        models.InitialStateHash,
-		}
-		initialScenePayload = &initialScenePayloadLocal
-		log.Info("Initial scene JSON task payload created for post-commit publish", zap.String("taskID", initialScenePayload.TaskID))
+		initialScenePayload = &payloadLocal
+
+		log.Info("Initial scene task payload created for post-commit publish", zap.String("taskID", initialScenePayload.TaskID))
 		return nil
 	}
 
 	if publishedStory.AreImagesPending {
-		log.Info("Initial scene JSON exists, but AreImagesPending is true. Retrying image generation.", zap.String("sceneID_if_exists", initialSceneID.String()))
+		log.Info("Initial scene text exists, but AreImagesPending is true. Retrying image generation.", zap.String("sceneID", initialSceneID.String()))
 
-		var setupContentForImages models.NovelSetupContent
-		if errUnmarshalSetup := json.Unmarshal(publishedStory.Setup, &setupContentForImages); errUnmarshalSetup != nil {
-			log.Error("Failed to unmarshal setup JSON to reconstruct cover prompt for image retry", zap.Error(errUnmarshalSetup))
+		var setupContent models.NovelSetupContent
+		if errUnmarshalSetup := json.Unmarshal(publishedStory.Setup, &setupContent); errUnmarshalSetup != nil {
+			log.Error("Failed to unmarshal setup JSON to reconstruct cover prompt", zap.Error(errUnmarshalSetup))
 			err = fmt.Errorf("failed to parse setup for cover image retry: %w", errUnmarshalSetup)
-			errMsg := err.Error()
-			publishedRepoTx.UpdateStatusFlagsAndDetails(context.Background(), tx, storyID, models.StatusError, false, true, &errMsg)
 			return err
 		}
-		if setupContentForImages.StoryPreviewImagePrompt == "" {
-			log.Warn("Cannot retry cover image generation: StoryPreviewImagePrompt is empty in setup. Setting AreImagesPending to false.")
-			if errUpdate := publishedRepoTx.UpdateStatusFlagsAndDetails(ctx, tx, storyID, publishedStory.Status, publishedStory.IsFirstScenePending, false, nil); errUpdate != nil {
-				log.Error("Failed to update story AreImagesPending flag to false when no prompt for cover", zap.Error(errUpdate))
-			}
-		} else {
-			var previewStyleSuffix string
-			previewDynConfKey := "prompt.story_preview_style_suffix"
-			dynamicConfigPreview, errConfPreview := dynamicConfigRepoTx.GetByKey(ctx, tx, previewDynConfKey)
-			if errConfPreview != nil && !errors.Is(errConfPreview, models.ErrNotFound) {
-				log.Error("Failed to get dynamic config for story preview style suffix", zap.String("key", previewDynConfKey), zap.Error(errConfPreview))
-			} else if dynamicConfigPreview != nil {
-				previewStyleSuffix = dynamicConfigPreview.Value
-			}
-
-			var fullConfig models.Config
-			var storyStyle string
-			if errUnmarshalConfig := json.Unmarshal(publishedStory.Config, &fullConfig); errUnmarshalConfig == nil {
-				if fullConfig.PlayerPrefs.Style != "" {
-					storyStyle = fullConfig.PlayerPrefs.Style
-					if storyStyle != "" {
-						storyStyle = ", " + storyStyle
-					}
-				}
-			}
-			reconstructedCoverPrompt := setupContentForImages.StoryPreviewImagePrompt + storyStyle + previewStyleSuffix
-
-			if !publishedStory.AreImagesPending {
-				if errUpdate := publishedRepoTx.UpdateStatusFlagsAndDetails(ctx, tx, storyID, publishedStory.Status, publishedStory.IsFirstScenePending, true, nil); errUpdate != nil {
-					log.Error("Failed to update story AreImagesPending flag to true before image retry task", zap.Error(errUpdate))
-					err = fmt.Errorf("failed to update story status for image retry: %w", errUpdate)
-					return err
-				}
-			}
-
-			previewImageRef := fmt.Sprintf("history_preview_%s", storyID.String())
-			coverTaskPayloadLocal := sharedMessaging.CharacterImageTaskPayload{
-				TaskID:           uuid.New().String(),
-				UserID:           userID.String(),
-				CharacterID:      storyID,
-				Prompt:           reconstructedCoverPrompt,
-				NegativePrompt:   "",
-				ImageReference:   previewImageRef,
-				Ratio:            "3:2",
-				PublishedStoryID: storyID,
-			}
-
-			coverBatchPayloadLocal := sharedMessaging.CharacterImageTaskBatchPayload{
-				BatchID: uuid.New().String(),
-				Tasks:   []sharedMessaging.CharacterImageTaskPayload{coverTaskPayloadLocal},
-			}
-			coverImageBatchPayload = &coverBatchPayloadLocal
-
-			log.Info("Cover image task payload created for post-commit publish", zap.String("taskID", coverTaskPayloadLocal.TaskID))
-			return nil
+		if setupContent.StoryPreviewImagePrompt == "" {
+			log.Error("Cannot retry cover image generation: StoryPreviewImagePrompt is empty in setup")
+			err = fmt.Errorf("cannot retry cover image: StoryPreviewImagePrompt is missing")
+			return err
 		}
-	}
 
-	log.Info("Initial generation steps (goal, setup text, scene json, cover prompt check) validated or processed.")
-	currentPublishedStory, errRefresh := publishedRepoTx.GetByID(ctx, tx, storyID)
-	if errRefresh != nil {
-		log.Error("Failed to refresh published story state before final status check", zap.Error(errRefresh))
-		err = models.ErrInternalServer
-		return err
-	}
+		var previewStyleSuffix string
+		previewDynConfKey := "prompt.story_preview_style_suffix"
+		dynamicConfigPreview, errConfPreview := dynamicConfigRepoTx.GetByKey(ctx, tx, previewDynConfKey)
+		if errConfPreview != nil && !errors.Is(errConfPreview, models.ErrNotFound) {
+			log.Error("Failed to get dynamic config for story preview style suffix", zap.String("key", previewDynConfKey), zap.Error(errConfPreview))
+		} else if dynamicConfigPreview != nil {
+			previewStyleSuffix = dynamicConfigPreview.Value
+		}
 
-	if currentPublishedStory.AreImagesPending {
-		log.Info("Images are still pending (e.g. task was sent for cover). Story not yet Ready.")
+		var fullConfig models.Config
+		var storyStyle string
+		if errUnmarshalConfig := json.Unmarshal(publishedStory.Config, &fullConfig); errUnmarshalConfig == nil {
+			storyStyle = fullConfig.PlayerPrefs.Style
+			if storyStyle != "" {
+				storyStyle = ", " + storyStyle
+			}
+		}
+		reconstructedCoverPrompt := setupContent.StoryPreviewImagePrompt + storyStyle + previewStyleSuffix
+
+		if !publishedStory.AreImagesPending {
+			if errUpdate := publishedRepoTx.UpdateStatusFlagsAndDetails(ctx, tx, storyID, publishedStory.Status, publishedStory.IsFirstScenePending, true, nil); errUpdate != nil {
+				log.Error("Failed to update story AreImagesPending flag before image retry", zap.Error(errUpdate))
+				err = fmt.Errorf("failed to update story status for image retry: %w", errUpdate)
+				return err
+			}
+		}
+
+		previewImageRef := fmt.Sprintf("history_preview_%s", storyID.String())
+		coverTaskPayloadLocal := sharedMessaging.CharacterImageTaskPayload{
+			TaskID:           uuid.New().String(),
+			UserID:           userID.String(),
+			CharacterID:      storyID,
+			Prompt:           reconstructedCoverPrompt,
+			NegativePrompt:   "",
+			ImageReference:   previewImageRef,
+			Ratio:            "3:2",
+			PublishedStoryID: storyID,
+		}
+		coverBatchPayloadLocal := sharedMessaging.CharacterImageTaskBatchPayload{BatchID: uuid.New().String(), Tasks: []sharedMessaging.CharacterImageTaskPayload{coverTaskPayloadLocal}}
+		coverImageBatchPayload = &coverBatchPayloadLocal
+
+		log.Info("Cover image task payload created for post-commit publish", zap.String("taskID", coverTaskPayloadLocal.TaskID))
 		return nil
 	}
 
-	if currentPublishedStory.Status == models.StatusReady {
-		log.Warn("Story status is already Ready. Nothing more to retry in initial generation.")
+	log.Info("Initial generation steps (setup, scene text, cover) validated.")
+	if publishedStory.Status == models.StatusReady {
+		log.Warn("Story status is already Ready. Nothing to retry.")
 		return nil
 	} else {
-		log.Info("Correcting story status to Ready.", zap.String("current_status", string(currentPublishedStory.Status)))
+		log.Info("Correcting story status to Ready.", zap.String("current_status", string(publishedStory.Status)))
 		errUpdate := publishedRepoTx.UpdateStatusFlagsAndDetails(ctx, tx, storyID, models.StatusReady, false, false, nil)
 		if errUpdate != nil {
 			log.Error("Failed to correct story status to Ready after validation.", zap.Error(errUpdate))
@@ -641,21 +542,14 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 		log.Info("Successfully corrected story status to Ready.")
 
 		clientUpdatePayload = &models.ClientStoryUpdate{
-			ID:           currentPublishedStory.ID.String(),
-			UserID:       currentPublishedStory.UserID.String(),
+			ID:           publishedStory.ID.String(),
+			UserID:       publishedStory.UserID.String(),
 			UpdateType:   models.UpdateTypeStory,
 			Status:       string(models.StatusReady),
 			ErrorDetails: nil,
-			StoryTitle:   currentPublishedStory.Title,
+			StoryTitle:   publishedStory.Title,
 		}
-		log.Info("Client update payload for 'Story Ready' created for post-commit send")
+		log.Info("Client update payload created for post-commit send")
 		return nil
 	}
-}
-
-func firstFewCharacters(s string, n int) string {
-	if len(s) > n {
-		return s[:n] + "..."
-	}
-	return s
 }
