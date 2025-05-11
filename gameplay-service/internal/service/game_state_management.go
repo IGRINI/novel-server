@@ -114,7 +114,6 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 		PublishedStoryID:      publishedStoryID,
 		CurrentStateHash:      models.InitialStateHash,
 		CoreStats:             initialStats,
-		StoryVariables:        make(map[string]interface{}),
 		SceneIndex:            0,
 		EncounteredCharacters: []string{},
 	}

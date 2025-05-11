@@ -203,14 +203,9 @@ func FormatFullGameStateToString(
 	previousSSS string, // Предыдущий Story Summary So Far
 	previousFD string, // Предыдущий Future Direction
 	previousVIS string, // Предыдущий Variable Impact Summary
-	currentSV map[string]interface{}, // Текущие Story Variables
 	encounteredChars []string, // Встреченные персонажи
 ) string {
 	var sb strings.Builder
-
-	// --- Статическая часть ---
-	sb.WriteString("### Game Configuration & Setup ###\n\n")
-
 	// Конфиг (как в FormatConfigAndSetupToString, но без заголовка)
 	sb.WriteString(fmt.Sprintf("Title: %s\n", config.Title))
 	sb.WriteString(fmt.Sprintf("Short Description: %s\n", config.ShortDescription))
@@ -324,24 +319,6 @@ func FormatFullGameStateToString(
 		}
 	} else {
 		sb.WriteString("Current Core Stats: (None)\n")
-	}
-
-	// Текущие переменные
-	if len(currentSV) > 0 {
-		sb.WriteString("Story Variables:\n")
-		keysSVCurr := make([]string, 0, len(currentSV))
-		for k := range currentSV {
-			keysSVCurr = append(keysSVCurr, k)
-		}
-		sort.Strings(keysSVCurr)
-		for _, name := range keysSVCurr {
-			// Пытаемся представить значение как строку
-			valueStr := fmt.Sprintf("%v", currentSV[name])
-			// Дополнительно можно экранировать или форматировать, если нужно
-			sb.WriteString(fmt.Sprintf("  %s: %s\n", name, valueStr))
-		}
-	} else {
-		sb.WriteString("Story Variables: (None)\n")
 	}
 
 	// Встреченные персонажи

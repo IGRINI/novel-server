@@ -20,19 +20,13 @@ import (
 // --- Helper Functions ---
 
 // calculateStateHash calculates a deterministic state hash, including the previous state hash.
-func calculateStateHash(previousHash string, coreStats map[string]int, storyVars map[string]interface{}) (string, error) {
+func calculateStateHash(previousHash string, coreStats map[string]int) (string, error) {
 	stateMap := make(map[string]interface{})
 
 	stateMap["_ph"] = previousHash
 
 	for k, v := range coreStats {
 		stateMap["cs_"+k] = v
-	}
-
-	for k, v := range storyVars {
-		if v != nil && !strings.HasPrefix(k, "_") {
-			stateMap["sv_"+k] = v
-		}
 	}
 
 	keys := make([]string, 0, len(stateMap))
@@ -76,9 +70,6 @@ func applyConsequences(progress *models.PlayerProgress, cons models.Consequences
 	if progress.CoreStats == nil {
 		progress.CoreStats = make(map[string]int)
 	}
-	if progress.StoryVariables == nil {
-		progress.StoryVariables = make(map[string]interface{})
-	}
 
 	if cons.CoreStatsChange != nil {
 		// build sorted stat keys from setup definition
@@ -94,16 +85,6 @@ func applyConsequences(progress *models.PlayerProgress, cons models.Consequences
 			} else {
 				// fallback: treat key as stat name
 				progress.CoreStats[key] += change
-			}
-		}
-	}
-
-	if cons.StoryVariables != nil {
-		for varName, value := range cons.StoryVariables {
-			if value == nil {
-				delete(progress.StoryVariables, varName)
-			} else {
-				progress.StoryVariables[varName] = value
 			}
 		}
 	}
@@ -156,16 +137,6 @@ func createGenerationPayload(
 		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Setup JSON: %w", err)
 	}
 
-	// Собираем текущие переменные без временных (начинающихся с _)
-	currentNonTransientVars := make(map[string]interface{})
-	if progress.StoryVariables != nil {
-		for k, v := range progress.StoryVariables {
-			if v != nil && !strings.HasPrefix(k, "_") {
-				currentNonTransientVars[k] = v
-			}
-		}
-	}
-
 	// Используем новый универсальный форматтер
 	userInputString := utils.FormatFullGameStateToString(
 		fullConfig,
@@ -175,7 +146,6 @@ func createGenerationPayload(
 		derefStringPtr(progress.LastStorySummary),
 		derefStringPtr(progress.LastFutureDirection),
 		derefStringPtr(progress.LastVarImpactSummary),
-		currentNonTransientVars,
 		progress.EncounteredCharacters,
 	)
 
@@ -247,9 +217,8 @@ func createInitialSceneGenerationPayload(
 			initialCoreStats[statName] = definition.Initial
 		}
 	}
-	initialStoryVars := make(map[string]interface{}) // Пусто
-	initialChoices := []models.UserChoiceInfo{}      // Пусто
-	initialEncChars := []string{}                    // Пусто
+	initialChoices := []models.UserChoiceInfo{} // Пусто
+	initialEncChars := []string{}               // Пусто
 
 	// Используем новый универсальный форматтер с начальными/пустыми значениями
 	userInputString := utils.FormatFullGameStateToString(
@@ -260,7 +229,6 @@ func createInitialSceneGenerationPayload(
 		"", // previousSSS
 		"", // previousFD
 		"", // previousVIS
-		initialStoryVars,
 		initialEncChars,
 	)
 

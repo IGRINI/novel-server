@@ -26,8 +26,6 @@ Player Preferences:
 
   Desired Locations: вечеринка, городские улицы, площадки для салютов
 
-  Desired Characters: девушки, друзья
-
 
 Core Stats Definition (from Setup):
 
@@ -35,11 +33,11 @@ Core Stats Definition (from Setup):
 
     Description: Степень прочности дружеских уз, влияет на поддержку и доверие между персонажами, повышается с совместными приключениями.
 
-    Initial Value: 75
+    Value: 78
 
-    Game Over on Min: false
+    Game Over on 0: false
 
-    Game Over on Max: true
+    Game Over on 100: true
 
     Icon: Heart
 
@@ -47,11 +45,11 @@ Core Stats Definition (from Setup):
 
     Description: Интенсивность неожиданных событий, увеличивается при насыщенных ночных приключениях, создает динамику.
 
-    Initial Value: 85
+    Value: 89
 
-    Game Over on Min: false
+    Game Over on 0: false
 
-    Game Over on Max: true
+    Game Over on 100: true
 
     Icon: Bolt
 
@@ -59,11 +57,11 @@ Core Stats Definition (from Setup):
 
     Description: Возможность романтических моментов и отношений, способствует развитию любовных линий и эмоциональных связей.
 
-    Initial Value: 60
+    Value: 52
 
-    Game Over on Min: false
+    Game Over on 0: false
 
-    Game Over on Max: true
+    Game Over on 100: true
 
     Icon: Ring
 
@@ -71,10 +69,10 @@ Core Stats Definition (from Setup):
 
     Description: Степень комичности ситуаций, вызывающих улыбку, повышается с юмористическими событиями, добавляет легкости игре.
 
-    Initial Value: 80
+    Value: 81
 
-    Game Over on Min: false
+    Game Over on 0: false
 
-    Game Over on Max: true
+    Game Over on 100: true
 
     Icon: Clown

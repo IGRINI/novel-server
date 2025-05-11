@@ -43,10 +43,13 @@ type PublishedStoryDetailDTO struct {
 	IsAuthor          bool
 }
 
+// CoreStatDetailDTO представляет свойства одного параметра статистики и условия конца игры
 type CoreStatDetailDTO struct {
-	Description        string
-	InitialValue       int
-	GameOverConditions []sharedModels.StatDefinition
+	Description  string `json:"description"`
+	InitialValue int    `json:"initial_value"`
+	GameOverMin  bool   `json:"game_over_min"`
+	GameOverMax  bool   `json:"game_over_max"`
+	Icon         string `json:"icon,omitempty"`
 }
 
 type ParsedCharacterDTO struct {
@@ -68,15 +71,15 @@ type PublishedStoryParsedDetailDTO struct {
 	IsAdultContent bool      `json:"is_adult_content"`
 	Status         string    `json:"status"`
 
-	Title            string                              `json:"title"`
-	ShortDescription string                              `json:"short_description"`
-	Genre            string                              `json:"genre"`
-	Language         string                              `json:"language"`
-	PlayerName       string                              `json:"player_name"`
-	CoreStats        map[string]sharedModels.CoreStatDTO `json:"core_stats"`
-	Characters       []sharedModels.CharacterDTO         `json:"characters"`
+	Title            string                       `json:"title"`
+	ShortDescription string                       `json:"short_description"`
+	Genre            string                       `json:"genre"`
+	Language         string                       `json:"language"`
+	PlayerName       string                       `json:"player_name"`
+	CoreStats        map[string]CoreStatDetailDTO `json:"core_stats"`
+	Characters       []ParsedCharacterDTO         `json:"characters"`
 
-	GameStates []*sharedModels.GameStateSummaryDTO `json:"game_states,omitempty"`
+	GameStates []*GameStateSummary `json:"game_states,omitempty"`
 }
 
 type StoryBrowsingService interface {
@@ -202,8 +205,8 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 
 	var config sharedModels.Config
 	var setup sharedModels.NovelSetupContent
-	var coreStatsDTO map[string]sharedModels.CoreStatDTO
-	var charactersDTO []sharedModels.CharacterDTO
+	var coreStatsDTO map[string]CoreStatDetailDTO
+	var charactersDTO []ParsedCharacterDTO
 
 	if story.Config != nil && len(story.Config) > 0 && string(story.Config) != "null" {
 		if err := json.Unmarshal(story.Config, &config); err != nil {
@@ -220,9 +223,9 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 			return nil, fmt.Errorf("%w: invalid setup data: %v", sharedModels.ErrInternalServer, err)
 		}
 
-		coreStatsDTO = make(map[string]sharedModels.CoreStatDTO)
+		coreStatsDTO = make(map[string]CoreStatDetailDTO)
 		for statID, statDef := range setup.CoreStatsDefinition {
-			coreStatsDTO[statID] = sharedModels.CoreStatDTO{
+			coreStatsDTO[statID] = CoreStatDetailDTO{
 				Description:  statDef.Description,
 				InitialValue: statDef.Initial,
 				GameOverMin:  statDef.Go.Min,
@@ -230,9 +233,9 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 				Icon:         statDef.Icon,
 			}
 		}
-		charactersDTO = make([]sharedModels.CharacterDTO, 0, len(setup.Characters))
+		charactersDTO = make([]ParsedCharacterDTO, 0, len(setup.Characters))
 		for _, charDef := range setup.Characters {
-			charactersDTO = append(charactersDTO, sharedModels.CharacterDTO{
+			charactersDTO = append(charactersDTO, ParsedCharacterDTO{
 				Name:           charDef.Name,
 				Description:    charDef.Description,
 				Personality:    charDef.Personality,
@@ -241,18 +244,29 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 		}
 	} else {
 		log.Warn("Story Setup JSON is nil or empty", zap.Stringer("storyID", story.ID))
-		coreStatsDTO = make(map[string]sharedModels.CoreStatDTO)
-		charactersDTO = make([]sharedModels.CharacterDTO, 0)
+		coreStatsDTO = make(map[string]CoreStatDetailDTO)
+		charactersDTO = make([]ParsedCharacterDTO, 0)
 	}
 
-	var gameStates []*sharedModels.GameStateSummaryDTO
-	gameStates, err = s.playerGameStateRepo.ListSummariesByPlayerAndStory(ctx, s.db, userID, storyID)
+	states, err := s.playerGameStateRepo.ListByPlayerAndStory(ctx, s.db, userID, storyID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		s.logger.Error("Failed to list game states for story details", zap.String("storyID", storyID.String()), zap.Stringer("userID", userID), zap.Error(err))
+		s.logger.Error("Failed to list player game states", zap.String("storyID", storyID.String()), zap.Stringer("userID", userID), zap.Error(err))
 		return nil, fmt.Errorf("%w: failed to list game states: %v", sharedModels.ErrInternalServer, err)
 	}
-	if gameStates == nil {
-		gameStates = make([]*sharedModels.GameStateSummaryDTO, 0)
+	gameStates := make([]*GameStateSummary, 0, len(states))
+	for _, gs := range states {
+		progress, errProg := s.playerProgressRepo.GetByID(ctx, s.db, gs.PlayerProgressID)
+		if errProg != nil {
+			s.logger.Error("Failed to get player progress for state summary", zap.String("stateID", gs.ID.String()), zap.Error(errProg))
+			continue
+		}
+		gameStates = append(gameStates, &GameStateSummary{
+			ID:                  gs.ID,
+			LastActivityAt:      gs.LastActivityAt,
+			SceneIndex:          progress.SceneIndex,
+			CurrentSceneSummary: progress.CurrentSceneSummary,
+			PlayerStatus:        string(gs.PlayerStatus),
+		})
 	}
 
 	var title string
@@ -476,4 +490,13 @@ func (s *storyBrowsingServiceImpl) ListMyStoriesWithProgress(ctx context.Context
 
 	log.Info("Successfully listed user stories only with progress", zap.Int("count", len(summaries)), zap.Bool("hasNext", nextCursor != ""))
 	return summaries, nextCursor, nil
+}
+
+// GameStateSummary представляет сводку состояния игры для клиента.
+type GameStateSummary struct {
+	ID                  uuid.UUID `json:"id"`
+	LastActivityAt      time.Time `json:"last_activity_at"`
+	SceneIndex          int       `json:"scene_index"`
+	CurrentSceneSummary *string   `json:"current_scene_summary,omitempty"`
+	PlayerStatus        string    `json:"player_status"`
 }

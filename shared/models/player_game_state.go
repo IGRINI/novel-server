@@ -36,3 +36,13 @@ type PlayerGameState struct {
 
 // PlayerCoreStats - можно использовать для парсинга CoreStats JSON, если потребуется.
 // type PlayerCoreStats map[string]int
+
+// GameStateSummaryDTO представляет сводку состояния игры для клиента.
+// Используется репозиторием для ListSummariesByPlayerAndStory.
+type GameStateSummaryDTO struct {
+	ID                  uuid.UUID    `json:"id"`
+	LastActivityAt      time.Time    `json:"last_activity_at"`
+	SceneIndex          int          `json:"scene_index"`
+	CurrentSceneSummary *string      `json:"current_scene_summary,omitempty"`
+	PlayerStatus        PlayerStatus `json:"player_status"`
+}

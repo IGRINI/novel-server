@@ -127,9 +127,6 @@ func scanPlayerProgress(row pgx.Row) (*models.PlayerProgress, error) {
 	if err := utils.UnmarshalMap(coreStatsJSON, &progress.CoreStats); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal core stats: %w", err)
 	}
-	if err := utils.UnmarshalMap(storyVarsJSON, &progress.StoryVariables); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal story variables: %w", err)
-	}
 
 	return progress, nil
 }
@@ -214,11 +211,6 @@ func (r *pgPlayerProgressRepository) Save(ctx context.Context, querier interface
 		r.logger.Error("Failed to marshal core stats for save", append(logFields, zap.Error(err))...)
 		return uuid.Nil, err
 	}
-	storyVarsJSON, err := utils.MarshalMap(progress.StoryVariables)
-	if err != nil {
-		r.logger.Error("Failed to marshal story variables for save", append(logFields, zap.Error(err))...)
-		return uuid.Nil, err
-	}
 
 	// Handle potentially nil nullable fields (UserID, StoryID)
 	var userIDArg, storyIDArg interface{}
@@ -242,7 +234,6 @@ func (r *pgPlayerProgressRepository) Save(ctx context.Context, querier interface
 			userIDArg,                     // $1 (nullable)
 			storyIDArg,                    // $2 (nullable)
 			coreStatsJSON,                 // $3
-			storyVarsJSON,                 // $4
 			progress.CurrentStateHash,     // $5
 			progress.SceneIndex,           // $6
 			progress.CreatedAt,            // $7 (Use the value set above)
@@ -270,7 +261,6 @@ func (r *pgPlayerProgressRepository) Save(ctx context.Context, querier interface
 			userIDArg,                     // $2 (nullable)
 			storyIDArg,                    // $3 (nullable)
 			coreStatsJSON,                 // $4
-			storyVarsJSON,                 // $5
 			progress.CurrentStateHash,     // $6
 			progress.SceneIndex,           // $7
 			progress.UpdatedAt,            // $8 (Use the value set above)
@@ -500,16 +490,15 @@ func (r *pgPlayerProgressRepository) UpsertInitial(ctx context.Context, querier 
 
 	// Marshal maps to JSON
 	coreStatsJSON, errM1 := utils.MarshalMap(progress.CoreStats)
-	storyVarsJSON, errM2 := utils.MarshalMap(progress.StoryVariables)
-	if errM1 != nil || errM2 != nil {
-		log.Error("Failed to marshal progress data for UpsertInitial", zap.Error(errM1), zap.Error(errM2))
-		return uuid.Nil, fmt.Errorf("failed to marshal progress data: %v, %v", errM1, errM2)
+	if errM1 != nil {
+		log.Error("Failed to marshal progress data for UpsertInitial", zap.Error(errM1))
+		return uuid.Nil, fmt.Errorf("failed to marshal progress data: %v", errM1)
 	}
 
 	var returnedID uuid.UUID
 	err := querier.QueryRow(ctx, query,
 		progress.ID, progress.UserID, progress.PublishedStoryID, progress.CurrentStateHash,
-		coreStatsJSON, storyVarsJSON,
+		coreStatsJSON,
 		progress.SceneIndex,
 	).Scan(&returnedID)
 
@@ -541,15 +530,14 @@ func (r *pgPlayerProgressRepository) Update(ctx context.Context, querier interfa
 
 	// Marshal maps to JSON
 	coreStatsJSON, errM1 := utils.MarshalMap(progress.CoreStats)
-	storyVarsJSON, errM2 := utils.MarshalMap(progress.StoryVariables)
-	if errM1 != nil || errM2 != nil {
-		log.Error("Failed to marshal progress data for Update", zap.Error(errM1), zap.Error(errM2))
-		return fmt.Errorf("failed to marshal progress data: %v, %v", errM1, errM2)
+	if errM1 != nil {
+		log.Error("Failed to marshal progress data for Update", zap.Error(errM1))
+		return fmt.Errorf("failed to marshal progress data: %v", errM1)
 	}
 
 	cmdTag, err := querier.Exec(ctx, query,
 		progress.ID, progress.CurrentStateHash,
-		coreStatsJSON, storyVarsJSON,
+		coreStatsJSON,
 		progress.SceneIndex,
 		progress.UserID, // For WHERE clause
 	)
@@ -604,16 +592,15 @@ func (r *pgPlayerProgressRepository) UpsertByHash(ctx context.Context, querier i
 
 	// Marshal maps to JSON
 	coreStatsJSON, errM1 := utils.MarshalMap(progress.CoreStats)
-	storyVarsJSON, errM2 := utils.MarshalMap(progress.StoryVariables)
-	if errM1 != nil || errM2 != nil {
-		log.Error("Failed to marshal progress data for UpsertByHash", zap.Error(errM1), zap.Error(errM2))
-		return uuid.Nil, fmt.Errorf("failed to marshal progress data: %v, %v", errM1, errM2)
+	if errM1 != nil {
+		log.Error("Failed to marshal progress data for UpsertByHash", zap.Error(errM1))
+		return uuid.Nil, fmt.Errorf("failed to marshal progress data: %v", errM1)
 	}
 
 	var returnedID uuid.UUID
 	err := querier.QueryRow(ctx, query,
 		progress.ID, progress.UserID, progress.PublishedStoryID, progress.CurrentStateHash,
-		coreStatsJSON, storyVarsJSON, progress.SceneIndex,
+		coreStatsJSON, progress.SceneIndex,
 		progress.LastStorySummary, progress.LastFutureDirection, progress.LastVarImpactSummary, progress.CurrentSceneSummary,
 		progress.CreatedAt, progress.UpdatedAt,
 	).Scan(&returnedID)
