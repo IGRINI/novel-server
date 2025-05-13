@@ -11,6 +11,7 @@ import (
 	database "novel-server/shared/database"
 	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
+	"novel-server/shared/models"
 	sharedModels "novel-server/shared/models"
 	"novel-server/shared/utils"
 
@@ -128,11 +129,11 @@ func (s *publishingServiceImpl) PublishDraft(ctx context.Context, draftID uuid.U
 		ID:             uuid.New(),
 		UserID:         userID,
 		Config:         draft.Config,
-		Setup:          nil, // Will be generated later
-		Status:         sharedModels.StatusSetupPending,
-		Language:       draft.Language, // <<< КОПИРУЕМ ЯЗЫК ИЗ DRAFT >>>
-		IsPublic:       false,          // Private by default
-		IsAdultContent: tempConfig.IsAdultContent,
+		Setup:          json.RawMessage("{}"),                // Initialize with empty JSON object
+		Status:         sharedModels.StatusModerationPending, // <<< НАЧАЛЬНЫЙ СТАТУС
+		Language:       draft.Language,                       // <<< КОПИРУЕМ ЯЗЫК ИЗ DRAFT >>>
+		IsPublic:       false,                                // Private by default
+		IsAdultContent: false,                                // Will be set after moderation
 		Title:          &draft.Title,
 		Description:    &draft.Description,
 		CreatedAt:      time.Now().UTC(),
@@ -144,7 +145,7 @@ func (s *publishingServiceImpl) PublishDraft(ctx context.Context, draftID uuid.U
 		log.Error("Error creating published story within transaction", zap.Error(err))
 		return uuid.Nil, fmt.Errorf("error creating published story: %w", err)
 	}
-	log.Info("Published story created in DB", zap.String("publishedStoryID", newPublishedStory.ID.String()))
+	log.Info("Published story created in DB", zap.String("publishedStoryID", newPublishedStory.ID.String()), zap.String("initial_status", string(newPublishedStory.Status)))
 
 	// 5. Delete the draft within the transaction
 	if err = repoTx.Delete(ctx, draftID, userID); err != nil {
@@ -153,36 +154,72 @@ func (s *publishingServiceImpl) PublishDraft(ctx context.Context, draftID uuid.U
 	}
 	log.Info("Draft deleted from DB")
 
-	// 6. Send task for Setup generation (outside the transaction, after commit)
-	taskID := uuid.New().String()
-	// Десериализуем конфиг для передачи в формате текста
-	var deserializedConfig sharedModels.Config
-	var configUserInput string
-	if errUnmarshal := json.Unmarshal(newPublishedStory.Config, &deserializedConfig); errUnmarshal != nil {
-		// Логируем ошибку, но НЕ прерываем транзакцию, так как commit уже близко
-		// Задача не будет отправлена, если парсинг не удался.
-		s.logger.Error("Failed to unmarshal Config JSON before publishing Setup task. Task will NOT be sent.",
-			zap.String("publishedStoryID", newPublishedStory.ID.String()),
-			zap.Error(errUnmarshal),
-		)
+	// 6. Send task for Content Moderation (outside the transaction, after commit)
+	moderationTaskID := uuid.New().String()
+	var formattedInputForModeration string
+	var formatErr error
+
+	if draft.Config != nil {
+		var configForModeration models.Config
+		if errUnmarshal := json.Unmarshal(draft.Config, &configForModeration); errUnmarshal != nil {
+			log.Error("Failed to unmarshal config for moderation input formatting", zap.Error(errUnmarshal))
+			// Если конфиг не парсится, мы не можем отправить его на модерацию.
+			// Это критично, так как история создана, но не может быть проверена.
+			// Помечаем историю как ошибочную.
+			err = fmt.Errorf("failed to unmarshal config for moderation: %w", errUnmarshal) // Устанавливаем err для defer
+			// Дополнительно обновляем статус созданной истории на Error уже после commit основной транзакции (если она пройдет)
+			// Так как мы не можем использовать 'tx' здесь, делаем это в goroutine после возможного commit.
+			go func(storyID uuid.UUID, userID uuid.UUID, errMsg string) {
+				updateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if errUpd := s.publishedRepo.UpdateStatusAndError(updateCtx, s.pool, storyID, sharedModels.StatusError, &errMsg); errUpd != nil {
+					s.logger.Error("Failed to update published story status to Error after config unmarshal failure for moderation", zap.Error(errUpd), zap.String("storyID", storyID.String()))
+				}
+			}(newPublishedStory.ID, newPublishedStory.UserID, err.Error())
+			// defer обработает rollback из-за err != nil
+			return uuid.Nil, err
+		}
+
+		formattedInputForModeration, formatErr = utils.FormatInputForModeration(configForModeration)
+		if formatErr != nil {
+			log.Error("Failed to format config for moderation input", zap.Error(formatErr))
+			// Ошибка форматирования также критична.
+			err = fmt.Errorf("failed to format config for moderation: %w", formatErr)
+			go func(storyID uuid.UUID, userID uuid.UUID, errMsg string) {
+				updateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if errUpd := s.publishedRepo.UpdateStatusAndError(updateCtx, s.pool, storyID, sharedModels.StatusError, &errMsg); errUpd != nil {
+					s.logger.Error("Failed to update published story status to Error after config format failure for moderation", zap.Error(errUpd), zap.String("storyID", storyID.String()))
+				}
+			}(newPublishedStory.ID, newPublishedStory.UserID, err.Error())
+			return uuid.Nil, err
+		}
 	} else {
-		configUserInput = utils.FormatConfigToString(deserializedConfig, "")
+		// Это не должно произойти, так как проверяли draft.Config выше, но на всякий случай.
+		log.Error("Draft config is nil when preparing moderation task")
+		err = fmt.Errorf("draft config is nil when sending moderation task")
+		go func(storyID uuid.UUID, userID uuid.UUID, errMsg string) {
+			updateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if errUpd := s.publishedRepo.UpdateStatusAndError(updateCtx, s.pool, storyID, sharedModels.StatusError, &errMsg); errUpd != nil {
+				s.logger.Error("Failed to update published story status to Error due to nil config for moderation", zap.Error(errUpd), zap.String("storyID", storyID.String()))
+			}
+		}(newPublishedStory.ID, newPublishedStory.UserID, err.Error())
+		return uuid.Nil, err
 	}
 
-	setupPayload := sharedMessaging.GenerationTaskPayload{
-		TaskID:           taskID,
+	moderationPayload := sharedMessaging.GenerationTaskPayload{
+		TaskID:           moderationTaskID,
 		UserID:           newPublishedStory.UserID.String(),
-		PromptType:       sharedModels.PromptTypeNovelSetup,
-		UserInput:        configUserInput,               // <-- Используем форматированный текст
-		PublishedStoryID: newPublishedStory.ID.String(), // Link to published story
-		Language:         newPublishedStory.Language,    // <<< Передаем язык >>>
+		PromptType:       sharedModels.PromptTypeContentModeration,
+		UserInput:        formattedInputForModeration, // <<< ИСПОЛЬЗУЕМ ОТФОРМАТИРОВАННЫЙ ВВОД
+		PublishedStoryID: newPublishedStory.ID.String(),
+		Language:         newPublishedStory.Language,
 	}
 
-	// Publish task OUTSIDE the transaction, after it's almost certainly committed
 	go func(payload sharedMessaging.GenerationTaskPayload) {
-		// <<< Добавляем проверку, что UserInput не пустой (на случай ошибки парсинга) >>>
 		if payload.UserInput == "" {
-			s.logger.Error("CRITICAL: Cannot publish setup generation task because UserInput is empty (likely due to prior JSON unmarshal error)",
+			s.logger.Error("CRITICAL: Cannot publish content moderation task because UserInput (config) is empty",
 				zap.String("publishedStoryID", payload.PublishedStoryID),
 				zap.String("taskID", payload.TaskID),
 			)
@@ -191,23 +228,20 @@ func (s *publishingServiceImpl) PublishDraft(ctx context.Context, draftID uuid.U
 		publishCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := s.publisher.PublishGenerationTask(publishCtx, payload); err != nil {
-			// Error publishing Setup task - critical, as the transaction is already committed.
-			// Status will remain SetupPending, but the task won't be sent.
-			// A retry system or monitoring is needed for such cases.
-			s.logger.Error("CRITICAL: Failed to publish setup generation task after DB commit",
+			s.logger.Error("CRITICAL: Failed to publish content moderation task after DB commit",
 				zap.String("publishedStoryID", payload.PublishedStoryID),
 				zap.String("taskID", payload.TaskID),
 				zap.Error(err))
 		} else {
-			s.logger.Info("Setup generation task published successfully",
+			s.logger.Info("Content moderation task published successfully",
 				zap.String("publishedStoryID", payload.PublishedStoryID),
 				zap.String("taskID", payload.TaskID))
 		}
-	}(setupPayload)
+	}(moderationPayload)
 
 	// If we reached here without errors, defer tx.Commit() will work on exit
 	publishedStoryID = newPublishedStory.ID
-	log.Info("PublishDraft completed successfully", zap.String("publishedStoryID", publishedStoryID.String()))
+	log.Info("PublishDraft completed successfully, initiated moderation task", zap.String("publishedStoryID", publishedStoryID.String()))
 	return publishedStoryID, nil
 }
 

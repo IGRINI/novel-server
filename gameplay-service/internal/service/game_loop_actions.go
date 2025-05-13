@@ -39,12 +39,27 @@ func (s *gameLoopServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUI
 		log.Info("Player is waiting for scene generation")
 		return nil, models.ErrSceneNeedsGeneration
 	case models.PlayerStatusGameOverPending:
-		log.Info("Player is waiting for game over generation")
-		return nil, models.ErrGameOverPending
-	case models.PlayerStatusCompleted:
-		log.Info("Player has completed the game, attempting to fetch final scene")
+		log.Info("Player is waiting for game over generation or game is over")
 		if !gameState.CurrentSceneID.Valid {
-			log.Error("Player game state is Completed, but CurrentSceneID is nil", zap.Stringer("gameStateID", gameStateID))
+			log.Info("Player is waiting for game over scene generation (CurrentSceneID is nil)")
+			return nil, models.ErrGameOverPending
+		}
+		// Fetch the final scene (ending text)
+		finalScene, errScene := s.sceneRepo.GetByID(ctx, s.pool, gameState.CurrentSceneID.UUID)
+		if errScene != nil {
+			if errors.Is(errScene, models.ErrNotFound) || errors.Is(errScene, pgx.ErrNoRows) {
+				log.Error("Could not find final scene for completed game state", zap.Stringer("sceneID", gameState.CurrentSceneID.UUID), zap.Error(errScene))
+				return nil, models.ErrInternalServer // Scene should exist
+			}
+			log.Error("Failed to get final scene by ID for completed game", zap.Stringer("sceneID", gameState.CurrentSceneID.UUID), zap.Error(errScene))
+			return nil, models.ErrInternalServer
+		}
+		log.Info("Returning final scene for completed game")
+		return finalScene, nil // Return the final scene containing the ending text
+	case models.PlayerStatusCompleted:
+		log.Info("Player has finished the game, attempting to fetch final scene")
+		if !gameState.CurrentSceneID.Valid {
+			log.Error("Player game state is Finished, but CurrentSceneID is nil", zap.Stringer("gameStateID", gameStateID))
 			return nil, models.ErrInternalServer // Should not happen if game over was processed correctly
 		}
 		// Fetch the final scene (ending text)
@@ -452,7 +467,7 @@ func (s *gameLoopServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, 
 			madeChoicesInfo,
 			nextStateHash,
 			publishedStory.Language,
-			models.PromptTypeNovelCreator,
+			models.PromptTypeStoryContinuation,
 		)
 		if errGenPayload != nil {
 			s.logger.Error("Failed to create generation payload", append(logFields, zap.Error(errGenPayload))...)

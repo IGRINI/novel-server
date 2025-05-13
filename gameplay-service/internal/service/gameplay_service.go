@@ -144,7 +144,7 @@ type gameplayServiceImpl struct {
 	publishingService    PublishingService
 	likeService          LikeService
 	storyBrowsingService StoryBrowsingService
-	gameLoopService      GameLoopService
+	gameLoopService      interfaces.GameLoopService
 	publisher            messaging.TaskPublisher
 	imgBatchPublisher    messaging.CharacterImageTaskBatchPublisher
 	imageRefRepo         interfaces.ImageReferenceRepository
@@ -173,6 +173,7 @@ func NewGameplayService(
 	authClient interfaces.AuthServiceClient,
 	cfg *config.Config,
 	configService *sharedConfigService.ConfigService,
+	gameLoopService interfaces.GameLoopService,
 ) GameplayService {
 	// <<< СОЗДАЕМ DraftService >>>
 	draftSvc := NewDraftService(configRepo, taskPublisher, logger, cfg)
@@ -192,19 +193,6 @@ func NewGameplayService(
 		logger,
 		pool,
 	)
-	// <<< СОЗДАЕМ GameLoopService >>>
-	gameLoopSvc := NewGameLoopService(
-		publishedRepo, sceneRepo, playerProgressRepo, playerGameStateRepo,
-		taskPublisher,
-		configRepo,
-		imageRefRepo,
-		imgBatchPublisher,
-		dynamicConfigRepo,
-		clientPub,
-		logger,
-		cfg,
-		pool,
-	)
 
 	return &gameplayServiceImpl{
 		configRepo:           configRepo,
@@ -217,7 +205,7 @@ func NewGameplayService(
 		publishingService:    publishingSvc,
 		likeService:          likeSvc,
 		storyBrowsingService: storyBrowsingSvc,
-		gameLoopService:      gameLoopSvc,
+		gameLoopService:      gameLoopService,
 		publisher:            taskPublisher,
 		imgBatchPublisher:    imgBatchPublisher,
 		imageRefRepo:         imageRefRepo,

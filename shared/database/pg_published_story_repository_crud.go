@@ -28,11 +28,12 @@ const publishedStoryFields = `
 const (
 	createPublishedStoryQuery = `
 		INSERT INTO published_stories (
-			id, user_id, title, description, status, language, -- Include id in insert
-			is_public, is_adult_content, /* cover_image_url REMOVED */ config, setup,
+			id, user_id, title, description, status, language,
+			is_public, is_adult_content, config, setup,
+			internal_generation_step,
 			created_at, updated_at -- likes_count default to 0
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, /* $9 REMOVED */ $9, $10, $11, $12 -- 12 args now
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13 -- 13 args now
 		)
 	`
 	// publishedStoryFields используется в GetByID, предполагается, что он доступен
@@ -46,9 +47,9 @@ const (
 			language = $5,
 			is_public = $6,
 			is_adult_content = $7,
-			-- cover_image_url = $8, -- REMOVED
-			config = $8, -- Index shifted
-			setup = $9,  -- Index shifted
+			config = $8,
+			setup = $9,
+			internal_generation_step = $10,
 			updated_at = NOW()
 		WHERE id = $1
 		RETURNING updated_at
@@ -69,29 +70,36 @@ func (r *pgPublishedStoryRepository) Create(ctx context.Context, querier interfa
 	now := time.Now().UTC()
 	story.CreatedAt = now
 	story.UpdatedAt = now
+	// Устанавливаем начальный шаг, если не задан
+	if story.InternalGenerationStep == nil {
+		initialStep := models.StepModeration // Начинаем с модерации
+		story.InternalGenerationStep = &initialStep
+	}
 
 	logFields := []zap.Field{
 		zap.String("userID", story.UserID.String()),
 		zap.Stringp("title", story.Title),
 		zap.String("status", string(story.Status)),
-		zap.String("newStoryID", story.ID.String()), // Log the new ID
+		zap.String("newStoryID", story.ID.String()),                         // Log the new ID
+		zap.Stringp("initialStep", (*string)(story.InternalGenerationStep)), // Log the initial step
 	}
 	r.logger.Debug("Creating new published story", logFields...)
 
 	// Используем Exec, так как RETURNING id не нужен согласно интерфейсу
 	_, err := querier.Exec(ctx, createPublishedStoryQuery, // Use querier
-		story.ID,             // $1 (now generated)
-		story.UserID,         // $2
-		story.Title,          // $3 (*string)
-		story.Description,    // $4 (*string)
-		story.Status,         // $5
-		story.Language,       // $6
-		story.IsPublic,       // $7
-		story.IsAdultContent, // $8
-		story.Config,         // $9 (was $10)
-		story.Setup,          // $10 (was $11)
-		story.CreatedAt,      // $11 (was $12)
-		story.UpdatedAt,      // $12 (was $13)
+		story.ID,                     // $1 (now generated)
+		story.UserID,                 // $2
+		story.Title,                  // $3 (*string)
+		story.Description,            // $4 (*string)
+		story.Status,                 // $5
+		story.Language,               // $6
+		story.IsPublic,               // $7
+		story.IsAdultContent,         // $8
+		story.Config,                 // $9
+		story.Setup,                  // $10
+		story.InternalGenerationStep, // $11
+		story.CreatedAt,              // $12 (was $11)
+		story.UpdatedAt,              // $13 (was $12)
 	)
 
 	if err != nil {
@@ -150,9 +158,12 @@ func (r *pgPublishedStoryRepository) GetWithLikeStatus(ctx context.Context, quer
 	var story models.PublishedStory
 	// Ensure all fields from publishedStoryFields are scanned here
 	err := row.Scan(
-		&story.ID, &story.UserID, &story.Config, &story.Setup, &story.Status, &story.Language, &story.IsPublic, &story.IsAdultContent,
+		&story.ID, &story.UserID, &story.Config, &story.Setup, &story.Status,
+		&story.InternalGenerationStep,
+		&story.Language, &story.IsPublic, &story.IsAdultContent,
 		&story.Title, &story.Description, &story.ErrorDetails, &story.LikesCount, &story.CreatedAt, &story.UpdatedAt,
-		&story.IsFirstScenePending, &story.AreImagesPending, // Add any other fields included in publishedStoryFields
+		&story.IsFirstScenePending, &story.AreImagesPending,
+		&story.PendingCharGenTasks, &story.PendingCardImgTasks, &story.PendingCharImgTasks,
 		&isLiked,
 	)
 
@@ -169,22 +180,23 @@ func (r *pgPublishedStoryRepository) GetWithLikeStatus(ctx context.Context, quer
 	return &story, isLiked, nil
 }
 
-// Update обновляет данные опубликованной истории.
-func (r *pgPublishedStoryRepository) Update(ctx context.Context, story *models.PublishedStory) error {
+// Update обновляет данные опубликованной истории (кроме счетчиков и флагов генерации).
+func (r *pgPublishedStoryRepository) Update(ctx context.Context, querier interfaces.DBTX, story *models.PublishedStory) error { // <<< Добавлен querier
 	logFields := []zap.Field{zap.String("storyID", story.ID.String())}
 	r.logger.Debug("Updating published story data", logFields...)
 
 	var updatedAt time.Time
-	err := r.db.QueryRow(ctx, updatePublishedStoryQuery, // Use constant
-		story.ID,             // $1
-		story.Title,          // $2 (*string)
-		story.Description,    // $3 (*string)
-		story.Status,         // $4
-		story.Language,       // $5
-		story.IsPublic,       // $6
-		story.IsAdultContent, // $7
-		story.Config,         // $8 (was $9)
-		story.Setup,          // $9 (was $10)
+	err := querier.QueryRow(ctx, updatePublishedStoryQuery, // <<< Используем querier
+		story.ID,                     // $1
+		story.Title,                  // $2 (*string)
+		story.Description,            // $3 (*string)
+		story.Status,                 // $4
+		story.Language,               // $5
+		story.IsPublic,               // $6
+		story.IsAdultContent,         // $7
+		story.Config,                 // $8
+		story.Setup,                  // $9
+		story.InternalGenerationStep, // $10
 	).Scan(&updatedAt)
 
 	if err != nil {

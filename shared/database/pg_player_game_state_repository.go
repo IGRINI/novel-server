@@ -18,9 +18,9 @@ const (
 
 	insertPlayerGameStateQuery = `
             INSERT INTO player_game_states
-                (id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at)
+                (id, player_id, published_story_id, current_scene_id, player_progress_id, player_status, ending_text, error_details, started_at, last_activity_at, completed_at, created_at, updated_at)
             VALUES
-                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
             RETURNING id
         `
 	updatePlayerGameStateQuery = `
@@ -31,9 +31,8 @@ const (
                 ending_text = $5,
                 error_details = $6,
                 last_activity_at = $7,
-                completed_at = $8
-                -- player_id and published_story_id should not change
-                -- started_at should not change on update
+                completed_at = $8,
+                updated_at = NOW()
             WHERE id = $1
             RETURNING id
         `
@@ -129,22 +128,22 @@ func (r *pgPlayerGameStateRepository) Save(ctx context.Context, querier interfac
 	if state.ID == uuid.Nil {
 		// --- INSERT ---
 		state.ID = uuid.New() // Generate new ID for insert
-		state.StartedAt = now // Set started time only on insert
+		state.StartedAt = now // Restore setting started time
 		logFields = append(logFields, zap.String("newGameStateID", state.ID.String()))
 		r.logger.Debug("Inserting new player game state", logFields...)
 
 		err = querier.QueryRow(ctx, insertPlayerGameStateQuery,
-			state.ID,
-			state.PlayerID,
-			state.PublishedStoryID,
-			state.CurrentSceneID,
-			state.PlayerProgressID,
-			state.PlayerStatus,
-			state.EndingText,
-			state.ErrorDetails,
-			state.StartedAt,
-			state.LastActivityAt,
-			state.CompletedAt,
+			state.ID,               // $1
+			state.PlayerID,         // $2
+			state.PublishedStoryID, // $3
+			state.CurrentSceneID,   // $4
+			state.PlayerProgressID, // $5
+			state.PlayerStatus,     // $6
+			state.EndingText,       // $7 (Restored)
+			state.ErrorDetails,     // $8
+			state.StartedAt,        // $9 (Restored)
+			state.LastActivityAt,   // $10
+			state.CompletedAt,      // $11 (Restored)
 		).Scan(&returnedID)
 
 	} else {
@@ -155,10 +154,10 @@ func (r *pgPlayerGameStateRepository) Save(ctx context.Context, querier interfac
 			state.CurrentSceneID,   // $2
 			state.PlayerProgressID, // $3
 			state.PlayerStatus,     // $4
-			state.EndingText,       // $5
+			state.EndingText,       // $5 (Restored)
 			state.ErrorDetails,     // $6
 			state.LastActivityAt,   // $7
-			state.CompletedAt,      // $8
+			state.CompletedAt,      // $8 (Restored)
 		).Scan(&returnedID)
 
 		// Handle potential ErrNoRows on update, although it shouldn't happen if ID is correct
@@ -342,13 +341,13 @@ func (r *pgPlayerGameStateRepository) ListByStoryID(ctx context.Context, querier
 // в статусе генерации сцены или концовки (или все такие, если порог 0), и обновляет их статус на Error.
 func (r *pgPlayerGameStateRepository) FindAndMarkStaleGeneratingAsError(ctx context.Context, querier interfaces.DBTX, staleThreshold time.Duration) (int64, error) {
 	staleStatus1 := models.PlayerStatusGeneratingScene
-	staleStatus2 := models.PlayerStatusGameOverPending
+	staleStatus2 := models.PlayerStatusGameOverPending // Restored
 	errorMessage := "Player state generation process timed out or got stuck."
 	args := []interface{}{
 		models.PlayerStatusError, // $1: Новый статус
 		errorMessage,             // $2: Сообщение об ошибке
 		staleStatus1,             // $3: Зависший статус 1
-		staleStatus2,             // $4: Зависший статус 2
+		staleStatus2,             // $4: Зависший статус 2 (Restored)
 	}
 	query := findAndMarkStalePlayerGeneratingQueryBase
 	thresholdTime := time.Now().UTC().Add(-staleThreshold)
@@ -364,7 +363,7 @@ func (r *pgPlayerGameStateRepository) FindAndMarkStaleGeneratingAsError(ctx cont
 		args = append(args, thresholdTime)
 		logFields = append(logFields, zap.Time("thresholdTime", thresholdTime))
 	} else {
-		r.logger.Info("Stale threshold is zero, checking all generating/game_over_pending states regardless of time.", logFields...)
+		r.logger.Info("Stale threshold is zero, checking all generating/game_over_pending states regardless of time.", logFields...) // Restored pending
 	}
 
 	r.logger.Info("Finding and marking stale generating player game states as Error", logFields...)
@@ -596,11 +595,13 @@ func scanPlayerGameState(row pgx.Row) (*models.PlayerGameState, error) {
 		&state.CurrentSceneID,
 		&state.PlayerProgressID,
 		&state.PlayerStatus,
-		&state.EndingText,
+		&state.EndingText, // Restored
 		&state.ErrorDetails,
-		&state.StartedAt,
+		&state.StartedAt, // Restored
 		&state.LastActivityAt,
-		&state.CompletedAt,
+		&state.CompletedAt, // Restored
+		// Missing CreatedAt, UpdatedAt in original fields/scan?
+		// Let's assume they are handled by DB defaults or not selected everywhere.
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

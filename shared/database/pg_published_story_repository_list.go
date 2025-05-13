@@ -512,7 +512,6 @@ func (r *pgPublishedStoryRepository) SearchPublic(ctx context.Context, querier i
 	for rows.Next() {
 		var tempSummary models.PublishedStorySummary
 		var publishedAt sql.NullTime
-		var playerStatus sql.NullString
 		var rank float32
 
 		scanErr := rows.Scan(
@@ -524,27 +523,21 @@ func (r *pgPublishedStoryRepository) SearchPublic(ctx context.Context, querier i
 			&publishedAt,
 			&tempSummary.IsAdultContent,
 			&tempSummary.LikesCount,
-			&tempSummary.Status,
-			&tempSummary.IsPublic,
 			&tempSummary.IsLiked,
+			&tempSummary.Status,
 			&tempSummary.HasPlayerProgress,
-			&playerStatus,
-			&tempSummary.PlayerGameStateID,
-			&rank, // Scan rank
+			&tempSummary.IsPublic,
+			&rank,
 		)
+
 		if scanErr != nil {
 			r.logger.Error("Failed to scan search result row manually", append(logFields, zap.Error(scanErr))...)
 			return nil, nil, fmt.Errorf("ошибка сканирования строки результата поиска: %w", scanErr)
 		}
 
 		if publishedAt.Valid {
-			tempSummary.PublishedAt = publishedAt.Time // Corrected assignment
+			tempSummary.PublishedAt = publishedAt.Time
 		}
-		if playerStatus.Valid {
-			s := models.PlayerStatus(playerStatus.String)
-			tempSummary.PlayerGameStatus = string(s) // Corrected: Assign string(s)
-		}
-		// GameStateID is now scanned directly into tempSummary.PlayerGameStateID
 
 		results = append(results, &tempSummary) // Append the summary directly for now
 	}

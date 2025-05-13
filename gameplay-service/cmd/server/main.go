@@ -128,6 +128,22 @@ func main() {
 	logger.Info("ConfigService инициализирован")
 	// ------------------------------------------
 
+	// <<< НОВОЕ: Инициализация GameLoopService отдельно >>>
+	gameLoopService := service.NewGameLoopService(
+		publishedRepo, sceneRepo, playerProgressRepo, playerGameStateRepo,
+		taskPublisher,
+		storyConfigRepo,
+		imageReferenceRepo,
+		characterImageTaskBatchPublisher,
+		dynamicConfigRepo,
+		clientUpdatePublisher,
+		logger,
+		cfg,
+		dbPool,
+		characterImageTaskPublisher,
+	)
+	logger.Info("GameLoopService инициализирован")
+
 	// --- Инициализация сервисов --- //
 	gameplayService := service.NewGameplayService(
 		storyConfigRepo,
@@ -146,6 +162,7 @@ func main() {
 		authServiceClient,
 		cfg,
 		configService,
+		gameLoopService, // <<< ПЕРЕДАЕМ СОЗДАННЫЙ GameLoopService
 	)
 
 	// <<< Добавляем инициализацию StoryBrowsingService >>>
@@ -260,7 +277,8 @@ func main() {
 		// Параметры самого консьюмера:
 		cfg.InternalUpdatesQueueName,
 		cfg,
-		dbPool, // <<< Добавляем dbPool >>>
+		dbPool,          // <<< Добавляем dbPool >>>
+		gameLoopService, // <<< ИЗМЕНЕНО: Передаем gameLoopService вместо gameplayService
 	)
 	if err != nil {
 		logger.Fatal("Не удалось создать консьюмер уведомлений", zap.Error(err))
@@ -288,7 +306,8 @@ func main() {
 		// Но слушаем другую очередь:
 		cfg.ImageGeneratorResultQueue,
 		cfg,
-		dbPool, // <<< Добавляем dbPool >>>
+		dbPool,          // <<< Добавляем dbPool >>>
+		gameLoopService, // <<< ИЗМЕНЕНО: Передаем gameLoopService вместо gameplayService
 	)
 	if err != nil {
 		logger.Fatal("Не удалось создать консьюмер результатов изображений", zap.Error(err))

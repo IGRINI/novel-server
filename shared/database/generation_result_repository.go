@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
 	sharedInterfaces "novel-server/shared/interfaces"
@@ -45,21 +44,21 @@ const (
 )
 
 type PgGenerationResultRepository struct {
-	pool   *pgxpool.Pool
+	db     sharedInterfaces.DBTX
 	logger *zap.Logger
 }
 
 // NewPgGenerationResultRepository создает новый экземпляр PgGenerationResultRepository.
-func NewPgGenerationResultRepository(pool *pgxpool.Pool, logger *zap.Logger) sharedInterfaces.GenerationResultRepository {
+func NewPgGenerationResultRepository(db sharedInterfaces.DBTX, logger *zap.Logger) sharedInterfaces.GenerationResultRepository {
 	return &PgGenerationResultRepository{
-		pool:   pool,
+		db:     db,
 		logger: logger.Named("PgGenerationResultRepo"),
 	}
 }
 
 // Save сохраняет или обновляет результат генерации в базе данных.
 func (r *PgGenerationResultRepository) Save(ctx context.Context, result *sharedModels.GenerationResult) error {
-	tag, err := r.pool.Exec(ctx, saveGenerationResultQuery,
+	tag, err := r.db.Exec(ctx, saveGenerationResultQuery,
 		result.ID,
 		result.PromptType,
 		result.UserID,
@@ -85,7 +84,7 @@ func (r *PgGenerationResultRepository) Save(ctx context.Context, result *sharedM
 
 // GetByTaskID получает результат генерации по ID задачи.
 func (r *PgGenerationResultRepository) GetByTaskID(ctx context.Context, taskID string) (*sharedModels.GenerationResult, error) {
-	row := r.pool.QueryRow(ctx, getGenerationResultByTaskIDQuery, taskID)
+	row := r.db.QueryRow(ctx, getGenerationResultByTaskIDQuery, taskID)
 	result, err := scanGenerationResult(row)
 
 	if err != nil {

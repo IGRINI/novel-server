@@ -118,12 +118,31 @@ type PublishedStoryRepository interface {
 
 	// UpdateStatusFlagsAndSetup обновляет статус, Setup и флаги ожидания для истории.
 	// Используется после успешной генерации Setup.
-	UpdateStatusFlagsAndSetup(ctx context.Context, querier DBTX, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, isFirstScenePending bool, areImagesPending bool) error
+	// Добавлен параметр internalStep для обновления внутреннего шага генерации.
+	UpdateStatusFlagsAndSetup(ctx context.Context, querier DBTX, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, isFirstScenePending bool, areImagesPending bool, internalStep *models.InternalGenerationStep) error
 
 	// UpdateStatusFlagsAndDetails обновляет статус, флаги ожидания и детали ошибки.
 	// Используется при установке статуса Error или потенциально других переходах.
-	UpdateStatusFlagsAndDetails(ctx context.Context, querier DBTX, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, errorDetails *string) error
+	UpdateStatusFlagsAndDetails(ctx context.Context, querier DBTX, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, errorDetails *string, internalStep *models.InternalGenerationStep) error
 
 	// GetSummaryWithDetails получает детали истории, имя автора, флаг лайка и прогресса для указанного пользователя.
 	GetSummaryWithDetails(ctx context.Context, querier DBTX, storyID, userID uuid.UUID) (*models.PublishedStorySummary, error)
+
+	// UpdateAfterModeration обновляет историю после завершения задачи модерации.
+	// Устанавливает IsAdultContent, новый статус, опционально детали ошибки и внутренний шаг генерации.
+	UpdateAfterModeration(ctx context.Context, querier DBTX, id uuid.UUID, status models.StoryStatus, isAdultContent bool, errorDetails *string, internalStep *models.InternalGenerationStep) error
+
+	// UpdateStatusAndError обновляет статус и детали ошибки для опубликованной истории.
+	UpdateStatusAndError(ctx context.Context, querier DBTX, id uuid.UUID, status models.StoryStatus, errorDetails *string) error
+
+	// UpdateSetup обновляет поле setup для опубликованной истории.
+	UpdateSetup(ctx context.Context, querier DBTX, id uuid.UUID, setup json.RawMessage) error
+
+	// UpdateSetupStatusAndCounters обновляет setup, статус и счетчики ожидающих задач для опубликованной истории.
+	// Добавлен параметр internalStep для обновления внутреннего шага генерации.
+	UpdateSetupStatusAndCounters(ctx context.Context, querier DBTX, id uuid.UUID, setup json.RawMessage, status models.StoryStatus, pendingCharGen, pendingCardImg, pendingCharImg int, internalStep *models.InternalGenerationStep) error
+
+	// UpdateCountersAndMaybeStatus атомарно обновляет счетчики задач и, если все счетчики <= 0,
+	// обновляет статус истории. Возвращает true, если все задачи завершены, и финальный статус.
+	UpdateCountersAndMaybeStatus(ctx context.Context, querier DBTX, id uuid.UUID, decrementCharGen int, incrementCharImg int, decrementCardImg int, decrementCharImg int, newStatusIfComplete models.StoryStatus) (allTasksComplete bool, finalStatus models.StoryStatus, err error)
 }

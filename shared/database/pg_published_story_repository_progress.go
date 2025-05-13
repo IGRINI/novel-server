@@ -2,7 +2,6 @@ package database
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	interfaces "novel-server/shared/interfaces"
@@ -65,8 +64,7 @@ func (r *pgPublishedStoryRepository) FindWithProgressByUserID(ctx context.Contex
 			ps.created_at, ps.is_adult_content, ps.likes_count,
 			TRUE AS has_player_progress,
 			ps.is_public,
-			pgs.player_status, pgs.id as player_game_state_id,
-			pgs.last_accessed_at -- For cursor pagination and LastPlayedAt field
+			pgs.last_accessed_at -- For cursor pagination
 		FROM published_stories ps
 		JOIN player_game_states pgs ON pgs.published_story_id = ps.id AND pgs.user_id = $1
 		JOIN users u ON u.id = ps.user_id
@@ -117,22 +115,21 @@ func (r *pgPublishedStoryRepository) FindWithProgressByUserID(ctx context.Contex
 
 		// Scan fields into PublishedStorySummary
 		err := rows.Scan(
-			&story.ID, &story.Title, &story.ShortDescription, // Use ShortDescription
-			&story.AuthorID, &story.AuthorName,
-			&story.PublishedAt, // Use PublishedAt for ps.created_at
-			&story.IsAdultContent, &story.LikesCount,
+			&story.ID,
+			&story.Title,
+			&story.ShortDescription,
+			&story.AuthorID,
+			&story.AuthorName,
+			&story.PublishedAt,
+			&story.IsAdultContent,
+			&story.LikesCount,
 			&story.HasPlayerProgress,
 			&story.IsPublic,
-			&story.PlayerGameStatus, // Use PlayerGameStatus for pgs.player_status
-			&story.PlayerGameStateID,
 			&lastAccessedAtNullable,
 		)
 		if err != nil {
 			log.Error("Failed to scan story summary with progress", zap.Error(err))
 			return nil, "", fmt.Errorf("database scan error: %w", err)
-		}
-		if lastAccessedAtNullable.Valid {
-			story.LastPlayedAt = &lastAccessedAtNullable.Time // Assign LastPlayedAt
 		}
 
 		stories = append(stories, story)
@@ -359,27 +356,22 @@ func (r *pgPublishedStoryRepository) GetSummaryWithDetails(ctx context.Context, 
 // scanPublishedStorySummaryWithProgressAndActivity scans a summary and the last activity time.
 func scanPublishedStorySummaryWithProgressAndActivity(row pgx.Row, lastActivityAt *time.Time) (*models.PublishedStorySummary, error) {
 	var summary models.PublishedStorySummary
-	var playerGameStatus sql.NullString
-	var publishedAt time.Time // published_at from stories table (mapped to summary.PublishedAt)
+	var publishedAt time.Time
 
-	// Need to know the exact order from the query using this helper
-	// Assuming: summaryFields..., has_player_progress, is_public, player_status, player_game_state_id, last_activity_at
-	err := row.Scan( // Now expecting 15 destinations
-		&summary.ID,                // 1
-		&summary.Title,             // 2
-		&summary.ShortDescription,  // 3
-		&summary.AuthorID,          // 4
-		&summary.AuthorName,        // 5
-		&publishedAt,               // 6
-		&summary.IsAdultContent,    // 7
-		&summary.LikesCount,        // 8
-		&summary.IsLiked,           // 9
-		&summary.Status,            // 10
-		&summary.HasPlayerProgress, // 11
-		&summary.IsPublic,          // 12
-		&playerGameStatus,          // 13
-		&summary.PlayerGameStateID, // 14 (pgs.id)
-		lastActivityAt,             // 15 (pgs.last_activity_at)
+	err := row.Scan(
+		&summary.ID,
+		&summary.Title,
+		&summary.ShortDescription,
+		&summary.AuthorID,
+		&summary.AuthorName,
+		&publishedAt,
+		&summary.IsAdultContent,
+		&summary.LikesCount,
+		&summary.IsLiked,
+		&summary.Status,
+		&summary.HasPlayerProgress,
+		&summary.IsPublic,
+		lastActivityAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -388,10 +380,6 @@ func scanPublishedStorySummaryWithProgressAndActivity(row pgx.Row, lastActivityA
 		return nil, fmt.Errorf("ошибка сканирования строки PublishedStorySummaryWithProgressAndActivity: %w", err)
 	}
 
-	summary.PublishedAt = publishedAt // Assign scanned time
-	if playerGameStatus.Valid {
-		summary.PlayerGameStatus = playerGameStatus.String
-	}
-
+	summary.PublishedAt = publishedAt
 	return &summary, nil
 }

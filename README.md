@@ -349,40 +349,23 @@
 
 *   **`GET /api/v1/stories/:id`**
     *   Описание: Получение детальной информации о **своем** черновике по его UUID. Возвращает распарсенный конфиг, если он готов (`status: "draft"`).
-    *   Аутентификация: **Требуется.**
-    *   Параметр пути: `:id` (обязательно, string, UUID) - UUID черновика (`StoryConfig`).
     *   Ответ при успехе (`200 OK`): Объект `StoryConfigParsedDetail`.
         ```json
         {
-          "title": "string", // (обязательно, string)
-          "short_description": "string", // (обязательно, string)
-          "franchise": "string | null", // (опционально, string или null, зависит от генерации)
-          "genre": "string", // (обязательно, string)
-          "language": "string", // (обязательно, string)
-          "is_adult_content": false, // (обязательно, boolean)
-          "player_name": "string", // (обязательно, string) Protagonist Name
-          "player_description": "string", // (обязательно, string) Protagonist Description
-          "world_context": "string", // (обязательно, string)
-          "story_summary": "string", // (обязательно, string)
-          "core_stats": { // (обязательно, object) Словарь статов: имя -> описание
-            "stat_key_1": { // (обязательно, object)
-              "description": "string" // (обязательно, string) Описание из вывода Narrator
-              // InitialValue и GameOverConditions здесь отсутствуют, т.к. это черновик
-            },
-            "stat_key_2": { ... }
-          },
-          "player_preferences": { // (обязательно, object) Protagonist Preferences
-            "th": ["string"], // (опционально, array) Themes
-            "st": "string",   // (опционально, string) Style
-            "wl": ["string"], // (опционально, array) World Lore
-            "dt": "string",   // (опционально, string) Protagonist Details
-            "dl": "string",   // (опционально, string) Desired Locations (comma-separated)
-            "dc": "string"    // (опционально, string) Desired Characters (comma-separated)
-          },
-          "status": "draft | generating | error" // (обязательно, string) Текущий статус черновика
+          "title": "string",
+          "short_description": "string",
+          "franchise": "string | null",
+          "genre": "string",
+          "language": "string",
+          "player_name": "string",
+          "player_description": "string",
+          "world_context": "string",
+          "story_summary": "string",
+          "core_stats": { "stat_key_1": { "description": "string" }, "stat_key_2": { "description": "string" } },
+          "player_preferences": { "th": ["string"], "st": "string", "wl": ["string"], "dt": "string", "dl": "string", "dc": "string" },
+          "status": "draft | generating | error"
         }
         ```
-        *   **Примечание:** Если `status` черновика не `draft` (например, `generating` или `error`), поля, зависящие от сгенерированного `config` (такие как `title`, `core_stats`, `player_preferences` и т.д.) могут отсутствовать или быть `null`/пустыми. Клиент должен проверять статус.
     *   Ответ при ошибке:
         *   `400 Bad Request`: Невалидный UUID.
         *   `401 Unauthorized`: Невалидный токен.
@@ -470,27 +453,25 @@
     *   Ответ при успехе (`200 OK`): Пагинированный список `PublishedStorySummaryWithProgress`.
         ```json
         {
-          "data": [ // (обязательно, array)
+          "data": [
             {
-              "id": "uuid-string", // (обязательно, string, UUID)
-              "title": "string", // (обязательно, string)
-              "short_description": "string | null", // (опционально, string или null)
-              "author_id": "uuid-string", // (обязательно, string, UUID)
-              "author_name": "string", // (обязательно, string)
-              "published_at": "timestamp-string", // (обязательно, string, timestamp)
-              "is_adult_content": false, // (обязательно, boolean)
-              "likes_count": 123, // (обязательно, integer >= 0)
-              "is_liked": true, // (обязательно, boolean) Лайкнул ли *текущий* пользователь
-              "has_player_progress": true, // (обязательно, boolean) Есть ли у *текущего* пользователя сохранения
-              "status": "ready | error | setup_pending | ...", // (обязательно, string) Статус истории
-              "is_public": true, // (обязательно, boolean)
-              "cover_image_url": "https://.../history_preview_...jpg | null", // (опционально, string URL или null)
-              "player_game_status": "playing | completed | error | null", // (опционально, string или null) Статус последнего не-error сохранения игрока
-              "player_game_state_id": "uuid-string | null" // (опционально, string UUID или null) ID сохранения игрока
+              "id": "uuid-string",
+              "title": "string",
+              "short_description": "string",
+              "author_id": "uuid-string",
+              "author_name": "string",
+              "published_at": "timestamp-string",
+              "is_adult_content": false,
+              "likes_count": 123,
+              "is_liked": true,
+              "has_player_progress": true,
+              "player_game_state_id": "uuid-string | null",
+              "player_game_status": "playing | completed | error | null",
+              "status": "ready | error | setup_pending | ...",
+              "is_public": true
             }
-            /* ... */
           ],
-          "next_cursor": "string | null" // (обязательно, string или null)
+          "next_cursor": "string | null"
         }
         ```
     *   Ответ при ошибке:
@@ -508,7 +489,24 @@
     *   Ответ при успехе (`200 OK`): Пагинированный список `PublishedStorySummaryWithProgress`. Структура ответа **аналогична** `GET /api/v1/published-stories/me`.
         ```json
         {
-          "data": [ /* ... */ ],
+          "data": [
+            {
+              "id": "uuid-string",
+              "title": "string",
+              "short_description": "string",
+              "author_id": "uuid-string",
+              "author_name": "string",
+              "published_at": "timestamp-string",
+              "is_adult_content": false,
+              "likes_count": 123,
+              "is_liked": true,
+              "has_player_progress": true,
+              "player_game_state_id": "uuid-string | null",
+              "player_game_status": "playing | completed | error | null",
+              "status": "ready | error | setup_pending | ...",
+              "is_public": true
+            }
+          ],
           "next_cursor": "string | null"
         }
         ```
@@ -553,14 +551,7 @@
             "clues": { /* ... */ }
           },
           "characters": [ // (обязательно, array) Массив персонажей из NovelSetup, может быть пустым []
-            {
-              "name": "Дворецкий", // (обязательно, string)
-              "description": "Верный слуга... или нет?", // (обязательно, string)
-              "personality": "Загадочный", // (опционально, string)
-              "image_reference": "ch_butler_ref_123" // (опционально, string) Идентификатор для построения URL клиентом
-            }
-            /* ... */
-          ],
+           ],
           "cover_image_url": "https://.../history_preview_...jpg | null", // (опционально, string URL или null)
           "game_states": [ // (обязательно, array) Массив сохранений *текущего* пользователя, может быть пустым []
             {
@@ -588,15 +579,14 @@
     *   Параметр пути: `:story_id` (обязательно, string, UUID) - UUID опубликованной истории.
     *   Ответ при успехе (`200 OK`): Массив объектов `GameStateSummaryDTO`.
         ```json
-        [ // (обязательно, array) Массив может быть пустым []
+        [
           {
-            "id": "game-state-uuid-1", // (обязательно, string, UUID)
-            "last_activity_at": "timestamp-string", // (обязательно, string, timestamp)
-            "scene_index": 5, // (обязательно, integer)
-            "current_scene_summary": "Краткое описание сцены 10...", // (обязательно, string)
-            "player_status": "playing | completed | error" // (обязательно, string)
+            "id": "game-state-uuid-1",
+            "last_activity_at": "timestamp-string",
+            "scene_index": 5,
+            "current_scene_summary": "Краткое описание сцены 10...",
+            "player_status": "playing | completed | error"
           }
-          /* ... */
         ]
         ```
     *   Ответ при ошибке:
@@ -606,54 +596,60 @@
         *   `500 Internal Server Error`: Внутренняя ошибка сервера.
 
 *   **`GET /api/v1/published-stories/:story_id/gamestates/:game_state_id/scene`**
-    *   Описание: Получение текущей сцены для **конкретного состояния игры (сохранения)**.
+    *   Описание: Получение текущей сцены для конкретного состояния игры (сохранения).
     *   Аутентификация: **Требуется.**
     *   Параметры пути:
-        *   `:story_id` (обязательно, string, UUID) - UUID опубликованной истории.
-        *   `:game_state_id` (обязательно, string, UUID) - UUID состояния игры.
-    *   Ответ при успехе (`200 OK`): Объект сцены (`GameSceneResponseDTO`).
+        *   `:story_id` (string, UUID) - UUID опубликованной истории.
+        *   `:game_state_id` (string, UUID) - UUID состояния игры.
+    *   Ответ при успехе (`200 OK`): Объект `GameSceneResponseDTO`. Возвращает поля:
+        *   `id` (string): UUID сцены.
+        *   `published_story_id` (string): UUID истории.
+        *   `game_state_id` (string): UUID состояния.
+        *   `current_stats` (object): Статус игры - карта `имя_стата`->`значение`.
+        *   `choices` (array): Массив блоков выбора, только для сцен с выбором.
+        *   `ending_text` (string): Текст концовки, только для концовок.
+    *   Примеры ответа:
         ```json
+        // Сцена с выбором
         {
-          "id": "uuid-string", // (обязательно, string, UUID) ID текущей сцены
-          "published_story_id": "uuid-string", // (обязательно, string, UUID)
-          "game_state_id": "uuid-string", // (обязательно, string, UUID)
-          "current_stats": { // (обязательно, object) Текущие статы игрока в этом сохранении
-            "stat_key_1": 50, // (обязательно, integer)
-            "stat_key_2": 35 // (обязательно, integer)
-             // ... все статы из core_stats истории
+          "id": "uuid-string",
+          "published_story_id": "uuid-string",
+          "game_state_id": "uuid-string",
+          "current_stats": {
+            "stat_key_1": 50,
+            "stat_key_2": 35
           },
-          // --- Поля, определяющие тип сцены (взаимоисключающие, кроме choices+continuation) ---
-          "choices": [ // (опционально, array, может быть null/отсутствовать) Блоки выбора. Если есть, тип сцены "choices" или "continuation"
+          "choices": [
             {
-              "shuffleable": false, // (обязательно, boolean)
-              "character_name": "Advisor Zaltar | null", // (опционально, string или null/отсутствует)
-              "description": "Описание блока/ситуации выбора", // (обязательно, string)
-              "options": [ // (обязательно, array, минимум 1 элемент)
+              "shuffleable": false,
+              "character_name": null,
+              "description": "Описание блока/ситуации выбора",
+              "options": [
                 {
-                  "text": "Текст опции 1", // (обязательно, string)
-                  "consequences": { // (опционально, object, может быть null/отсутствовать)
-                    "response_text": "Текст-реакция на выбор | null", // (опционально, string или null/отсутствует)
-                    "stat_changes": { "sanity": -15, "clues": 5 } // (опционально, object, может быть null/отсутствовать) Ключи - ID статов, значения - изменения
+                  "text": "Текст опции 1",
+                  "consequences": {
+                    "response_text": null,
+                    "stat_changes": {
+                      "sanity": -15,
+                      "clues": 5
+                    }
                   }
-                },
-                {
-                  "text": "Текст опции 2", // (обязательно, string)
-                  "consequences": null // (опционально, object или null)
                 }
-                /* ... */
               ]
             }
-            /* ... другие блоки выбора */
-          ],
-          "ending_text": "Текст концовки игры... | null", // (опционально, string, может быть null/отсутствовать) Если есть, тип сцены "game_over"
-          "continuation": { // (опционально, object, может быть null/отсутствовать) Если есть, тип сцены "continuation" (может сочетаться с choices)
-            "new_player_description": "Описание нового персонажа...", // (обязательно, string, если continuation не null)
-            "ending_text_previous": "Текст концовки для предыдущего персонажа...", // (обязательно, string, если continuation не null)
-            "core_stats_reset": { // (обязательно, object, если continuation не null) Новые начальные значения статов
-                 "stat_key_1": 10,
-                 /* ... */
-            }
-          }
+          ]
+        }
+        ```
+        ```json
+        // Сцена с концовкой
+        {
+          "id": "uuid-string",
+          "published_story_id": "uuid-string",
+          "game_state_id": "uuid-string",
+          "current_stats": {
+            "stat_key_1": 50
+          },
+          "ending_text": "Текст концовки игры..."
         }
         ```
     *   Ответ при ошибке:

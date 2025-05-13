@@ -45,3 +45,25 @@ type Consequences struct {
 	CoreStatsChange map[string]int `json:"cs,omitempty"`
 	ResponseText    string         `json:"rt,omitempty"`
 }
+
+// --- Типы, необходимые для InitialSceneContent (могут быть скопированы или импортированы) ---
+
+type ChoiceSuggestion struct {
+	Text        string `json:"text"`
+	OutcomeHint string `json:"outcome_hint,omitempty"`
+}
+
+type SceneCard struct { // Переименовано из NewCardSuggestionFromPlanner для ясности в контексте сцены
+	ImagePromptDescriptor string `json:"image_prompt_descriptor"`
+	ImageReferenceName    string `json:"image_reference_name"`
+	Title                 string `json:"title"`
+}
+
+// InitialSceneContent defines the structure stored in SceneContent for the initial scene.
+type InitialSceneContent struct {
+	SceneFocus string                `json:"scene_focus,omitempty"` // Focus from planner
+	Cards      []SceneCard           `json:"cards,omitempty"`       // Cards for the initial scene
+	Characters []CharacterDefinition `json:"characters,omitempty"`  // Characters present at the start of this scene (definitions)
+}
+
+// --- Конец скопированных типов ---

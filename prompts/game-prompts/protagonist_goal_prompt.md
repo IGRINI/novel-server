@@ -30,9 +30,15 @@ You will receive the following details to craft the protagonist's main goal:
     c.  **Adherence to Length:** The total length of the response should not exceed the specified word limit.
 
 4.  **Output Format:**
-    a.  **Pure Narrative Text:** The output should contain only the narrative without any service comments.
-    b.  **Structure:**
-        i.  Clearly state "Protagonist's Main Goal:"
+    a.  **JSON Structure:** The output MUST be a single, valid JSON object with the following structure:
+        ```json
+        {
+          "result": "string"
+        }
+        ```
+    b.  **`result` Field Content:** This field must contain the narrative text defining the protagonist's main goal. This includes:
+        i.  The text "Protagonist's Main Goal:"
         ii. Followed by the defined goal (1-2 sentences).
         iii. Followed by the motivation (1-2 sentences).
-    c.  **No Meta-Elements:** Do not include JSON, code blocks, explicit headings (other than "Protagonist's Main Goal:"), metadata, or any elements not directly part of the goal definition itself.
+        The textual content within the `result` field must be in the language specified by `{{LANGUAGE_DEFINITION}}` and adhere to the overall word limit.
+    c.  **No Meta-Commentary:** The JSON output should not contain any technical meta-comments or explanations outside the defined string value for `result`.

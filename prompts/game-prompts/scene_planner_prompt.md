@@ -18,7 +18,7 @@ The AI should parse this input text to extract values for general context (like 
     *   Analyze `scene_focus` and `current_scene_cards`.
     *   If new visual cards are CRITICAL to represent `scene_focus` or key actions/elements, and suitable cards are not in `current_scene_cards`, provide 1-3 `new_card_suggestions`. Prioritize existing cards. Each suggestion includes:
         *   `image_prompt_descriptor` (string): A short, precise visual description for the new card image. This description MUST be consistent with the overall application style: "A moody, high-contrast digital illustration with dark tones, soft neon accents, and a focused central composition blending fantasy and minimalism, using a palette of deep blues, teals, cyan glow, and occasional purples for atmosphere."
-        *   `image_reference_name` (string): Unique image name (snake_case).
+        *   `image_reference_name` (string): A unique and descriptive name or identifier for the card's generated image (e.g., 'abandoned_library_clue', 'city_marketplace_encounter'). This should be in snake_case and suitable for use as a filename or asset ID. It can be based on the card's title or its narrative purpose in the scene.
         *   `title` (string): Card title/caption.
         *   `reason` (string): Justification for the card.
     *   Otherwise, `new_card_suggestions` should be an empty array or omitted.
@@ -29,7 +29,9 @@ The AI should parse this input text to extract values for general context (like 
     *   Include NPC in `character_updates` only if memory or relationships changed.
 5.  **NPC Removal (`characters_to_remove`):**
     *   List `characters_to_remove` (e.g., irrelevant, plot purpose fulfilled) with `id` and `reason`.
-6.  **Scene Focus (`scene_focus`):**
+6.  **Card Removal (`cards_to_remove`):**
+    *   List `cards_to_remove` (e.g., outdated or irrelevant cards) with `ref_name` and `reason`.
+7.  **Scene Focus (`scene_focus`):**
     *   `scene_focus`: 1-2 sentence narrative direction/objective for the next scene.
 
 # Output JSON Structure:
@@ -63,6 +65,12 @@ Output ONLY a single, valid JSON object as described below.
   "characters_to_remove": [
     {
       "id": "string",
+      "reason": "string"
+    }
+  ],
+  "cards_to_remove": [
+    {
+      "ref_name": "string",
       "reason": "string"
     }
   ],

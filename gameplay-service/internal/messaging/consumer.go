@@ -17,13 +17,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// --- NotificationConsumer ---
-
-const (
-	// Максимальное количество одновременно обрабатываемых сообщений
-	maxConcurrentHandlers = 10 // TODO: Сделать настраиваемым через config
-)
-
 // NotificationConsumer отвечает за получение уведомлений из RabbitMQ.
 type NotificationConsumer struct {
 	conn        *amqp.Connection
@@ -59,6 +52,7 @@ func NewNotificationConsumer(
 	queueName string,
 	cfg *config.Config,
 	db *pgxpool.Pool,
+	gameLoopService sharedInterfaces.GameLoopService,
 ) (*NotificationConsumer, error) {
 	if conn == nil {
 		return nil, errors.New("connection is nil")
@@ -82,6 +76,7 @@ func NewNotificationConsumer(
 		cfg,
 		playerProgressRepo,
 		db,
+		gameLoopService,
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())

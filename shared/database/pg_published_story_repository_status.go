@@ -40,6 +40,7 @@ const (
             setup = $3,
             is_first_scene_pending = $4,
             are_images_pending = $5,
+            internal_generation_step = $6::internal_generation_step,
             updated_at = NOW(),
             error_details = NULL -- Reset error on successful setup update
         WHERE id = $1
@@ -51,6 +52,7 @@ const (
             is_first_scene_pending = $3,
             are_images_pending = $4,
             error_details = $5,
+            internal_generation_step = $6::internal_generation_step,
             updated_at = NOW()
         WHERE id = $1
     `
@@ -229,8 +231,14 @@ func (r *pgPublishedStoryRepository) CountByStatus(ctx context.Context, querier 
 // FindAndMarkStaleGeneratingAsError находит "зависшие" истории в процессе генерации и устанавливает им статус Error.
 func (r *pgPublishedStoryRepository) FindAndMarkStaleGeneratingAsError(ctx context.Context, querier interfaces.DBTX, staleThreshold time.Duration) (int64, error) {
 	staleStatuses := []models.StoryStatus{
+		models.StatusModerationPending,
+		models.StatusProtagonistGoalPending,
+		models.StatusScenePlannerPending,
+		models.StatusSubTasksPending,
 		models.StatusSetupPending,
 		models.StatusFirstScenePending,
+		models.StatusImageGenerationPending,
+		models.StatusJsonGenerationPending,
 		models.StatusInitialGeneration,
 	}
 
@@ -285,58 +293,257 @@ func (r *pgPublishedStoryRepository) CheckInitialGenerationStatus(ctx context.Co
 	return isReady, nil
 }
 
-// UpdateStatusFlagsAndSetup обновляет статус, Setup и флаги ожидания для истории.
-func (r *pgPublishedStoryRepository) UpdateStatusFlagsAndSetup(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, isFirstScenePending bool, areImagesPending bool) error {
+// UpdateStatusFlagsAndSetup обновляет статус, Setup, флаги ожидания и внутренний шаг генерации.
+func (r *pgPublishedStoryRepository) UpdateStatusFlagsAndSetup(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, isFirstScenePending bool, areImagesPending bool, internalStep *models.InternalGenerationStep) error {
 	logFields := []zap.Field{
 		zap.String("publishedStoryID", id.String()),
 		zap.String("newStatus", string(status)),
-		zap.Int("setupSize", len(setup)),
 		zap.Bool("isFirstScenePending", isFirstScenePending),
 		zap.Bool("areImagesPending", areImagesPending),
+		zap.Int("setupSize", len(setup)),
+		zap.Any("internalStep", internalStep),
 	}
-	r.logger.Debug("Updating published story status, flags, and setup", logFields...)
+	r.logger.Debug("Updating published story status, flags, setup, and internal step", logFields...)
 
-	commandTag, err := querier.Exec(ctx, updateStatusFlagsSetupQuery, id, status, setup, isFirstScenePending, areImagesPending)
+	commandTag, err := querier.Exec(ctx, updateStatusFlagsSetupQuery, id, status, setup, isFirstScenePending, areImagesPending, internalStep)
 	if err != nil {
-		r.logger.Error("Failed to update published story status, flags, and setup", append(logFields, zap.Error(err))...)
-		return fmt.Errorf("ошибка обновления статуса/флагов/Setup для истории %s: %w", id, err)
+		r.logger.Error("Failed to update published story status, flags, setup, and internal step", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления статуса/флагов/setup/шага истории %s: %w", id, err)
 	}
 
 	if commandTag.RowsAffected() == 0 {
-		r.logger.Warn("No rows affected when updating published story status, flags, and setup (story not found?)", logFields...)
+		r.logger.Warn("No rows affected when updating published story status, flags, setup, and internal step", logFields...)
 		return models.ErrNotFound
 	}
 
-	r.logger.Info("Published story status, flags, and setup updated successfully", logFields...)
+	r.logger.Info("Published story status, flags, setup, and internal step updated successfully", logFields...)
 	return nil
 }
 
-// UpdateStatusFlagsAndDetails обновляет статус, флаги ожидания и детали ошибки.
-func (r *pgPublishedStoryRepository) UpdateStatusFlagsAndDetails(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, errorDetails *string) error {
+// UpdateStatusFlagsAndDetails обновляет статус, флаги ожидания, детали ошибки и внутренний шаг генерации.
+func (r *pgPublishedStoryRepository) UpdateStatusFlagsAndDetails(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, errorDetails *string, internalStep *models.InternalGenerationStep) error {
 	logFields := []zap.Field{
 		zap.String("publishedStoryID", id.String()),
 		zap.String("newStatus", string(status)),
 		zap.Bool("isFirstScenePending", isFirstScenePending),
 		zap.Bool("areImagesPending", areImagesPending),
+		zap.Stringp("errorDetails", errorDetails),
+		zap.Any("internalStep", internalStep),
+	}
+	r.logger.Debug("Updating published story status, flags, details, and internal step", logFields...)
+
+	commandTag, err := querier.Exec(ctx, updateStatusFlagsDetailsQuery, id, status, isFirstScenePending, areImagesPending, errorDetails, internalStep)
+	if err != nil {
+		r.logger.Error("Failed to update published story status, flags, details, and internal step", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления статуса/флагов/деталей/шага истории %s: %w", id, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("No rows affected when updating published story status, flags, details, and internal step", logFields...)
+		return models.ErrNotFound
+	}
+
+	r.logger.Info("Published story status, flags, details, and internal step updated successfully", logFields...)
+	return nil
+}
+
+// UpdateAfterModeration обновляет историю после завершения задачи модерации.
+// Устанавливает IsAdultContent, новый статус, опционально детали ошибки и внутренний шаг генерации.
+func (r *pgPublishedStoryRepository) UpdateAfterModeration(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, status models.StoryStatus, isAdultContent bool, errorDetails *string, internalStep *models.InternalGenerationStep) error {
+	query := `
+        UPDATE published_stories
+        SET
+            status = $2::story_status,
+            is_adult_content = $3,
+            error_details = $4, -- Передаем errorDetails как есть (может быть NULL)
+            internal_generation_step = $5::internal_generation_step,
+            updated_at = NOW()
+        WHERE id = $1
+    `
+	logFields := []zap.Field{
+		zap.String("publishedStoryID", id.String()),
+		zap.String("newStatus", string(status)),
+		zap.Bool("isAdultContent", isAdultContent),
+		zap.Stringp("errorDetails", errorDetails),
+		zap.Any("internalStep", internalStep),
+	}
+	r.logger.Debug("Updating published story after moderation", logFields...)
+
+	commandTag, err := querier.Exec(ctx, query, id, status, isAdultContent, errorDetails, internalStep)
+	if err != nil {
+		r.logger.Error("Failed to update published story after moderation", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления истории %s после модерации: %w", id, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("No rows affected when updating published story after moderation (story not found?)", logFields...)
+		return models.ErrNotFound
+	}
+
+	r.logger.Info("Published story updated successfully after moderation", logFields...)
+	return nil
+}
+
+// UpdateStatusAndError обновляет статус и детали ошибки для опубликованной истории.
+func (r *pgPublishedStoryRepository) UpdateStatusAndError(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, status models.StoryStatus, errorDetails *string) error {
+	logFields := []zap.Field{
+		zap.String("publishedStoryID", id.String()),
+		zap.String("newStatus", string(status)),
 	}
 	if errorDetails != nil {
 		logFields = append(logFields, zap.Stringp("errorDetails", errorDetails))
 	} else {
 		logFields = append(logFields, zap.Bool("clearErrorDetails", true))
 	}
-	r.logger.Debug("Updating published story status, flags, and error details", logFields...)
+	r.logger.Debug("Updating published story status and error", logFields...)
 
-	commandTag, err := querier.Exec(ctx, updateStatusFlagsDetailsQuery, id, status, isFirstScenePending, areImagesPending, errorDetails)
+	query := `
+		UPDATE published_stories
+		SET
+			status = $2::story_status,
+			error_details = $3,
+			updated_at = NOW()
+		WHERE id = $1
+	`
+	commandTag, err := querier.Exec(ctx, query, id, status, errorDetails)
 	if err != nil {
-		r.logger.Error("Failed to update published story status, flags, and error details", append(logFields, zap.Error(err))...)
-		return fmt.Errorf("ошибка обновления статуса/флагов/деталей ошибки для истории %s: %w", id, err)
+		r.logger.Error("Failed to update published story status and error", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления статуса и ошибки истории %s: %w", id, err)
 	}
 
 	if commandTag.RowsAffected() == 0 {
-		r.logger.Warn("No rows affected when updating published story status, flags, and error details (story not found?)", logFields...)
+		r.logger.Warn("No rows affected when updating published story status and error (story not found?)", logFields...)
 		return models.ErrNotFound
 	}
 
-	r.logger.Info("Published story status, flags, and error details updated successfully", logFields...)
+	r.logger.Info("Published story status and error updated successfully", logFields...)
 	return nil
+}
+
+// UpdateSetup обновляет поле setup для опубликованной истории.
+func (r *pgPublishedStoryRepository) UpdateSetup(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, setup json.RawMessage) error {
+	logFields := []zap.Field{
+		zap.String("publishedStoryID", id.String()),
+		zap.Int("setupSize", len(setup)),
+	}
+	r.logger.Debug("Updating published story setup", logFields...)
+
+	query := `
+		UPDATE published_stories
+		SET
+			setup = $2,
+			updated_at = NOW()
+		WHERE id = $1
+	`
+	commandTag, err := querier.Exec(ctx, query, id, setup)
+	if err != nil {
+		r.logger.Error("Failed to update published story setup", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления setup для истории %s: %w", id, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("No rows affected when updating published story setup (story not found?)", logFields...)
+		return models.ErrNotFound
+	}
+
+	r.logger.Info("Published story setup updated successfully", logFields...)
+	return nil
+}
+
+// UpdateSetupStatusAndCounters обновляет setup, статус, счетчики ожидающих задач и внутренний шаг генерации.
+func (r *pgPublishedStoryRepository) UpdateSetupStatusAndCounters(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, setup json.RawMessage, status models.StoryStatus, pendingCharGen, pendingCardImg, pendingCharImg int, internalStep *models.InternalGenerationStep) error {
+	query := `
+        UPDATE published_stories
+        SET
+            setup = $2,
+            status = $3::story_status,
+            pending_char_gen_tasks = ($4 > 0), -- Преобразуем int в bool для флага
+            pending_card_img_tasks = $5,
+            pending_char_img_tasks = $6,
+            internal_generation_step = $7::internal_generation_step, -- Добавлен шаг
+            updated_at = NOW(),
+            error_details = NULL -- Сбрасываем ошибку при этом обновлении
+        WHERE id = $1
+    `
+	logFields := []zap.Field{
+		zap.String("publishedStoryID", id.String()),
+		zap.Int("setupSize", len(setup)),
+		zap.String("newStatus", string(status)),
+		zap.Int("pendingCharGen", pendingCharGen),
+		zap.Int("pendingCardImg", pendingCardImg),
+		zap.Int("pendingCharImg", pendingCharImg),
+		zap.Any("internalStep", internalStep),
+	}
+	r.logger.Debug("Updating published story setup, status, counters, and internal step", logFields...)
+
+	commandTag, err := querier.Exec(ctx, query, id, setup, status, pendingCharGen, pendingCardImg, pendingCharImg, internalStep)
+	if err != nil {
+		r.logger.Error("Failed to update published story setup, status, counters, and internal step", append(logFields, zap.Error(err))...)
+		return fmt.Errorf("ошибка обновления setup/статуса/счетчиков/шага истории %s: %w", id, err)
+	}
+
+	if commandTag.RowsAffected() == 0 {
+		r.logger.Warn("No rows affected when updating published story setup, status, counters, and internal step", logFields...)
+		return models.ErrNotFound
+	}
+
+	r.logger.Info("Published story setup, status, counters, and internal step updated successfully", logFields...)
+	return nil
+}
+
+// UpdateCountersAndMaybeStatus атомарно обновляет счетчики задач и, если все счетчики <= 0,
+// обновляет статус истории. Возвращает true, если все задачи завершены, и финальный статус.
+func (r *pgPublishedStoryRepository) UpdateCountersAndMaybeStatus(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, decrementCharGen int, incrementCharImg int, decrementCardImg int, decrementCharImg int, newStatusIfComplete models.StoryStatus) (allTasksComplete bool, finalStatus models.StoryStatus, err error) {
+	logFields := []zap.Field{
+		zap.String("publishedStoryID", id.String()),
+		zap.Int("decrementCharGen", decrementCharGen),
+		zap.Int("incrementCharImg", incrementCharImg),
+		zap.Int("decrementCardImg", decrementCardImg),
+		zap.Int("decrementCharImg", decrementCharImg),
+		zap.String("newStatusIfComplete", string(newStatusIfComplete)),
+	}
+	r.logger.Debug("Updating counters and maybe status for published story", logFields...)
+
+	query := `
+		UPDATE published_stories
+		SET
+			pending_char_gen_tasks = GREATEST(0, pending_char_gen_tasks - $2),
+			pending_card_img_tasks = GREATEST(0, pending_card_img_tasks - $3),
+			pending_char_img_tasks = GREATEST(0, pending_char_img_tasks + $4 - $5),
+			status = CASE
+				WHEN (GREATEST(0, pending_char_gen_tasks - $2) <= 0 AND
+					  GREATEST(0, pending_card_img_tasks - $3) <= 0 AND
+					  GREATEST(0, pending_char_img_tasks + $4 - $5) <= 0)
+				THEN $6::story_status
+				ELSE status
+			END,
+			updated_at = NOW()
+		WHERE id = $1
+		RETURNING status, pending_char_gen_tasks, pending_card_img_tasks, pending_char_img_tasks
+	`
+
+	var newCharGenTasks, newCardImgTasks, newCharImgTasks int
+	err = querier.QueryRow(ctx, query, id, decrementCharGen, decrementCardImg, incrementCharImg, decrementCharImg, newStatusIfComplete).
+		Scan(&finalStatus, &newCharGenTasks, &newCardImgTasks, &newCharImgTasks)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			r.logger.Warn("No rows affected when updating counters and maybe status (story not found?)", logFields...)
+			return false, "", models.ErrNotFound
+		}
+		r.logger.Error("Failed to update counters and maybe status for published story", append(logFields, zap.Error(err))...)
+		return false, "", fmt.Errorf("ошибка обновления счетчиков и статуса истории %s: %w", id, err)
+	}
+
+	allTasksComplete = newCharGenTasks <= 0 && newCardImgTasks <= 0 && newCharImgTasks <= 0
+
+	logFields = append(logFields,
+		zap.Bool("allTasksComplete", allTasksComplete),
+		zap.String("finalStatus", string(finalStatus)),
+		zap.Int("newCharGenTasks", newCharGenTasks),
+		zap.Int("newCardImgTasks", newCardImgTasks),
+		zap.Int("newCharImgTasks", newCharImgTasks),
+	)
+	r.logger.Info("Counters and maybe status updated successfully for published story", logFields...)
+	return allTasksComplete, finalStatus, nil
 }

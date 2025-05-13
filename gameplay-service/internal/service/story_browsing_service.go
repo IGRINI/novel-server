@@ -16,8 +16,6 @@ import (
 	"go.uber.org/zap"
 )
 
-var ()
-
 type PublishedStoryDetailWithProgressDTO struct {
 	sharedModels.PublishedStory
 	AuthorName        string `json:"author_name"`
@@ -147,6 +145,36 @@ func (s *storyBrowsingServiceImpl) ListMyPublishedStories(ctx context.Context, u
 		return nil, "", sharedModels.ErrInternalServer
 	}
 
+	// Добавляем поля player_game_state_id и player_game_status по логике выбора состояния
+	for i := range summaries {
+		if summaries[i].HasPlayerProgress {
+			states, err := s.playerGameStateRepo.ListByPlayerAndStory(ctx, s.db, userID, summaries[i].ID)
+			if err == nil && len(states) > 0 {
+				// Выбираем все состояния со статусом != error
+				var valid []*sharedModels.PlayerGameState
+				for _, st := range states {
+					if st.PlayerStatus != sharedModels.PlayerStatusError {
+						valid = append(valid, st)
+					}
+				}
+				// Если нет валидных, берем все
+				if len(valid) == 0 {
+					valid = states
+				}
+				// Выбираем самое последнее по LastActivityAt
+				chosen := valid[0]
+				for _, st := range valid[1:] {
+					if st.LastActivityAt.After(chosen.LastActivityAt) {
+						chosen = st
+					}
+				}
+				// Заполняем поля в summary
+				summaries[i].PlayerGameStateID = &chosen.ID
+				status := string(chosen.PlayerStatus)
+				summaries[i].PlayerGameStatus = &status
+			}
+		}
+	}
 	return summaries, nextCursor, nil
 }
 
@@ -237,9 +265,8 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 		for _, charDef := range setup.Characters {
 			charactersDTO = append(charactersDTO, ParsedCharacterDTO{
 				Name:           charDef.Name,
-				Description:    charDef.Description,
-				Personality:    charDef.Personality,
-				ImageReference: charDef.ImageRef,
+				Personality:    charDef.Traits,
+				ImageReference: charDef.ImageReferenceName,
 			})
 		}
 	} else {

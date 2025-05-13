@@ -120,8 +120,7 @@ func (h *GameplayHandler) getStoryConfig(c *gin.Context) { // <<< *gin.Context
 		ShortDescription  string                    `json:"short_description"`
 		Franchise         string                    `json:"franchise,omitempty"`
 		Genre             string                    `json:"genre"`
-		Language          string                    `json:"language"` // Добавим язык из StoryConfig
-		IsAdultContent    bool                      `json:"is_adult_content"`
+		Language          string                    `json:"language"`           // Добавим язык из StoryConfig
 		PlayerName        string                    `json:"player_name"`        // ProtagonistName
 		PlayerDescription string                    `json:"player_description"` // ProtagonistDescription
 		WorldContext      string                    `json:"world_context"`
@@ -139,7 +138,6 @@ func (h *GameplayHandler) getStoryConfig(c *gin.Context) { // <<< *gin.Context
 		Franchise:         actualUserConfig.Franchise,
 		Genre:             actualUserConfig.Genre,
 		Language:          config.Language, // Язык берем из основного объекта StoryConfig
-		IsAdultContent:    actualUserConfig.IsAdultContent,
 		PlayerName:        actualUserConfig.ProtagonistName,
 		PlayerDescription: actualUserConfig.ProtagonistDescription,
 		WorldContext:      actualUserConfig.WorldContext,
@@ -154,13 +152,23 @@ func (h *GameplayHandler) getStoryConfig(c *gin.Context) { // <<< *gin.Context
 	// Для черновика мы можем либо не показывать их, либо показывать с нулевыми/дефолтными значениями.
 	// Здесь я просто передаю описание.
 	if actualUserConfig.CoreStats != nil {
-		for name, description := range actualUserConfig.CoreStats {
+		for name, narratorStat := range actualUserConfig.CoreStats { // narratorStat is NarratorCsStat
+			var goc parsedGameOverConditions
+			switch narratorStat.Go {
+			case "min":
+				goc.Min = true
+			case "max":
+				goc.Max = true
+			case "both":
+				goc.Min = true
+				goc.Max = true
+			}
+
 			publicDetail.CoreStats[name] = parsedCoreStat{
-				Description: description,
-				// InitialValue и GameOverConditions здесь не заполняем,
-				// так как их нет в sharedModels.Config от Narrator.
-				// Они появятся позже из NovelSetupContent.
-				// Если этот эндпоинт ДОЛЖЕН их показывать, ему нужно грузить и парсить Setup.
+				Description: narratorStat.Description,
+				// InitialValue не устанавливается из narratorStat, так как его там нет.
+				// Это значение должно приходить из NovelSetupContent, если оно уже было сгенерировано.
+				GameOverConditions: goc,
 			}
 		}
 	}

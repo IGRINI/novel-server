@@ -140,7 +140,6 @@ func (h *GameplayHandler) RegisterRoutes(router gin.IRouter, generalRL, generati
 			storiesGroup.POST("/generate", generationRL, h.generateInitialStory) // Path: /stories/generate
 			storiesGroup.GET("", h.listStoryConfigs)                             // Path: /stories
 			storiesGroup.GET("/:id", h.getStoryConfig)
-			storiesGroup.POST("/:id/revise", generationRL, h.reviseStoryConfig)
 			storiesGroup.POST("/:id/publish", h.publishStoryDraft)
 			storiesGroup.POST("/drafts/:draft_id/retry", generationRL, h.retryDraftGeneration)
 			storiesGroup.DELETE("/:id", h.deleteDraft)

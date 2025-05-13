@@ -275,23 +275,31 @@ func (p *rabbitMQPublisher) publishMessage(ctx context.Context, body []byte) err
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	err := p.channel.PublishWithContext(ctx,
-		"",          // exchange (используем default)
-		p.queueName, // routing key (имя очереди)
-		false,       // mandatory
-		false,       // immediate
-		amqp.Publishing{
-			ContentType:  "application/json",
-			DeliveryMode: amqp.Persistent,
-			Body:         body,
-			Timestamp:    time.Now(),
-			AppId:        "gameplay-service", // Идентификатор отправителя
-		},
-	)
+	var err error
+	// Попытка публикации с retry до 3 раз
+	for attempt := 1; attempt <= 3; attempt++ {
+		err = p.channel.PublishWithContext(ctx,
+			"",          // exchange (используем default)
+			p.queueName, // routing key (имя очереди)
+			false,       // mandatory
+			false,       // immediate
+			amqp.Publishing{
+				ContentType:  "application/json",
+				DeliveryMode: amqp.Persistent,
+				Body:         body,
+				Timestamp:    time.Now(),
+				AppId:        "gameplay-service", // Идентификатор отправителя
+			},
+		)
+		if err == nil {
+			log.Printf("Сообщение успешно опубликовано в очередь '%s' (attempt %d)", p.queueName, attempt)
+			break
+		}
+		log.Printf("Ошибка публикации (attempt %d) в очередь '%s': %v", attempt, p.queueName, err)
+		time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+	}
 	if err != nil {
-		log.Printf("Ошибка публикации сообщения в очередь '%s': %v", p.queueName, err)
-		// Возвращаем ошибку, чтобы вызывающий код мог ее обработать (например, откатить статус)
-		return fmt.Errorf("ошибка публикации в очередь %s: %w", p.queueName, err)
+		return fmt.Errorf("ошибка публикации в очередь %s после retries: %w", p.queueName, err)
 	}
 	log.Printf("Сообщение успешно опубликовано в очередь '%s'", p.queueName)
 	return nil

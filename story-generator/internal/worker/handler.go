@@ -34,11 +34,118 @@ const (
 
 // --- Структуры для валидации JSON ответа AI ---
 
-// NarratorValidation используется для проверки базовой структуры ответа Narrator/NarratorReviser
+// NarratorPPValidation используется для проверки внутренней структуры "pp" в ответе Narrator
+type NarratorPPValidation struct {
+	TH *[]string `json:"th"` // tags for story - required, non-empty
+	ST *string   `json:"st"` // visual style - required, non-empty
+	WL *string   `json:"wl"` // world lore - required, non-empty
+	// dt, dl, dc are optional and not strictly validated here
+}
+
+// NarratorValidation используется для проверки базовой структуры ответа Narrator
 type NarratorValidation struct {
-	Title       *string `json:"t"`  // Указатель, чтобы проверить наличие ключа
-	Description *string `json:"sd"` // Указатель, чтобы проверить наличие ключа
-	// Остальные поля не обязательны для базовой валидации здесь
+	Title             *string               `json:"t"`  // required, non-empty
+	Description       *string               `json:"sd"` // required, non-empty
+	Genre             *string               `json:"gn"` // required, non-empty
+	ProtagonistName   *string               `json:"pn"` // required, non-empty
+	ProtagonistDesc   *string               `json:"pd"` // required, non-empty
+	WorldContext      *string               `json:"wc"` // required, non-empty
+	StorySummary      *string               `json:"ss"` // required, non-empty
+	CoreStats         json.RawMessage       `json:"cs"` // required, must contain exactly 4 stats
+	PlayerPreferences *NarratorPPValidation `json:"pp"` // required
+	// fr (Franchise) is optional
+}
+
+// CoreStatItemValidation используется для проверки каждого объекта стата в Narrator.cs
+type CoreStatItemValidation struct {
+	Name        *string `json:"n"`  // required, non-empty
+	Description *string `json:"d"`  // required, non-empty
+	GameOver    *string `json:"go"` // required, "min", "max", or "both"
+}
+
+// ResultStringValidation используется для промптов, возвращающих {"result": "string"}
+type ResultStringValidation struct {
+	Result *string `json:"result"` // required, non-empty
+}
+
+// ContentModerationValidation используется для проверки ответа ContentModeration
+type ContentModerationValidation struct {
+	AC *int `json:"ac"` // required, must be 0 or 1
+}
+
+// CharacterGenerationItemValidation используется для проверки каждого объекта NPC
+type CharacterGenerationItemValidation struct {
+	ID              *string         `json:"id"`                      // required, non-empty
+	Name            *string         `json:"name"`                    // required, non-empty
+	Role            *string         `json:"role"`                    // required, non-empty
+	Traits          *string         `json:"traits"`                  // required, non-empty
+	Relationship    json.RawMessage `json:"relationship"`            // required, must contain "protaghonist" key
+	Memories        *string         `json:"memories"`                // required, non-empty
+	PlotHook        *string         `json:"plotHook"`                // required, non-empty
+	ImagePromptDesc *string         `json:"image_prompt_descriptor"` // required, non-empty
+	ImageRefName    *string         `json:"image_reference_name"`    // required, non-empty
+}
+
+// JsonGenerationChoiceOptionConsequenceValidation используется для проверки "cons" в JsonGeneration
+type JsonGenerationChoiceOptionConsequenceValidation struct {
+	CS json.RawMessage `json:"cs"` // required, map[string]int
+	RT *string         `json:"rt"` // required, can be empty string
+}
+
+// JsonGenerationChoiceOptionValidation используется для проверки каждой опции в JsonGeneration
+type JsonGenerationChoiceOptionValidation struct {
+	Txt  *string                                          `json:"txt"`  // required, non-empty
+	Cons *JsonGenerationChoiceOptionConsequenceValidation `json:"cons"` // required
+}
+
+// JsonGenerationChoiceValidation используется для проверки каждого блока выбора в JsonGeneration
+type JsonGenerationChoiceValidation struct {
+	SceneName *string                                `json:"scene"` // required, non-empty
+	Name      *string                                `json:"name"`  // required, non-empty
+	Desc      *string                                `json:"desc"`  // required, non-empty (markdown ok)
+	Opts      []JsonGenerationChoiceOptionValidation `json:"opts"`  // required, must have exactly 2 options
+}
+
+// JsonGenerationValidation используется для проверки ответа JsonGeneration
+type JsonGenerationValidation struct {
+	Location *string                          `json:"location"` // required, non-empty
+	Choices  []JsonGenerationChoiceValidation `json:"ch"`       // required, non-empty array
+}
+
+// ScenePlannerCharacterSuggestionValidation ...
+type ScenePlannerCharacterSuggestionValidation struct {
+	Role   *string `json:"role"`   // required, non-empty
+	Reason *string `json:"reason"` // required, non-empty
+}
+
+// ScenePlannerCardSuggestionValidation ...
+type ScenePlannerCardSuggestionValidation struct {
+	ImagePromptDesc *string `json:"image_prompt_descriptor"` // required, non-empty
+	ImageRefName    *string `json:"image_reference_name"`    // required, non-empty
+	Title           *string `json:"title"`                   // required, non-empty
+	Reason          *string `json:"reason"`                  // required, non-empty
+}
+
+// ScenePlannerCharacterUpdateValidation ...
+type ScenePlannerCharacterUpdateValidation struct {
+	ID *string `json:"id"` // required, non-empty
+	// memory_update, relationship_update are optional
+}
+
+// ScenePlannerCharacterToRemoveValidation ...
+type ScenePlannerCharacterToRemoveValidation struct {
+	ID     *string `json:"id"`     // required, non-empty
+	Reason *string `json:"reason"` // required, non-empty
+}
+
+// ScenePlannerValidation используется для проверки ответа ScenePlanner
+type ScenePlannerValidation struct {
+	NeedNewCharacter        *bool                                       `json:"need_new_character"`        // required
+	NewCharacterSuggestions []ScenePlannerCharacterSuggestionValidation `json:"new_character_suggestions"` // optional array
+	NewCardSuggestions      []ScenePlannerCardSuggestionValidation      `json:"new_card_suggestions"`      // optional array
+	CharacterUpdates        []ScenePlannerCharacterUpdateValidation     `json:"character_updates"`         // optional array
+	CharactersToRemove      []ScenePlannerCharacterToRemoveValidation   `json:"characters_to_remove"`      // optional array
+	SceneFocus              *string                                     `json:"scene_focus"`               // required, non-empty
 }
 
 // SetupValidation используется для проверки структуры ответа NovelSetup
@@ -406,9 +513,7 @@ func (h *TaskHandler) saveResultAndNotify(
 		errorDetails = execErr.Error()
 	} else {
 		// Ошибки не было, проверяем тип промпта
-		isScenePrompt := payload.PromptType == sharedModels.PromptTypeNovelFirstSceneCreator ||
-			payload.PromptType == sharedModels.PromptTypeNovelCreator ||
-			payload.PromptType == sharedModels.PromptTypeNovelGameOverCreator
+		isScenePrompt := payload.PromptType == sharedModels.PromptTypeJsonGeneration // <<< UPDATED
 
 		if isScenePrompt {
 			log.Printf("[TaskID: %s] Попытка сохранения сгенерированной сцены (PromptType: %s)...", payload.TaskID, payload.PromptType)
@@ -496,9 +601,7 @@ func (h *TaskHandler) notify(ctx context.Context, payload messaging.GenerationTa
 
 	// --- Логика установки GameStateID в уведомлении --- START
 	// Определяем, относится ли задача к генерации сцены
-	isSceneGenerationTask := payload.PromptType == sharedModels.PromptTypeNovelFirstSceneCreator ||
-		payload.PromptType == sharedModels.PromptTypeNovelCreator ||
-		payload.PromptType == sharedModels.PromptTypeNovelGameOverCreator
+	isSceneGenerationTask := payload.PromptType == sharedModels.PromptTypeJsonGeneration // <<< UPDATED
 
 	// GameStateID передается в уведомлении, ЕСЛИ:
 	// 1. Это НЕ генерация сцены ВОВСЕ.
@@ -543,152 +646,273 @@ func validateAIResponseJSON(promptType sharedModels.PromptType, jsonData []byte)
 	}
 
 	switch promptType {
-	case sharedModels.PromptTypeNarrator, sharedModels.PromptTypeNarratorReviser:
+	case sharedModels.PromptTypeNarrator:
 		var v NarratorValidation
 		if err := json.Unmarshal(jsonData, &v); err != nil {
 			return fmt.Errorf("failed to unmarshal into NarratorValidation: %w", err)
 		}
-		// Дополнительные проверки, если нужны (например, что title не пустой)
-		if v.Title == nil {
-			return errors.New("missing required field 't' (title)")
+		if v.Title == nil || *v.Title == "" {
+			return errors.New("NarratorValidation: missing or empty required field 't' (title)")
 		}
-		if v.Description == nil {
-			return errors.New("missing required field 'sd' (short_description)")
+		if v.Description == nil || *v.Description == "" {
+			return errors.New("NarratorValidation: missing or empty required field 'sd' (short_description)")
 		}
-		// Можно добавить проверку на пустые строки, если требуется
-		// if *v.Title == "" {
-		// 	return errors.New("field 't' (title) cannot be empty")
-		// }
-		// if *v.Description == "" {
-		// 	return errors.New("field 'sd' (short_description) cannot be empty")
-		// }
-
-	case sharedModels.PromptTypeNovelSetup:
-		var v sharedModels.NovelSetupContent // Используем напрямую shared модель
-		if err := json.Unmarshal(jsonData, &v); err != nil {
-			return fmt.Errorf("failed to unmarshal into NovelSetupContent: %w", err)
+		if v.Genre == nil || *v.Genre == "" {
+			return errors.New("NarratorValidation: missing or empty required field 'gn' (genre)")
 		}
-		// Проверяем обязательные поля NovelSetupContent
-		if v.CoreStatsDefinition == nil {
-			return errors.New("missing required field 'csd' (core_stats_definition)")
+		if v.ProtagonistName == nil || *v.ProtagonistName == "" {
+			return errors.New("NarratorValidation: missing or empty required field 'pn' (protagonist_name)")
 		}
-		if len(v.CoreStatsDefinition) == 0 { // Или другое условие, если пустой объект допустим
-			return errors.New("field 'csd' cannot be empty")
+		if v.ProtagonistDesc == nil || *v.ProtagonistDesc == "" {
+			return errors.New("NarratorValidation: missing or empty required field 'pd' (protagonist_description)")
 		}
-		if v.Characters == nil {
-			// Считаем пустой список персонажей допустимым, но не nil
-			return errors.New("missing required field 'chars' (characters)")
+		if v.WorldContext == nil || *v.WorldContext == "" {
+			return errors.New("NarratorValidation: missing or empty required field 'wc' (world_context)")
 		}
-		// if len(v.Characters) == 0 { // Раскомментировать, если пустой список недопустим
-		// 	return errors.New("field 'chars' cannot be empty")
-		// }
-		if v.StoryPreviewImagePrompt == "" {
-			// Допустим пустой промпт для превью? Если нет - раскомментировать.
-			// return errors.New("missing or empty required field 'spi' (story_preview_image_prompt)")
+		if v.StorySummary == nil || *v.StorySummary == "" {
+			return errors.New("NarratorValidation: missing or empty required field 'ss' (story_summary)")
+		}
+		if len(v.CoreStats) == 0 || string(v.CoreStats) == "null" {
+			return errors.New("NarratorValidation: missing or empty required field 'cs' (core_stats)")
 		}
 
-	case sharedModels.PromptTypeNovelFirstSceneCreator:
-		var v SceneValidation // Используем общую структуру для сцен
-		if err := json.Unmarshal(jsonData, &v); err != nil {
-			return fmt.Errorf("failed to unmarshal into SceneValidation (FirstScene): %w", err)
-		}
-		// Проверяем обязательные поля для первой сцены
-		if v.StorySummarySoFar == nil {
-			return errors.New("missing required field 'sssf' (story_summary_so_far)")
-		}
-		if v.FutureDirection == nil {
-			return errors.New("missing required field 'fd' (future_direction)")
-		}
-		if v.Choices == nil {
-			return errors.New("missing required field 'ch' (choices)")
-		}
-		if len(v.Choices) == 0 {
-			return errors.New("field 'ch' (choices) cannot be empty for the first scene")
+		var csMap map[string]CoreStatItemValidation
+		if err := json.Unmarshal(v.CoreStats, &csMap); err != nil {
+			return fmt.Errorf("NarratorValidation: 'cs' is not a valid JSON object of stats: %w. JSON: %s", err, string(v.CoreStats))
 		}
 
-	case sharedModels.PromptTypeNovelCreator:
-		var v SceneValidation // Используем общую структуру для сцен
-		if err := json.Unmarshal(jsonData, &v); err != nil {
-			return fmt.Errorf("failed to unmarshal into SceneValidation (Creator): %w", err)
-		}
-		// Проверяем обязательные поля для обычной сцены
-		if v.StorySummarySoFar == nil {
-			return errors.New("missing required field 'sssf' (story_summary_so_far)")
-		}
-		if v.FutureDirection == nil {
-			return errors.New("missing required field 'fd' (future_direction)")
-		}
-		// vis опционален, но 'ch' обязателен
-		if v.Choices == nil {
-			return errors.New("missing required field 'ch' (choices)")
-		}
-		if len(v.Choices) == 0 {
-			return errors.New("field 'ch' (choices) cannot be empty for a scene")
+		if len(csMap) != 4 {
+			return fmt.Errorf("NarratorValidation: 'cs' must contain exactly 4 stats, got %d", len(csMap))
 		}
 
-	// case sharedModels.PromptTypeNovelContinueCreator: // <<< ЗАКОММЕНТИРОВАНО ИЗ-ЗА ОТСУТСТВИЯ КОНСТАНТЫ
-	// 	var v ContinueValidation
-	// 	if err := json.Unmarshal(jsonData, &v); err != nil {
-	// 		return errors.New("failed to unmarshal into ContinueValidation: %w", err)
-	// 	}
-	// 	// Проверяем обязательные поля для продолжения
-	// 	if v.StorySummarySoFar == nil {
-	// 		return errors.New("missing required field 'sssf'")
-	// 	}
-	// 	if v.FutureDirection == nil {
-	// 		return errors.New("missing required field 'fd'")
-	// 	}
-	// 	if v.NewPlayerDesc == nil {
-	// 		return errors.New("missing required field 'npd'")
-	// 	}
-	// 	if len(v.CoreStatsReset) == 0 || string(v.CoreStatsReset) == "null" || string(v.CoreStatsReset) == "{}" { // Проверяем, что не пустой/null/{}
-	// 		return errors.New("missing or empty required field 'csr'")
-	// 	}
-	// 	if v.EndingTextPrev == nil {
-	// 		return errors.New("missing required field 'etp'")
-	// 	}
-	// 	if v.Choices == nil {
-	// 		return errors.New("missing required field 'ch'")
-	// 	}
-	// 	if len(v.Choices) == 0 {
-	// 		return errors.New("field 'ch' cannot be empty for continuation")
-	// 	}
-
-	case sharedModels.PromptTypeNovelGameOverCreator:
-		var v GameOverValidation
-		if err := json.Unmarshal(jsonData, &v); err != nil {
-			// Попробуем распарсить как обычную сцену, если как GameOver не вышло
-			// (Иногда AI может вернуть полную структуру сцены вместо простого {"et": "..."})
-			var vScene SceneValidation
-			if errScene := json.Unmarshal(jsonData, &vScene); errScene != nil {
-				// Если и как сцена не парсится, возвращаем исходную ошибку GameOver
-				return fmt.Errorf("failed to unmarshal into GameOverValidation or SceneValidation: %w (primary: %v)", err, errScene)
+		expectedKeys := []string{"0", "1", "2", "3"}
+		for _, key := range expectedKeys {
+			statItem, ok := csMap[key]
+			if !ok {
+				return fmt.Errorf("NarratorValidation: 'cs' is missing stat with index '%s'", key)
 			}
-			// Если распарсилось как сцена, проверяем ее валидность для случая GameOver
-			if vScene.Choices == nil {
-				return errors.New("missing required field 'ch' (choices) when parsed as SceneValidation for GameOver")
+			if statItem.Name == nil || *statItem.Name == "" {
+				return fmt.Errorf("NarratorValidation: stat '%s' missing or empty 'n' (name)", key)
 			}
-			if len(vScene.Choices) == 0 {
-				return errors.New("field 'ch' (choices) cannot be empty when parsed as SceneValidation for GameOver")
+			if statItem.Description == nil || *statItem.Description == "" {
+				return fmt.Errorf("NarratorValidation: stat '%s' missing or empty 'd' (description)", key)
 			}
-			// Если структура сцены валидна, считаем это успехом валидации для GameOver
-			log.Printf("[validateAIResponseJSON] Parsed GameOver response as SceneValidation structure successfully.")
+			if statItem.GameOver == nil || *statItem.GameOver == "" {
+				return fmt.Errorf("NarratorValidation: stat '%s' missing or empty 'go' (game_over_condition)", key)
+			}
+			goVal := *statItem.GameOver
+			if goVal != "min" && goVal != "max" && goVal != "both" {
+				return fmt.Errorf("NarratorValidation: stat '%s' has invalid 'go' value '%s'. Must be 'min', 'max', or 'both'", key, goVal)
+			}
+		}
 
-		} else {
-			// Распарсилось как GameOverValidation, проверяем наличие хотя бы одного поля
-			if v.EndingText == nil && v.Choices == nil {
-				return errors.New("response for GameOver must contain either 'et' or 'ch' field")
+		if v.PlayerPreferences == nil {
+			return errors.New("NarratorValidation: missing required field 'pp' (player_preferences)")
+		}
+		if v.PlayerPreferences.TH == nil || len(*v.PlayerPreferences.TH) == 0 {
+			return errors.New("NarratorValidation: 'pp.th' (tags) is missing or empty")
+		}
+		if v.PlayerPreferences.ST == nil || *v.PlayerPreferences.ST == "" {
+			return errors.New("NarratorValidation: 'pp.st' (visual_style) is missing or empty")
+		}
+		if v.PlayerPreferences.WL == nil || *v.PlayerPreferences.WL == "" {
+			return errors.New("NarratorValidation: 'pp.wl' (world_lore) is missing or empty")
+		}
+
+	case sharedModels.PromptTypeProtagonistGoal,
+		sharedModels.PromptTypeStoryContinuation,
+		sharedModels.PromptTypeNovelGameOverCreator:
+		var v ResultStringValidation
+		if err := json.Unmarshal(jsonData, &v); err != nil {
+			return fmt.Errorf("failed to unmarshal into ResultStringValidation for %s: %w", promptType, err)
+		}
+		if v.Result == nil || *v.Result == "" {
+			return fmt.Errorf("ResultStringValidation for %s: missing or empty required field 'result'", promptType)
+		}
+
+	case sharedModels.PromptTypeStorySetup:
+		var v struct {
+			Result *string `json:"result"`
+			PR     *string `json:"pr"`
+		}
+		if err := json.Unmarshal(jsonData, &v); err != nil {
+			return fmt.Errorf("StorySetupValidation: failed to unmarshal into validation struct: %w", err)
+		}
+		if v.Result == nil || *v.Result == "" {
+			return errors.New("StorySetupValidation: missing or empty required field 'result'")
+		}
+		if v.PR == nil || *v.PR == "" {
+			return errors.New("StorySetupValidation: missing or empty required field 'pr'")
+		}
+
+	case sharedModels.PromptTypeContentModeration:
+		var v ContentModerationValidation
+		if err := json.Unmarshal(jsonData, &v); err != nil {
+			return fmt.Errorf("failed to unmarshal into ContentModerationValidation: %w", err)
+		}
+		if v.AC == nil {
+			return errors.New("ContentModerationValidation: missing required field 'ac'")
+		}
+		if *v.AC != 0 && *v.AC != 1 {
+			return fmt.Errorf("ContentModerationValidation: field 'ac' must be 0 or 1, got %d", *v.AC)
+		}
+
+	case sharedModels.PromptTypeCharacterGeneration:
+		var v []CharacterGenerationItemValidation
+		if err := json.Unmarshal(jsonData, &v); err != nil {
+			return fmt.Errorf("failed to unmarshal into []CharacterGenerationItemValidation: %w. JSON: %s", err, string(jsonData))
+		}
+		if v == nil { // Explicitly check for nil slice if unmarshal of empty array results in nil
+			return errors.New("CharacterGenerationValidation: response is nil, expected a JSON array")
+		}
+		if len(v) < 2 || len(v) > 4 {
+			return fmt.Errorf("CharacterGenerationValidation: must generate 2 to 4 characters, got %d", len(v))
+		}
+		for i, item := range v {
+			if item.ID == nil || *item.ID == "" {
+				return fmt.Errorf("CharacterGenerationValidation item %d: missing or empty 'id'", i)
 			}
-			// Если есть Choices, они не должны быть пустым массивом
-			if v.Choices != nil && len(v.Choices) == 0 {
-				return errors.New("field 'ch' cannot be an empty array for GameOver")
+			if item.Name == nil || *item.Name == "" {
+				return fmt.Errorf("CharacterGenerationValidation item %d: missing or empty 'name'", i)
+			}
+			if item.Role == nil || *item.Role == "" {
+				return fmt.Errorf("CharacterGenerationValidation item %d: missing or empty 'role'", i)
+			}
+			if item.Traits == nil || *item.Traits == "" {
+				return fmt.Errorf("CharacterGenerationValidation item %d: missing or empty 'traits'", i)
+			}
+			if len(item.Relationship) == 0 || string(item.Relationship) == "null" {
+				return fmt.Errorf("CharacterGenerationValidation item %d: missing or empty 'relationship'", i)
+			}
+			var relMap map[string]interface{}
+			if err := json.Unmarshal(item.Relationship, &relMap); err != nil {
+				return fmt.Errorf("CharacterGenerationValidation item %d: 'relationship' is not a valid JSON object: %w", i, err)
+			}
+			if _, ok := relMap["protaghonist"]; !ok { // Note: prompt uses "protaghonist"
+				return fmt.Errorf("CharacterGenerationValidation item %d: 'relationship' must contain 'protaghonist' key", i)
+			}
+			if item.Memories == nil || *item.Memories == "" {
+				return fmt.Errorf("CharacterGenerationValidation item %d: missing or empty 'memories'", i)
+			}
+			if item.PlotHook == nil || *item.PlotHook == "" {
+				return fmt.Errorf("CharacterGenerationValidation item %d: missing or empty 'plotHook'", i)
+			}
+			if item.ImagePromptDesc == nil || *item.ImagePromptDesc == "" {
+				return fmt.Errorf("CharacterGenerationValidation item %d: missing or empty 'image_prompt_descriptor'", i)
+			}
+			if item.ImageRefName == nil || *item.ImageRefName == "" {
+				return fmt.Errorf("CharacterGenerationValidation item %d: missing or empty 'image_reference_name'", i)
+			}
+		}
+
+	case sharedModels.PromptTypeJsonGeneration:
+		var v JsonGenerationValidation
+		if err := json.Unmarshal(jsonData, &v); err != nil {
+			return fmt.Errorf("failed to unmarshal into JsonGenerationValidation: %w", err)
+		}
+		if v.Location == nil || *v.Location == "" {
+			return errors.New("JsonGenerationValidation: missing or empty 'location'")
+		}
+		if v.Choices == nil || len(v.Choices) == 0 {
+			// TODO: Validate against {{CHOICE_COUNT}} if available
+			return errors.New("JsonGenerationValidation: 'ch' (choices) is missing or empty")
+		}
+		for i, choice := range v.Choices {
+			if choice.SceneName == nil || *choice.SceneName == "" {
+				return fmt.Errorf("JsonGenerationValidation choice %d: missing or empty 'scene'", i)
+			}
+			if choice.Name == nil || *choice.Name == "" {
+				return fmt.Errorf("JsonGenerationValidation choice %d: missing or empty 'name'", i)
+			}
+			if choice.Desc == nil || *choice.Desc == "" {
+				// Markdown is OK, so empty is fine if allowed by prompt, but prompt implies situation text.
+				return fmt.Errorf("JsonGenerationValidation choice %d: missing or empty 'desc'", i)
+			}
+			if choice.Opts == nil || len(choice.Opts) != 2 {
+				return fmt.Errorf("JsonGenerationValidation choice %d: 'opts' must contain exactly 2 options, got %d", i, len(choice.Opts))
+			}
+			for j, opt := range choice.Opts {
+				if opt.Txt == nil || *opt.Txt == "" {
+					return fmt.Errorf("JsonGenerationValidation choice %d, option %d: missing or empty 'txt'", i, j)
+				}
+				if opt.Cons == nil {
+					return fmt.Errorf("JsonGenerationValidation choice %d, option %d: missing 'cons'", i, j)
+				}
+				if len(opt.Cons.CS) == 0 || string(opt.Cons.CS) == "null" { // "cs" itself can be an empty object {}
+					return fmt.Errorf("JsonGenerationValidation choice %d, option %d: missing 'cons.cs'", i, j)
+				}
+				// Validate cs is a map
+				var csMap map[string]interface{}
+				if err := json.Unmarshal(opt.Cons.CS, &csMap); err != nil {
+					return fmt.Errorf("JsonGenerationValidation choice %d, option %d: 'cons.cs' is not a valid JSON object: %w", i, j, err)
+				}
+				if opt.Cons.RT == nil { // rt can be an empty string ""
+					return fmt.Errorf("JsonGenerationValidation choice %d, option %d: missing 'cons.rt'", i, j)
+				}
+			}
+		}
+
+	case sharedModels.PromptTypeScenePlanner:
+		var v ScenePlannerValidation
+		if err := json.Unmarshal(jsonData, &v); err != nil {
+			return fmt.Errorf("failed to unmarshal into ScenePlannerValidation: %w", err)
+		}
+		if v.NeedNewCharacter == nil {
+			return errors.New("ScenePlannerValidation: missing 'need_new_character'")
+		}
+		if v.SceneFocus == nil || *v.SceneFocus == "" {
+			return errors.New("ScenePlannerValidation: missing or empty 'scene_focus'")
+		}
+		// Validate NewCharacterSuggestions if present
+		if v.NewCharacterSuggestions != nil {
+			for i, sug := range v.NewCharacterSuggestions {
+				if sug.Role == nil || *sug.Role == "" {
+					return fmt.Errorf("ScenePlannerValidation NewCharacterSuggestion %d: missing or empty 'role'", i)
+				}
+				if sug.Reason == nil || *sug.Reason == "" {
+					return fmt.Errorf("ScenePlannerValidation NewCharacterSuggestion %d: missing or empty 'reason'", i)
+				}
+			}
+		}
+		// Validate NewCardSuggestions if present
+		if v.NewCardSuggestions != nil {
+			for i, sug := range v.NewCardSuggestions {
+				if sug.ImagePromptDesc == nil || *sug.ImagePromptDesc == "" {
+					return fmt.Errorf("ScenePlannerValidation NewCardSuggestion %d: missing or empty 'image_prompt_descriptor'", i)
+				}
+				if sug.ImageRefName == nil || *sug.ImageRefName == "" {
+					return fmt.Errorf("ScenePlannerValidation NewCardSuggestion %d: missing or empty 'image_reference_name'", i)
+				}
+				if sug.Title == nil || *sug.Title == "" {
+					return fmt.Errorf("ScenePlannerValidation NewCardSuggestion %d: missing or empty 'title'", i)
+				}
+				if sug.Reason == nil || *sug.Reason == "" {
+					return fmt.Errorf("ScenePlannerValidation NewCardSuggestion %d: missing or empty 'reason'", i)
+				}
+			}
+		}
+		// Validate CharacterUpdates if present
+		if v.CharacterUpdates != nil {
+			for i, upd := range v.CharacterUpdates {
+				if upd.ID == nil || *upd.ID == "" {
+					return fmt.Errorf("ScenePlannerValidation CharacterUpdate %d: missing or empty 'id'", i)
+				}
+			}
+		}
+		// Validate CharactersToRemove if present
+		if v.CharactersToRemove != nil {
+			for i, rem := range v.CharactersToRemove {
+				if rem.ID == nil || *rem.ID == "" {
+					return fmt.Errorf("ScenePlannerValidation CharacterToRemove %d: missing or empty 'id'", i)
+				}
+				if rem.Reason == nil || *rem.Reason == "" {
+					return fmt.Errorf("ScenePlannerValidation CharacterToRemove %d: missing or empty 'reason'", i)
+				}
 			}
 		}
 
 	default:
-		log.Printf("[validateAIResponseJSON] No validation defined for PromptType: %s. Skipping validation.", promptType)
-		// Или вернуть ошибку, если валидация обязательна для всех типов
-		// return fmt.Errorf("no validation rule defined for PromptType %s", promptType)
+		log.Printf("[validateAIResponseJSON] No specific validation defined for PromptType: %s. Passing through.", promptType)
 	}
 
 	return nil // Валидация прошла успешно

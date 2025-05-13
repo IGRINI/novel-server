@@ -10,7 +10,6 @@ import (
 	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
-	"novel-server/shared/utils"
 	"time"
 
 	"github.com/google/uuid"
@@ -148,101 +147,11 @@ func (s *draftServiceImpl) GenerateInitialStory(ctx context.Context, userID uuid
 	return config, nil
 }
 
-// ReviseDraft updates an existing story draft
+// ReviseDraft sends a revision generation task for an existing draft.
 func (s *draftServiceImpl) ReviseDraft(ctx context.Context, id uuid.UUID, userID uuid.UUID, revisionPrompt string) error {
 	log := s.logger.With(zap.String("draftID", id.String()), zap.String("userID", userID.String()))
-	log.Info("ReviseDraft called")
-
-	config, err := s.repo.GetByID(ctx, id, userID)
-	if err != nil {
-		log.Error("Error getting draft for revision", zap.Error(err))
-		// Let the caller handle ErrNotFound if necessary
-		return fmt.Errorf("error getting draft for revision: %w", err)
-	}
-
-	if config.Status != sharedModels.StatusDraft && config.Status != sharedModels.StatusError {
-		log.Warn("Attempt to revise in invalid status", zap.String("status", string(config.Status)))
-		return sharedModels.ErrCannotRevise // Use shared error
-	}
-
-	activeCount, err := s.repo.CountActiveGenerations(ctx, userID)
-	if err != nil {
-		log.Error("Error counting active generations before revision", zap.Error(err))
-		return fmt.Errorf("error checking generation status: %w", err)
-	}
-	generationLimit := s.cfg.GenerationLimitPerUser
-	if activeCount >= generationLimit {
-		log.Warn("User reached active generation limit, revision rejected", zap.Int("limit", generationLimit))
-		return sharedModels.ErrUserHasActiveGeneration
-	}
-
-	var userInputs []string
-	if config.UserInput != nil {
-		if err := json.Unmarshal(config.UserInput, &userInputs); err != nil {
-			log.Warn("Error deserializing UserInput, creating new array", zap.Error(err))
-			userInputs = make([]string, 0)
-		}
-	}
-	userInputs = append(userInputs, revisionPrompt)
-	updatedUserInputJSON, err := json.Marshal(userInputs)
-	if err != nil {
-		log.Error("Error marshalling updated UserInput", zap.Error(err))
-		return fmt.Errorf("error preparing data for DB: %w", err)
-	}
-	config.UserInput = updatedUserInputJSON
-
-	originalStatus := config.Status // Store original status for potential rollback
-	config.Status = sharedModels.StatusGenerating
-	config.UpdatedAt = time.Now().UTC()
-	if err := s.repo.Update(ctx, config); err != nil {
-		log.Error("Error updating status/UserInput before revision", zap.Error(err))
-		return fmt.Errorf("error updating status/UserInput before revision: %w", err)
-	}
-
-	taskID := uuid.New().String()
-
-	// <<< Новая логика формирования UserInput для ревизии >>>
-	var userInputForTask string
-	if len(config.Config) == 0 {
-		log.Error("Cannot revise draft: previous config is missing or empty", zap.String("draftID", config.ID.String()))
-		return fmt.Errorf("cannot revise draft %s: previous config is missing", config.ID.String())
-	}
-
-	// Распарсиваем текущий конфиг в структуру sharedModels.Config
-	var currentStoryConfigData sharedModels.Config
-	if errUnmarshal := json.Unmarshal(config.Config, &currentStoryConfigData); errUnmarshal != nil {
-		log.Error("Cannot revise draft: failed to unmarshal existing config JSON into sharedModels.Config",
-			zap.String("draftID", config.ID.String()),
-			zap.Error(errUnmarshal))
-		return fmt.Errorf("cannot revise draft %s: invalid existing config JSON: %w", config.ID.String(), errUnmarshal)
-	}
-
-	// Используем FormatConfigToString для UserInput
-	userInputForTask = utils.FormatConfigToString(currentStoryConfigData, revisionPrompt)
-	// <<< Конец новой логики >>>
-
-	generationPayload := sharedMessaging.GenerationTaskPayload{
-		TaskID:        taskID,
-		UserID:        config.UserID.String(),
-		PromptType:    sharedModels.PromptTypeNarratorReviser,
-		UserInput:     userInputForTask,
-		StoryConfigID: config.ID.String(),
-		Language:      config.Language, // <<< ПЕРЕДАЕМ ЯЗЫК ОТДЕЛЬНО >>>
-	}
-
-	if err := s.publisher.PublishGenerationTask(ctx, generationPayload); err != nil {
-		log.Error("Error publishing revision task, attempting rollback", zap.String("taskID", taskID), zap.Error(err))
-		config.Status = originalStatus                                     // Rollback to Draft or Error
-		config.UserInput, _ = json.Marshal(userInputs[:len(userInputs)-1]) // Remove the last input
-		config.UpdatedAt = time.Now().UTC()
-		if rollbackErr := s.repo.Update(context.Background(), config); rollbackErr != nil {
-			log.Error("CRITICAL ERROR: Failed to roll back status/UserInput after revision publish error", zap.Error(rollbackErr))
-		}
-		return fmt.Errorf("error publishing revision task: %w", err)
-	}
-
-	log.Info("Revision task sent successfully", zap.String("taskID", taskID))
-	return nil
+	log.Info("ReviseDraft called, delegating to RetryDraftGeneration")
+	return s.RetryDraftGeneration(ctx, id, userID)
 }
 
 // GetStoryConfig gets the story config
@@ -331,36 +240,10 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 
 	if config.UserInput != nil {
 		if err := json.Unmarshal(config.UserInput, &userInputs); err == nil && len(userInputs) > 0 {
-			lastUserInput = userInputs[len(userInputs)-1]
-			if len(userInputs) == 1 {
-				promptType = sharedModels.PromptTypeNarrator
-				userInputForTask = lastUserInput
-				log.Info("Retry is for initial generation")
-				// Префикс языка больше не добавляем
-				/*
-					if prefix, ok := languagePrefixes[config.Language]; ok {
-						userInputForTask = prefix + userInputForTask
-						log.Debug("Added language prefix to prompt for initial retry", zap.String("prefix", prefix), zap.String("language", config.Language))
-					} else {
-						log.Warn("Language code not found in prefixes for initial retry, using original prompt", zap.String("language", config.Language))
-					}
-				*/
-			} else {
-				promptType = sharedModels.PromptTypeNarratorReviser
-				log.Info("Retry is for a revision generation", zap.String("revisionPrompt", lastUserInput))
-
-				if len(config.Config) == 0 {
-					log.Error("Cannot retry revision: previous config is missing or empty", zap.String("draftID", config.ID.String()))
-					return fmt.Errorf("cannot retry revision %s: previous config is missing", config.ID.String())
-				}
-
-				var currentStoryConfigData sharedModels.Config
-				if errUnmarshal := json.Unmarshal(config.Config, &currentStoryConfigData); errUnmarshal != nil {
-					log.Error("Cannot retry revision: failed to unmarshal existing config JSON into sharedModels.Config", zap.Error(errUnmarshal))
-					return fmt.Errorf("cannot retry revision %s: invalid existing config JSON: %w", config.ID.String(), errUnmarshal)
-				}
-				userInputForTask = utils.FormatConfigToString(currentStoryConfigData, lastUserInput)
-			}
+			lastUserInput = userInputs[0] // Always use the first (and presumably only) input
+			promptType = sharedModels.PromptTypeNarrator
+			userInputForTask = lastUserInput
+			log.Info("Retry is for initial generation (PromptTypeNarrator)", zap.String("userInput", lastUserInput))
 		} else {
 			log.Error("Failed to unmarshal UserInput or UserInput is empty for retry", zap.Error(err))
 			return sharedModels.ErrInternalServer // Use shared error

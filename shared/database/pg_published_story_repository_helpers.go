@@ -23,13 +23,14 @@ func scanPublishedStory(row pgx.Row) (*models.PublishedStory, error) {
 	// Assuming order based on fields in PublishedStory struct for now:
 	// id, user_id, config, setup, status, language, is_public, is_adult_content,
 	// title, description, error_details, likes_count, created_at, updated_at,
-	// is_first_scene_pending, are_images_pending
+	// is_first_scene_pending, are_images_pending, internal_generation_step, pending_char_gen_tasks, pending_card_img_tasks, pending_char_img_tasks
 	err := row.Scan(
 		&story.ID,
 		&story.UserID,
 		&configBytes, // Scan into bytes first
 		&setupBytes,  // Scan into bytes first
 		&story.Status,
+		&story.InternalGenerationStep,
 		&story.Language,       // Scan Language
 		&story.IsPublic,       // Scan IsPublic
 		&story.IsAdultContent, // Scan IsAdultContent
@@ -41,6 +42,9 @@ func scanPublishedStory(row pgx.Row) (*models.PublishedStory, error) {
 		&story.UpdatedAt,
 		&story.IsFirstScenePending, // Scan IsFirstScenePending
 		&story.AreImagesPending,    // Scan AreImagesPending
+		&story.PendingCharGenTasks,
+		&story.PendingCardImgTasks,
+		&story.PendingCharImgTasks,
 	)
 
 	if err != nil {
@@ -82,39 +86,27 @@ func scanPublishedStory(row pgx.Row) (*models.PublishedStory, error) {
 // !! ВАЖНО: Этот хелпер НЕ сканирует поле 'rank' для поисковых запросов. !!
 func scanPublishedStorySummaryWithProgress(row pgx.Row) (*models.PublishedStorySummary, error) {
 	var summary models.PublishedStorySummary
-	var playerGameStatus sql.NullString // Handle nullable player_game_status
 
-	// Assuming order based on updated publishedStorySummaryWithProgressFields:
-	// ID, Title, ShortDescription, AuthorID, AuthorName, PublishedAt,
-	// IsAdultContent, LikesCount, Status, /* REMOVED */ IsPublic, IsLiked,
-	// HasPlayerProgress, PlayerGameStatus, PlayerGameStateID
+	// Сканиурем только поля, которые есть в модели PublishedStorySummary
 	err := row.Scan(
 		&summary.ID,
 		&summary.Title,
-		&summary.ShortDescription,  // Scan directly into ShortDescription (string) -> Maps to ps.description
-		&summary.AuthorID,          // -> Maps to ps.user_id
-		&summary.AuthorName,        // -> Maps to u.display_name
-		&summary.PublishedAt,       // -> Maps to ps.created_at
-		&summary.IsAdultContent,    // -> Maps to ps.is_adult_content
-		&summary.LikesCount,        // 8 -> Maps to ps.likes_count
-		&summary.IsLiked,           // 9 -> Maps to (sl.user_id IS NOT NULL)
-		&summary.Status,            // 10 -> Maps to ps.status
-		&summary.HasPlayerProgress, // 11 -> Maps to (pgs.player_progress_id IS NOT NULL)
-		&summary.IsPublic,          // 12 -> Maps to ps.is_public
-		&playerGameStatus,          // 13 -> Maps to pgs.player_status
-		&summary.PlayerGameStateID, // 14 -> Maps to pgs.id
+		&summary.ShortDescription,
+		&summary.AuthorID,
+		&summary.AuthorName,
+		&summary.PublishedAt,
+		&summary.IsAdultContent,
+		&summary.LikesCount,
+		&summary.IsLiked,
+		&summary.Status,
+		&summary.HasPlayerProgress,
+		&summary.IsPublic,
 	)
-
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, models.ErrNotFound
 		}
 		return nil, fmt.Errorf("ошибка сканирования строки PublishedStorySummaryWithProgress: %w", err)
 	}
-
-	if playerGameStatus.Valid {
-		summary.PlayerGameStatus = playerGameStatus.String
-	}
-
 	return &summary, nil
 }

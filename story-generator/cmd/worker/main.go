@@ -441,7 +441,7 @@ func startHTTPServer(apiHandler *api.APIHandler) *http.Server {
 func connectRabbitMQ(url string) (*amqp.Connection, error) {
 	var conn *amqp.Connection
 	var err error
-	maxRetries := 5
+	maxRetries := 50
 	retryDelay := 3 * time.Second
 
 	for i := 0; i < maxRetries; i++ {

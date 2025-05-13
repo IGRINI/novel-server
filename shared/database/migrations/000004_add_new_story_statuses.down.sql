@@ -1,0 +1,27 @@
+-- +migrate Down
+-- Removing ENUM values is a destructive operation and can lead to data integrity issues
+-- if these values are already in use. Manual review and data migration might be needed.
+-- Consider the implications before running this down migration.
+--
+-- Example of how one might attempt to remove them (use with extreme caution):
+-- DELETE FROM published_stories WHERE status = 'moderation_pending';
+-- DELETE FROM published_stories WHERE status = 'protagonist_goal_pending';
+-- DELETE FROM published_stories WHERE status = 'scene_planner_pending';
+--
+-- ALTER TYPE story_status RENAME TO story_status_old;
+-- CREATE TYPE story_status AS ENUM (
+--    'draft',
+--    'initial_generation',
+--    'ready',
+--    'error',
+--    'setup_pending',
+--    'image_generation_pending',
+--    'first_scene_pending',
+--    'generating'
+-- );
+-- UPDATE published_stories SET status = status::text::story_status WHERE status::text IN ('draft', 'initial_generation', 'ready', 'error', 'setup_pending', 'image_generation_pending', 'first_scene_pending', 'generating');
+-- DROP TYPE story_status_old;
+
+-- For now, this down migration is intentionally left empty to prevent accidental data issues.
+
+-- +migrate StatementEnd 

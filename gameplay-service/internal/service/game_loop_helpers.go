@@ -137,7 +137,7 @@ func createGenerationPayload(
 		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Setup JSON: %w", err)
 	}
 
-	// Используем новый универсальный форматтер
+	// Используем универсальный форматтер для динамического состояния
 	userInputString := utils.FormatFullGameStateToString(
 		fullConfig,
 		fullSetup,
@@ -147,6 +147,7 @@ func createGenerationPayload(
 		derefStringPtr(progress.LastFutureDirection),
 		derefStringPtr(progress.LastVarImpactSummary),
 		progress.EncounteredCharacters,
+		story.IsAdultContent,
 	)
 
 	payload := sharedMessaging.GenerationTaskPayload{
@@ -210,34 +211,15 @@ func createInitialSceneGenerationPayload(
 		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Setup JSON: %w", err)
 	}
 
-	// Начальные значения для динамических полей
-	initialCoreStats := make(map[string]int)
-	if fullSetup.CoreStatsDefinition != nil {
-		for statName, definition := range fullSetup.CoreStatsDefinition {
-			initialCoreStats[statName] = definition.Initial
-		}
-	}
-	initialChoices := []models.UserChoiceInfo{} // Пусто
-	initialEncChars := []string{}               // Пусто
-
-	// Используем новый универсальный форматтер с начальными/пустыми значениями
-	userInputString := utils.FormatFullGameStateToString(
-		fullConfig,
-		fullSetup,
-		initialCoreStats,
-		initialChoices,
-		"", // previousSSS
-		"", // previousFD
-		"", // previousVIS
-		initialEncChars,
-	)
+	// Формируем UserInput для начальной сцены из Config и Setup
+	userInputString := utils.FormatConfigAndSetupToString(fullConfig, fullSetup)
 
 	payload := sharedMessaging.GenerationTaskPayload{
 		TaskID:           uuid.New().String(),
 		UserID:           userID.String(),
 		PublishedStoryID: story.ID.String(),
-		PromptType:       models.PromptTypeNovelFirstSceneCreator,
-		UserInput:        userInputString, // Помещаем отформатированный текст сюда
+		PromptType:       models.PromptTypeStoryContinuation,
+		UserInput:        userInputString,
 		StateHash:        models.InitialStateHash,
 		Language:         language,
 	}

@@ -1,0 +1,6 @@
+-- Down migration for adding story statuses
+-- Removing values from ENUM types in PostgreSQL is complex and often discouraged,
+-- especially if the values might have been used.
+-- Typically, you would mark statuses as deprecated or unused in the application logic
+-- rather than attempting to remove them from the database ENUM.
+-- Therefore, this down migration is intentionally left empty. 

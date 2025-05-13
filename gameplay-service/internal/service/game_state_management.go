@@ -149,7 +149,6 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 		PlayerProgressID: initialProgressID,
 		CurrentSceneID:   uuid.NullUUID{},
 		PlayerStatus:     playerStatus,
-		StartedAt:        now,
 		LastActivityAt:   now,
 	}
 

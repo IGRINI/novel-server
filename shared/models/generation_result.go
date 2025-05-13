@@ -14,15 +14,19 @@ type PromptType string
 
 // Константы для типов промптов
 const (
-	PromptTypeNarrator               PromptType = "narrator"                  // Генерация базовых параметров мира по запросу пользователя
-	PromptTypeNarratorReviser        PromptType = "narrator_reviser"          // Ревизия базовых параметров мира по запросу пользователя
-	PromptTypeNovelSetup             PromptType = "novel_setup"               // Генерация стартового состояния мира (статы, персонажи)
-	PromptTypeNovelFirstSceneCreator PromptType = "novel_first_scene_creator" // Генерация первой сцены
-	PromptTypeNovelCreator           PromptType = "novel_creator"             // Генерация следующей сцены (или первой)
-	PromptTypeNovelGameOverCreator   PromptType = "novel_gameover_creator"    // Генерация финальной сцены (конец игры)
-	PromptTypeCharacterImage         PromptType = "character_image"           // Генерация изображения персонажа
-	PromptTypeStoryPreviewImage      PromptType = "story_preview_image"       // Генерация превью-изображения истории
-	// Добавить другие типы по необходимости
+	PromptTypeNarrator             PromptType = "narrator"                    // from narrator.md
+	PromptTypeProtagonistGoal      PromptType = "protagonist_goal_prompt"     // from protagonist_goal_prompt.md
+	PromptTypeScenePlanner         PromptType = "scene_planner_prompt"        // from scene_planner_prompt.md
+	PromptTypeStoryContinuation    PromptType = "story_continuation_prompt"   // from story_continuation_prompt.md
+	PromptTypeStorySetup           PromptType = "story_setup_prompt"          // from story_setup_prompt.md
+	PromptTypeJsonGeneration       PromptType = "json_generation_prompt"      // from json_generation_prompt.md
+	PromptTypeCharacterGeneration  PromptType = "character_generation_prompt" // from character_generation_prompt.md
+	PromptTypeContentModeration    PromptType = "content_moderation_prompt"   // from content_moderation_prompt.md
+	PromptTypeNovelGameOverCreator PromptType = "novel_gameover_creator"      // from novel_gameover_creator.md
+	PromptTypeCharacterImage       PromptType = "character_image"             // Генерация изображения персонажа
+	PromptTypeStoryPreviewImage    PromptType = "story_preview_image"         // Генерация превью-изображения истории
+	PromptTypeImageGeneration      PromptType = "image_generation_prompt"     // Общая генерация изображений по тексту (например, для карточек)
+	// Другие типы, не основанные на предоставленных файлах, были удалены согласно запросу.
 )
 
 // <<< КОНЕЦ ДОБАВЛЕНИЯ >>>
@@ -48,7 +52,18 @@ type GenerationResult struct {
 // IsValidPromptType проверяет, является ли строка допустимым PromptType.
 func IsValidPromptType(pt PromptType) bool {
 	switch pt {
-	case PromptTypeNarrator, PromptTypeNarratorReviser, PromptTypeNovelSetup, PromptTypeNovelFirstSceneCreator, PromptTypeNovelCreator, PromptTypeNovelGameOverCreator, PromptTypeCharacterImage, PromptTypeStoryPreviewImage:
+	case PromptTypeNarrator,
+		PromptTypeProtagonistGoal,
+		PromptTypeScenePlanner,
+		PromptTypeStoryContinuation,
+		PromptTypeStorySetup,
+		PromptTypeJsonGeneration,
+		PromptTypeCharacterGeneration,
+		PromptTypeContentModeration,
+		PromptTypeNovelGameOverCreator,
+		PromptTypeCharacterImage,
+		PromptTypeStoryPreviewImage,
+		PromptTypeImageGeneration:
 		return true
 	default:
 		return false

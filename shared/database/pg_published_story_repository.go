@@ -14,9 +14,14 @@ import (
 const (
 	// Поля для полной структуры PublishedStory
 	publishedStoryFields = `
-		ps.id, ps.user_id, ps.config, ps.setup, ps.status, ps.language, ps.is_public, ps.is_adult_content,
+		ps.id, ps.user_id, ps.config, ps.setup, ps.status, 
+		ps.internal_generation_step,
+		ps.language, ps.is_public, ps.is_adult_content,
 		ps.title, ps.description, ps.error_details, ps.likes_count, ps.created_at, ps.updated_at,
-		ps.is_first_scene_pending, ps.are_images_pending
+		ps.is_first_scene_pending, ps.are_images_pending,
+		ps.pending_char_gen_tasks,
+		ps.pending_card_img_tasks,
+		ps.pending_char_img_tasks
 	`
 	// Поля для сводки (используются в PublishedStorySummary)
 	publishedStorySummaryFields = `
@@ -25,7 +30,7 @@ const (
 	`
 	// Поля для сводки с прогрессом (используются в PublishedStorySummaryWithProgress)
 	publishedStorySummaryWithProgressFields = publishedStorySummaryFields + `,
-		(pgs.player_progress_id IS NOT NULL) as has_player_progress, ps.is_public, pgs.player_status, pgs.id as player_game_state_id
+		(pgs.player_progress_id IS NOT NULL) as has_player_progress, ps.is_public
 	`
 )
 

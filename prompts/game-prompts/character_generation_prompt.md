@@ -20,11 +20,23 @@ You will receive `UserInput`, a multi-line text containing the complete game con
 -   `Adult Content`: Boolean indicating if adult themes are present.
 -   `Player Preferences`: Includes `Tags for Story`, `Visual Style`, `World Lore`, and potentially `Desired Characters` or `Desired Locations`.
 -   `Core Stats Definition`: Details about the protagonist's stats.
+-   `Create characters:` (Optional): A multi-line section that might list specific characters to be generated, typically formatted with roles and reasons for each. E.g.:
+    ```
+    Create characters:
+    1:
+      Role: <role_for_char1>
+      Reason: <reason_for_char1>
+    2:
+      Role: <role_for_char2>
+      Reason: <reason_for_char2>
+    ```
 Additionally, `UserInput` may contain information about pre-existing characters and their assigned IDs. Newly generated characters should have IDs that do not conflict with these.
 
 # Instructions:
-1.  **Analyze Input:** Carefully parse and understand all sections of the `UserInput`. Pay close attention to `Genre`, `World Context`, `Story Summary`, `Protagonist Name`, `Protagonist Description`, and `Player Preferences` (especially `Tags for Story` and any `Desired Characters`). Note any information about pre-existing characters and their IDs if provided.
-2.  **Number of Characters:** Generate a small set of 2 to 4 unique NPCs suitable for early story introduction. If `Player Preferences` includes `Desired Characters`, prioritize incorporating them or characters inspired by those desires.
+1.  **Analyze Input:** Carefully parse and understand all sections of the `UserInput`. Pay close attention to `Genre`, `World Context`, `Story Summary`, `Protagonist Name`, `Protagonist Description`, and `Player Preferences` (especially `Tags for Story` and any `Desired Characters`). Note any information about pre-existing characters and their IDs if provided. Also, look for an optional section titled 'Create characters:' which lists specific characters to be designed.
+2.  **Prioritize Explicit Requests & Generate Core Set:**
+    a.  First, if the `UserInput` contains a section titled 'Create characters:' with a list of roles and reasons (as described in `Input Description`), you **must** generate an NPC for each item in this list. These explicitly requested characters are the top priority.
+    b.  In addition to any characters generated from the 'Create characters:' list (or if no such list is provided), ensure a total of 2 to 4 unique NPCs are generated that are suitable for early story introduction. If `Player Preferences` includes `Desired Characters`, use this to influence the design of characters, whether they come from the explicit list or are generated to meet the 2-4 count.
 3.  **Assign IDs:** Assign a unique string `id` (e.g., "bar_owner_boris", "mysterious_stranger_01") to each NPC you generate. These IDs must be in snake_case and must not conflict with the protagonist (ID "protaghonist") or any pre-existing characters mentioned in `UserInput`.
 4.  **Character Attributes:** For each NPC, create a JSON object with the fields defined in the "Output JSON Structure" section below. This includes:
     *   `id` (string)

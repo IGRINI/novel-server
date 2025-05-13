@@ -10,6 +10,7 @@ const (
 	PushEventTypeSetupPending = "setup_pending" // Setup готов, ожидается первая сцена
 	PushEventTypeSceneReady   = "scene_ready"   // Новая сцена готова
 	PushEventTypeGameOver     = "game_over"     // Игра завершена
+	PushEventTypeStoryError   = "story_error"   // Ошибка генерации истории
 	// TODO: Add other event types as needed (e.g., scene_ready, game_over)
 )
 
@@ -25,12 +26,15 @@ const (
 	PushLocKeySceneReady = "notification_scene_ready"
 	// Игра завершена
 	PushLocKeyGameOver = "notification_game_over"
+	// Ошибка генерации истории
+	PushLocKeyStoryError = "notification_story_error"
 )
 
 // Имена аргументов локализации (для полей loc_arg_* в data payload)
 const (
-	PushLocArgStoryTitle = "storyTitle"
-	PushLocArgEndingText = "ending_text"
+	PushLocArgStoryTitle   = "storyTitle"
+	PushLocArgEndingText   = "ending_text"
+	PushLocArgErrorDetails = "errorDetails"
 )
 
 // Ключи для Fallback текста (если локализация на клиенте не сработает)
