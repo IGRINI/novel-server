@@ -135,9 +135,7 @@ func (s *storyBrowsingServiceImpl) ListMyPublishedStories(ctx context.Context, u
 	log := s.logger.With(zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
 	log.Info("ListMyPublishedStories called")
 
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
+	SanitizeLimit(&limit, 20, 100)
 
 	summaries, nextCursor, err := s.publishedRepo.ListUserSummariesWithProgress(ctx, s.db, userID, cursor, limit, false)
 	if err != nil {
@@ -182,9 +180,7 @@ func (s *storyBrowsingServiceImpl) ListPublicStories(ctx context.Context, userID
 	log := s.logger.With(zap.String("requestingUserID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
 	log.Info("ListPublicStories called")
 
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
+	SanitizeLimit(&limit, 20, 100)
 
 	var requestingUserID *uuid.UUID
 	if userID != uuid.Nil {
@@ -335,9 +331,7 @@ func (s *storyBrowsingServiceImpl) ListUserPublishedStories(ctx context.Context,
 	log := s.logger.With(zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
 	log.Info("ListUserPublishedStories called (cursor-based)")
 
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
+	SanitizeLimit(&limit, 20, 100)
 
 	stories, nextCursor, err := s.publishedRepo.ListByUserID(ctx, s.db, userID, cursor, limit)
 	if err != nil {
@@ -505,9 +499,7 @@ func (s *storyBrowsingServiceImpl) ListMyStoriesWithProgress(ctx context.Context
 	log := s.logger.With(zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit), zap.Bool("filterAdult", filterAdult))
 	log.Info("ListMyStoriesWithProgress called (service layer)")
 
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
+	SanitizeLimit(&limit, 20, 100)
 
 	summaries, nextCursor, err := s.publishedRepo.ListUserSummariesOnlyWithProgress(ctx, s.db, userID, cursor, limit, filterAdult)
 	if err != nil {

@@ -3,11 +3,11 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	interfaces "novel-server/shared/interfaces"
 	sharedModels "novel-server/shared/models"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
@@ -58,117 +58,47 @@ func NewLikeService(
 }
 
 // LikeStory добавляет лайк к опубликованной истории от пользователя.
-func (s *likeServiceImpl) LikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (err error) { // <<< Добавляем именованный err
+func (s *likeServiceImpl) LikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (err error) {
 	logFields := []zap.Field{
 		zap.String("userID", userID.String()),
 		zap.String("publishedStoryID", publishedStoryID.String()),
 	}
 	s.logger.Info("Attempting to like story using MarkStoryAsLiked", logFields...)
-
-	// <<< ДОБАВЛЕНО: Начинаем транзакцию >>>
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		s.logger.Error("Failed to begin transaction for liking story", append(logFields, zap.Error(err))...)
-		return sharedModels.ErrInternalServer // Возвращаем общую ошибку
-	}
-	// Гарантируем откат или коммит
-	defer func() {
-		if r := recover(); r != nil {
-			s.logger.Error("Panic recovered during LikeStory, rolling back transaction", append(logFields, zap.Any("panic", r))...)
-			_ = tx.Rollback(context.Background()) // Ignore rollback error after panic
-			err = fmt.Errorf("panic during like: %v", r)
-		} else if err != nil {
-			s.logger.Warn("Rolling back transaction due to error during like", append(logFields, zap.Error(err))...)
-			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
-				s.logger.Error("Failed to rollback transaction", append(logFields, zap.Error(rollbackErr))...)
+	return WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		err := s.publishedRepo.MarkStoryAsLiked(ctx, tx, publishedStoryID, userID)
+		if err != nil {
+			if errors.Is(err, sharedModels.ErrNotFound) {
+				s.logger.Warn("Story not found for liking", append(logFields, zap.Error(err))...)
+				return sharedModels.ErrNotFound
 			}
-		} else {
-			if commitErr := tx.Commit(ctx); commitErr != nil {
-				s.logger.Error("Failed to commit transaction after successful like", append(logFields, zap.Error(commitErr))...)
-				err = fmt.Errorf("error committing transaction: %w", commitErr)
-			}
+			s.logger.Error("Failed to mark story as liked in repository", append(logFields, zap.Error(err))...)
+			return sharedModels.ErrInternalServer
 		}
-	}()
-
-	// <<< ИЗМЕНЕНО: Вызываем метод репозитория с транзакцией >>>
-	err = s.publishedRepo.MarkStoryAsLiked(ctx, tx, publishedStoryID, userID)
-	if err != nil {
-		// Проверяем стандартные ошибки, которые может вернуть MarkStoryAsLiked
-		if errors.Is(err, sharedModels.ErrNotFound) {
-			// Эта ошибка может возникнуть, если published_story не существует
-			// Ошибка будет передана в defer для отката
-			s.logger.Warn("Story not found for liking", append(logFields, zap.Error(err))...)
-			return sharedModels.ErrNotFound // Use shared error directly
-		}
-
-		// Любая другая ошибка (ошибка транзакции, ошибка БД)
-		// Ошибка будет передана в defer для отката
-		s.logger.Error("Failed to mark story as liked in repository", append(logFields, zap.Error(err))...)
-		return sharedModels.ErrInternalServer // Use shared error directly
-	}
-
-	// MarkStoryAsLiked возвращает nil, если лайк уже существовал или был успешно добавлен.
-	// Поэтому отдельная проверка на ErrAlreadyLiked здесь не нужна.
-	s.logger.Info("Story liked successfully (or was already liked, transaction pending commit)", logFields...)
-	// defer tx.Commit() сработает, если err == nil
-	return nil
+		s.logger.Info("Story liked successfully", logFields...)
+		return nil
+	})
 }
 
 // UnlikeStory удаляет лайк с опубликованной истории от пользователя.
-func (s *likeServiceImpl) UnlikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (err error) { // <<< Добавляем именованный err
+func (s *likeServiceImpl) UnlikeStory(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (err error) {
 	logFields := []zap.Field{
 		zap.String("userID", userID.String()),
 		zap.String("publishedStoryID", publishedStoryID.String()),
 	}
 	s.logger.Info("Attempting to unlike story using MarkStoryAsUnliked", logFields...)
-
-	// <<< ДОБАВЛЕНО: Начинаем транзакцию >>>
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		s.logger.Error("Failed to begin transaction for unliking story", append(logFields, zap.Error(err))...)
-		return sharedModels.ErrInternalServer
-	}
-	// Гарантируем откат или коммит
-	defer func() {
-		if r := recover(); r != nil {
-			s.logger.Error("Panic recovered during UnlikeStory, rolling back transaction", append(logFields, zap.Any("panic", r))...)
-			_ = tx.Rollback(context.Background())
-			err = fmt.Errorf("panic during unlike: %v", r)
-		} else if err != nil {
-			s.logger.Warn("Rolling back transaction due to error during unlike", append(logFields, zap.Error(err))...)
-			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
-				s.logger.Error("Failed to rollback transaction", append(logFields, zap.Error(rollbackErr))...)
+	return WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		err := s.publishedRepo.MarkStoryAsUnliked(ctx, tx, publishedStoryID, userID)
+		if err != nil {
+			if errors.Is(err, sharedModels.ErrNotFound) {
+				s.logger.Warn("Story not found for unliking", append(logFields, zap.Error(err))...)
+				return sharedModels.ErrNotFound
 			}
-		} else {
-			if commitErr := tx.Commit(ctx); commitErr != nil {
-				s.logger.Error("Failed to commit transaction after successful unlike", append(logFields, zap.Error(commitErr))...)
-				err = fmt.Errorf("error committing transaction: %w", commitErr)
-			}
+			s.logger.Error("Failed to mark story as unliked in repository", append(logFields, zap.Error(err))...)
+			return sharedModels.ErrInternalServer
 		}
-	}()
-
-	// <<< ИЗМЕНЕНО: Вызываем метод репозитория с транзакцией >>>
-	err = s.publishedRepo.MarkStoryAsUnliked(ctx, tx, publishedStoryID, userID)
-	if err != nil {
-		// Проверяем стандартные ошибки, которые может вернуть MarkStoryAsUnliked
-		if errors.Is(err, sharedModels.ErrNotFound) {
-			// Эта ошибка может возникнуть, если published_story не существует
-			// Ошибка будет передана в defer для отката
-			s.logger.Warn("Story not found for unliking", append(logFields, zap.Error(err))...)
-			return sharedModels.ErrNotFound // Use shared error directly
-		}
-
-		// Любая другая ошибка (ошибка транзакции, ошибка БД)
-		// Ошибка будет передана в defer для отката
-		s.logger.Error("Failed to mark story as unliked in repository", append(logFields, zap.Error(err))...)
-		return sharedModels.ErrInternalServer // Use shared error directly
-	}
-
-	// MarkStoryAsUnliked возвращает nil, если лайк не существовал или был успешно удален.
-	// Поэтому отдельная проверка на ErrNotLikedYet здесь не нужна.
-	s.logger.Info("Story unliked successfully (or was not liked, transaction pending commit)", logFields...)
-	// defer tx.Commit() сработает, если err == nil
-	return nil
+		s.logger.Info("Story unliked successfully", logFields...)
+		return nil
+	})
 }
 
 // ListLikedStories retrieves a paginated list of stories liked by a user, with progress flag.
@@ -176,9 +106,7 @@ func (s *likeServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID
 	log := s.logger.With(zap.String("method", "ListLikedStories"), zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
 	log.Debug("Listing liked stories for user (single query)")
 
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
+	SanitizeLimit(&limit, 20, 100)
 
 	// Pass the database pool s.pool as the DBTX argument
 	summaries, nextCursor, err := s.publishedRepo.ListLikedByUser(ctx, s.pool, userID, cursor, limit)

@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
+	"novel-server/shared/constants"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
 	"novel-server/shared/utils"
@@ -49,84 +50,37 @@ func (p *NotificationProcessor) handleProtagonistGoalResult(ctx context.Context,
 	var processingError error // Для обработки ошибок и предотвращения запуска задачи
 
 	if notification.Status == sharedMessaging.NotificationStatusError {
-		log.Warn("Protagonist goal task failed", zap.String("error_details", notification.ErrorDetails))
-		// Используем UpdateAfterModeration, так как он уже умеет обновлять статус и ошибку.
-		// IsAdultContent здесь не меняется, передаем текущее значение.
-		// Передаем nil для internalStep при ошибке
-		if errUpdate := p.publishedRepo.UpdateAfterModeration(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &notification.ErrorDetails, nil); errUpdate != nil {
-			log.Error("Failed to update PublishedStory to Error status after protagonist goal failure", zap.Error(errUpdate))
-			processingError = fmt.Errorf("failed to update story status to Error: %w", errUpdate) // Сохраняем ошибку
-		} else {
-			log.Info("PublishedStory status updated to Error due to protagonist goal failure.")
-			// Уведомляем клиента об ошибке протагониста
-			if uid, errUID := uuid.Parse(notification.UserID); errUID == nil {
-				p.publishClientStoryUpdateOnError(publishedStoryID, uid, notification.ErrorDetails)
-			}
-		}
+		// Ошибка протагониста — используем обёртку
+		p.handleStoryError(ctx, publishedStoryID, notification.UserID, notification.ErrorDetails, constants.WSEventStoryError)
+		return nil
 	} else if notification.Status == sharedMessaging.NotificationStatusSuccess {
 		log.Info("Protagonist goal task successful, processing results.")
 
 		genResult, genErr := p.genResultRepo.GetByTaskID(dbCtx, taskID)
 		if genErr != nil {
-			log.Error("Failed to get GenerationResult by TaskID for protagonist goal", zap.Error(genErr))
-			errMsg := fmt.Sprintf("failed to fetch protagonist goal result from gen_results: %v", genErr)
-			// Передаем nil для internalStep при ошибке
-			if errUpdate := p.publishedRepo.UpdateAfterModeration(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpdate != nil {
-				log.Error("Failed to update PublishedStory to Error status after failing to fetch gen_result", zap.Error(errUpdate))
-				processingError = fmt.Errorf("failed to update story status to Error: %w", errUpdate)
-			} else {
-				// Уведомляем клиента об ошибке протагониста
-				if uid, errUID := uuid.Parse(notification.UserID); errUID == nil {
-					p.publishClientStoryUpdateOnError(publishedStoryID, uid, errMsg)
-				}
-			}
+			errMsg := fmt.Sprintf("failed to fetch protagonist goal result: %v", genErr)
+			p.handleStoryError(ctx, publishedStoryID, notification.UserID, errMsg, constants.WSEventStoryError)
+			return nil
 		} else if genResult.Error != "" {
 			log.Warn("GenerationResult for protagonist goal indicates an error", zap.String("gen_error", genResult.Error))
-			// Передаем nil для internalStep при ошибке
-			if errUpdate := p.publishedRepo.UpdateAfterModeration(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &genResult.Error, nil); errUpdate != nil {
-				log.Error("Failed to update PublishedStory to Error status due to gen_result error", zap.Error(errUpdate))
-				processingError = fmt.Errorf("failed to update story status to Error: %w", errUpdate)
-			} else {
-				// Уведомляем клиента об ошибке протагониста
-				if uid, errUID := uuid.Parse(notification.UserID); errUID == nil {
-					p.publishClientStoryUpdateOnError(publishedStoryID, uid, genResult.Error)
-				}
-			}
+			errDetails := fmt.Sprintf("protagonist goal generation error: %s", genResult.Error)
+			p.handleStoryError(ctx, publishedStoryID, notification.UserID, errDetails, constants.WSEventStoryError)
+			return nil
 		} else {
 			genResultText := genResult.GeneratedText
-			var goalOutcome protagonistGoalResultPayload
-			if err := utils.DecodeStrict([]byte(genResultText), &goalOutcome); err != nil {
-				log.Error("Failed to unmarshal protagonist goal result JSON", zap.Error(err), zap.String("json_text", genResultText))
-				var raw map[string]interface{}
-				if errMap := json.Unmarshal([]byte(genResultText), &raw); errMap == nil {
-					if res, ok := raw["result"].(string); ok {
-						goalOutcome.Result = res
-						log.Warn("Использован fallback при разборе protagonist goal", zap.String("result", res))
-					} else {
-						errMsg := fmt.Sprintf("fallback parsing failed: поле 'result' отсутствует или не строка: %v", raw)
-						// Передаем nil для internalStep при ошибке
-						if errUpd := p.publishedRepo.UpdateAfterModeration(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-							log.Error("Failed to update story status to Error after fallback parse failure", zap.Error(errUpd))
-						}
-						processingError = errors.New(errMsg) // Устанавливаем ошибку
-					}
-				} else {
-					errMsg := fmt.Sprintf("failed to parse protagonist goal result: %v", err)
-					// Передаем nil для internalStep при ошибке
-					if errUpd := p.publishedRepo.UpdateAfterModeration(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-						log.Error("Failed to update story status to Error after fallback parse failure", zap.Error(errUpd))
-					}
-					processingError = errors.New(errMsg) // Устанавливаем ошибку
-				}
+			// Строгая проверка и парсинг JSON цели протагониста
+			goalOutcome, err := decodeStrictJSON[protagonistGoalResultPayload](genResultText)
+			if err != nil {
+				log.Error("Failed to parse protagonist goal result JSON", zap.Error(err), zap.String("json_text", genResultText))
+				errMsg := fmt.Sprintf("failed to parse protagonist goal result: %v", err)
+				p.handleStoryError(ctx, publishedStoryID, notification.UserID, errMsg, constants.WSEventStoryError)
+				return nil
 			}
 
 			if processingError == nil && strings.TrimSpace(goalOutcome.Result) == "" {
 				errMsg := "empty 'result' field in protagonist goal JSON"
-				// Передаем nil для internalStep при ошибке
-				if errUpd := p.publishedRepo.UpdateAfterModeration(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-					log.Error("Failed to update story status to Error due to empty result field", zap.Error(errUpd))
-				}
-				processingError = errors.New(errMsg) // Устанавливаем ошибку
+				p.handleStoryError(ctx, publishedStoryID, notification.UserID, errMsg, constants.WSEventStoryError)
+				return nil
 			}
 
 			if processingError == nil { // Продолжаем, только если ошибок не было

@@ -176,10 +176,7 @@ func (s *draftServiceImpl) ListUserDrafts(ctx context.Context, userID uuid.UUID,
 	log := s.logger.With(zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
 	log.Info("ListUserDrafts called")
 
-	if limit <= 0 || limit > 100 {
-		log.Warn("Invalid limit requested, adjusting", zap.Int("requestedLimit", limit))
-		limit = 20
-	}
+	SanitizeLimit(&limit, 20, 100)
 
 	configs, nextCursor, err := s.repo.ListByUserID(ctx, userID, cursor, limit+1) // Fetch one extra
 	if err != nil {

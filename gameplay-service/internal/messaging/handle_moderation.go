@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
+	"novel-server/shared/constants"
 	sharedMessaging "novel-server/shared/messaging"
 	"novel-server/shared/models"
 	sharedModels "novel-server/shared/models"
@@ -94,21 +95,9 @@ func (p *NotificationProcessor) handleContentModerationResult(ctx context.Contex
 	var processingError error
 
 	if notification.Status == sharedMessaging.NotificationStatusError {
-		log.Warn("Content moderation task failed", zap.String("error_details", notification.ErrorDetails))
-		// publishedStory.Status = sharedModels.StatusError // Будет установлено в UpdateStatusFlagsAndDetails
-		// publishedStory.ErrorDetails = &notification.ErrorDetails
-		// publishedStory.UpdatedAt = time.Now().UTC()
-
-		if errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, false, false, &notification.ErrorDetails, nil); errUpdate != nil {
-			log.Error("Failed to update PublishedStory to Error status after moderation failure", zap.Error(errUpdate))
-			processingError = fmt.Errorf("failed to update story status to Error: %w", errUpdate)
-		} else {
-			log.Info("PublishedStory status updated to Error due to moderation failure.")
-			// Уведомляем клиента об ошибке истории
-			if uid, errUID := uuid.Parse(notification.UserID); errUID == nil {
-				p.publishClientStoryUpdateOnError(publishedStoryID, uid, notification.ErrorDetails)
-			}
-		}
+		// Ошибка модерации контента
+		p.handleStoryError(ctx, publishedStoryID, notification.UserID, notification.ErrorDetails, constants.WSEventStoryError)
+		return nil
 	} else if notification.Status == sharedMessaging.NotificationStatusSuccess {
 		log.Info("Content moderation task successful, processing results.")
 
@@ -116,42 +105,23 @@ func (p *NotificationProcessor) handleContentModerationResult(ctx context.Contex
 		genResult, genErr := p.genResultRepo.GetByTaskID(dbCtx, taskID)
 		if genErr != nil {
 			log.Error("Failed to get GenerationResult by TaskID for moderation", zap.Error(genErr))
-			errMsg := fmt.Sprintf("failed to fetch moderation result from gen_results: %v", genErr)
-			// Передаем nil для internalStep при ошибке
-			if errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, false, false, &errMsg, nil); errUpdate != nil {
-				log.Error("Failed to update PublishedStory to Error status after failing to fetch gen_result", zap.Error(errUpdate))
-				processingError = fmt.Errorf("failed to update story status to Error: %w", errUpdate)
-			} else {
-				// TODO: Отправить клиенту уведомление об ошибке
-			}
+			errMsg := fmt.Sprintf("failed to fetch moderation result: %v", genErr)
+			p.handleStoryError(ctx, publishedStoryID, notification.UserID, errMsg, constants.WSEventStoryError)
+			return nil
 		} else if genResult.Error != "" {
 			log.Warn("GenerationResult for moderation indicates an error", zap.String("gen_error", genResult.Error))
-			// Передаем nil для internalStep при ошибке
-			if errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, false, false, &genResult.Error, nil); errUpdate != nil {
-				log.Error("Failed to update PublishedStory to Error status due to gen_result error", zap.Error(errUpdate))
-				processingError = fmt.Errorf("failed to update story status to Error: %w", errUpdate)
-			} else {
-				// Уведомляем клиента об ошибке истории
-				if uid, errUID := uuid.Parse(notification.UserID); errUID == nil {
-					p.publishClientStoryUpdateOnError(publishedStoryID, uid, genResult.Error)
-				}
-			}
+			errDetails := fmt.Sprintf("moderation result error: %s", genResult.Error)
+			p.handleStoryError(ctx, publishedStoryID, notification.UserID, errDetails, constants.WSEventStoryError)
+			return nil
 		} else {
 			genResultText = genResult.GeneratedText
-			var moderationOutcome moderationResultPayload
-			if errUnmarshal := json.Unmarshal([]byte(genResultText), &moderationOutcome); errUnmarshal != nil {
-				log.Error("Failed to unmarshal moderation result JSON", zap.Error(errUnmarshal), zap.String("json_text", genResultText))
-				errMsg := fmt.Sprintf("failed to parse moderation result: %v", errUnmarshal)
-				// Передаем nil для internalStep при ошибке
-				if errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, false, false, &errMsg, nil); errUpdate != nil {
-					log.Error("Failed to update PublishedStory to Error status after moderation JSON parse failure", zap.Error(errUpdate))
-					processingError = fmt.Errorf("failed to update story status to Error: %w", errUpdate)
-				} else {
-					// Уведомляем клиента об ошибке истории
-					if uid, errUID := uuid.Parse(notification.UserID); errUID == nil {
-						p.publishClientStoryUpdateOnError(publishedStoryID, uid, errMsg)
-					}
-				}
+			// Строгая проверка и парсинг JSON результата модерации
+			moderationOutcome, err := decodeStrictJSON[moderationResultPayload](genResultText)
+			if err != nil {
+				log.Error("Failed to unmarshal moderation result JSON", zap.Error(err), zap.String("json_text", genResultText))
+				errMsg := fmt.Sprintf("failed to parse moderation result: %v", err)
+				p.handleStoryError(ctx, publishedStoryID, notification.UserID, errMsg, constants.WSEventStoryError)
+				return nil
 			} else {
 				publishedStory.IsAdultContent = bool(moderationOutcome.IsAdult) // Преобразуем обратно в bool
 				publishedStory.Status = sharedModels.StatusProtagonistGoalPending
@@ -202,6 +172,10 @@ func (p *NotificationProcessor) handleContentModerationResult(ctx context.Contex
 					}
 					nextTaskPayload = &payload
 				}
+				// Уведомляем клиента об успешной публикации предыдущего шага
+				if _, perr2 := parseUUIDField(notification.UserID, "UserID"); perr2 == nil {
+					p.publishClientStoryUpdateOnReady(publishedStory)
+				}
 			}
 		}
 	} else {
@@ -237,9 +211,6 @@ func (p *NotificationProcessor) handleContentModerationResult(ctx context.Contex
 		return fmt.Errorf("failed to update story after moderation: %w", errUpdate) // NACK
 	}
 	log.Info("PublishedStory updated after moderation", zap.Bool("is_adult", publishedStory.IsAdultContent), zap.String("new_status", string(publishedStory.Status)), zap.Any("internal_step", finalInternalStep))
-
-	// Отправляем клиенту уведомление об успешном обновлении истории
-	p.publishClientStoryUpdateOnReady(publishedStory)
 
 	// === Публикация следующей задачи (только если payload был успешно создан) ===
 	if nextTaskPayload != nil {

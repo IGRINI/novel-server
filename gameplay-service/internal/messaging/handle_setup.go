@@ -107,7 +107,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 			// Попытаться получить ID пользователя для уведомления
 			// (storyForNotification может быть nil, если паника до его получения)
 			if storyForNotification != nil {
-				go p.publishStoryUpdateViaRabbitMQ(context.Background(), storyForNotification, constants.WSEventSetupError, finalErrorDetails)
+				go p.handleStoryError(context.Background(), publishedStoryID, storyForNotification.UserID.String(), *finalErrorDetails, constants.WSEventSetupError)
 			}
 
 		} else if err != nil {
@@ -118,8 +118,8 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 				log.Error("Failed to rollback transaction after error", zap.Error(rollbackErr))
 			}
 			// Уведомление об ошибке после отката
-			if finalErrorDetails != nil && storyForNotification != nil { // Если ошибка была обработана через handleNovelSetupErrorTx
-				go p.publishStoryUpdateViaRabbitMQ(context.Background(), storyForNotification, constants.WSEventSetupError, finalErrorDetails)
+			if finalErrorDetails != nil && storyForNotification != nil {
+				go p.handleStoryError(context.Background(), publishedStoryID, storyForNotification.UserID.String(), *finalErrorDetails, constants.WSEventSetupError)
 			}
 		} else {
 			// Если ошибок не было, коммитим
@@ -131,7 +131,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 				// Уведомление об ошибке после неудачного коммита (используем старое состояние)
 				if storyForNotification != nil {
 					errStr := err.Error()
-					go p.publishStoryUpdateViaRabbitMQ(context.Background(), storyForNotification, constants.WSEventSetupError, &errStr)
+					go p.handleStoryError(context.Background(), publishedStoryID, storyForNotification.UserID.String(), errStr, constants.WSEventSetupError)
 				}
 			} else {
 				log.Info("handleNovelSetupNotification transaction committed successfully")
@@ -194,13 +194,14 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 		genErr = errors.New(genResult.Error)
 	} else {
 		rawGeneratedText = genResult.GeneratedText
-		// Используем переменную для сохранения результата
-		if errUnmarshal := utils.DecodeStrict([]byte(rawGeneratedText), &finalSetupResult); errUnmarshal != nil {
-			log.Error("SETUP UNMARSHAL ERROR", zap.Error(errUnmarshal), zap.String("json_snippet", utils.StringShort(rawGeneratedText, 200)))
-			genErr = fmt.Errorf("generated setup JSON validation failed: %w", errUnmarshal)
-		} else if finalSetupResult.Result == "" {
-			log.Error("SETUP VALIDATION ERROR: 'result' field is empty")
-			genErr = fmt.Errorf("setup JSON is missing 'result' field")
+		// Строгая проверка и парсинг JSON результата setup
+		var res SetupPromptResult
+		res, err := decodeStrictJSON[SetupPromptResult](rawGeneratedText)
+		if err != nil {
+			log.Error("SETUP UNMARSHAL ERROR", zap.Error(err), zap.String("json_snippet", utils.StringShort(rawGeneratedText, 200)))
+			genErr = fmt.Errorf("generated setup JSON validation failed: %w", err)
+		} else {
+			finalSetupResult = res
 		}
 	}
 
@@ -386,23 +387,8 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 
 // handleNovelSetupErrorTx - версия handleNovelSetupError, работающая внутри транзакции
 func (p *NotificationProcessor) handleNovelSetupErrorTx(ctx context.Context, tx interfaces.DBTX, story *sharedModels.PublishedStory, errorDetails string, logger *zap.Logger) error {
-	logger.Error("Handling NovelSetup error within transaction", zap.String("error_details", errorDetails))
-
-	publishedRepoTx := database.NewPgPublishedStoryRepository(tx, p.logger)
-	// Передаем nil для internalStep при ошибке
-	errUpdate := publishedRepoTx.UpdateStatusFlagsAndDetails(ctx, tx, story.ID, sharedModels.StatusError, false, false, &errorDetails, nil)
-	if errUpdate != nil {
-		logger.Error("CRITICAL ERROR: Failed to update PublishedStory status to Error within transaction", zap.Error(errUpdate))
-		// Возвращаем ошибку, чтобы вызвавшая функция знала о проблеме и откатила транзакцию
-		return fmt.Errorf("failed to update story status to Error: %w", errUpdate)
-	}
-	logger.Info("PublishedStory status updated to Error due to setup processing error (within tx)")
-
-	// Отправка WebSocket уведомления об ошибке (происходит ПОСЛЕ коммита/отката основной функции)
-	// Эта горутина запускается уже после возврата из handleNovelSetupErrorTx
-	// go p.publishStoryUpdateViaRabbitMQ(context.Background(), story, constants.WSEventSetupError, &errorDetails)
-
-	return nil // Успешно обновили статус на Error в рамках транзакции
+	_ = logger
+	return p.handleStoryError(ctx, story.ID, story.UserID.String(), errorDetails, constants.WSEventSetupError)
 }
 
 // publishPushNotificationForSetupPending использует notifications.BuildSetupPendingPushPayload

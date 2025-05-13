@@ -182,49 +182,18 @@ func (s *gameLoopServiceImpl) CreateNewGameState(ctx context.Context, playerID u
 func (s *gameLoopServiceImpl) DeletePlayerGameState(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID) (err error) {
 	log := s.logger.With(zap.String("gameStateID", gameStateID.String()), zap.Stringer("userID", userID))
 	log.Info("Deleting player game state by ID")
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		log.Error("Failed to begin transaction for DeletePlayerGameState", zap.Error(err))
-		return models.ErrInternalServer
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			log.Error("Panic recovered during DeletePlayerGameState, rolling back transaction", zap.Any("panic", r))
-			_ = tx.Rollback(context.Background())
-			err = fmt.Errorf("panic during game state deletion: %v", r)
-		} else if err != nil {
-			log.Warn("Rolling back transaction due to error during game state deletion", zap.Error(err))
-			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
-				log.Error("Failed to rollback transaction", zap.Error(rollbackErr))
+	return WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		repo := database.NewPgPlayerGameStateRepository(tx, s.logger)
+		err := repo.DeleteForUser(ctx, tx, gameStateID, userID)
+		if err != nil {
+			if errors.Is(err, models.ErrNotFound) {
+				log.Warn("Player game state not found or user forbidden to delete", zap.Error(err))
+				return models.ErrPlayerGameStateNotFound
 			}
-		} else {
-			log.Info("Attempting to commit transaction for DeletePlayerGameState")
-			if commitErr := tx.Commit(ctx); commitErr != nil {
-				log.Error("Failed to commit transaction after successful game state deletion", zap.Error(commitErr))
-				err = fmt.Errorf("error committing transaction: %w", commitErr)
-			} else {
-				log.Info("Transaction committed successfully for DeletePlayerGameState")
-			}
-		}
-	}()
-
-	gameStateRepoTx := database.NewPgPlayerGameStateRepository(tx, s.logger)
-
-	// Call the optimized DeleteForUser method
-	err = gameStateRepoTx.DeleteForUser(ctx, tx, gameStateID, userID)
-	if err != nil {
-		if errors.Is(err, models.ErrNotFound) {
-			// ErrNotFound from DeleteForUser implies not found OR forbidden
-			log.Warn("Player game state not found or user forbidden to delete", zap.Error(err))
-			err = models.ErrPlayerGameStateNotFound // Return specific error
-		} else {
 			log.Error("Error deleting player game state from repository", zap.Error(err))
-			err = models.ErrInternalServer // Return generic internal error
+			return models.ErrInternalServer
 		}
-		return err // Error will be handled by defer rollback
-	}
-
-	log.Info("Player game state deleted successfully (transaction pending commit)")
-	return nil // Error is nil, defer will commit
+		log.Info("Player game state deleted successfully")
+		return nil
+	})
 }

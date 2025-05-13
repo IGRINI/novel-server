@@ -11,6 +11,7 @@ import (
 
 	"novel-server/shared/constants"
 	"novel-server/shared/database"
+	"novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
 
@@ -59,28 +60,11 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 
 	// <<< НАЧАЛО: Проверка статуса >>>
 	if publishedStory.Status != sharedModels.StatusSubTasksPending || !publishedStory.PendingCharGenTasks {
-		errMsg := fmt.Sprintf("CRITICAL: CharacterGeneration result received for story %s with unexpected status/flag. Current status: %s, PendingCharGenTasks: %t. Expected: StatusSubTasksPending and PendingCharGenTasks=true.",
-			publishedStoryID.String(),
-			string(publishedStory.Status),
-			publishedStory.PendingCharGenTasks,
+		errMsg := fmt.Sprintf("unexpected character generation state for story %s: status=%s, pendingTasks=%t",
+			publishedStoryID, string(publishedStory.Status), publishedStory.PendingCharGenTasks,
 		)
-		log.Error(errMsg)
-
-		// Немедленно устанавливаем статус Error для истории
-		// Используем UpdateAfterModeration как универсальный метод для установки статуса и ошибки
-		// Передаем isAdultContent как есть, и nil для internalStep, так как на этом этапе он не важен
-		if errUpd := p.publishedRepo.UpdateAfterModeration(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-			log.Error("Failed to update story to Error status due to unexpected state during character generation", zap.Error(errUpd))
-			// Если не удалось обновить статус в БД, Nack-аем сообщение, чтобы оно было переобработано
-			return fmt.Errorf("failed to update story %s to error: %w", publishedStoryID, errUpd)
-		}
-
-		// Уведомляем клиента об ошибке истории
-		p.publishClientStoryUpdateOnError(publishedStoryID, publishedStory.UserID, errMsg)
-		// Отправляем push-уведомление об ошибке
-		p.publishPushOnError(ctx, publishedStoryID, publishedStory.UserID, "Unexpected state during character generation.", constants.PushEventTypeStoryError)
-
-		return nil // Ack, так как статус в БД обновлен (или попытка была сделана)
+		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
+		return nil
 	}
 	// <<< КОНЕЦ: Проверка статуса >>>
 
@@ -91,41 +75,43 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 		return fmt.Errorf("failed to fetch generation result: %w", err)
 	}
 	if genResult.Error != "" {
-		log.Warn("GenerationResult indicates error for character generation", zap.String("gen_error", genResult.Error))
-		// Обновляем статус истории на ошибку
-		if errUpd := p.publishedRepo.UpdateAfterModeration(ctx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &genResult.Error, nil); errUpd != nil {
-			log.Error("Failed to update story to Error status after character generation failure", zap.Error(errUpd))
-		}
-		return nil // Ack
+		errDetails := fmt.Sprintf("generation result error for CharacterGeneration: %s", genResult.Error)
+		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errDetails, constants.WSEventStoryError)
+		return nil
 	}
 
-	raw := genResult.GeneratedText
-	// Валидация JSON
-	if !json.Valid([]byte(raw)) {
-		errMsg := fmt.Sprintf("invalid JSON for CharacterGeneration: %s", raw)
-		log.Error(errMsg)
-		if errUpd := p.publishedRepo.UpdateAfterModeration(ctx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-			log.Error("Failed to update story status to Error after invalid JSON", zap.Error(errUpd))
-		}
-		return nil // Ack
-	}
-
-	var chars []map[string]interface{}
-	if errUn := json.Unmarshal([]byte(raw), &chars); errUn != nil {
-		errMsg := fmt.Sprintf("failed to unmarshal CharacterGeneration JSON: %v", errUn)
-		log.Error(errMsg)
-		if errUpd := p.publishedRepo.UpdateAfterModeration(ctx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-			log.Error("Failed to update story status to Error after unmarshal failure", zap.Error(errUpd))
-		}
-		return nil // Ack
+	// Строгая проверка и парсинг JSON массива персонажей
+	chars, err := decodeStrictJSON[[]map[string]interface{}](genResult.GeneratedText)
+	if err != nil {
+		errMsg := fmt.Sprintf("failed to parse CharacterGeneration JSON: %v", err)
+		log.Error(errMsg, zap.Error(err))
+		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
+		return nil
 	}
 	if len(chars) == 0 {
 		errMsg := "CharacterGeneration JSON array is empty"
 		log.Error(errMsg)
-		if errUpd := p.publishedRepo.UpdateAfterModeration(ctx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-			log.Error("Failed to update story status to Error after empty characters", zap.Error(errUpd))
-		}
+		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 		return nil // Ack
+	}
+
+	// Проверка и сбор определений персонажей
+	generatedCharacters := make([]sharedModels.CharacterDefinition, 0, len(chars))
+	for _, charMap := range chars {
+		charDef := sharedModels.CharacterDefinition{}
+		if nameVal, ok := charMap["name"].(string); ok {
+			charDef.Name = nameVal
+		}
+		if traitsVal, ok := charMap["traits"].(string); ok {
+			charDef.Description = traitsVal
+		}
+		if ipdVal, ok := charMap["image_prompt_descriptor"].(string); ok {
+			charDef.Prompt = ipdVal
+		}
+		if irnVal, ok := charMap["image_reference_name"].(string); ok {
+			charDef.ImageRef = irnVal
+		}
+		generatedCharacters = append(generatedCharacters, charDef)
 	}
 
 	// Дополнительная проверка обязательных полей для каждого персонажа
@@ -133,83 +119,63 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 		if id, ok := c["id"].(string); !ok || strings.TrimSpace(id) == "" {
 			errMsg := fmt.Sprintf("missing or invalid 'id' field in character at index %d", i)
 			log.Error(errMsg)
-			if errUpd := p.publishedRepo.UpdateAfterModeration(ctx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-				log.Error("Failed to update story status to Error after missing id", zap.Error(errUpd))
-			}
+			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
 		// Проверка остальных обязательных полей
 		if name, ok := c["name"].(string); !ok || strings.TrimSpace(name) == "" {
 			errMsg := fmt.Sprintf("missing or invalid 'name' field in character at index %d", i)
 			log.Error(errMsg)
-			if errUpd := p.publishedRepo.UpdateAfterModeration(ctx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-				log.Error("Failed to update story status to Error after missing name", zap.Error(errUpd))
-			}
+			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
 		if role, ok := c["role"].(string); !ok || strings.TrimSpace(role) == "" {
 			errMsg := fmt.Sprintf("missing or invalid 'role' field in character at index %d", i)
 			log.Error(errMsg)
-			if errUpd := p.publishedRepo.UpdateAfterModeration(ctx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-				log.Error("Failed to update story status to Error after missing role", zap.Error(errUpd))
-			}
+			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
 		if traits, ok := c["traits"].(string); !ok || strings.TrimSpace(traits) == "" {
 			errMsg := fmt.Sprintf("missing or invalid 'traits' field in character at index %d", i)
 			log.Error(errMsg)
-			if errUpd := p.publishedRepo.UpdateAfterModeration(ctx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-				log.Error("Failed to update story status to Error after missing traits", zap.Error(errUpd))
-			}
+			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
 		relRaw, ok := c["relationship"].(map[string]interface{})
 		if !ok {
 			errMsg := fmt.Sprintf("missing or invalid 'relationship' object in character at index %d", i)
 			log.Error(errMsg)
-			if errUpd := p.publishedRepo.UpdateAfterModeration(ctx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-				log.Error("Failed to update story status to Error after missing relationship object", zap.Error(errUpd))
-			}
+			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
 		if protag, ok := relRaw["protaghonist"].(string); !ok || strings.TrimSpace(protag) == "" {
 			errMsg := fmt.Sprintf("missing or invalid 'protaghonist' relationship in character at index %d", i)
 			log.Error(errMsg)
-			if errUpd := p.publishedRepo.UpdateAfterModeration(ctx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-				log.Error("Failed to update story status to Error after missing protagonist relationship", zap.Error(errUpd))
-			}
+			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
 		if mem, ok := c["memories"].(string); !ok || strings.TrimSpace(mem) == "" {
 			errMsg := fmt.Sprintf("missing or invalid 'memories' field in character at index %d", i)
 			log.Error(errMsg)
-			if errUpd := p.publishedRepo.UpdateAfterModeration(ctx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-				log.Error("Failed to update story status to Error after missing memories", zap.Error(errUpd))
-			}
+			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
 		if hook, ok := c["plotHook"].(string); !ok || strings.TrimSpace(hook) == "" {
 			errMsg := fmt.Sprintf("missing or invalid 'plotHook' field in character at index %d", i)
 			log.Error(errMsg)
-			if errUpd := p.publishedRepo.UpdateAfterModeration(ctx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-				log.Error("Failed to update story status to Error after missing plotHook", zap.Error(errUpd))
-			}
+			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
 		if ipd, ok := c["image_prompt_descriptor"].(string); !ok || strings.TrimSpace(ipd) == "" {
 			errMsg := fmt.Sprintf("missing or invalid 'image_prompt_descriptor' field in character at index %d", i)
 			log.Error(errMsg)
-			if errUpd := p.publishedRepo.UpdateAfterModeration(ctx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-				log.Error("Failed to update story status to Error after missing image_prompt_descriptor", zap.Error(errUpd))
-			}
+			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
 		if irn, ok := c["image_reference_name"].(string); !ok || strings.TrimSpace(irn) == "" {
 			errMsg := fmt.Sprintf("missing or invalid 'image_reference_name' field in character at index %d", i)
 			log.Error(errMsg)
-			if errUpd := p.publishedRepo.UpdateAfterModeration(ctx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpd != nil {
-				log.Error("Failed to update story status to Error after missing image_reference_name", zap.Error(errUpd))
-			}
+			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
 	}
@@ -239,93 +205,48 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 	publishedStory.PendingCharGenTasks = false
 	publishedStory.PendingCharImgTasks += len(chars)
 
-	// Атомарно сохраняем setup и счетчики
-	txUpdate, err := p.db.Begin(dbCtx)
-	if err != nil {
-		log.Error("Failed to begin transaction for character generation update", zap.Error(err))
-		return nil // Ack
-	}
-	defer txUpdate.Rollback(dbCtx)
-
-	// <<< НАЧАЛО: Обновление контента начальной сцены >>>
-	sceneRepoTx := database.NewPgStorySceneRepository(txUpdate, p.logger) // Используем txUpdate
-	initialScene, errScene := sceneRepoTx.FindByStoryAndHash(dbCtx, txUpdate, publishedStoryID, sharedModels.InitialStateHash)
-	if errScene != nil {
-		log.Error("Failed to find initial scene to save characters", zap.Error(errScene))
-		// Ошибка критична, откатываем транзакцию (defer сработает)
-		return nil // Ack (ошибка залогирована, но сообщение обработано)
-	}
-
-	var initialSceneContent sharedModels.InitialSceneContent
-	if errUnmarshalScene := json.Unmarshal(initialScene.Content, &initialSceneContent); errUnmarshalScene != nil {
-		log.Error("Failed to unmarshal initial scene content", zap.Error(errUnmarshalScene))
-		// Ошибка критична, откатываем транзакцию
-		return nil // Ack
-	}
-
-	// Преобразуем map[string]interface{} в []sharedModels.CharacterDefinition
-	generatedCharacters := make([]sharedModels.CharacterDefinition, 0, len(chars))
-	for _, charMap := range chars {
-		// Данные из charMap соответствуют структуре GeneratedCharacter.
-		// Нам нужно извлечь из них поля для CharacterDefinition.
-		charDef := sharedModels.CharacterDefinition{}
-
-		if nameVal, ok := charMap["name"].(string); ok {
-			charDef.Name = nameVal
+	// Атомарно сохраняем контент начальной сцены и флаги
+	errTx := p.withTransaction(dbCtx, func(tx interfaces.DBTX) error {
+		sceneRepoTx := database.NewPgStorySceneRepository(tx, p.logger)
+		initialScene, err := sceneRepoTx.FindByStoryAndHash(dbCtx, tx, publishedStoryID, sharedModels.InitialStateHash)
+		if err != nil {
+			p.logger.Error("Failed to find initial scene to save characters", zap.Error(err))
+			return err
 		}
-		// Поле Description в CharacterDefinition, вероятно, соответствует Traits или комбинации других полей.
-		// Пока оставим его пустым или возьмем Traits.
-		if traitsVal, ok := charMap["traits"].(string); ok {
-			charDef.Description = traitsVal // Или другое поле/комбинация
+		var initialSceneContent sharedModels.InitialSceneContent
+		if err := json.Unmarshal(initialScene.Content, &initialSceneContent); err != nil {
+			p.logger.Error("Failed to unmarshal initial scene content", zap.Error(err))
+			return err
 		}
-		// VisualTags, Personality - могут отсутствовать в GeneratedCharacter или требовать дополнительной логики
-
-		if ipdVal, ok := charMap["image_prompt_descriptor"].(string); ok {
-			charDef.Prompt = ipdVal // Prompt в CharacterDefinition соответствует ImagePromptDescriptor
+		initialSceneContent.Characters = generatedCharacters
+		updatedContentBytes, err := json.Marshal(initialSceneContent)
+		if err != nil {
+			p.logger.Error("Failed to marshal updated initial scene content", zap.Error(err))
+			return err
 		}
-		if irnVal, ok := charMap["image_reference_name"].(string); ok {
-			charDef.ImageRef = irnVal // ImageRef в CharacterDefinition соответствует ImageReferenceName
+		if err := sceneRepoTx.UpdateContent(dbCtx, tx, initialScene.ID, updatedContentBytes); err != nil {
+			p.logger.Error("Failed to update initial scene content in transaction", zap.Error(err))
+			return err
 		}
-
-		generatedCharacters = append(generatedCharacters, charDef)
-	}
-	initialSceneContent.Characters = generatedCharacters // Добавляем/перезаписываем персонажей
-
-	updatedContentBytes, errMarshalScene := json.Marshal(initialSceneContent)
-	if errMarshalScene != nil {
-		log.Error("Failed to marshal updated initial scene content", zap.Error(errMarshalScene))
-		// Ошибка критична, откатываем транзакцию
+		step := sharedModels.StepCharacterImageGeneration
+		if err := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, tx,
+			publishedStory.ID,
+			publishedStory.Status,
+			false,
+			publishedStory.PendingCardImgTasks > 0 || publishedStory.PendingCharImgTasks > 0,
+			nil,
+			&step,
+		); err != nil {
+			p.logger.Error("Failed to update flags and step in transaction after character generation", zap.Error(err))
+			return err
+		}
+		return nil
+	})
+	if errTx != nil {
+		log.Error("Transaction failed during character generation update", zap.Error(errTx))
 		return nil // Ack
 	}
 
-	if errUpdateScene := sceneRepoTx.UpdateContent(dbCtx, txUpdate, initialScene.ID, updatedContentBytes); errUpdateScene != nil {
-		log.Error("Failed to update initial scene content in transaction", zap.Error(errUpdateScene))
-		// Ошибка критична, откатываем транзакцию
-		return nil // Ack
-	}
-	log.Info("Initial scene content updated with generated characters.")
-	// <<< КОНЕЦ: Обновление контента начальной сцены >>>
-
-	// Определяем следующий шаг
-	nextStep := sharedModels.StepCharacterImageGeneration
-	// Вызываем UpdateSetupStatusAndCounters с новым шагом
-	// <<< ИЗМЕНЕНО: Используем функцию, не обновляющую Setup >>>
-	// Используем UpdateStatusFlagsAndDetails, передавая nil для errorDetails и setup
-	if err := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, txUpdate,
-		publishedStory.ID,
-		publishedStory.Status, // Текущий статус (вероятно, SubTasksPending)
-		false,                 // is_first_scene_pending - CharacterGen не влияет на это напрямую
-		publishedStory.PendingCardImgTasks > 0 || publishedStory.PendingCharImgTasks > 0, // are_images_pending
-		nil, // errorDetails
-		&nextStep,
-	); err != nil {
-		log.Error("Failed to update flags and step in transaction after character generation", zap.Error(err))
-		return nil // Ack
-	}
-	if err := txUpdate.Commit(dbCtx); err != nil {
-		log.Error("Failed to commit transaction for character generation update", zap.Error(err))
-		return nil // Ack
-	}
 	// Публикуем задачи генерации изображений для новых персонажей
 	for _, c := range chars {
 		refName := c["image_reference_name"].(string)

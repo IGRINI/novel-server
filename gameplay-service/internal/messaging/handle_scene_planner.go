@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -28,88 +29,47 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 
 	log.Info("Processing scene planner result")
 
-	dbCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-
-	publishedStory, err := p.publishedRepo.GetByID(dbCtx, p.db, publishedStoryID)
+	publishedStory, err := p.ensureStoryStatus(ctx, publishedStoryID, sharedModels.StatusScenePlannerPending)
 	if err != nil {
-		log.Error("Failed to get PublishedStory for scene planner update", zap.Error(err))
-		return fmt.Errorf("error getting PublishedStory %s: %w", publishedStoryID, err)
+		return err
 	}
-
-	if publishedStory.Status != sharedModels.StatusScenePlannerPending {
-		log.Warn("PublishedStory not in ScenePlannerPending status, update skipped.", zap.String("current_status", string(publishedStory.Status)))
+	if publishedStory == nil {
 		return nil
 	}
 
 	var storyCfg sharedModels.Config
-	if errUnmarshalCfg := json.Unmarshal(publishedStory.Config, &storyCfg); errUnmarshalCfg != nil {
-		log.Error("Failed to unmarshal story config in scene planner result handling", zap.Error(errUnmarshalCfg))
-		errMsg := fmt.Sprintf("critical error: failed to unmarshal story config %s: %v", publishedStoryID, errUnmarshalCfg)
-		if errUpdate := p.publishedRepo.UpdateStatusAndError(ctx, p.db, publishedStoryID, sharedModels.StatusError, &errMsg); errUpdate != nil {
-			log.Error("Failed to update PublishedStory to Error status after config unmarshal failure", zap.Error(errUpdate))
-		}
-		if uid, errUID := uuid.Parse(publishedStory.UserID.String()); errUID == nil {
-			p.publishClientStoryUpdateOnError(publishedStoryID, uid, errMsg)
-			p.publishPushOnError(ctx, publishedStoryID, uid, errMsg, constants.PushEventTypeStoryError)
-		}
-		return fmt.Errorf(errMsg)
+	if err := json.Unmarshal(publishedStory.Config, &storyCfg); err != nil {
+		errMsg := fmt.Sprintf("critical error: failed to unmarshal story config %s: %v", publishedStoryID, err)
+		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
+		return errors.New(errMsg)
 	}
 
 	if notification.Status == sharedMessaging.NotificationStatusError {
-		log.Warn("Scene planner task failed", zap.String("error_details", notification.ErrorDetails))
-		if errUpdate := p.publishedRepo.UpdateStatusAndError(ctx, p.db, publishedStoryID, sharedModels.StatusError, &notification.ErrorDetails); errUpdate != nil {
-			log.Error("Failed to update PublishedStory to Error status after scene planner failure", zap.Error(errUpdate))
-			return fmt.Errorf("failed to update story status to Error: %w", errUpdate)
-		}
-		if uid, errUID := uuid.Parse(publishedStory.UserID.String()); errUID == nil {
-			p.publishClientStoryUpdateOnError(publishedStoryID, uid, notification.ErrorDetails)
-			p.publishPushOnError(ctx, publishedStoryID, uid, notification.ErrorDetails, constants.PushEventTypeStoryError)
-		}
-		log.Info("PublishedStory status updated to Error due to scene planner failure.")
+		// Ошибка планирования сцены — используем обёртку
+		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), notification.ErrorDetails, constants.WSEventStoryError)
 		return nil
 	}
 
 	log.Info("Scene planner task successful, processing results.")
 
-	genResult, genErr := p.genResultRepo.GetByTaskID(dbCtx, taskID)
+	genResult, genErr := p.genResultRepo.GetByTaskID(ctx, taskID)
 	if genErr != nil {
-		log.Error("Failed to get GenerationResult by TaskID for scene planner", zap.Error(genErr))
-		errMsg := fmt.Sprintf("failed to fetch scene planner result from gen_results: %v", genErr)
-		if errUpdate := p.publishedRepo.UpdateStatusAndError(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, &errMsg); errUpdate != nil {
-			log.Error("Failed to update PublishedStory to Error status after failing to fetch gen_result for scene planner", zap.Error(errUpdate))
-		}
-		if uid, errUID := uuid.Parse(publishedStory.UserID.String()); errUID == nil {
-			p.publishClientStoryUpdateOnError(publishedStoryID, uid, errMsg)
-			p.publishPushOnError(ctx, publishedStoryID, uid, errMsg, constants.PushEventTypeStoryError)
-		}
+		errMsg := fmt.Sprintf("failed to fetch scene planner result: %v", genErr)
+		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 		return nil
 	}
 
 	if genResult.Error != "" {
-		log.Warn("GenerationResult for scene planner indicates an error", zap.String("gen_error", genResult.Error))
-		if errUpdate := p.publishedRepo.UpdateStatusAndError(ctx, p.db, publishedStoryID, sharedModels.StatusError, &genResult.Error); errUpdate != nil {
-			log.Error("Failed to update PublishedStory to Error status due to gen_result error for scene planner", zap.Error(errUpdate))
-		}
-		if uid, errUID := uuid.Parse(publishedStory.UserID.String()); errUID == nil {
-			p.publishClientStoryUpdateOnError(publishedStoryID, uid, genResult.Error)
-			p.publishPushOnError(ctx, publishedStoryID, uid, genResult.Error, constants.PushEventTypeStoryError)
-		}
+		errMsg := fmt.Sprintf("scene planner generation error: %s", genResult.Error)
+		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 		return nil
 	}
 	genResultText := genResult.GeneratedText
 
-	var plannerOutcome sharedModels.InitialScenePlannerOutcome
-	if err := utils.DecodeStrict([]byte(genResultText), &plannerOutcome); err != nil {
-		log.Error("Failed to unmarshal scene planner outcome", zap.Error(err))
+	plannerOutcome, err := decodeStrict[sharedModels.InitialScenePlannerOutcome](genResultText)
+	if err != nil {
 		errMsg := fmt.Sprintf("failed to parse scene planner result: %v", err)
-		if errUpdate := p.publishedRepo.UpdateStatusAndError(ctx, p.db, publishedStoryID, sharedModels.StatusError, &errMsg); errUpdate != nil {
-			log.Error("Failed to update PublishedStory to Error status after scene planner JSON parse failure", zap.Error(errUpdate))
-		}
-		if uid, errUID := uuid.Parse(publishedStory.UserID.String()); errUID == nil {
-			p.publishClientStoryUpdateOnError(publishedStoryID, uid, errMsg)
-			p.publishPushOnError(ctx, publishedStoryID, uid, errMsg, constants.PushEventTypeStoryError)
-		}
+		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 		return nil
 	}
 
@@ -128,15 +88,8 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 
 	initialSceneContentBytes, errMarshalScene := json.Marshal(initialSceneContent)
 	if errMarshalScene != nil {
-		log.Error("Failed to marshal InitialSceneContent JSON", zap.Error(errMarshalScene))
 		errMsg := fmt.Sprintf("failed to marshal initial scene content: %v", errMarshalScene)
-		if errUpdate := p.publishedRepo.UpdateStatusAndError(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, &errMsg); errUpdate != nil {
-			log.Error("Failed to update story to Error after scene content marshal failure", zap.Error(errUpdate))
-		}
-		if uid, errUID := uuid.Parse(publishedStory.UserID.String()); errUID == nil {
-			p.publishClientStoryUpdateOnError(publishedStoryID, uid, errMsg)
-			p.publishPushOnError(ctx, publishedStoryID, uid, errMsg, constants.PushEventTypeStoryError)
-		}
+		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 		return nil
 	}
 
@@ -153,14 +106,14 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 		newStatus = sharedModels.StatusSetupPending
 	}
 
-	tx, errTx := p.db.Begin(dbCtx)
+	tx, errTx := p.db.Begin(ctx)
 	if errTx != nil {
 		log.Error("Failed to begin transaction for story update after scene planner", zap.Error(errTx))
 		return fmt.Errorf("failed to begin transaction: %w", errTx)
 	}
-	defer func() { _ = tx.Rollback(dbCtx) }()
+	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, errLock := tx.Exec(dbCtx, "SELECT 1 FROM published_stories WHERE id=$1 FOR UPDATE", publishedStoryID); errLock != nil {
+	if _, errLock := tx.Exec(ctx, "SELECT 1 FROM published_stories WHERE id=$1 FOR UPDATE", publishedStoryID); errLock != nil {
 		log.Error("Failed to lock story row for scene planner update", zap.Error(errLock))
 		return fmt.Errorf("failed to lock story row: %w", errLock)
 	}
@@ -171,7 +124,7 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 		StateHash:        sharedModels.InitialStateHash,
 		Content:          initialSceneContentBytes,
 	}
-	if errCreateScene := p.sceneRepo.Create(dbCtx, tx, &initialScene); errCreateScene != nil {
+	if errCreateScene := p.sceneRepo.Create(ctx, tx, &initialScene); errCreateScene != nil {
 		log.Error("Failed to create initial story scene in transaction", zap.Error(errCreateScene))
 		return fmt.Errorf("failed to create initial scene: %w", errCreateScene)
 	}
@@ -184,7 +137,7 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 
 	var internalStep *sharedModels.InternalGenerationStep
 
-	if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, tx,
+	if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(ctx, tx,
 		publishedStoryID,
 		newStatus,
 		publishedStory.IsFirstScenePending,
@@ -201,7 +154,7 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 		zap.Int("pending_card_img_count", pendingCardImgTasksCount),
 	)
 
-	if errCommit := tx.Commit(dbCtx); errCommit != nil {
+	if errCommit := tx.Commit(ctx); errCommit != nil {
 		log.Error("Failed to commit transaction for story update after scene planner", zap.Error(errCommit))
 		return fmt.Errorf("failed to commit transaction: %w", errCommit)
 	}

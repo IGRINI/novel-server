@@ -134,17 +134,18 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 			}
 
 			if parseErr == nil {
-				var tempConfigForValidation sharedModels.Config
-				if errValidate := json.Unmarshal([]byte(rawGeneratedText), &tempConfigForValidation); errValidate != nil {
-					p.logger.Error("NARRATOR UNMARSHAL (Full Config) (Tx): Failed to validate generated JSON", zap.Error(errValidate))
+				// Строгая проверка и парсинг JSON конфигурации рассказчика
+				validatedConfig, err := decodeStrictJSON[sharedModels.Config](rawGeneratedText)
+				if err != nil {
+					p.logger.Error("NARRATOR UNMARSHAL (Full Config) (Tx): Failed to validate generated JSON", zap.Error(err))
 					config.Status = sharedModels.StatusError
-					parseErr = fmt.Errorf("generated JSON validation failed: %w", errValidate)
+					parseErr = fmt.Errorf("generated JSON validation failed: %w", err)
 					genResultErrorDetail = parseErr.Error()
 				} else {
 					config.Config = json.RawMessage(rawGeneratedText)
 					config.Status = sharedModels.StatusDraft
-					config.Title = tempConfigForValidation.Title
-					config.Description = tempConfigForValidation.ShortDescription
+					config.Title = validatedConfig.Title
+					config.Description = validatedConfig.ShortDescription
 					p.logger.Info("Successfully validated and updated StoryConfig Title, Description (Tx)", zap.String("new_title", config.Title))
 				}
 				config.UpdatedAt = time.Now().UTC()
@@ -184,7 +185,7 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 			finalErrorDetails = &errStr
 		}
 		if config != nil {
-			go p.publishClientDraftUpdate(context.Background(), config, finalErrorDetails)
+			go p.handleDraftError(context.Background(), config.ID, *finalErrorDetails)
 		}
 		return errTx
 	}
@@ -194,7 +195,7 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 		errStr := errCommit.Error()
 		finalErrorDetails = &errStr
 		if config != nil {
-			go p.publishClientDraftUpdate(context.Background(), config, finalErrorDetails)
+			go p.handleDraftError(context.Background(), config.ID, *finalErrorDetails)
 		}
 		return fmt.Errorf("failed to commit Narrator transaction: %w", errCommit)
 	}
@@ -205,11 +206,7 @@ func (p *NotificationProcessor) handleNarratorNotification(ctx context.Context, 
 		go p.publishClientDraftUpdate(context.Background(), config, nil)
 		p.publishPushNotificationForDraft(context.Background(), config)
 	} else if config.Status == sharedModels.StatusError {
-		go p.publishClientDraftUpdate(context.Background(), config, finalErrorDetails)
-		p.logger.Warn("Draft generation resulted in error, skipping push notification.",
-			zap.String("storyConfigID", config.ID.String()),
-			zap.String("task_id", taskID),
-		)
+		go p.handleDraftError(context.Background(), config.ID, *finalErrorDetails)
 	}
 
 	return nil
