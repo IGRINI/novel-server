@@ -137,6 +137,7 @@ func (p *NotificationProcessor) handleProtagonistGoalResult(ctx context.Context,
 						currentSetup = make(map[string]interface{}) // Сбрасываем, если не можем распарсить
 					}
 				}
+				// Обновляем или добавляем только цель протагониста
 				currentSetup["protagonist_goal"] = goalOutcome.Result
 
 				newSetupBytes, errMarshalSetup := json.Marshal(currentSetup)
@@ -151,7 +152,7 @@ func (p *NotificationProcessor) handleProtagonistGoalResult(ctx context.Context,
 						processingError = errors.New(errMsg)
 					}
 				} else {
-					publishedStory.Setup = newSetupBytes
+					publishedStory.Setup = newSetupBytes // Обновляем Setup для сохранения
 					publishedStory.Status = sharedModels.StatusScenePlannerPending
 					publishedStory.ErrorDetails = nil // Сбрасываем ошибки
 					publishedStory.UpdatedAt = time.Now().UTC()

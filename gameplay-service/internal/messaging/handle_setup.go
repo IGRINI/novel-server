@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
 
 	"novel-server/shared/constants"
@@ -219,18 +220,23 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 
 	// 2. Обновление Setup в PublishedStory
 	currentSetup := make(map[string]interface{})
+	// Загружаем существующий Setup, чтобы не потерять другие данные (например, protagonist_goal)
 	if len(publishedStory.Setup) > 0 && string(publishedStory.Setup) != "null" && string(publishedStory.Setup) != "{}" {
 		if errUnmarshal := json.Unmarshal(publishedStory.Setup, &currentSetup); errUnmarshal != nil {
-			log.Warn("Failed to unmarshal existing PublishedStory.Setup, starting fresh", zap.Error(errUnmarshal))
-			currentSetup = make(map[string]interface{})
+			log.Warn("Failed to unmarshal existing PublishedStory.Setup, starting fresh for spi", zap.Error(errUnmarshal))
+			currentSetup = make(map[string]interface{}) // Ошибка не критична, просто SPI может быть единственным в Setup
 		}
 	}
-	currentSetup["initial_narrative"] = finalSetupResult.Result // Используем сохраненный результат
+	// currentSetup["initial_narrative"] = finalSetupResult.Result // <<< УДАЛЕНО: initial_narrative не сохраняется в Setup
 	if finalSetupResult.PreviewPrompt != "" {
 		currentSetup["spi"] = finalSetupResult.PreviewPrompt
-		log.Info("Added/Updated 'spi' (StoryPreviewImagePrompt)")
+		log.Info("Added/Updated 'spi' (StoryPreviewImagePrompt) in Setup")
+	} else {
+		// Если PreviewPrompt пуст, удаляем spi из Setup, если он там был
+		delete(currentSetup, "spi")
+		log.Info("'spi' (StoryPreviewImagePrompt) is empty, ensured it's not in Setup")
 	}
-	currentSetup["full_story_setup_result"] = finalSetupResult
+	// currentSetup["full_story_setup_result"] = finalSetupResult // <<< УДАЛЕНО: полный результат не храним в Setup
 
 	newSetupBytes, errMarshal := json.Marshal(currentSetup)
 	if errMarshal != nil {
@@ -269,7 +275,13 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 	// 4. Определение следующего статуса и флагов
 	var nextStatus sharedModels.StoryStatus
 	var areImagesPending bool
-	var isFirstScenePending bool = false // Сцена (initial_narrative) готова к генерации JSON
+	// var isFirstScenePending bool = false // Сцена (initial_narrative) готова к генерации JSON -- ЭТОТ ФЛАГ НЕ ЗДЕСЬ
+
+	// Флаг isFirstScenePending должен управляться в handleNovelSetupNotification
+	// на основе того, был ли успешно сохранен initial_narrative в StoryScene.
+	// Здесь мы его не трогаем, предполагая, что он будет установлен позже, если нужно.
+	// Однако, если initial_narrative обрабатывается *только* здесь, то флаг нужно установить.
+	// Пока оставляем как есть, полагаясь на последующую обработку JSON.
 
 	if needsPreviewImage {
 		nextStatus = sharedModels.StatusImageGenerationPending
@@ -287,7 +299,9 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 	} else {
 		nextInternalStep = models.StepInitialSceneJSON
 	}
-	errUpdateSetup := publishedRepoTx.UpdateStatusFlagsAndSetup(operationCtx, tx, publishedStoryID, nextStatus, newSetupBytes, isFirstScenePending, areImagesPending, &nextInternalStep)
+	// Обновляем PublishedStory: статус, Setup (только с spi), флаги изображений и следующий шаг.
+	// isFirstScenePending НЕ меняем здесь, это задача другого этапа (JSON generation).
+	errUpdateSetup := publishedRepoTx.UpdateStatusFlagsAndSetup(operationCtx, tx, publishedStoryID, nextStatus, newSetupBytes, publishedStory.IsFirstScenePending, areImagesPending, &nextInternalStep)
 	if errUpdateSetup != nil {
 		log.Error("CRITICAL ERROR: Failed to update status, flags and Setup", zap.Error(errUpdateSetup))
 		err = fmt.Errorf("error updating story %s: %w", publishedStoryID, errUpdateSetup) // NACK
@@ -295,7 +309,7 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 	}
 	log.Info("PublishedStory status, flags, setup and step updated",
 		zap.String("new_status", string(nextStatus)),
-		zap.Bool("is_first_scene_pending", isFirstScenePending),
+		zap.Bool("is_first_scene_pending", publishedStory.IsFirstScenePending),
 		zap.Bool("are_images_pending", areImagesPending),
 		zap.Any("internal_step", nextInternalStep),
 	)
@@ -309,6 +323,63 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 	if commitSuccessful {
 		go p.dispatchTasksAfterSetupCommit(publishedStoryID, finalSetupResult)
 	}
+
+	// <<< НАЧАЛО: Сохранение initial_narrative в StoryScene >>>
+	sceneRepoTx := database.NewPgStorySceneRepository(tx, p.logger)
+	initialScene, errGetScene := sceneRepoTx.FindByStoryAndHash(operationCtx, tx, publishedStoryID, sharedModels.InitialStateHash)
+	var sceneContent sharedModels.InitialSceneContent
+
+	if errGetScene != nil {
+		if errors.Is(errGetScene, sharedModels.ErrNotFound) || errors.Is(errGetScene, pgx.ErrNoRows) {
+			log.Info("Initial scene not found, creating new one for initial_narrative.")
+			initialScene = &sharedModels.StoryScene{
+				ID:               uuid.New(),
+				PublishedStoryID: publishedStoryID,
+				StateHash:        sharedModels.InitialStateHash,
+			}
+			// sceneContent останется пустым, заполнится ниже
+		} else {
+			log.Error("Failed to get initial scene for saving narrative", zap.Error(errGetScene))
+			err = fmt.Errorf("failed to get initial scene: %w", errGetScene)
+			return err // Ошибка вызовет Rollback
+		}
+	} else {
+		// Сцена найдена, пытаемся размаршалить существующий контент
+		if errUnmarshal := json.Unmarshal(initialScene.Content, &sceneContent); errUnmarshal != nil {
+			log.Warn("Failed to unmarshal existing initial scene content, will overwrite with new narrative.", zap.Error(errUnmarshal))
+			// sceneContent останется по умолчанию (пустой) или можно сбросить:
+			sceneContent = sharedModels.InitialSceneContent{}
+		}
+	}
+
+	// Обновляем или устанавливаем SceneFocus (бывший initial_narrative)
+	sceneContent.SceneFocus = finalSetupResult.Result
+
+	updatedContentBytes, errMarshalContent := json.Marshal(sceneContent)
+	if errMarshalContent != nil {
+		log.Error("Failed to marshal initial scene content with narrative", zap.Error(errMarshalContent))
+		err = fmt.Errorf("failed to marshal scene content: %w", errMarshalContent)
+		return err // Ошибка вызовет Rollback
+	}
+
+	if initialScene.Content == nil { // Если сцена новая (не найдена ранее)
+		initialScene.Content = updatedContentBytes
+		if errCreate := sceneRepoTx.Create(operationCtx, tx, initialScene); errCreate != nil {
+			log.Error("Failed to create initial scene with narrative", zap.Error(errCreate))
+			err = fmt.Errorf("failed to create initial scene: %w", errCreate)
+			return err // Ошибка вызовет Rollback
+		}
+		log.Info("Initial scene created successfully with initial_narrative.")
+	} else {
+		// Обновляем существующую сцену
+		if errUpdate := sceneRepoTx.UpdateContent(operationCtx, tx, initialScene.ID, updatedContentBytes); errUpdate != nil {
+			log.Error("Failed to update initial scene with narrative", zap.Error(errUpdate))
+			err = fmt.Errorf("failed to update initial scene: %w", errUpdate)
+			return err // Ошибка вызовет Rollback
+		}
+		log.Info("Initial scene updated successfully with initial_narrative.")
+	}
+	// <<< КОНЕЦ: Сохранение initial_narrative в StoryScene >>>
 
 	return err // err будет nil, если коммит успешен, иначе - ошибка коммита
 }

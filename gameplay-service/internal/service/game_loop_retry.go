@@ -128,12 +128,6 @@ func (s *gameLoopServiceImpl) buildRetryGenerationForGameStatePayload(
 		return nil, models.ErrInternalServer
 	}
 	genPayload.GameStateID = gameStateID.String()
-	// Перезаписываем UserInput на основе конфига и setup
-	var cfg2 models.Config
-	var stp models.NovelSetupContent
-	_ = json.Unmarshal(story.Config, &cfg2)
-	_ = json.Unmarshal(story.Setup, &stp)
-	genPayload.UserInput = utils.FormatConfigAndSetupToString(cfg2, stp)
 	return &genPayload, nil
 }
 
@@ -225,6 +219,34 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 	}
 	step := *stepPtr
 	log.Info("Starting retry from step", zap.String("step", string(step)))
+
+	// Получаем контент начальной сцены, если он может понадобиться
+	var initialSceneContent *models.InitialSceneContent
+	if step == models.StepCardImageGeneration || step == models.StepCharacterImageGeneration || step == models.StepInitialSceneJSON {
+		sceneRepo := database.NewPgStorySceneRepository(tx, s.logger)
+		initialScene, errScene := sceneRepo.FindByStoryAndHash(ctx, tx, storyID, models.InitialStateHash)
+		if errScene != nil {
+			if errors.Is(errScene, pgx.ErrNoRows) || errors.Is(errScene, models.ErrNotFound) {
+				log.Error("Initial scene not found for retry step", zap.String("step", string(step)))
+				return fmt.Errorf("initial scene not found for story %s retry", storyID)
+			} else {
+				log.Error("Failed to get initial scene for retry", zap.Error(errScene))
+				return fmt.Errorf("failed to get initial scene for story %s retry: %w", storyID, errScene)
+			}
+		}
+		if initialScene.Content != nil {
+			tempContent := models.InitialSceneContent{}
+			if errUnmarshal := json.Unmarshal(initialScene.Content, &tempContent); errUnmarshal != nil {
+				log.Error("Failed to unmarshal initial scene content for retry", zap.Error(errUnmarshal))
+				return fmt.Errorf("failed to unmarshal initial scene content for story %s retry: %w", storyID, errUnmarshal)
+			} else {
+				initialSceneContent = &tempContent
+			}
+		} else {
+			log.Error("Initial scene content is nil for retry step", zap.String("step", string(step)))
+			return fmt.Errorf("initial scene content is nil for story %s retry", storyID)
+		}
+	}
 
 	if story.Setup != nil {
 		if err := json.Unmarshal(story.Setup, &setupMap); err != nil {
@@ -397,46 +419,39 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 		promptType = models.PromptTypeImageGeneration
 		log.Warn("Retrying CardImages step - this will republish tasks for ALL initial card images")
 
-		initialCardsRaw, ok := setupMap["initial_cards"]
-		if !ok {
-			log.Error("'initial_cards' missing in setupMap for card image retry")
-			return fmt.Errorf("initial_cards missing in setup for story %s", storyID)
-		}
-		initialCardsJSON, _ := json.Marshal(initialCardsRaw)
-		var initialCards []models.GeneratedCharacter
-		if err := json.Unmarshal(initialCardsJSON, &initialCards); err != nil {
-			log.Error("Failed to unmarshal initial_cards from setupMap", zap.Error(err))
-			return fmt.Errorf("failed to unmarshal initial_cards for story %s: %w", storyID, err)
-		}
-
-		if len(initialCards) == 0 {
-			log.Warn("No initial cards found in setupMap, cannot retry card images")
-			return nil
+		// Читаем карточки из InitialSceneContent
+		if initialSceneContent == nil || len(initialSceneContent.Cards) == 0 {
+			log.Warn("No initial cards found in InitialSceneContent, cannot retry card images")
+			return nil // Ничего для ретрая
 		}
 
 		var publishErrors []error
-		for i, card := range initialCards {
+		for i, card := range initialSceneContent.Cards { // <<< Используем initialSceneContent.Cards
 			if card.ImagePromptDescriptor == "" || card.ImageReferenceName == "" {
-				log.Warn("Skipping card image generation due to missing prompt/ref", zap.Int("cardIndex", i), zap.String("cardName", card.Name))
+				log.Warn("Skipping card image generation due to missing prompt/ref", zap.Int("cardIndex", i), zap.String("cardName", card.Title))
 				continue
 			}
-			cardPayload := &sharedMessaging.CharacterImageTaskPayload{
+
+			// Формируем payload. ID персонажа для карточки обычно Nil.
+			cardPayload := sharedMessaging.CharacterImageTaskPayload{
 				UserID:           userID.String(),
 				PublishedStoryID: storyID,
 				TaskID:           uuid.New().String(),
-				Prompt:           card.ImagePromptDescriptor, // Используем отформатированный ввод
-				CharacterName:    card.Name,
-				CharacterID:      uuid.MustParse(card.ID),
+				Prompt:           card.ImagePromptDescriptor,
+				CharacterName:    card.Title,
+				ImageReference:   card.ImageReferenceName, // <<< Добавлено ImageReference
+				CharacterID:      uuid.Nil,                // <<< ID персонажа Nil для карточек
+				Ratio:            "3:2",                   // <<< Уточнить Ratio для карточек
 			}
 
-			if errPub := s.imagePublisher.PublishCharacterImageTask(ctx, *cardPayload); errPub != nil {
-				log.Error("Failed to publish card image task during retry", zap.Error(errPub), zap.Int("cardIndex", i), zap.String("cardName", card.Name))
+			if errPub := s.imagePublisher.PublishCharacterImageTask(ctx, cardPayload); errPub != nil {
+				log.Error("Failed to publish card image task during retry", zap.Error(errPub), zap.Int("cardIndex", i), zap.String("cardName", card.Title))
 				if publishErrors == nil {
 					publishErrors = []error{}
 				}
 				publishErrors = append(publishErrors, errPub)
 			} else {
-				log.Info("Published card image task payload for retry", zap.Int("cardIndex", i), zap.String("cardName", card.Name))
+				log.Info("Published card image task payload for retry", zap.Int("cardIndex", i), zap.String("cardName", card.Title))
 			}
 		}
 		if len(publishErrors) > 0 {
@@ -448,60 +463,33 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 
 	case models.StepCharacterImageGeneration:
 		log.Warn("Retrying CharacterImages step - this will republish tasks for ALL generated characters")
-		// Ensure setupMap is populated
-		if setupMap == nil {
-			log.Error("'setupMap' is nil for character image retry")
-			return fmt.Errorf("setup data missing for story %s character image retry", storyID)
-		}
-		charsRaw, ok := setupMap["chars"]
-		if !ok {
-			log.Warn("'chars' missing in setupMap for character image retry, maybe none were generated yet?")
-			return nil // Nothing to retry
-		}
-		charsJSON, _ := json.Marshal(charsRaw)
-		var chars []models.GeneratedCharacter // Assuming GeneratedCharacter structure is suitable
-		if err := json.Unmarshal(charsJSON, &chars); err != nil {
-			log.Error("Failed to unmarshal 'chars' from setupMap", zap.Error(err))
-			return fmt.Errorf("failed to unmarshal 'chars' for story %s: %w", storyID, err)
-		}
 
-		if len(chars) == 0 {
-			log.Warn("No characters found in setupMap, cannot retry character images")
-			return nil
+		// Читаем персонажей из InitialSceneContent
+		if initialSceneContent == nil || len(initialSceneContent.Characters) == 0 {
+			log.Warn("No characters found in InitialSceneContent, cannot retry character images")
+			return nil // Ничего для ретрая
 		}
 
 		var publishErrors []error
-		for i, char := range chars {
-			if char.ImagePromptDescriptor == "" || char.ImageReferenceName == "" {
+		for i, char := range initialSceneContent.Characters { // <<< Используем initialSceneContent.Characters
+			if char.Prompt == "" || char.ImageRef == "" { // <<< Используем поля CharacterDefinition
 				log.Warn("Skipping character image generation due to missing prompt/ref", zap.Int("charIndex", i), zap.String("charName", char.Name))
 				continue
 			}
-			// Assuming a util function exists or creating input directly
-			charImgUserInputMap := map[string]string{
-				"image_prompt_descriptor": char.ImagePromptDescriptor,
-				"image_reference_name":    char.ImageReferenceName,
-				"character_name":          char.Name,
-				"generation_context_type": "character_image",
-			}
-			charImgUserInputBytes, errMarshal := json.Marshal(charImgUserInputMap)
-			if errMarshal != nil {
-				log.Error("Failed to marshal UserInput for character image generation task", zap.Error(errMarshal), zap.Any("character", char))
-				publishErrors = append(publishErrors, errMarshal)
-				continue // Skip this character
-			}
 
-			// NOTE: Assuming CharacterImageTaskPayload is the correct payload type for character images too.
-			// If a different publisher/payload exists, adjust accordingly.
+			// Формируем payload, используя поля CharacterDefinition
+			// ID персонажа не хранится в CharacterDefinition, его нужно будет найти иначе, если он нужен издателю.
+			// Пока отправляем Nil UUID.
 			charPayload := sharedMessaging.CharacterImageTaskPayload{
 				TaskID:           uuid.New().String(),
 				UserID:           story.UserID.String(),
 				PublishedStoryID: storyID,
-				CharacterID:      uuid.MustParse(char.ID), // Assuming char.ID is a valid UUID string
+				CharacterID:      uuid.Nil, // <<< ID персонажа неизвестен из CharacterDefinition
 				CharacterName:    char.Name,
-				ImageReference:   char.ImageReferenceName,
-				Prompt:           string(charImgUserInputBytes), // Using the marshalled JSON as prompt input
-				NegativePrompt:   "",                            // Add if needed
-				Ratio:            "2:3",                         // Or get from config/setup if variable
+				ImageReference:   char.ImageRef,
+				Prompt:           char.Prompt,
+				NegativePrompt:   "",    // Add if needed
+				Ratio:            "2:3", // Or get from config/setup if variable
 			}
 
 			if errPub := s.imagePublisher.PublishCharacterImageTask(ctx, charPayload); errPub != nil {

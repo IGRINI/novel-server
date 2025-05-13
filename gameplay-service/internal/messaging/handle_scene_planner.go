@@ -15,6 +15,13 @@ import (
 	"novel-server/shared/utils"
 )
 
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, notification sharedMessaging.NotificationPayload, publishedStoryID uuid.UUID) error {
 	taskID := notification.TaskID
 	log := p.logger.With(zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()), zap.String("prompt_type", string(notification.PromptType)))
@@ -106,26 +113,10 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 		return nil
 	}
 
-	var sceneCharacters []sharedModels.CharacterDefinition
-	if storyCfg.Chars != nil {
-		charactersToRemoveSet := make(map[string]struct{})
-		for _, charToRemove := range plannerOutcome.CharactersToRemove {
-			charactersToRemoveSet[charToRemove.ID] = struct{}{}
-		}
-
-		for _, charDef := range storyCfg.Chars {
-			if _, remove := charactersToRemoveSet[charDef.Name]; !remove {
-				sceneCharacters = append(sceneCharacters, charDef)
-			} else {
-				log.Info("Removing character from initial scene based on planner outcome", zap.String("character_name", charDef.Name))
-			}
-		}
-	}
-
 	initialSceneContent := sharedModels.InitialSceneContent{
 		SceneFocus: plannerOutcome.SceneFocus,
 		Cards:      make([]sharedModels.SceneCard, len(plannerOutcome.NewCardSuggestions)),
-		Characters: sceneCharacters,
+		Characters: []sharedModels.CharacterDefinition{},
 	}
 	for i, sug := range plannerOutcome.NewCardSuggestions {
 		initialSceneContent.Cards[i] = sharedModels.SceneCard{
@@ -152,16 +143,15 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 	charTasksToLaunch := len(plannerOutcome.NewCharacterSuggestions)
 	cardImgTasksToLaunch := len(plannerOutcome.NewCardSuggestions)
 
-	publishedStory.PendingCharGenTasks = (charTasksToLaunch > 0)
-	publishedStory.PendingCardImgTasks = cardImgTasksToLaunch
+	newStatus := publishedStory.Status
+	pendingCharGenTasksFlag := (charTasksToLaunch > 0)
+	pendingCardImgTasksCount := cardImgTasksToLaunch
 
-	if publishedStory.PendingCharGenTasks || publishedStory.PendingCardImgTasks > 0 {
-		publishedStory.Status = sharedModels.StatusSubTasksPending
+	if pendingCharGenTasksFlag || pendingCardImgTasksCount > 0 {
+		newStatus = sharedModels.StatusSubTasksPending
 	} else {
-		publishedStory.Status = sharedModels.StatusSetupPending
+		newStatus = sharedModels.StatusSetupPending
 	}
-	publishedStory.ErrorDetails = nil
-	publishedStory.UpdatedAt = time.Now().UTC()
 
 	tx, errTx := p.db.Begin(dbCtx)
 	if errTx != nil {
@@ -187,14 +177,28 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 	}
 	log.Info("Initial story scene created successfully", zap.Stringer("scene_id", initialScene.ID))
 
-	if errUpdateStory := p.publishedRepo.UpdateStory(dbCtx, tx, publishedStory); errUpdateStory != nil {
-		log.Error("Failed to update PublishedStory in transaction after scene planner", zap.Error(errUpdateStory))
-		return fmt.Errorf("failed to update story (status/counters) after scene planner: %w", errUpdateStory)
+	pendingCharGenDB := 0
+	if pendingCharGenTasksFlag {
+		pendingCharGenDB = 1
 	}
-	log.Info("PublishedStory status and counters updated successfully (transaction pending commit)",
-		zap.String("new_status", string(publishedStory.Status)),
-		zap.Bool("pending_char_gen", publishedStory.PendingCharGenTasks),
-		zap.Int("pending_card_img", publishedStory.PendingCardImgTasks),
+
+	var internalStep *sharedModels.InternalGenerationStep
+
+	if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, tx,
+		publishedStoryID,
+		newStatus,
+		publishedStory.IsFirstScenePending,
+		pendingCardImgTasksCount > 0 || publishedStory.PendingCharImgTasks > 0 || pendingCharGenDB > 0,
+		nil,
+		internalStep,
+	); errUpdateStory != nil {
+		log.Error("Failed to update PublishedStory (status/flags) in transaction after scene planner", zap.Error(errUpdateStory))
+		return fmt.Errorf("failed to update story (status/flags) after scene planner: %w", errUpdateStory)
+	}
+	log.Info("PublishedStory status and flags updated (transaction pending commit)",
+		zap.String("new_status", string(newStatus)),
+		zap.Bool("pending_char_gen_flag", pendingCharGenTasksFlag),
+		zap.Int("pending_card_img_count", pendingCardImgTasksCount),
 	)
 
 	if errCommit := tx.Commit(dbCtx); errCommit != nil {
@@ -206,13 +210,12 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 	var protagonistGoalMap map[string]interface{}
 	if len(publishedStory.Setup) > 0 && string(publishedStory.Setup) != "null" && string(publishedStory.Setup) != "{}" {
 		if errUnmarshalSetup := json.Unmarshal(publishedStory.Setup, &protagonistGoalMap); errUnmarshalSetup != nil {
-			log.Warn("Failed to unmarshal PublishedStory.Setup to get protagonist_goal, char gen might be impaired.",
+			log.Warn("Failed to unmarshal PublishedStory.Setup to get protagonist_goal, char gen input might be impaired.",
 				zap.Error(errUnmarshalSetup), zap.String("setup_content", string(publishedStory.Setup)))
 			protagonistGoalMap = make(map[string]interface{})
 		}
 	} else {
-		log.Warn("PublishedStory.Setup is empty or null, expected protagonist_goal for char gen.",
-			zap.String("setup_content", string(publishedStory.Setup)))
+		log.Warn("PublishedStory.Setup is empty or null, expected protagonist_goal for char gen.", zap.String("setup_content", string(publishedStory.Setup)))
 		protagonistGoalMap = make(map[string]interface{})
 	}
 
@@ -222,7 +225,7 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 	} else {
 		log.Warn("protagonist_goal not found in PublishedStory.Setup for char gen input.")
 	}
-	tempSetupForCharGen["chars"] = sceneCharacters
+	tempSetupForCharGen["chars"] = nil
 	if len(plannerOutcome.NewCharacterSuggestions) > 0 {
 		tempSetupForCharGen["characters_to_generate_list"] = plannerOutcome.NewCharacterSuggestions
 	}
@@ -270,7 +273,6 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 				CharacterName:    cardSuggestion.Title,
 				NegativePrompt:   "",
 				Ratio:            "2:3",
-				ImageType:        constants.ImageTypeCard,
 			}
 			go func(payload sharedMessaging.CharacterImageTaskPayload) {
 				taskCtx, cancelTask := context.WithTimeout(context.Background(), 15*time.Second)

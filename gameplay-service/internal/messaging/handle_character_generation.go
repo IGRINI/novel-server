@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"novel-server/shared/constants"
+	"novel-server/shared/database"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
 
@@ -214,6 +215,7 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 	}
 
 	// Сохраняем персонажей в setup, обновляем счетчики и публикуем задачи для генерации изображений
+	/* <<< УДАЛЕНО: Логика сохранения в Setup >>>
 	var currentSetup map[string]interface{}
 	if len(publishedStory.Setup) > 0 {
 		if err := json.Unmarshal(publishedStory.Setup, &currentSetup); err != nil {
@@ -224,9 +226,6 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 		currentSetup = make(map[string]interface{})
 	}
 	currentSetup["chars"] = chars
-	// Обновляем флаг задачи генерации персонажей
-	publishedStory.PendingCharGenTasks = false
-	publishedStory.PendingCharImgTasks += len(chars)
 	// Обновляем setup JSON в истории
 	newSetupBytes, err := json.Marshal(currentSetup)
 	if err != nil {
@@ -234,6 +233,12 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 		return nil // Ack
 	}
 	publishedStory.Setup = newSetupBytes
+	*/
+
+	// Обновляем флаг задачи генерации персонажей
+	publishedStory.PendingCharGenTasks = false
+	publishedStory.PendingCharImgTasks += len(chars)
+
 	// Атомарно сохраняем setup и счетчики
 	txUpdate, err := p.db.Begin(dbCtx)
 	if err != nil {
@@ -241,11 +246,80 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 		return nil // Ack
 	}
 	defer txUpdate.Rollback(dbCtx)
+
+	// <<< НАЧАЛО: Обновление контента начальной сцены >>>
+	sceneRepoTx := database.NewPgStorySceneRepository(txUpdate, p.logger) // Используем txUpdate
+	initialScene, errScene := sceneRepoTx.FindByStoryAndHash(dbCtx, txUpdate, publishedStoryID, sharedModels.InitialStateHash)
+	if errScene != nil {
+		log.Error("Failed to find initial scene to save characters", zap.Error(errScene))
+		// Ошибка критична, откатываем транзакцию (defer сработает)
+		return nil // Ack (ошибка залогирована, но сообщение обработано)
+	}
+
+	var initialSceneContent sharedModels.InitialSceneContent
+	if errUnmarshalScene := json.Unmarshal(initialScene.Content, &initialSceneContent); errUnmarshalScene != nil {
+		log.Error("Failed to unmarshal initial scene content", zap.Error(errUnmarshalScene))
+		// Ошибка критична, откатываем транзакцию
+		return nil // Ack
+	}
+
+	// Преобразуем map[string]interface{} в []sharedModels.CharacterDefinition
+	generatedCharacters := make([]sharedModels.CharacterDefinition, 0, len(chars))
+	for _, charMap := range chars {
+		// Данные из charMap соответствуют структуре GeneratedCharacter.
+		// Нам нужно извлечь из них поля для CharacterDefinition.
+		charDef := sharedModels.CharacterDefinition{}
+
+		if nameVal, ok := charMap["name"].(string); ok {
+			charDef.Name = nameVal
+		}
+		// Поле Description в CharacterDefinition, вероятно, соответствует Traits или комбинации других полей.
+		// Пока оставим его пустым или возьмем Traits.
+		if traitsVal, ok := charMap["traits"].(string); ok {
+			charDef.Description = traitsVal // Или другое поле/комбинация
+		}
+		// VisualTags, Personality - могут отсутствовать в GeneratedCharacter или требовать дополнительной логики
+
+		if ipdVal, ok := charMap["image_prompt_descriptor"].(string); ok {
+			charDef.Prompt = ipdVal // Prompt в CharacterDefinition соответствует ImagePromptDescriptor
+		}
+		if irnVal, ok := charMap["image_reference_name"].(string); ok {
+			charDef.ImageRef = irnVal // ImageRef в CharacterDefinition соответствует ImageReferenceName
+		}
+
+		generatedCharacters = append(generatedCharacters, charDef)
+	}
+	initialSceneContent.Characters = generatedCharacters // Добавляем/перезаписываем персонажей
+
+	updatedContentBytes, errMarshalScene := json.Marshal(initialSceneContent)
+	if errMarshalScene != nil {
+		log.Error("Failed to marshal updated initial scene content", zap.Error(errMarshalScene))
+		// Ошибка критична, откатываем транзакцию
+		return nil // Ack
+	}
+
+	if errUpdateScene := sceneRepoTx.UpdateContent(dbCtx, txUpdate, initialScene.ID, updatedContentBytes); errUpdateScene != nil {
+		log.Error("Failed to update initial scene content in transaction", zap.Error(errUpdateScene))
+		// Ошибка критична, откатываем транзакцию
+		return nil // Ack
+	}
+	log.Info("Initial scene content updated with generated characters.")
+	// <<< КОНЕЦ: Обновление контента начальной сцены >>>
+
 	// Определяем следующий шаг
 	nextStep := sharedModels.StepCharacterImageGeneration
 	// Вызываем UpdateSetupStatusAndCounters с новым шагом
-	if err := p.publishedRepo.UpdateSetupStatusAndCounters(dbCtx, txUpdate, publishedStory.ID, publishedStory.Setup, publishedStory.Status, 0, publishedStory.PendingCardImgTasks, publishedStory.PendingCharImgTasks, &nextStep); err != nil {
-		log.Error("Failed to update setup and counters in transaction after character generation", zap.Error(err))
+	// <<< ИЗМЕНЕНО: Используем функцию, не обновляющую Setup >>>
+	// Используем UpdateStatusFlagsAndDetails, передавая nil для errorDetails и setup
+	if err := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, txUpdate,
+		publishedStory.ID,
+		publishedStory.Status, // Текущий статус (вероятно, SubTasksPending)
+		false,                 // is_first_scene_pending - CharacterGen не влияет на это напрямую
+		publishedStory.PendingCardImgTasks > 0 || publishedStory.PendingCharImgTasks > 0, // are_images_pending
+		nil, // errorDetails
+		&nextStep,
+	); err != nil {
+		log.Error("Failed to update flags and step in transaction after character generation", zap.Error(err))
 		return nil // Ack
 	}
 	if err := txUpdate.Commit(dbCtx); err != nil {
