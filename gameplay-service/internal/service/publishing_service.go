@@ -11,7 +11,6 @@ import (
 	database "novel-server/shared/database"
 	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
-	"novel-server/shared/models"
 	sharedModels "novel-server/shared/models"
 	"novel-server/shared/utils"
 
@@ -66,182 +65,103 @@ func (s *publishingServiceImpl) PublishDraft(ctx context.Context, draftID uuid.U
 	log := s.logger.With(zap.String("draftID", draftID.String()), zap.String("userID", userID.String()))
 	log.Info("PublishDraft called")
 
-	// Begin transaction
-	tx, err := s.pool.Begin(ctx)
+	// Выполняем DB-операции в транзакции
+	err = WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		// 1. Создать репозитории в контексте транзакции
+		repoTx := database.NewPgStoryConfigRepository(tx, s.logger)
+		publishedRepoTx := database.NewPgPublishedStoryRepository(tx, s.logger)
+
+		// 2. Получить драфт
+		draft, err := repoTx.GetByID(ctx, draftID, userID)
+		if wrapErr := WrapRepoError(s.logger, err, "StoryConfig"); wrapErr != nil {
+			if errors.Is(wrapErr, sharedModels.ErrNotFound) {
+				return sharedModels.ErrNotFound
+			}
+			return wrapErr
+		}
+
+		// 3. Проверить статус и наличие config
+		if draft.Status != sharedModels.StatusDraft && draft.Status != sharedModels.StatusError {
+			log.Warn("Attempt to publish draft in invalid status", zap.String("status", string(draft.Status)))
+			return ErrCannotPublish
+		}
+		if len(draft.Config) == 0 {
+			log.Warn("Attempt to publish draft without generated config")
+			return ErrCannotPublishNoConfig
+		}
+
+		// 4. Создать PublishedStory
+		newStory := &sharedModels.PublishedStory{
+			ID:             uuid.New(),
+			UserID:         userID,
+			Config:         draft.Config,
+			Setup:          json.RawMessage("{}"),                // Initialize with empty JSON object
+			Status:         sharedModels.StatusModerationPending, // <<< НАЧАЛЬНЫЙ СТАТУС
+			Language:       draft.Language,                       // <<< КОПИРУЕМ ЯЗЫК ИЗ DRAFT >>>
+			IsPublic:       false,                                // Private by default
+			IsAdultContent: false,                                // Will be set after moderation
+			Title:          &draft.Title,
+			Description:    &draft.Description,
+			CreatedAt:      time.Now().UTC(),
+			UpdatedAt:      time.Now().UTC(),
+		}
+		if cErr := publishedRepoTx.Create(ctx, tx, newStory); cErr != nil {
+			log.Error("Error creating published story within transaction", zap.Error(cErr))
+			return fmt.Errorf("error creating published story: %w", cErr)
+		}
+		publishedStoryID = newStory.ID
+
+		// 5. Удалить драфт
+		if delErr := repoTx.Delete(ctx, draftID, userID); delErr != nil {
+			log.Error("Error deleting draft within transaction", zap.Error(delErr))
+			return fmt.Errorf("error deleting draft: %w", delErr)
+		}
+		return nil
+	})
 	if err != nil {
-		log.Error("Failed to begin transaction", zap.Error(err))
-		return uuid.Nil, fmt.Errorf("error beginning transaction: %w", err)
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			log.Error("Panic recovered during PublishDraft, rolling back transaction", zap.Any("panic", r))
-			_ = tx.Rollback(context.Background()) // Ignore rollback error after panic
-			err = fmt.Errorf("panic during publish: %v", r)
-		} else if err != nil {
-			log.Warn("Rolling back transaction due to error", zap.Error(err))
-			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
-				log.Error("Failed to rollback transaction", zap.Error(rollbackErr))
-			}
-		} else {
-			if commitErr := tx.Commit(ctx); commitErr != nil {
-				log.Error("Failed to commit transaction", zap.Error(commitErr))
-				err = fmt.Errorf("error committing transaction: %w", commitErr)
-			}
-		}
-	}()
-
-	// Use transaction for repositories
-	repoTx := database.NewPgStoryConfigRepository(tx, s.logger)
-	publishedRepoTx := database.NewPgPublishedStoryRepository(tx, s.logger)
-
-	// 1. Get the draft within the transaction
-	draft, err := repoTx.GetByID(ctx, draftID, userID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			log.Warn("Draft not found for publishing")
-			return uuid.Nil, sharedModels.ErrNotFound // Use standard error
-		}
-		log.Error("Error getting draft within transaction", zap.Error(err))
-		return uuid.Nil, fmt.Errorf("error getting draft: %w", err)
-	}
-
-	// 2. Check status and Config presence
-	if draft.Status != sharedModels.StatusDraft && draft.Status != sharedModels.StatusError {
-		log.Warn("Attempt to publish draft in invalid status", zap.String("status", string(draft.Status)))
-		return uuid.Nil, ErrCannotPublish // Use local error
-	}
-	if draft.Config == nil || len(draft.Config) == 0 {
-		log.Warn("Attempt to publish draft without generated config")
-		return uuid.Nil, ErrCannotPublishNoConfig // Use local error
-	}
-
-	// 3. Extract necessary fields from draft.Config
-	var tempConfig struct {
-		IsAdultContent bool `json:"ac"`
-	}
-	if err = json.Unmarshal(draft.Config, &tempConfig); err != nil {
-		log.Error("Failed to unmarshal draft config to extract flags", zap.Error(err))
-		return uuid.Nil, fmt.Errorf("error reading draft configuration: %w", err)
-	}
-
-	// 4. Create PublishedStory within the transaction
-	newPublishedStory := &sharedModels.PublishedStory{
-		ID:             uuid.New(),
-		UserID:         userID,
-		Config:         draft.Config,
-		Setup:          json.RawMessage("{}"),                // Initialize with empty JSON object
-		Status:         sharedModels.StatusModerationPending, // <<< НАЧАЛЬНЫЙ СТАТУС
-		Language:       draft.Language,                       // <<< КОПИРУЕМ ЯЗЫК ИЗ DRAFT >>>
-		IsPublic:       false,                                // Private by default
-		IsAdultContent: false,                                // Will be set after moderation
-		Title:          &draft.Title,
-		Description:    &draft.Description,
-		CreatedAt:      time.Now().UTC(),
-		UpdatedAt:      time.Now().UTC(),
-	}
-
-	// Pass the transaction 'tx' as the DBTX argument
-	if err = publishedRepoTx.Create(ctx, tx, newPublishedStory); err != nil {
-		log.Error("Error creating published story within transaction", zap.Error(err))
-		return uuid.Nil, fmt.Errorf("error creating published story: %w", err)
-	}
-	log.Info("Published story created in DB", zap.String("publishedStoryID", newPublishedStory.ID.String()), zap.String("initial_status", string(newPublishedStory.Status)))
-
-	// 5. Delete the draft within the transaction
-	if err = repoTx.Delete(ctx, draftID, userID); err != nil {
-		log.Error("Error deleting draft within transaction", zap.Error(err))
-		return uuid.Nil, fmt.Errorf("error deleting draft: %w", err)
-	}
-	log.Info("Draft deleted from DB")
-
-	// 6. Send task for Content Moderation (outside the transaction, after commit)
-	moderationTaskID := uuid.New().String()
-	var formattedInputForModeration string
-	var formatErr error
-
-	if draft.Config != nil {
-		var configForModeration models.Config
-		if errUnmarshal := json.Unmarshal(draft.Config, &configForModeration); errUnmarshal != nil {
-			log.Error("Failed to unmarshal config for moderation input formatting", zap.Error(errUnmarshal))
-			// Если конфиг не парсится, мы не можем отправить его на модерацию.
-			// Это критично, так как история создана, но не может быть проверена.
-			// Помечаем историю как ошибочную.
-			err = fmt.Errorf("failed to unmarshal config for moderation: %w", errUnmarshal) // Устанавливаем err для defer
-			// Дополнительно обновляем статус созданной истории на Error уже после commit основной транзакции (если она пройдет)
-			// Так как мы не можем использовать 'tx' здесь, делаем это в goroutine после возможного commit.
-			go func(storyID uuid.UUID, userID uuid.UUID, errMsg string) {
-				updateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if errUpd := s.publishedRepo.UpdateStatusAndError(updateCtx, s.pool, storyID, sharedModels.StatusError, &errMsg); errUpd != nil {
-					s.logger.Error("Failed to update published story status to Error after config unmarshal failure for moderation", zap.Error(errUpd), zap.String("storyID", storyID.String()))
-				}
-			}(newPublishedStory.ID, newPublishedStory.UserID, err.Error())
-			// defer обработает rollback из-за err != nil
-			return uuid.Nil, err
-		}
-
-		formattedInputForModeration, formatErr = utils.FormatInputForModeration(configForModeration)
-		if formatErr != nil {
-			log.Error("Failed to format config for moderation input", zap.Error(formatErr))
-			// Ошибка форматирования также критична.
-			err = fmt.Errorf("failed to format config for moderation: %w", formatErr)
-			go func(storyID uuid.UUID, userID uuid.UUID, errMsg string) {
-				updateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if errUpd := s.publishedRepo.UpdateStatusAndError(updateCtx, s.pool, storyID, sharedModels.StatusError, &errMsg); errUpd != nil {
-					s.logger.Error("Failed to update published story status to Error after config format failure for moderation", zap.Error(errUpd), zap.String("storyID", storyID.String()))
-				}
-			}(newPublishedStory.ID, newPublishedStory.UserID, err.Error())
-			return uuid.Nil, err
-		}
-	} else {
-		// Это не должно произойти, так как проверяли draft.Config выше, но на всякий случай.
-		log.Error("Draft config is nil when preparing moderation task")
-		err = fmt.Errorf("draft config is nil when sending moderation task")
-		go func(storyID uuid.UUID, userID uuid.UUID, errMsg string) {
-			updateCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if errUpd := s.publishedRepo.UpdateStatusAndError(updateCtx, s.pool, storyID, sharedModels.StatusError, &errMsg); errUpd != nil {
-				s.logger.Error("Failed to update published story status to Error due to nil config for moderation", zap.Error(errUpd), zap.String("storyID", storyID.String()))
-			}
-		}(newPublishedStory.ID, newPublishedStory.UserID, err.Error())
 		return uuid.Nil, err
 	}
 
-	moderationPayload := sharedMessaging.GenerationTaskPayload{
-		TaskID:           moderationTaskID,
-		UserID:           newPublishedStory.UserID.String(),
-		PromptType:       sharedModels.PromptTypeContentModeration,
-		UserInput:        formattedInputForModeration, // <<< ИСПОЛЬЗУЕМ ОТФОРМАТИРОВАННЫЙ ВВОД
-		PublishedStoryID: newPublishedStory.ID.String(),
-		Language:         newPublishedStory.Language,
-	}
-
-	go func(payload sharedMessaging.GenerationTaskPayload) {
-		if payload.UserInput == "" {
-			s.logger.Error("CRITICAL: Cannot publish content moderation task because UserInput (config) is empty",
-				zap.String("publishedStoryID", payload.PublishedStoryID),
-				zap.String("taskID", payload.TaskID),
-			)
+	// После успешной транзакции — создание задачи модерации
+	go func() {
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel2()
+		pubStory, pErr := s.publishedRepo.GetByID(ctx2, s.pool, publishedStoryID)
+		if pErr != nil {
+			s.logger.Error("Failed to get published story for moderation task", zap.Error(pErr))
 			return
 		}
-		publishCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		if err := s.publisher.PublishGenerationTask(publishCtx, payload); err != nil {
-			s.logger.Error("CRITICAL: Failed to publish content moderation task after DB commit",
-				zap.String("publishedStoryID", payload.PublishedStoryID),
-				zap.String("taskID", payload.TaskID),
-				zap.Error(err))
-		} else {
-			s.logger.Info("Content moderation task published successfully",
-				zap.String("publishedStoryID", payload.PublishedStoryID),
-				zap.String("taskID", payload.TaskID))
+		// Подготовка конфигурации для модерации
+		var cfg sharedModels.Config
+		if err := DecodeStrictJSON(pubStory.Config, &cfg); err != nil {
+			s.logger.Error("Failed to decode story Config for moderation", zap.Error(err))
+			errMsg := err.Error()
+			s.publishedRepo.UpdateStatusAndError(ctx2, s.pool, publishedStoryID, sharedModels.StatusError, &errMsg)
+			return
 		}
-	}(moderationPayload)
+		userInput, fmtErr := utils.FormatInputForModeration(cfg)
+		if fmtErr != nil {
+			s.logger.Error("Failed to format input for moderation", zap.Error(fmtErr))
+			errMsg := fmtErr.Error()
+			s.publishedRepo.UpdateStatusAndError(ctx2, s.pool, publishedStoryID, sharedModels.StatusError, &errMsg)
+			return
+		}
+		payload := sharedMessaging.GenerationTaskPayload{
+			TaskID:           uuid.New().String(),
+			UserID:           pubStory.UserID.String(),
+			PublishedStoryID: pubStory.ID.String(),
+			PromptType:       sharedModels.PromptTypeContentModeration,
+			UserInput:        userInput,
+			Language:         pubStory.Language,
+		}
+		if pubErr := s.publisher.PublishGenerationTask(ctx2, payload); pubErr != nil {
+			s.logger.Error("Failed to publish moderation task", zap.Error(pubErr))
+		} else {
+			s.logger.Info("Moderation task published successfully", zap.String("taskID", payload.TaskID))
+		}
+	}()
 
-	// If we reached here without errors, defer tx.Commit() will work on exit
-	publishedStoryID = newPublishedStory.ID
-	log.Info("PublishDraft completed successfully, initiated moderation task", zap.String("publishedStoryID", publishedStoryID.String()))
+	log.Info("PublishDraft completed successfully, transaction committed")
 	return publishedStoryID, nil
 }
 
@@ -276,47 +196,16 @@ func (s *publishingServiceImpl) DeletePublishedStory(ctx context.Context, id uui
 	log := s.logger.With(zap.String("publishedStoryID", id.String()), zap.String("userID", userID.String()))
 	log.Info("DeletePublishedStory called")
 
-	// Начинаем транзакцию
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		log.Error("Failed to begin transaction for deleting published story", zap.Error(err))
-		return fmt.Errorf("error starting transaction: %w", err)
-	}
-	// Гарантируем откат или коммит
-	defer func() {
-		if r := recover(); r != nil {
-			log.Error("Panic recovered during DeletePublishedStory, rolling back transaction", zap.Any("panic", r))
-			_ = tx.Rollback(context.Background()) // Ignore rollback error after panic
-			err = fmt.Errorf("panic during deletion: %v", r)
-		} else if err != nil {
-			log.Warn("Rolling back transaction due to error during delete", zap.Error(err))
-			if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
-				log.Error("Failed to rollback transaction", zap.Error(rollbackErr))
+	err := WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		publishedRepoTx := database.NewPgPublishedStoryRepository(tx, s.logger)
+		if delErr := publishedRepoTx.Delete(ctx, tx, id, userID); delErr != nil {
+			if errors.Is(delErr, sharedModels.ErrNotFound) || errors.Is(delErr, sharedModels.ErrForbidden) {
+				return delErr
 			}
-		} else {
-			if commitErr := tx.Commit(ctx); commitErr != nil {
-				log.Error("Failed to commit transaction after successful delete", zap.Error(commitErr))
-				err = fmt.Errorf("error committing transaction: %w", commitErr)
-			}
+			return fmt.Errorf("error deleting published story: %w", delErr)
 		}
-	}()
-
-	// Создаем репозиторий с транзакцией
-	publishedRepoTx := database.NewPgPublishedStoryRepository(tx, s.logger)
-
-	// Вызываем метод Delete репозитория с транзакцией
-	err = publishedRepoTx.Delete(ctx, tx, id, userID) // <<< ИЗМЕНЕНО: Передаем tx
-	if err != nil {
-		// Не логируем здесь снова, т.к. defer обработает rollback
-		// Возвращаем стандартные ошибки, если это возможно
-		if errors.Is(err, sharedModels.ErrNotFound) || errors.Is(err, sharedModels.ErrForbidden) {
-			return err // Ошибка будет обработана defer для отката
-		}
-		// В остальных случаях возвращаем обобщенную ошибку
-		return fmt.Errorf("error deleting published story: %w", err) // Ошибка будет обработана defer для отката
-	}
-
-	log.Info("Published story deleted successfully (transaction pending commit)")
-	// defer tx.Commit() сработает, если err == nil
-	return nil
+		log.Info("Published story deleted successfully")
+		return nil
+	})
+	return err
 }

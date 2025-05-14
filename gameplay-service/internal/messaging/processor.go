@@ -254,37 +254,36 @@ func (p *NotificationProcessor) processNotificationPayloadInternal(ctx context.C
 		return nil
 	}
 
-	// Определяем ID и тип задачи
-	var isStoryConfigTask bool
-	var storyConfigID uuid.UUID
+	// Извлекаем PublishedStoryID (если применимо)
 	var publishedStoryID uuid.UUID
-	var parseIDErr error
-
-	if notification.StoryConfigID != "" {
-		storyConfigID, parseIDErr = uuid.Parse(notification.StoryConfigID)
-		if parseIDErr == nil {
-			isStoryConfigTask = true
+	var errParseID error
+	if notification.PublishedStoryID != "" {
+		publishedStoryID, errParseID = uuid.Parse(notification.PublishedStoryID)
+		if errParseID != nil {
+			p.logger.Error("Invalid PublishedStoryID in notification", zap.Error(errParseID), zap.String("task_id", taskID))
+			// Если ID невалиден, мы не можем привязать ошибку к истории, но сообщение обработано
+			// TODO: Возможно, отправлять в DLQ?
+			return nil // Ack
 		}
-	}
-	if !isStoryConfigTask && notification.PublishedStoryID != "" {
-		publishedStoryID, parseIDErr = uuid.Parse(notification.PublishedStoryID)
+	} else if notification.StoryConfigID != "" { // Fallback для старых типов
+		// Для Narrator - используем StoryConfigID как publishedStoryID (хотя это не совсем верно для PublishedStory)
+		// В случае неизвестного типа, попробуем StoryConfigID, если он есть
+		storyConfigID, errParseCfgID := uuid.Parse(notification.StoryConfigID)
+		if errParseCfgID == nil {
+			publishedStoryID = storyConfigID
+			p.logger.Warn("Using StoryConfigID as PublishedStoryID for unknown notification type handling", zap.String("task_id", taskID))
+		} // else: если и его нет, publishedStoryID останется нулевым
 	}
 
-	if parseIDErr != nil || (storyConfigID == uuid.Nil && publishedStoryID == uuid.Nil) {
-		p.logger.Error("Invalid or missing ID in NotificationPayload", zap.String("task_id", taskID), zap.String("story_config_id", notification.StoryConfigID), zap.String("published_story_id", notification.PublishedStoryID), zap.Error(parseIDErr))
-		return fmt.Errorf("invalid or missing ID in notification payload: %w", parseIDErr)
-	}
-
-	// Определяем ID для передачи в обработчик
-	var storyID uuid.UUID
-	if isStoryConfigTask {
-		storyID = storyConfigID
-	} else {
-		storyID = publishedStoryID
-	}
 	// Делаем роутинг через зарегистрированные обработчики
 	if handler, ok := p.handlers[notification.PromptType]; ok {
-		return handler.Handle(ctx, notification, storyID)
+		err := handler.Handle(ctx, notification, publishedStoryID)
+		if err != nil {
+			p.logger.Error("Error handling notification", zap.Error(err), zap.String("task_id", taskID))
+			// Обработчик должен сам выставить статус Error, если нужно. NACK может привести к повторной обработке
+			// return err // NACK
+		}
+		return nil // Ack
 	}
 	p.logger.Warn("Получен неизвестный тип уведомления", zap.String("prompt_type", string(notification.PromptType)), zap.String("task_id", taskID))
 	return nil // Ack

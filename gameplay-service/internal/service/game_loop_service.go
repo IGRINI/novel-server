@@ -1,15 +1,17 @@
 package service
 
 import (
-	"context"       // Может понадобиться для UserInput
-	"encoding/json" // <<< ДОБАВЛЕНО
+	"context" // Может понадобиться для UserInput
+	// <<< ДОБАВЛЕНО
 	"errors"
 	"fmt"
 
 	// <<< ДОБАВЛЕНО
 	// Может понадобиться для payload
-	"novel-server/gameplay-service/internal/config"    // Убедитесь, что он здесь
-	"novel-server/gameplay-service/internal/messaging" // Убедитесь, что он здесь
+	// Убедитесь, что он здесь
+	// Убедитесь, что он здесь
+	"novel-server/gameplay-service/internal/config"
+	"novel-server/gameplay-service/internal/messaging"
 	"novel-server/shared/database"
 	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging" // <<< ДОБАВЛЕН АЛИАС
@@ -21,104 +23,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
-
-// <<< НАЧАЛО УДАЛЕНИЯ >>>
-/*
-type GameLoopService interface {
-	// GetStoryScene retrieves the scene associated with a specific game state ID.
-	GetStoryScene(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID) (*models.StoryScene, error)
-
-	// MakeChoice applies player choices to a specific game state.
-	MakeChoice(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID, selectedOptionIndices []int) error
-
-	// ListGameStates lists all active game states (save slots) for a player and a story.
-	ListGameStates(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) ([]*models.PlayerGameState, error)
-
-	// CreateNewGameState creates a new save slot (game state) for a player and a story.
-	// Returns an error if the player exceeds their save slot limit (TODO: implement limit check).
-	CreateNewGameState(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) (*models.PlayerGameState, error)
-
-	// DeletePlayerGameState deletes a specific game state (save slot) by its ID.
-	DeletePlayerGameState(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID) error
-
-	// RetryGenerationForGameState handles retrying generation for a specific game state.
-	// It determines if setup or scene generation failed and triggers the appropriate task.
-	RetryGenerationForGameState(ctx context.Context, userID, storyID, gameStateID uuid.UUID) error
-
-	// UpdateSceneInternal updates the content of a specific scene (internal admin func).
-	UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error
-
-	// GetPlayerProgress retrieves the progress node linked to a specific game state ID.
-	GetPlayerProgress(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID) (*models.PlayerProgress, error)
-
-	// DeleteSceneInternal deletes a scene (internal admin func).
-	DeleteSceneInternal(ctx context.Context, sceneID uuid.UUID) error
-
-	// UpdatePlayerProgressInternal updates a specific progress node (internal func).
-	UpdatePlayerProgressInternal(ctx context.Context, progressID uuid.UUID, progressData map[string]interface{}) error
-
-	// RetryInitialGeneration handles retrying generation for a published story's Setup or Initial Scene.
-	RetryInitialGeneration(ctx context.Context, userID, storyID uuid.UUID) error
-}
-*/
-// <<< КОНЕЦ УДАЛЕНИЯ >>>
-
-type gameLoopServiceImpl struct {
-	publishedRepo              interfaces.PublishedStoryRepository
-	sceneRepo                  interfaces.StorySceneRepository
-	playerProgressRepo         interfaces.PlayerProgressRepository
-	playerGameStateRepo        interfaces.PlayerGameStateRepository
-	publisher                  messaging.TaskPublisher
-	storyConfigRepo            interfaces.StoryConfigRepository
-	imageReferenceRepo         interfaces.ImageReferenceRepository
-	characterImageTaskBatchPub messaging.CharacterImageTaskBatchPublisher
-	dynamicConfigRepo          interfaces.DynamicConfigRepository
-	clientPub                  messaging.ClientUpdatePublisher
-	logger                     *zap.Logger
-	cfg                        *config.Config
-	pool                       *pgxpool.Pool
-	imagePublisher             messaging.CharacterImageTaskPublisher
-}
-
-// NewGameLoopService creates a new instance of GameLoopService.
-func NewGameLoopService(
-	publishedRepo interfaces.PublishedStoryRepository,
-	sceneRepo interfaces.StorySceneRepository,
-	playerProgressRepo interfaces.PlayerProgressRepository,
-	playerGameStateRepo interfaces.PlayerGameStateRepository,
-	publisher messaging.TaskPublisher,
-	storyConfigRepo interfaces.StoryConfigRepository,
-	imageReferenceRepo interfaces.ImageReferenceRepository,
-	characterImageTaskBatchPub messaging.CharacterImageTaskBatchPublisher,
-	dynamicConfigRepo interfaces.DynamicConfigRepository,
-	clientPub messaging.ClientUpdatePublisher,
-	logger *zap.Logger,
-	cfg *config.Config,
-	pool *pgxpool.Pool,
-	imagePublisher messaging.CharacterImageTaskPublisher,
-) interfaces.GameLoopService {
-	if cfg == nil {
-		panic("cfg cannot be nil for NewGameLoopService")
-	}
-	return &gameLoopServiceImpl{
-		publishedRepo:              publishedRepo,
-		sceneRepo:                  sceneRepo,
-		playerProgressRepo:         playerProgressRepo,
-		playerGameStateRepo:        playerGameStateRepo,
-		publisher:                  publisher,
-		storyConfigRepo:            storyConfigRepo,
-		imageReferenceRepo:         imageReferenceRepo,
-		characterImageTaskBatchPub: characterImageTaskBatchPub,
-		dynamicConfigRepo:          dynamicConfigRepo,
-		clientPub:                  clientPub,
-		logger:                     logger.Named("GameLoopService"),
-		cfg:                        cfg,
-		pool:                       pool,
-		imagePublisher:             imagePublisher,
-	}
-}
-
-// --- Helper Functions ---
 
 // DispatchNextGenerationTask determines the next AI generation task based on the story's current status
 // and publishes it to the message queue. It operates within the provided transaction.
@@ -163,7 +67,7 @@ func (s *gameLoopServiceImpl) DispatchNextGenerationTask(
 			return fmt.Errorf("cannot dispatch setup task for story %s: config is nil", storyID)
 		}
 		var deserializedConfig models.Config
-		if errUnmarshal := json.Unmarshal(publishedStory.Config, &deserializedConfig); errUnmarshal != nil {
+		if errUnmarshal := DecodeStrictJSON(publishedStory.Config, &deserializedConfig); errUnmarshal != nil {
 			log.Error("Failed to unmarshal Config for Setup task payload creation", zap.Error(errUnmarshal))
 			return fmt.Errorf("failed to unmarshal config for story %s: %w", storyID, errUnmarshal)
 		}
@@ -195,7 +99,7 @@ func (s *gameLoopServiceImpl) DispatchNextGenerationTask(
 			return fmt.Errorf("cannot dispatch image generation task for story %s: setup is missing or empty", storyID)
 		}
 		var setupContent models.NovelSetupContent
-		if errUnmarshal := json.Unmarshal(publishedStory.Setup, &setupContent); errUnmarshal != nil {
+		if errUnmarshal := DecodeStrictJSON(publishedStory.Setup, &setupContent); errUnmarshal != nil {
 			log.Error("Failed to unmarshal Setup for Image Generation task payload creation", zap.Error(errUnmarshal))
 			return fmt.Errorf("failed to unmarshal setup for story %s: %w", storyID, errUnmarshal)
 		}
@@ -292,18 +196,18 @@ func (s *gameLoopServiceImpl) DispatchNextGenerationTask(
 
 		var deserializedConfig models.Config
 		var deserializedSetup models.NovelSetupContent
-		if err := json.Unmarshal(publishedStory.Config, &deserializedConfig); err != nil {
+		if err := DecodeStrictJSON(publishedStory.Config, &deserializedConfig); err != nil {
 			log.Error("Failed to unmarshal Config for JSON task payload creation", zap.Error(err))
 			return fmt.Errorf("failed to unmarshal config for json task (story %s): %w", storyID, err)
 		}
-		if err := json.Unmarshal(publishedStory.Setup, &deserializedSetup); err != nil {
+		if err := DecodeStrictJSON(publishedStory.Setup, &deserializedSetup); err != nil {
 			log.Error("Failed to unmarshal Setup for JSON task payload creation", zap.Error(err))
 			return fmt.Errorf("failed to unmarshal setup for json task (story %s): %w", storyID, err)
 		}
 
 		// Добавляем десериализацию Setup в map[string]interface{} для получения цели
 		var setupMap map[string]interface{}
-		if err := json.Unmarshal(publishedStory.Setup, &setupMap); err != nil {
+		if err := DecodeStrictJSON(publishedStory.Setup, &setupMap); err != nil {
 			log.Error("Failed to unmarshal Setup into map[string]interface{} for JSON task payload creation", zap.Error(err))
 			// Можно решить, критична ли ошибка. Если цель необязательна, можно продолжить с nil map.
 			// Пока считаем критичной, так как форматтер теперь ожидает setupMap.
@@ -401,3 +305,61 @@ func (s *gameLoopServiceImpl) DispatchNextGenerationTask(
 
 // Ensure gameLoopServiceImpl implements GameLoopService
 var _ interfaces.GameLoopService = (*gameLoopServiceImpl)(nil)
+
+// Восстановление структуры и конструктора GameLoopServiceImpl
+type gameLoopServiceImpl struct {
+	publishedRepo              interfaces.PublishedStoryRepository
+	sceneRepo                  interfaces.StorySceneRepository
+	playerProgressRepo         interfaces.PlayerProgressRepository
+	playerGameStateRepo        interfaces.PlayerGameStateRepository
+	publisher                  messaging.TaskPublisher
+	storyConfigRepo            interfaces.StoryConfigRepository
+	imageReferenceRepo         interfaces.ImageReferenceRepository
+	characterImageTaskBatchPub messaging.CharacterImageTaskBatchPublisher
+	dynamicConfigRepo          interfaces.DynamicConfigRepository
+	clientPub                  messaging.ClientUpdatePublisher
+	logger                     *zap.Logger
+	cfg                        *config.Config
+	pool                       *pgxpool.Pool
+	imagePublisher             messaging.CharacterImageTaskPublisher
+}
+
+// NewGameLoopService creates a new instance of GameLoopService.
+func NewGameLoopService(
+	publishedRepo interfaces.PublishedStoryRepository,
+	sceneRepo interfaces.StorySceneRepository,
+	playerProgressRepo interfaces.PlayerProgressRepository,
+	playerGameStateRepo interfaces.PlayerGameStateRepository,
+	publisher messaging.TaskPublisher,
+	storyConfigRepo interfaces.StoryConfigRepository,
+	imageReferenceRepo interfaces.ImageReferenceRepository,
+	characterImageTaskBatchPub messaging.CharacterImageTaskBatchPublisher,
+	dynamicConfigRepo interfaces.DynamicConfigRepository,
+	clientPub messaging.ClientUpdatePublisher,
+	logger *zap.Logger,
+	cfg *config.Config,
+	pool *pgxpool.Pool,
+	imagePublisher messaging.CharacterImageTaskPublisher,
+) interfaces.GameLoopService {
+	if cfg == nil {
+		panic("cfg cannot be nil for NewGameLoopService")
+	}
+	return &gameLoopServiceImpl{
+		publishedRepo:              publishedRepo,
+		sceneRepo:                  sceneRepo,
+		playerProgressRepo:         playerProgressRepo,
+		playerGameStateRepo:        playerGameStateRepo,
+		publisher:                  publisher,
+		storyConfigRepo:            storyConfigRepo,
+		imageReferenceRepo:         imageReferenceRepo,
+		characterImageTaskBatchPub: characterImageTaskBatchPub,
+		dynamicConfigRepo:          dynamicConfigRepo,
+		clientPub:                  clientPub,
+		logger:                     logger.Named("GameLoopService"),
+		cfg:                        cfg,
+		pool:                       pool,
+		imagePublisher:             imagePublisher,
+	}
+}
+
+// --- Helper Functions ---

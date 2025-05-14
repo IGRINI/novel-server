@@ -16,31 +16,19 @@ func (s *gameLoopServiceImpl) doRetryWithTx(
 	buildPayload func(ctx context.Context, tx pgx.Tx) (*sharedMessaging.GenerationTaskPayload, error),
 	postProcess func(ctx context.Context, tx pgx.Tx, payload *sharedMessaging.GenerationTaskPayload) error,
 ) error {
-	// 1. Начинаем транзакцию
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to begin retry tx: %w", err)
-	}
-	defer func() {
+	// Используем универсальную транзакционную обёртку
+	return WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		// 1. Строим payload
+		payload, err := buildPayload(ctx, tx)
 		if err != nil {
-			tx.Rollback(ctx)
-		} else {
-			err = tx.Commit(ctx)
+			return err
 		}
-	}()
-
-	// 2. Строим payload
-	payload, err := buildPayload(ctx, tx)
-	if err != nil {
-		return err
-	}
-
-	// 3. После сохранения статусов и данных вызываем postProcess для публикации
-	if postProcess != nil {
-		if err2 := postProcess(ctx, tx, payload); err2 != nil {
-			return fmt.Errorf("post-process retry failed: %w", err2)
+		// 2. После сохранения статусов вызываем postProcess для публикации
+		if postProcess != nil {
+			if err2 := postProcess(ctx, tx, payload); err2 != nil {
+				return fmt.Errorf("post-process retry failed: %w", err2)
+			}
 		}
-	}
-
-	return nil
+		return nil
+	})
 }

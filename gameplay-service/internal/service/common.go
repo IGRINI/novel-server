@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 
 	"novel-server/shared/models"
 )
@@ -41,10 +43,44 @@ func SanitizeLimit(limit *int, defaultVal, max int) {
 	}
 }
 
-// WrapNotFound преобразует ошибку pgx.ErrNoRows в models.ErrNotFound.
-func WrapNotFound(err error) error {
+// WrapRepoError обрабатывает ошибку репозитория: преобразует ErrNoRows в models.ErrNotFound и другие ошибки в models.ErrInternalServer, логгируя их.
+func WrapRepoError(logger *zap.Logger, err error, entity string) error {
 	if errors.Is(err, pgx.ErrNoRows) {
+		logger.Warn(fmt.Sprintf("%s not found", entity), zap.Error(err))
 		return models.ErrNotFound
 	}
-	return err
+	if err != nil {
+		logger.Error(fmt.Sprintf("error querying %s", entity), zap.Error(err))
+		return models.ErrInternalServer
+	}
+	return nil
+}
+
+// DecodeStrictJSON проверяет корректность JSON и десериализует его в v.
+// Возвращает ErrBadRequest при некорректном формате или ErrInternalServer при ошибке Unmarshal.
+func DecodeStrictJSON(data []byte, v interface{}) error {
+	if !json.Valid(data) {
+		return fmt.Errorf("%w: invalid JSON format", models.ErrBadRequest)
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		return fmt.Errorf("%w: %v", models.ErrInternalServer, err)
+	}
+	return nil
+}
+
+// PaginateList применяет проверку limit, вызывает функцию listFn для получения limit+1 элементов,
+// возвращает усечённый список длины limit и корректный nextCursor.
+// listFn принимает скорректированный limit+1 и возвращает ([]T, nextCursor, error).
+func PaginateList[T any](limit *int, defaultVal, maxVal int, listFn func(int) ([]T, string, error)) ([]T, string, error) {
+	SanitizeLimit(limit, defaultVal, maxVal)
+	items, nextCursor, err := listFn(*limit + 1)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(items) > *limit {
+		items = items[:*limit]
+	} else {
+		nextCursor = ""
+	}
+	return items, nextCursor, nil
 }

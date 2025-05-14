@@ -130,28 +130,42 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 	}
 	log.Info("Initial story scene created successfully", zap.Stringer("scene_id", initialScene.ID))
 
-	pendingCharGenDB := 0
+	// Определяем следующий шаг и флаг ожидания изображений
+	var nextInternalStep sharedModels.InternalGenerationStep
+	var areImagesPendingFlag bool
+
 	if pendingCharGenTasksFlag {
-		pendingCharGenDB = 1
+		nextInternalStep = sharedModels.StepCharacterGeneration
+		// Флаг areImagesPending будет true, если нужны ЕЩЕ и изображения карт
+		areImagesPendingFlag = (pendingCardImgTasksCount > 0)
+	} else if pendingCardImgTasksCount > 0 {
+		nextInternalStep = sharedModels.StepCardImageGeneration
+		areImagesPendingFlag = true // Нужны только изображения карт
+	} else {
+		// Если не нужны ни персонажи, ни изображения карт, переходим к генерации Setup
+		// (Хотя статус newStatus должен был стать StatusSetupPending в этом случае)
+		nextInternalStep = sharedModels.StepSetupGeneration
+		areImagesPendingFlag = false
 	}
 
-	var internalStep *sharedModels.InternalGenerationStep
-
+	// Обновляем статус, флаг ожидания изображений (только карт!) и ШАГ
 	if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(ctx, tx,
 		publishedStoryID,
-		newStatus,
-		publishedStory.IsFirstScenePending,
-		pendingCardImgTasksCount > 0 || publishedStory.PendingCharImgTasks > 0 || pendingCharGenDB > 0,
-		nil,
-		internalStep,
+		newStatus,                          // Рассчитанный статус
+		publishedStory.IsFirstScenePending, // Сохраняем существующий флаг
+		areImagesPendingFlag,               // True, если запускаем генерацию изображений КАРТ
+		nil,                                // Ошибок нет
+		&nextInternalStep,                  // Передаем указатель на рассчитанный шаг
 	); errUpdateStory != nil {
-		log.Error("Failed to update PublishedStory (status/flags) in transaction after scene planner", zap.Error(errUpdateStory))
-		return fmt.Errorf("failed to update story (status/flags) after scene planner: %w", errUpdateStory)
+		log.Error("Failed to update PublishedStory (status/flags/step) in transaction after scene planner", zap.Error(errUpdateStory))
+		return fmt.Errorf("failed to update story (status/flags/step) after scene planner: %w", errUpdateStory)
 	}
-	log.Info("PublishedStory status and flags updated (transaction pending commit)",
+	log.Info("PublishedStory status, flags, and step updated (transaction pending commit)",
 		zap.String("new_status", string(newStatus)),
-		zap.Bool("pending_char_gen_flag", pendingCharGenTasksFlag),
+		zap.Bool("pending_char_gen_flag_implied_by_step", pendingCharGenTasksFlag),
 		zap.Int("pending_card_img_count", pendingCardImgTasksCount),
+		zap.Bool("are_images_pending_flag_set", areImagesPendingFlag), // Отражает только карты, запущенные здесь
+		zap.Any("internal_step_set", nextInternalStep),
 	)
 
 	if errCommit := tx.Commit(ctx); errCommit != nil {

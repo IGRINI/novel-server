@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"go.uber.org/zap"
 )
 
@@ -19,25 +18,20 @@ func (s *gameLoopServiceImpl) UpdateSceneInternal(ctx context.Context, sceneID u
 	log.Info("UpdateSceneInternal called")
 
 	var contentBytes []byte
-	if contentJSON != "" {
-		if !json.Valid([]byte(contentJSON)) {
-			log.Warn("Invalid JSON received for scene content")
-			return fmt.Errorf("%w: invalid scene content JSON format", models.ErrBadRequest)
-		}
-		contentBytes = []byte(contentJSON)
-	} else {
+	if contentJSON == "" {
 		log.Warn("Attempted to set empty content for scene")
 		return fmt.Errorf("%w: scene content cannot be empty", models.ErrBadRequest)
 	}
+	var raw json.RawMessage
+	if err := DecodeStrictJSON([]byte(contentJSON), &raw); err != nil {
+		log.Warn("Invalid JSON received for scene content", zap.Error(err))
+		return err
+	}
+	contentBytes = []byte(contentJSON)
 
 	err := s.sceneRepo.UpdateContent(ctx, s.pool, sceneID, contentBytes)
-	if err != nil {
-		if errors.Is(err, models.ErrNotFound) {
-			log.Warn("Scene not found for update")
-			return models.ErrNotFound
-		}
-		log.Error("Failed to update scene content in repository", zap.Error(err))
-		return models.ErrInternalServer
+	if wrapErr := WrapRepoError(s.logger, err, "StoryScene"); wrapErr != nil {
+		return wrapErr
 	}
 
 	log.Info("Scene content updated successfully by internal request")
@@ -50,13 +44,8 @@ func (s *gameLoopServiceImpl) DeleteSceneInternal(ctx context.Context, sceneID u
 	log.Info("DeleteSceneInternal called")
 
 	err := s.sceneRepo.Delete(ctx, s.pool, sceneID)
-	if err != nil {
-		if errors.Is(err, models.ErrNotFound) {
-			log.Warn("Scene not found for deletion")
-			return models.ErrNotFound
-		}
-		log.Error("Failed to delete scene from repository", zap.Error(err))
-		return models.ErrInternalServer
+	if wrapErr := WrapRepoError(s.logger, err, "StoryScene"); wrapErr != nil {
+		return wrapErr
 	}
 
 	log.Info("Scene deleted successfully")
@@ -69,13 +58,11 @@ func (s *gameLoopServiceImpl) UpdatePlayerProgressInternal(ctx context.Context, 
 	log.Info("Attempting to update player progress internally")
 
 	currentProgress, err := s.playerProgressRepo.GetByID(ctx, s.pool, progressID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, models.ErrNotFound) {
+	if wrapErr := WrapRepoError(s.logger, err, "PlayerProgress"); wrapErr != nil {
+		if errors.Is(wrapErr, models.ErrNotFound) {
 			log.Warn("Player progress not found for internal update")
-			return fmt.Errorf("%w: player progress with ID %s not found", models.ErrNotFound, progressID)
 		}
-		log.Error("Failed to get player progress by ID for internal update", zap.Error(err))
-		return fmt.Errorf("failed to retrieve player progress: %w", err)
+		return wrapErr
 	}
 
 	progressDataBytes, err := json.Marshal(progressData)

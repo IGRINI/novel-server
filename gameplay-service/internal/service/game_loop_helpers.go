@@ -1,9 +1,11 @@
 package service
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	sharedMessaging "novel-server/shared/messaging"
@@ -127,12 +129,12 @@ func createGenerationPayload(
 		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("story config or setup is nil")
 	}
 	var fullConfig models.Config
-	if err := json.Unmarshal(story.Config, &fullConfig); err != nil {
+	if err := DecodeStrictJSON(story.Config, &fullConfig); err != nil {
 		log.Printf("WARN: Failed to parse Config JSON for generation task StoryID %s: %v", story.ID, err)
 		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Config JSON: %w", err)
 	}
 	var fullSetup models.NovelSetupContent
-	if err := json.Unmarshal(story.Setup, &fullSetup); err != nil {
+	if err := DecodeStrictJSON(story.Setup, &fullSetup); err != nil {
 		log.Printf("WARN: Failed to parse Setup JSON for generation task StoryID %s: %v", story.ID, err)
 		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Setup JSON: %w", err)
 	}
@@ -163,23 +165,6 @@ func createGenerationPayload(
 	return payload, nil
 }
 
-// clearTransientFlags removes flags starting with "_" from the slice.
-// Теперь не нужна, т.к. gf не используется.
-/*
-func clearTransientFlags(flags []string) []string {
-	if flags == nil {
-		return nil
-	}
-	newFlags := make([]string, 0, len(flags))
-	for _, flag := range flags {
-		if !strings.HasPrefix(flag, "_") {
-			newFlags = append(newFlags, flag)
-		}
-	}
-	return newFlags
-}
-*/
-
 // derefStringPtr безопасное разыменовывание *string
 func derefStringPtr(s *string) string {
 	if s != nil {
@@ -201,12 +186,12 @@ func createInitialSceneGenerationPayload(
 		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("story config or setup is nil")
 	}
 	var fullConfig models.Config
-	if err := json.Unmarshal(story.Config, &fullConfig); err != nil {
+	if err := DecodeStrictJSON(story.Config, &fullConfig); err != nil {
 		log.Printf("WARN: Failed to parse Config JSON for initial scene task StoryID %s: %v", story.ID, err)
 		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Config JSON: %w", err)
 	}
 	var fullSetup models.NovelSetupContent
-	if err := json.Unmarshal(story.Setup, &fullSetup); err != nil {
+	if err := DecodeStrictJSON(story.Setup, &fullSetup); err != nil {
 		log.Printf("WARN: Failed to parse Setup JSON for initial scene task StoryID %s: %v", story.ID, err)
 		return sharedMessaging.GenerationTaskPayload{}, fmt.Errorf("error parsing Setup JSON: %w", err)
 	}
@@ -225,4 +210,19 @@ func createInitialSceneGenerationPayload(
 	}
 
 	return payload, nil
+}
+
+// fetchAndAuthorizeGameState retrieves a PlayerGameState by ID, handles errors, and verifies ownership.
+func (s *gameLoopServiceImpl) fetchAndAuthorizeGameState(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID) (*models.PlayerGameState, error) {
+	gameState, err := s.playerGameStateRepo.GetByID(ctx, s.pool, gameStateID)
+	if wrapErr := WrapRepoError(s.logger, err, "PlayerGameState"); wrapErr != nil {
+		if errors.Is(wrapErr, models.ErrNotFound) {
+			return nil, models.ErrPlayerGameStateNotFound
+		}
+		return nil, wrapErr
+	}
+	if gameState.PlayerID != userID {
+		return nil, models.ErrForbidden
+	}
+	return gameState, nil
 }

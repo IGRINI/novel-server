@@ -133,13 +133,7 @@ func (s *draftServiceImpl) GenerateInitialStory(ctx context.Context, userID uuid
 
 	log.Debug("GenerationTaskPayload created", zap.Any("payload", generationPayload))
 
-	if err := s.publisher.PublishGenerationTask(ctx, generationPayload); err != nil {
-		log.Error("Error publishing initial generation task, attempting rollback", zap.String("draftID", config.ID.String()), zap.String("taskID", taskID), zap.Error(err))
-		config.Status = sharedModels.StatusError
-		config.UpdatedAt = time.Now().UTC()
-		if rollbackErr := s.repo.Update(context.Background(), config); rollbackErr != nil {
-			log.Error("CRITICAL ERROR: Failed to roll back status to Error after publish error", zap.String("draftID", config.ID.String()), zap.Error(rollbackErr))
-		}
+	if err := s.publishPayload(ctx, config, generationPayload); err != nil {
 		return config, fmt.Errorf("error sending generation task: %w", err)
 	}
 
@@ -161,12 +155,7 @@ func (s *draftServiceImpl) GetStoryConfig(ctx context.Context, id uuid.UUID, use
 
 	config, err := s.repo.GetByID(ctx, id, userID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			log.Warn("StoryConfig not found")
-			return nil, sharedModels.ErrNotFound // Use standard error
-		}
-		log.Error("Error getting StoryConfig", zap.Error(err))
-		return nil, fmt.Errorf("error getting StoryConfig: %w", err)
+		return nil, WrapRepoError(s.logger, err, "StoryConfig")
 	}
 	return config, nil
 }
@@ -176,23 +165,16 @@ func (s *draftServiceImpl) ListUserDrafts(ctx context.Context, userID uuid.UUID,
 	log := s.logger.With(zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
 	log.Info("ListUserDrafts called")
 
-	SanitizeLimit(&limit, 20, 100)
-
-	configs, nextCursor, err := s.repo.ListByUserID(ctx, userID, cursor, limit+1) // Fetch one extra
+	configs, nextCursor, err := PaginateList(&limit, 20, 100, func(l int) ([]sharedModels.StoryConfig, string, error) {
+		return s.repo.ListByUserID(ctx, userID, cursor, l)
+	})
 	if err != nil {
 		if errors.Is(err, interfaces.ErrInvalidCursor) {
 			log.Warn("Invalid cursor provided")
-			return nil, "", err // Return the specific error
+			return nil, "", err
 		}
 		log.Error("Error listing user drafts from repository", zap.Error(err))
-		return nil, "", sharedModels.ErrInternalServer // Return a generic internal error
-	}
-
-	hasNextPage := len(configs) > limit
-	if hasNextPage {
-		configs = configs[:limit]
-	} else {
-		nextCursor = "" // No next page if we didn't fetch extra
+		return nil, "", sharedModels.ErrInternalServer
 	}
 
 	log.Debug("User drafts listed successfully", zap.Int("count", len(configs)), zap.Bool("hasNext", nextCursor != ""))
@@ -206,12 +188,7 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 
 	config, err := s.repo.GetByID(ctx, draftID, userID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			log.Warn("Draft not found for retry")
-			return sharedModels.ErrNotFound
-		}
-		log.Error("Error getting draft for retry", zap.Error(err))
-		return fmt.Errorf("error getting draft: %w", err)
+		return WrapRepoError(s.logger, err, "Draft")
 	}
 
 	if config.Status != sharedModels.StatusError {
@@ -236,7 +213,7 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 	var userInputForTask string
 
 	if config.UserInput != nil {
-		if err := json.Unmarshal(config.UserInput, &userInputs); err == nil && len(userInputs) > 0 {
+		if err := DecodeStrictJSON(config.UserInput, &userInputs); err == nil && len(userInputs) > 0 {
 			lastUserInput = userInputs[0] // Always use the first (and presumably only) input
 			promptType = sharedModels.PromptTypeNarrator
 			userInputForTask = lastUserInput
@@ -280,14 +257,8 @@ func (s *draftServiceImpl) RetryDraftGeneration(ctx context.Context, draftID uui
 	log.Debug("Generation payload created for retry", zap.Any("payload", generationPayload))
 	// <<< КОНЕЦ ЛОГА >>>
 
-	if err := s.publisher.PublishGenerationTask(ctx, generationPayload); err != nil {
-		log.Error("Error publishing retry generation task. Rolling back status...", zap.Error(err))
-		config.Status = sharedModels.StatusError
-		config.UpdatedAt = time.Now().UTC()
-		if rollbackErr := s.repo.Update(context.Background(), config); rollbackErr != nil {
-			log.Error("CRITICAL: Failed to roll back status to Error after retry publish error", zap.Error(rollbackErr))
-		}
-		return sharedModels.ErrInternalServer // Use shared error
+	if err := s.publishPayload(ctx, config, generationPayload); err != nil {
+		return sharedModels.ErrInternalServer
 	}
 
 	log.Info("Retry generation task published successfully", zap.String("taskID", taskID))
@@ -301,12 +272,7 @@ func (s *draftServiceImpl) GetDraftDetailsInternal(ctx context.Context, draftID 
 
 	config, err := s.repo.GetByIDInternal(ctx, draftID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			log.Warn("StoryConfig not found by internal call")
-			return nil, sharedModels.ErrNotFound // Use standard error
-		}
-		log.Error("Error getting StoryConfig via internal call", zap.Error(err))
-		return nil, fmt.Errorf("error getting StoryConfig internally: %w", err)
+		return nil, WrapRepoError(s.logger, err, "StoryConfigInternal")
 	}
 	return config, nil
 }
@@ -318,12 +284,12 @@ func (s *draftServiceImpl) UpdateDraftInternal(ctx context.Context, draftID uuid
 
 	// 1. Валидация JSON (достаточно базовой проверки в обработчике, здесь доверяем)
 	var rawConfig, rawUserInput json.RawMessage
-	if err := json.Unmarshal([]byte(configJSON), &rawConfig); err != nil {
+	if err := DecodeStrictJSON([]byte(configJSON), &rawConfig); err != nil {
 		log.Error("Invalid config JSON in internal update", zap.Error(err))
 		// Эта ошибка не должна происходить, если валидация была в handler
 		return fmt.Errorf("invalid config JSON provided internally: %w", err)
 	}
-	if err := json.Unmarshal([]byte(userInputJSON), &rawUserInput); err != nil {
+	if err := DecodeStrictJSON([]byte(userInputJSON), &rawUserInput); err != nil {
 		log.Error("Invalid user input JSON in internal update", zap.Error(err))
 		return fmt.Errorf("invalid user input JSON provided internally: %w", err)
 	}
@@ -364,5 +330,19 @@ func (s *draftServiceImpl) DeleteDraft(ctx context.Context, id uuid.UUID, userID
 	}
 
 	log.Info("Draft deleted successfully")
+	return nil
+}
+
+// publishPayload публикует задачу и откатывает статус драфта на Error в случае ошибки.
+func (s *draftServiceImpl) publishPayload(ctx context.Context, config *sharedModels.StoryConfig, payload sharedMessaging.GenerationTaskPayload) error {
+	if err := s.publisher.PublishGenerationTask(ctx, payload); err != nil {
+		s.logger.Error("Error publishing generation task, rolling back status", zap.Error(err))
+		config.Status = sharedModels.StatusError
+		config.UpdatedAt = time.Now().UTC()
+		if rbErr := s.repo.Update(context.Background(), config); rbErr != nil {
+			s.logger.Error("CRITICAL: Failed to roll back draft status after publish error", zap.Error(rbErr))
+		}
+		return err
+	}
 	return nil
 }

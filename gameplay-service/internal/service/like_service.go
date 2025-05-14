@@ -66,13 +66,12 @@ func (s *likeServiceImpl) LikeStory(ctx context.Context, userID uuid.UUID, publi
 	s.logger.Info("Attempting to like story using MarkStoryAsLiked", logFields...)
 	return WithTx(ctx, s.pool, func(tx pgx.Tx) error {
 		err := s.publishedRepo.MarkStoryAsLiked(ctx, tx, publishedStoryID, userID)
-		if err != nil {
-			if errors.Is(err, sharedModels.ErrNotFound) {
+		if wrapErr := WrapRepoError(s.logger, err, "PublishedStory"); wrapErr != nil {
+			if errors.Is(wrapErr, sharedModels.ErrNotFound) {
 				s.logger.Warn("Story not found for liking", append(logFields, zap.Error(err))...)
 				return sharedModels.ErrNotFound
 			}
-			s.logger.Error("Failed to mark story as liked in repository", append(logFields, zap.Error(err))...)
-			return sharedModels.ErrInternalServer
+			return wrapErr
 		}
 		s.logger.Info("Story liked successfully", logFields...)
 		return nil
@@ -88,13 +87,12 @@ func (s *likeServiceImpl) UnlikeStory(ctx context.Context, userID uuid.UUID, pub
 	s.logger.Info("Attempting to unlike story using MarkStoryAsUnliked", logFields...)
 	return WithTx(ctx, s.pool, func(tx pgx.Tx) error {
 		err := s.publishedRepo.MarkStoryAsUnliked(ctx, tx, publishedStoryID, userID)
-		if err != nil {
-			if errors.Is(err, sharedModels.ErrNotFound) {
+		if wrapErr := WrapRepoError(s.logger, err, "PublishedStory"); wrapErr != nil {
+			if errors.Is(wrapErr, sharedModels.ErrNotFound) {
 				s.logger.Warn("Story not found for unliking", append(logFields, zap.Error(err))...)
 				return sharedModels.ErrNotFound
 			}
-			s.logger.Error("Failed to mark story as unliked in repository", append(logFields, zap.Error(err))...)
-			return sharedModels.ErrInternalServer
+			return wrapErr
 		}
 		s.logger.Info("Story unliked successfully", logFields...)
 		return nil
@@ -106,13 +104,11 @@ func (s *likeServiceImpl) ListLikedStories(ctx context.Context, userID uuid.UUID
 	log := s.logger.With(zap.String("method", "ListLikedStories"), zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
 	log.Debug("Listing liked stories for user (single query)")
 
-	SanitizeLimit(&limit, 20, 100)
-
-	// Pass the database pool s.pool as the DBTX argument
-	summaries, nextCursor, err := s.publishedRepo.ListLikedByUser(ctx, s.pool, userID, cursor, limit)
+	summaries, nextCursor, err := PaginateList(&limit, 20, 100, func(l int) ([]sharedModels.PublishedStorySummary, string, error) {
+		return s.publishedRepo.ListLikedByUser(ctx, s.pool, userID, cursor, l)
+	})
 	if err != nil {
 		log.Error("Failed to list liked stories from publishedRepo", zap.Error(err))
-		// Возвращаем внутреннюю ошибку, так как ошибка пришла из репозитория
 		return nil, "", sharedModels.ErrInternalServer
 	}
 

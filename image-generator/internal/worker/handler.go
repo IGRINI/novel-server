@@ -44,22 +44,15 @@ var (
 		Name: "image_generator_publish_result_errors_total",
 		Help: "Total number of errors publishing task results.",
 	})
+	invalidTaskReference = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "image_generator_invalid_task_reference_total",
+		Help: "Total number of tasks received with an invalid image reference prefix.",
+	})
 )
 
-// Helper function to get a pointer to a string
-func ptrString(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
-}
-
-// Helper function to safely dereference a string pointer for logging
-func safeDerefString(s *string) string {
-	if s == nil {
-		return "<nil>"
-	}
-	return *s
+// Function to check image reference prefix
+func isValidImageReference(ref string) bool {
+	return (len(ref) > 3 && ref[:3] == "ch_") || (len(ref) > 16 && ref[:16] == "history_preview_")
 }
 
 // Handler обрабатывает входящие сообщения.
@@ -122,6 +115,20 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 		resultsChan := make(chan messaging.NotificationPayload, len(batchPayload.Tasks))
 
 		for _, task := range batchPayload.Tasks {
+			// --- VALIDATION ADDED ---
+			if !isValidImageReference(task.ImageReference) {
+				log.Error("Invalid image reference prefix in task from batch, skipping task",
+					zap.String("task_id", task.TaskID),
+					zap.String("image_reference", task.ImageReference),
+					zap.String("character_id", task.CharacterID.String()),
+					zap.String("published_story_id", task.PublishedStoryID.String()),
+				)
+				invalidTaskReference.Inc()
+				tasksProcessed.WithLabelValues("error_invalid_reference").Inc() // Add status for invalid reference
+				continue                                                        // Skip this invalid task
+			}
+			// --- END VALIDATION ---
+
 			wg.Add(1)
 			go func(t messaging.CharacterImageTaskPayload) {
 				defer wg.Done()
@@ -173,7 +180,7 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 					TaskID:           t.TaskID,
 					PublishedStoryID: t.PublishedStoryID.String(),
 					UserID:           t.UserID,
-					PromptType:       determinePromptTypeFromResult(resultPayload),
+					PromptType:       determinePromptTypeFromReference(t.ImageReference), // Use reference directly
 					ImageReference:   resultPayload.ImageReference,
 				}
 				if resultPayload.Success {
@@ -236,8 +243,21 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 		return false                                            // Nack - неизвестный формат
 	}
 
+	// --- VALIDATION ADDED for single task ---
+	log := h.logger.With(zap.String("task_id", taskPayload.TaskID), zap.String("correlation_id", msg.CorrelationId)) // Define log earlier
+	if !isValidImageReference(taskPayload.ImageReference) {
+		log.Error("Invalid image reference prefix in single task, Nacking message",
+			zap.String("image_reference", taskPayload.ImageReference),
+			zap.String("character_id", taskPayload.CharacterID.String()),
+			zap.String("published_story_id", taskPayload.PublishedStoryID.String()),
+		)
+		invalidTaskReference.Inc()
+		tasksProcessed.WithLabelValues("error_invalid_reference").Inc() // Add status for invalid reference
+		return false                                                    // Nack the message
+	}
+	// --- END VALIDATION ---
+
 	// Обработка как одиночной задачи
-	log := h.logger.With(zap.String("task_id", taskPayload.TaskID), zap.String("correlation_id", msg.CorrelationId))
 	log.Info("Received single character image generation task")
 	// Используем .String() для CharacterID и PublishedStoryID
 	log = log.With(
@@ -276,7 +296,7 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 			TaskID:           taskPayload.TaskID,
 			PublishedStoryID: taskPayload.PublishedStoryID.String(),
 			UserID:           taskPayload.UserID,
-			PromptType:       determinePromptTypeFromResult(resultPayload),
+			PromptType:       determinePromptTypeFromReference(taskPayload.ImageReference), // Use reference directly
 			ImageReference:   resultPayload.ImageReference,
 		}
 		notificationPayload.Status = messaging.NotificationStatusError
@@ -306,8 +326,8 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 			TaskID:           taskPayload.TaskID,
 			PublishedStoryID: taskPayload.PublishedStoryID.String(),
 			UserID:           taskPayload.UserID,
-			PromptType:       determinePromptTypeFromResult(resultPayload),
-			ImageReference:   resultPayload.ImageReference,
+			PromptType:       determinePromptTypeFromReference(taskPayload.ImageReference), // Use reference directly
+			ImageReference:   taskPayload.ImageReference,
 		}
 		notificationPayload.Status = messaging.NotificationStatusSuccess
 		notificationPayload.ImageURL = resultPayload.ImageURL
@@ -326,24 +346,17 @@ func (h *Handler) HandleDelivery(ctx context.Context, msg amqp091.Delivery) bool
 	}
 }
 
-// determinePromptTypeFromResult определяет PromptType на основе ImageReference.
-func determinePromptTypeFromResult(result messaging.CharacterImageResultPayload) models.PromptType {
-	// Простое правило: если reference начинается с "ch_", то это персонаж,
-	// если с "history_preview_", то это превью. Иначе - неизвестно.
-	if len(result.ImageReference) > 3 && result.ImageReference[:3] == "ch_" {
+// determinePromptTypeFromReference определяет PromptType на основе ImageReference.
+// Эта функция вызывается ПОСЛЕ валидации isValidImageReference,
+// поэтому кейс с неизвестным префиксом не должен достигаться для валидных вызовов.
+func determinePromptTypeFromReference(imageReference string) models.PromptType {
+	if len(imageReference) > 3 && imageReference[:3] == "ch_" {
 		return models.PromptTypeCharacterImage
-	} else if len(result.ImageReference) > 16 && result.ImageReference[:16] == "history_preview_" {
+	} else if len(imageReference) > 16 && imageReference[:16] == "history_preview_" {
 		return models.PromptTypeStoryPreviewImage
 	}
-	// По умолчанию или если не распознано
-	return models.PromptType("unknown_image_type") // Возвращаем кастомный тип, чтобы не падало при валидации
+	// Этот блок не должен вызываться, если isValidImageReference отработала корректно перед вызовом.
+	// Оставим как fallback, но по идее это ошибка логики, если мы сюда попали.
+	zap.L().Warn("determinePromptTypeFromReference called with invalid reference, should have been caught by validation", zap.String("reference", imageReference))
+	return models.PromptType("unknown_image_type")
 }
-
-// buildFullPrompt создает полный промпт, комбинируя базовый и суффикс стиля.
-// <<< ИЗМЕНЕНО: Больше не добавляет суффикс из конфига >>>
-func buildFullPrompt(basePrompt string) string {
-	// Просто возвращаем базовый промпт
-	return basePrompt
-}
-
-// handleGenerateImage обрабатывает одну задачу генерации изображения.

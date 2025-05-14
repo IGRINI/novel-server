@@ -41,7 +41,7 @@ type PublishedStoryDetailDTO struct {
 	IsAuthor          bool
 }
 
-// CoreStatDetailDTO представляет свойства одного параметра статистики и условия конца игры
+// CoreStatDetailDTO represents the properties of a single stat and game end condition
 type CoreStatDetailDTO struct {
 	Description  string `json:"description"`
 	InitialValue int    `json:"initial_value"`
@@ -131,46 +131,55 @@ func NewStoryBrowsingService(
 	}
 }
 
+// pickLatestGameState selects the latest active game state, ignoring errors.
+func pickLatestGameState(states []*sharedModels.PlayerGameState) *sharedModels.PlayerGameState {
+	if len(states) == 0 {
+		return nil
+	}
+	valid := make([]*sharedModels.PlayerGameState, 0, len(states))
+	for _, st := range states {
+		if st.PlayerStatus != sharedModels.PlayerStatusError {
+			valid = append(valid, st)
+		}
+	}
+	if len(valid) == 0 {
+		valid = states
+	}
+	chosen := valid[0]
+	for _, st := range valid[1:] {
+		if st.LastActivityAt.After(chosen.LastActivityAt) {
+			chosen = st
+		}
+	}
+	return chosen
+}
+
+// ListMyPublishedStories returns user stories with progress.
 func (s *storyBrowsingServiceImpl) ListMyPublishedStories(ctx context.Context, userID uuid.UUID, cursor string, limit int) ([]sharedModels.PublishedStorySummary, string, error) {
 	log := s.logger.With(zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
 	log.Info("ListMyPublishedStories called")
 
-	SanitizeLimit(&limit, 20, 100)
-
-	summaries, nextCursor, err := s.publishedRepo.ListUserSummariesWithProgress(ctx, s.db, userID, cursor, limit, false)
+	summaries, nextCursor, err := PaginateList(&limit, 20, 100, func(l int) ([]sharedModels.PublishedStorySummary, string, error) {
+		return s.publishedRepo.ListUserSummariesWithProgress(ctx, s.db, userID, cursor, l, false)
+	})
 	if err != nil {
 		log.Error("Failed to list user published stories summaries with progress", zap.Error(err))
 		return nil, "", sharedModels.ErrInternalServer
 	}
 
-	// Добавляем поля player_game_state_id и player_game_status по логике выбора состояния
+	// Add player state info
 	for i := range summaries {
-		if summaries[i].HasPlayerProgress {
-			states, err := s.playerGameStateRepo.ListByPlayerAndStory(ctx, s.db, userID, summaries[i].ID)
-			if err == nil && len(states) > 0 {
-				// Выбираем все состояния со статусом != error
-				var valid []*sharedModels.PlayerGameState
-				for _, st := range states {
-					if st.PlayerStatus != sharedModels.PlayerStatusError {
-						valid = append(valid, st)
-					}
-				}
-				// Если нет валидных, берем все
-				if len(valid) == 0 {
-					valid = states
-				}
-				// Выбираем самое последнее по LastActivityAt
-				chosen := valid[0]
-				for _, st := range valid[1:] {
-					if st.LastActivityAt.After(chosen.LastActivityAt) {
-						chosen = st
-					}
-				}
-				// Заполняем поля в summary
-				summaries[i].PlayerGameStateID = &chosen.ID
-				status := string(chosen.PlayerStatus)
-				summaries[i].PlayerGameStatus = &status
-			}
+		if !summaries[i].HasPlayerProgress {
+			continue
+		}
+		states, err := s.playerGameStateRepo.ListByPlayerAndStory(ctx, s.db, userID, summaries[i].ID)
+		if err != nil {
+			continue
+		}
+		if chosen := pickLatestGameState(states); chosen != nil {
+			summaries[i].PlayerGameStateID = &chosen.ID
+			status := string(chosen.PlayerStatus)
+			summaries[i].PlayerGameStatus = &status
 		}
 	}
 	return summaries, nextCursor, nil
@@ -180,14 +189,14 @@ func (s *storyBrowsingServiceImpl) ListPublicStories(ctx context.Context, userID
 	log := s.logger.With(zap.String("requestingUserID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
 	log.Info("ListPublicStories called")
 
-	SanitizeLimit(&limit, 20, 100)
-
 	var requestingUserID *uuid.UUID
 	if userID != uuid.Nil {
 		requestingUserID = &userID
 	}
 
-	summaries, nextCursor, err := s.publishedRepo.ListPublicSummaries(ctx, s.db, requestingUserID, cursor, limit, "default")
+	summaries, nextCursor, err := PaginateList(&limit, 20, 100, func(l int) ([]sharedModels.PublishedStorySummary, string, error) {
+		return s.publishedRepo.ListPublicSummaries(ctx, s.db, requestingUserID, cursor, l, "default")
+	})
 	if err != nil {
 		s.logger.Error("Failed to list public stories summaries", zap.Error(err))
 		return nil, "", sharedModels.ErrInternalServer
@@ -202,13 +211,12 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 	log.Info("GetPublishedStoryDetails called")
 
 	story, isLiked, err := s.publishedRepo.GetWithLikeStatus(ctx, s.db, storyID, userID)
-	if err != nil {
-		if errors.Is(err, sharedModels.ErrNotFound) {
+	if wrapErr := WrapRepoError(s.logger, err, "PublishedStory"); wrapErr != nil {
+		if errors.Is(wrapErr, sharedModels.ErrNotFound) {
 			log.Warn("Published story not found")
 			return nil, sharedModels.ErrNotFound
 		}
-		log.Error("Failed to get published story with like status from repository", zap.Error(err))
-		return nil, sharedModels.ErrInternalServer
+		return nil, wrapErr
 	}
 
 	isAuthor := story.UserID == userID
@@ -232,19 +240,19 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetails(ctx context.Context,
 	var coreStatsDTO map[string]CoreStatDetailDTO
 	var charactersDTO []ParsedCharacterDTO
 
-	if story.Config != nil && len(story.Config) > 0 && string(story.Config) != "null" {
-		if err := json.Unmarshal(story.Config, &config); err != nil {
-			log.Error("Failed to unmarshal story Config JSON", zap.Stringer("storyID", story.ID), zap.Error(err))
-			return nil, fmt.Errorf("%w: invalid config data: %v", sharedModels.ErrInternalServer, err)
+	if len(story.Config) > 0 && string(story.Config) != "null" {
+		if err := DecodeStrictJSON(story.Config, &config); err != nil {
+			log.Error("Failed to decode story Config JSON", zap.Stringer("storyID", story.ID), zap.Error(err))
+			return nil, err
 		}
 	} else {
 		log.Warn("Story Config JSON is nil or empty", zap.Stringer("storyID", story.ID))
 	}
 
-	if story.Setup != nil && len(story.Setup) > 0 && string(story.Setup) != "null" {
-		if err := json.Unmarshal(story.Setup, &setup); err != nil {
-			log.Error("Failed to unmarshal story Setup JSON directly", zap.Stringer("storyID", story.ID), zap.Error(err))
-			return nil, fmt.Errorf("%w: invalid setup data: %v", sharedModels.ErrInternalServer, err)
+	if len(story.Setup) > 0 && string(story.Setup) != "null" {
+		if err := DecodeStrictJSON(story.Setup, &setup); err != nil {
+			log.Error("Failed to decode story Setup JSON", zap.Stringer("storyID", story.ID), zap.Error(err))
+			return nil, err
 		}
 
 		coreStatsDTO = make(map[string]CoreStatDetailDTO)
@@ -331,9 +339,9 @@ func (s *storyBrowsingServiceImpl) ListUserPublishedStories(ctx context.Context,
 	log := s.logger.With(zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit))
 	log.Info("ListUserPublishedStories called (cursor-based)")
 
-	SanitizeLimit(&limit, 20, 100)
-
-	stories, nextCursor, err := s.publishedRepo.ListByUserID(ctx, s.db, userID, cursor, limit)
+	stories, nextCursor, err := PaginateList(&limit, 20, 100, func(l int) ([]*sharedModels.PublishedStory, string, error) {
+		return s.publishedRepo.ListByUserID(ctx, s.db, userID, cursor, l)
+	})
 	if err != nil {
 		log.Error("Error listing user published stories from repository (cursor-based)", zap.Error(err))
 		return nil, "", fmt.Errorf("repository error fetching stories: %w", err)
@@ -348,13 +356,11 @@ func (s *storyBrowsingServiceImpl) GetPublishedStoryDetailsInternal(ctx context.
 	log.Info("GetPublishedStoryDetailsInternal called")
 
 	story, err := s.publishedRepo.GetByID(ctx, s.db, storyID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			log.Warn("Published story not found")
+	if wrapErr := WrapRepoError(s.logger, err, "PublishedStory"); wrapErr != nil {
+		if errors.Is(wrapErr, sharedModels.ErrNotFound) {
 			return nil, sharedModels.ErrStoryNotFound
 		}
-		log.Error("Failed to get published story by ID", zap.Error(err))
-		return nil, sharedModels.ErrInternalServer
+		return nil, wrapErr
 	}
 
 	log.Info("Successfully retrieved published story details for internal use")
@@ -366,9 +372,8 @@ func (s *storyBrowsingServiceImpl) ListStoryScenesInternal(ctx context.Context, 
 	log.Info("ListStoryScenesInternal called")
 
 	scenes, err := s.sceneRepo.ListByStoryID(ctx, s.db, storyID)
-	if err != nil {
-		log.Error("Failed to list story scenes", zap.Error(err))
-		return nil, fmt.Errorf("failed to list story scenes from repository: %w", err)
+	if wrapErr := WrapRepoError(s.logger, err, "StoryScene"); wrapErr != nil {
+		return nil, wrapErr
 	}
 
 	log.Info("Successfully retrieved story scenes for internal use", zap.Int("count", len(scenes)))
@@ -443,7 +448,9 @@ func (s *storyBrowsingServiceImpl) GetStoriesWithProgress(ctx context.Context, u
 	log := s.logger.With(zap.String("method", "GetStoriesWithProgress"), zap.String("userID", userID.String()), zap.Int("limit", limit), zap.String("cursor", cursor))
 	log.Debug("Fetching stories with progress for user")
 
-	stories, nextCursor, err := s.publishedRepo.FindWithProgressByUserID(ctx, s.db, userID, limit, cursor)
+	stories, nextCursor, err := PaginateList(&limit, 20, 100, func(l int) ([]sharedModels.PublishedStorySummary, string, error) {
+		return s.publishedRepo.FindWithProgressByUserID(ctx, s.db, userID, l, cursor)
+	})
 	if err != nil {
 		log.Error("Failed to find stories with progress in repository", zap.Error(err))
 		return nil, "", fmt.Errorf("%w: failed to retrieve stories with progress from repository: %v", sharedModels.ErrInternalServer, err)
@@ -473,9 +480,9 @@ func (s *storyBrowsingServiceImpl) GetParsedSetup(ctx context.Context, storyID u
 	}
 
 	var novelSetup sharedModels.NovelSetupContent
-	if err := json.Unmarshal(story.Setup, &novelSetup); err != nil {
-		log.Error("Failed to unmarshal story Setup JSON in GetParsedSetup", zap.Error(err))
-		return nil, fmt.Errorf("%w: failed to parse setup data in GetParsedSetup", sharedModels.ErrInternalServer)
+	if err := DecodeStrictJSON(story.Setup, &novelSetup); err != nil {
+		log.Error("Failed to decode story Setup JSON in GetParsedSetup", zap.Error(err))
+		return nil, err
 	}
 
 	return &novelSetup, nil
@@ -499,9 +506,9 @@ func (s *storyBrowsingServiceImpl) ListMyStoriesWithProgress(ctx context.Context
 	log := s.logger.With(zap.String("userID", userID.String()), zap.String("cursor", cursor), zap.Int("limit", limit), zap.Bool("filterAdult", filterAdult))
 	log.Info("ListMyStoriesWithProgress called (service layer)")
 
-	SanitizeLimit(&limit, 20, 100)
-
-	summaries, nextCursor, err := s.publishedRepo.ListUserSummariesOnlyWithProgress(ctx, s.db, userID, cursor, limit, filterAdult)
+	summaries, nextCursor, err := PaginateList(&limit, 20, 100, func(l int) ([]sharedModels.PublishedStorySummary, string, error) {
+		return s.publishedRepo.ListUserSummariesOnlyWithProgress(ctx, s.db, userID, cursor, l, filterAdult)
+	})
 	if err != nil {
 		log.Error("Failed to list user stories only with progress", zap.Error(err))
 		return nil, "", sharedModels.ErrInternalServer
@@ -511,7 +518,7 @@ func (s *storyBrowsingServiceImpl) ListMyStoriesWithProgress(ctx context.Context
 	return summaries, nextCursor, nil
 }
 
-// GameStateSummary представляет сводку состояния игры для клиента.
+// GameStateSummary represents game state summary for client
 type GameStateSummary struct {
 	ID                  uuid.UUID `json:"id"`
 	LastActivityAt      time.Time `json:"last_activity_at"`
