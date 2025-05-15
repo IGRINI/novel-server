@@ -22,7 +22,7 @@ import (
 // Например: {"goal": "найти артефакт", "initial_setup_elements": {"key_item": "старая карта"}}
 // ИСПРАВЛЕННАЯ СТРУКТУРА В СООТВЕТСТВИИ С protagonist_goal_prompt.md
 type protagonistGoalResultPayload struct {
-	Result string `json:"result"` // Промпт возвращает только это поле
+	Result string `json:"res"` // Промпт возвращает только это поле
 }
 
 func (p *NotificationProcessor) handleProtagonistGoalResult(ctx context.Context, notification sharedMessaging.NotificationPayload, publishedStoryID uuid.UUID) error {
@@ -34,15 +34,12 @@ func (p *NotificationProcessor) handleProtagonistGoalResult(ctx context.Context,
 	dbCtx, cancel := context.WithTimeout(ctx, 20*time.Second) // Увеличим таймаут для потенциально более сложной логики
 	defer cancel()
 
-	publishedStory, err := p.publishedRepo.GetByID(dbCtx, p.db, publishedStoryID)
+	publishedStory, err := p.ensureStoryStatus(dbCtx, publishedStoryID, sharedModels.StatusProtagonistGoalPending)
 	if err != nil {
-		log.Error("Failed to get PublishedStory for protagonist goal update", zap.Error(err))
-		return fmt.Errorf("error getting PublishedStory %s: %w", publishedStoryID, err)
+		return err // Ошибка получения или несоответствие уже залогировано в ensureStoryStatus
 	}
-
-	if publishedStory.Status != sharedModels.StatusProtagonistGoalPending {
-		log.Warn("PublishedStory not in ProtagonistGoalPending status, update skipped.", zap.String("current_status", string(publishedStory.Status)))
-		return nil // Дублирующее или запоздавшее сообщение
+	if publishedStory == nil {
+		return nil // Статус не совпал, ACK и выход
 	}
 
 	// Переменная для хранения payload следующей задачи
@@ -164,7 +161,10 @@ func (p *NotificationProcessor) handleProtagonistGoalResult(ctx context.Context,
 	nextStep := sharedModels.StepScenePlanner
 	if errUpdate := p.publishedRepo.UpdateStatusFlagsAndSetup(dbCtx, p.db, publishedStory.ID, publishedStory.Status, publishedStory.Setup, publishedStory.IsFirstScenePending, publishedStory.AreImagesPending, &nextStep); errUpdate != nil {
 		log.Error("FINAL DB ERROR: Failed to update PublishedStory after protagonist goal processing", zap.Error(errUpdate))
-		return fmt.Errorf("failed to update story after protagonist goal: %w", errUpdate) // NACK
+		// Устанавливаем статус Error и уведомляем клиента
+		errMsg := fmt.Sprintf("failed to update story after protagonist goal: %v", errUpdate)
+		p.handleStoryError(ctx, publishedStoryID, notification.UserID, errMsg, constants.WSEventStoryError)
+		return fmt.Errorf("failed to update story after protagonist goal: %w", errUpdate) // NACK после уведомления
 	}
 	log.Info("PublishedStory updated after protagonist goal processing", zap.String("new_status", string(publishedStory.Status)), zap.Any("internal_step", nextStep))
 
@@ -183,8 +183,10 @@ func (p *NotificationProcessor) handleProtagonistGoalResult(ctx context.Context,
 		log.Warn("Scene planner task payload was not generated, task not published.")
 	}
 
-	// Отправляем клиенту уведомление об успешном обновлении истории после цели протагониста
-	p.publishClientStoryUpdateOnReady(publishedStory)
+	// Уведомляем клиента об обновлении статуса истории после обработки цели протагониста
+	if uid, perr := parseUUIDField(notification.UserID, "UserID"); perr == nil {
+		p.notifyClient(publishedStory.ID, uid, sharedModels.UpdateTypeStory, string(publishedStory.Status), nil)
+	}
 
 	return nil // Ack
 }

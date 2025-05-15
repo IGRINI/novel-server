@@ -55,9 +55,13 @@ func (p *NotificationProcessor) handleJsonGenerationResult(ctx context.Context, 
 		return fmt.Errorf("failed to get GenerationResult for JsonGeneration: %w", errGet)
 	}
 	if genResult.Error != "" {
-		// Ошибка генерации JSON — используем обёртку
+		// Ошибка генерации JSON — корректная обработка в зависимости от stateHash
 		errDetails := fmt.Sprintf("generation result error for JsonGeneration: %s", genResult.Error)
-		p.handleGameStateError(ctx, gameStateID, notification.UserID, errDetails)
+		if notification.StateHash == sharedModels.InitialStateHash {
+			p.handleStoryError(ctx, publishedStoryID, notification.UserID, errDetails, constants.WSEventStoryError)
+		} else {
+			p.handleGameStateError(ctx, gameStateID, notification.UserID, errDetails)
+		}
 		return nil
 	}
 	rawJSON := genResult.GeneratedText
@@ -110,7 +114,7 @@ func (p *NotificationProcessor) handleJsonGenerationResult(ctx context.Context, 
 		}
 		if notification.StateHash == sharedModels.InitialStateHash {
 			stepComplete := sharedModels.StepComplete
-			if updateErr := p.publishedRepo.UpdateStatusFlagsAndDetails(ctx, tx, publishedStoryID, sharedModels.StatusReady, false, false, nil, &stepComplete); updateErr != nil {
+			if updateErr := p.publishedRepo.UpdateStatusFlagsAndDetails(ctx, tx, publishedStoryID, sharedModels.StatusReady, false, false, 0, 0, 0, nil, &stepComplete); updateErr != nil {
 				p.logger.Error("Failed to update PublishedStory status to Ready after initial scene JSON generation", zap.Error(updateErr))
 				return updateErr
 			}

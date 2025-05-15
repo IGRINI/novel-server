@@ -54,9 +54,9 @@ type ChoiceSuggestion struct {
 }
 
 type SceneCard struct { // Переименовано из NewCardSuggestionFromPlanner для ясности в контексте сцены
-	ImagePromptDescriptor string `json:"image_prompt_descriptor"`
-	ImageReferenceName    string `json:"image_reference_name"`
-	Title                 string `json:"title"`
+	Pr    string `json:"pr"` // Было: ImagePromptDescriptor string `json:"image_prompt_descriptor"`
+	Ir    string `json:"ir"` // Было: ImageReferenceName    string `json:"image_reference_name"`
+	Title string `json:"title"`
 }
 
 // InitialSceneContent defines the structure stored in SceneContent for the initial scene.

@@ -138,7 +138,7 @@ func (s *gameLoopServiceImpl) DispatchNextGenerationTask(
 						PublishedStoryID: publishedStory.ID,
 						CharacterID:      charID,
 						CharacterName:    char.Name,
-						ImageReference:   char.ImageReferenceName,
+						ImageReference:   fmt.Sprintf("ch_%s", char.ImageReferenceName),
 						Prompt:           char.ImagePromptDescriptor,
 						Ratio:            charRatio,
 					}

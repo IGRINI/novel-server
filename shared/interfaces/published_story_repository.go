@@ -121,9 +121,9 @@ type PublishedStoryRepository interface {
 	// Добавлен параметр internalStep для обновления внутреннего шага генерации.
 	UpdateStatusFlagsAndSetup(ctx context.Context, querier DBTX, id uuid.UUID, status models.StoryStatus, setup json.RawMessage, isFirstScenePending bool, areImagesPending bool, internalStep *models.InternalGenerationStep) error
 
-	// UpdateStatusFlagsAndDetails обновляет статус, флаги ожидания и детали ошибки.
+	// UpdateStatusFlagsAndDetails обновляет статус, флаги ожидания, счётчики задач и детали ошибки.
 	// Используется при установке статуса Error или потенциально других переходах.
-	UpdateStatusFlagsAndDetails(ctx context.Context, querier DBTX, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, errorDetails *string, internalStep *models.InternalGenerationStep) error
+	UpdateStatusFlagsAndDetails(ctx context.Context, querier DBTX, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, pendingCharGenTasks int, pendingCardImgTasks int, pendingCharImgTasks int, errorDetails *string, internalStep *models.InternalGenerationStep) error
 
 	// GetSummaryWithDetails получает детали истории, имя автора, флаг лайка и прогресса для указанного пользователя.
 	GetSummaryWithDetails(ctx context.Context, querier DBTX, storyID, userID uuid.UUID) (*models.PublishedStorySummary, error)

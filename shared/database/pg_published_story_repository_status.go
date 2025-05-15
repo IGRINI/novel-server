@@ -32,6 +32,11 @@ const (
         SET status = $1, error_details = $2, updated_at = NOW()
         WHERE status = ANY($3::story_status[]) AND updated_at < $4
     `
+	findAndMarkStaleQueryBase = `
+        UPDATE published_stories
+        SET status = $1, error_details = $2, updated_at = NOW()
+        WHERE status = ANY($3::story_status[])
+    `
 	checkInitialGenStatusQuery  = `SELECT status FROM published_stories WHERE id = $1`
 	updateStatusFlagsSetupQuery = `
         UPDATE published_stories
@@ -51,8 +56,11 @@ const (
             status = $2::story_status,
             is_first_scene_pending = $3,
             are_images_pending = $4,
-            error_details = $5,
-            internal_generation_step = $6::internal_generation_step,
+            pending_char_gen_tasks = $5,
+            pending_card_img_tasks = $6,
+            pending_char_img_tasks = $7,
+            error_details = $8,
+            internal_generation_step = $9::internal_generation_step,
             updated_at = NOW()
         WHERE id = $1
     `
@@ -250,20 +258,18 @@ func (r *pgPublishedStoryRepository) FindAndMarkStaleGeneratingAsError(ctx conte
 
 	errorMessage := "Generation timed out or failed (marked as stale)"
 	args := []interface{}{models.StatusError, errorMessage, pq.Array(staleStatuses)}
-	query := findAndMarkStaleQuery
-
+	var queryToUse string
 	if staleThreshold > 0 {
-		args = append(args, time.Now().UTC().Add(-staleThreshold)) // Append threshold time
+		queryToUse = findAndMarkStaleQuery
+		args = append(args, time.Now().UTC().Add(-staleThreshold))
 	} else {
-		// If threshold is 0, we still need a time comparison to satisfy the query structure where $4 is expected.
-		// Use a very old time to effectively check all records matching the status.
-		args = append(args, time.Time{}) // Effectively no time limit
+		queryToUse = findAndMarkStaleQueryBase
 		r.logger.Info("Stale threshold is zero, checking all specified stale statuses regardless of time.", logFields...)
 	}
 
-	commandTag, err := querier.Exec(ctx, query, args...)
+	commandTag, err := querier.Exec(ctx, queryToUse, args...)
 	if err != nil {
-		r.logger.Error("Failed to execute update query for stale published stories", append(logFields, zap.Error(err), zap.String("query", query))...)
+		r.logger.Error("Failed to execute update query for stale published stories", append(logFields, zap.Error(err), zap.String("query", queryToUse))...)
 		return 0, fmt.Errorf("ошибка обновления статуса зависших опубликованных историй: %w", err)
 	}
 
@@ -320,19 +326,22 @@ func (r *pgPublishedStoryRepository) UpdateStatusFlagsAndSetup(ctx context.Conte
 	return nil
 }
 
-// UpdateStatusFlagsAndDetails обновляет статус, флаги ожидания, детали ошибки и внутренний шаг генерации.
-func (r *pgPublishedStoryRepository) UpdateStatusFlagsAndDetails(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, errorDetails *string, internalStep *models.InternalGenerationStep) error {
+// UpdateStatusFlagsAndDetails обновляет статус, флаги ожидания, счётчики задач, детали ошибки и внутренний шаг генерации.
+func (r *pgPublishedStoryRepository) UpdateStatusFlagsAndDetails(ctx context.Context, querier interfaces.DBTX, id uuid.UUID, status models.StoryStatus, isFirstScenePending bool, areImagesPending bool, pendingCharGenTasks int, pendingCardImgTasks int, pendingCharImgTasks int, errorDetails *string, internalStep *models.InternalGenerationStep) error {
 	logFields := []zap.Field{
 		zap.String("publishedStoryID", id.String()),
 		zap.String("newStatus", string(status)),
 		zap.Bool("isFirstScenePending", isFirstScenePending),
 		zap.Bool("areImagesPending", areImagesPending),
+		zap.Int("pendingCharGenTasks", pendingCharGenTasks),
+		zap.Int("pendingCardImgTasks", pendingCardImgTasks),
+		zap.Int("pendingCharImgTasks", pendingCharImgTasks),
 		zap.Stringp("errorDetails", errorDetails),
 		zap.Any("internalStep", internalStep),
 	}
 	r.logger.Debug("Updating published story status, flags, details, and internal step", logFields...)
 
-	commandTag, err := querier.Exec(ctx, updateStatusFlagsDetailsQuery, id, status, isFirstScenePending, areImagesPending, errorDetails, internalStep)
+	commandTag, err := querier.Exec(ctx, updateStatusFlagsDetailsQuery, id, status, isFirstScenePending, areImagesPending, pendingCharGenTasks, pendingCardImgTasks, pendingCharImgTasks, errorDetails, internalStep)
 	if err != nil {
 		r.logger.Error("Failed to update published story status, flags, details, and internal step", append(logFields, zap.Error(err))...)
 		return fmt.Errorf("ошибка обновления статуса/флагов/деталей/шага истории %s: %w", id, err)
@@ -457,7 +466,7 @@ func (r *pgPublishedStoryRepository) UpdateSetupStatusAndCounters(ctx context.Co
         SET
             setup = $2,
             status = $3::story_status,
-            pending_char_gen_tasks = ($4 > 0), -- Преобразуем int в bool для флага
+            pending_char_gen_tasks = $4, -- Убрано преобразование в bool, т.к. поле теперь int
             pending_card_img_tasks = $5,
             pending_char_img_tasks = $6,
             internal_generation_step = $7::internal_generation_step, -- Добавлен шаг

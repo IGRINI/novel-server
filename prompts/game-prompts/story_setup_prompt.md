@@ -55,18 +55,18 @@ You will receive a textual description of the initial game state and context. Th
    a. **JSON Structure:** The output MUST be a single, valid JSON object with the following structure:
       ```json
       {
-        "result": "string",
-        "pr": "string"
+        "res": "string",
+        "prv": "string"
       }
       ```
-   b. **`result` Field Content:** This field must contain the complete narrative text for the beginning of the story. This includes:
+   b. **`res` Field Content:** This field must contain the complete narrative text for the beginning of the story. This includes:
       i.   An engaging introduction presenting the protagonist, the setting, and key story elements.
       ii.  Exactly {{CHOICE_COUNT}} distinct situations, each structured with a setup, development, and a choice point.
       iii. Natural transitions between these situations.
       iv.  Each situation must conclude with a binary choice formatted as: "[Option A] / [Option B]".
-   c. **Language Consistency:** The textual content within the `result` field must maintain a consistent style, preserving the specified language.
-   d.  **No Meta-Commentary:** The JSON output should not contain any technical meta-comments or explanations outside the defined string value for `result`.
-   The field `pr` must be a concise visual description for generating the story preview image, consistent with the application style (e.g., "A moody, high-contrast digital illustration with dark tones, soft neon accents, and a focused central composition blending fantasy and minimalism, using deep blues, teals, and cyanish glow").
+   c. **Language Consistency:** The textual content within the `res` field must maintain a consistent style, preserving the specified language.
+   d.  **No Meta-Commentary:** The JSON output should not contain any technical meta-comments or explanations outside the defined string value for `res`.
+   The field `prv` must be a concise visual description for generating the story preview image, consistent with the application style (e.g., "A moody, high-contrast digital illustration with dark tones, soft neon accents, and a focused central composition blending fantasy and minimalism, using deep blues, teals, and cyanish glow").
 
 5. **Quality Control:**
    a. **Logical Consistency:** Ensure that no contradictions exist between different situations within the current narrative.

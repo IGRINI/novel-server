@@ -65,7 +65,7 @@ func (s *gameLoopServiceImpl) buildRetryGenerationForGameStatePayload(
 		}
 		// Обновить флаги статуса для setup retry
 		if story.Status == models.StatusError {
-			publishedRepo.UpdateStatusFlagsAndDetails(ctx, tx, story.ID, models.StatusSetupPending, false, false, nil, nil)
+			publishedRepo.UpdateStatusFlagsAndDetails(ctx, tx, story.ID, models.StatusSetupPending, false, false, 0, 0, 0, nil, nil)
 		}
 		// Форматируем input
 		var cfg models.Config
@@ -157,13 +157,6 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 	log.Info("RetryInitialGeneration called")
 
 	err = WithTx(ctx, s.pool, func(tx pgx.Tx) error {
-		var storyConfig models.Config
-		var setupMap map[string]interface{}
-		var initialNarrativeText string
-		var promptType models.PromptType
-		var userInput string
-		var payloadToSend interface{}
-
 		story, err := s.publishedRepo.GetByID(ctx, tx, storyID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -188,344 +181,384 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 			log.Error("Config JSON is missing for the story")
 			return fmt.Errorf("story %s has missing config JSON", storyID)
 		}
+		var storyConfig models.Config
 		if err := DecodeStrictJSON(story.Config, &storyConfig); err != nil {
 			log.Error("Failed to unmarshal story config JSON", zap.Error(err))
 			return fmt.Errorf("failed to unmarshal config for story %s: %w", storyID, err)
 		}
 
-		stepPtr := story.InternalGenerationStep
-		if stepPtr == nil {
-			log.Error("InternalGenerationStep became nil unexpectedly")
-			return fmt.Errorf("internal generation step is unexpectedly nil for story %s", storyID)
-		}
-		step := *stepPtr
-		log.Info("Starting retry from step", zap.String("step", string(step)))
-
-		// Получаем контент начальной сцены, если он может понадобиться
-		var initialSceneContent *models.InitialSceneContent
-		if step == models.StepCardImageGeneration || step == models.StepCharacterImageGeneration || step == models.StepInitialSceneJSON {
-			sceneRepo := database.NewPgStorySceneRepository(tx, s.logger)
-			initialScene, errScene := sceneRepo.FindByStoryAndHash(ctx, tx, storyID, models.InitialStateHash)
-			if errScene != nil {
-				if errors.Is(errScene, pgx.ErrNoRows) || errors.Is(errScene, models.ErrNotFound) {
-					log.Error("Initial scene not found for retry step", zap.String("step", string(step)))
-					return fmt.Errorf("initial scene not found for story %s retry", storyID)
-				} else {
-					log.Error("Failed to get initial scene for retry", zap.Error(errScene))
-					return fmt.Errorf("failed to get initial scene for story %s retry: %w", storyID, errScene)
-				}
-			}
-			if initialScene.Content != nil {
-				tempContent := models.InitialSceneContent{}
-				if errUnmarshal := DecodeStrictJSON(initialScene.Content, &tempContent); errUnmarshal != nil {
-					log.Error("Failed to unmarshal initial scene content for retry", zap.Error(errUnmarshal))
-					return fmt.Errorf("failed to unmarshal initial scene content for story %s retry: %w", storyID, errUnmarshal)
-				} else {
-					initialSceneContent = &tempContent
-				}
-			} else {
-				log.Error("Initial scene content is nil for retry step", zap.String("step", string(step)))
-				return fmt.Errorf("initial scene content is nil for story %s retry", storyID)
-			}
-		}
-
+		var setupMap map[string]interface{}
 		if story.Setup != nil {
 			if err := DecodeStrictJSON(story.Setup, &setupMap); err != nil {
 				log.Error("Failed to unmarshal story setup JSON", zap.Error(err))
 				return fmt.Errorf("failed to unmarshal setup for story %s: %w", storyID, err)
 			}
 		}
-		var ok bool
-		initialNarrativeText, ok = setupMap["initial_narrative"].(string)
-		if !ok {
-			initialNarrativeText = ""
+
+		stepPtr := story.InternalGenerationStep
+		if stepPtr == nil { // Should be caught by earlier check, but for safety
+			log.Error("InternalGenerationStep became nil unexpectedly after initial check")
+			return fmt.Errorf("internal generation step is unexpectedly nil for story %s", storyID)
 		}
-		isAdult := story.IsAdultContent
+		step := *stepPtr
+		log.Info("Starting retry from step", zap.String("step", string(step)))
 
-		switch step {
-		case models.StepModeration:
-			promptType = models.PromptTypeContentModeration
-			var configForModeration models.Config
-			if err := DecodeStrictJSON(story.Config, &configForModeration); err != nil {
-				log.Error("Failed to unmarshal config for Moderation retry payload", zap.Error(err))
-				return err // Critical unmarshal error
+		var initialSceneContent *models.InitialSceneContent
+		if step == models.StepCardImageGeneration || step == models.StepCharacterImageGeneration || step == models.StepCharacterGeneration || step == models.StepInitialSceneJSON {
+			sceneRepo := database.NewPgStorySceneRepository(tx, s.logger) // Use s.logger for repo
+			initialScene, errScene := sceneRepo.FindByStoryAndHash(ctx, tx, storyID, models.InitialStateHash)
+			if errScene != nil {
+				if errors.Is(errScene, pgx.ErrNoRows) || errors.Is(errScene, models.ErrNotFound) {
+					log.Error("Initial scene not found for retry step", zap.String("step", string(step)))
+					return fmt.Errorf("initial scene not found for story %s retry", storyID)
+				}
+				log.Error("Failed to get initial scene for retry", zap.Error(errScene))
+				return fmt.Errorf("failed to get initial scene for story %s retry: %w", storyID, errScene)
 			}
-			userInput, err = utils.FormatInputForModeration(configForModeration)
-			if err != nil {
-				log.Error("Failed to format input for Moderation retry", zap.Error(err))
-				return err
+			if initialScene.Content != nil {
+				tempContent := models.InitialSceneContent{}
+				if errUnmarshal := DecodeStrictJSON(initialScene.Content, &tempContent); errUnmarshal != nil {
+					log.Error("Failed to unmarshal initial scene content for retry", zap.Error(errUnmarshal))
+					return fmt.Errorf("failed to unmarshal initial scene content for story %s retry: %w", storyID, errUnmarshal)
+				}
+				initialSceneContent = &tempContent
+			} else {
+				log.Error("Initial scene content is nil for retry step", zap.String("step", string(step)))
+				return fmt.Errorf("initial scene content is nil for story %s retry", storyID)
 			}
-			payloadToSend = &sharedMessaging.GenerationTaskPayload{
-				TaskID:           uuid.New().String(),
-				UserID:           userID.String(),
-				PublishedStoryID: storyID.String(),
-				PromptType:       promptType,
-				UserInput:        userInput,
-				Language:         story.Language,
-			}
-			log.Info("Prepared payload for Moderation retry")
+		}
 
-		case models.StepProtagonistGoal:
-			promptType = models.PromptTypeProtagonistGoal
-			var configForGoal models.Config
-			if err := DecodeStrictJSON(story.Config, &configForGoal); err != nil {
-				log.Error("Failed to decode config for Goal retry payload", zap.Error(err))
-				return err // Critical unmarshal error
-			}
-			// Используем новый форматтер
-			userInput = utils.FormatConfigForGoalPrompt(configForGoal, story.IsAdultContent)
-			log.Info("Prepared payload for ProtagonistGoal retry")
-			payloadToSend = &sharedMessaging.GenerationTaskPayload{
-				TaskID:           uuid.New().String(),
-				UserID:           userID.String(),
-				PublishedStoryID: storyID.String(),
-				PromptType:       promptType,
-				UserInput:        userInput,
-				Language:         story.Language,
-			}
-			log.Info("Prepared payload for ProtagonistGoal retry")
-
-		case models.StepScenePlanner:
-			promptType = models.PromptTypeScenePlanner
-			goal, ok := setupMap["protagonist_goal"].(string)
-			if !ok || goal == "" {
-				log.Error("Protagonist goal missing or invalid in setupMap for scene planner retry")
-				return fmt.Errorf("protagonist_goal missing/invalid in setup for story %s", storyID)
-			}
-			userInput, err = utils.FormatConfigAndGoalForScenePlanner(storyConfig, goal, isAdult)
-			if err != nil {
-				log.Error("Failed to format input for scene planner", zap.Error(err))
-				return err
-			}
-			payloadToSend = &sharedMessaging.GenerationTaskPayload{
-				TaskID:           uuid.New().String(),
-				UserID:           userID.String(),
-				PublishedStoryID: storyID.String(),
-				PromptType:       promptType,
-				UserInput:        userInput,
-				Language:         story.Language,
-			}
-			log.Info("Prepared payload for ScenePlanner retry")
-
-		case models.StepCharacterGeneration:
-			promptType = models.PromptTypeCharacterGeneration
-			var configForCharGen models.Config
-			if err := DecodeStrictJSON(story.Config, &configForCharGen); err != nil {
-				log.Error("Failed to decode config for CharacterGen retry payload", zap.Error(err))
-				return err // Critical unmarshal error
-			}
-			userInput, err = utils.FormatInputForCharacterGen(configForCharGen, setupMap, isAdult)
-			if err != nil {
-				log.Error("Failed to format input for CharacterGen retry", zap.Error(err))
-				return err
-			}
-			payloadToSend = &sharedMessaging.GenerationTaskPayload{
-				TaskID:           uuid.New().String(),
-				UserID:           userID.String(),
-				PublishedStoryID: storyID.String(),
-				PromptType:       promptType,
-				UserInput:        userInput,
-				Language:         story.Language,
-			}
-			log.Info("Prepared payload for CharacterGeneration retry")
-
-		case models.StepSetupGeneration:
-			promptType = models.PromptTypeStorySetup
-			userInput, err = utils.FormatInputForSetupGen(storyConfig, setupMap, isAdult)
-			if err != nil {
-				log.Error("Failed to format input for setup generation", zap.Error(err))
-				return err
-			}
-			payloadToSend = &sharedMessaging.GenerationTaskPayload{
-				TaskID:           uuid.New().String(),
-				UserID:           userID.String(),
-				PublishedStoryID: storyID.String(),
-				PromptType:       promptType,
-				UserInput:        userInput,
-				Language:         story.Language,
-			}
-			log.Info("Prepared payload for SetupGeneration retry")
-
-		case models.StepInitialSceneJSON:
-			promptType = models.PromptTypeJsonGeneration
-			if initialNarrativeText == "" {
-				log.Error("Initial narrative text is missing in setupMap for JSON generation retry")
-				return fmt.Errorf("initial_narrative missing in setup for story %s", storyID)
-			}
-			// Добавляем десериализацию Setup в models.NovelSetupContent для получения списка персонажей
-			var deserializedSetup models.NovelSetupContent
+		var deserializedSetup models.NovelSetupContent
+		if step == models.StepInitialSceneJSON {
 			if err := DecodeStrictJSON(story.Setup, &deserializedSetup); err != nil {
 				log.Error("Failed to decode Setup into NovelSetupContent for JSON task retry", zap.Error(err))
 				return fmt.Errorf("failed to decode setup into struct for json task retry (story %s): %w", storyID, err)
 			}
-			userInput, err = utils.FormatInputForJsonGeneration(storyConfig, deserializedSetup, setupMap, initialNarrativeText)
-			if err != nil {
-				log.Error("Failed to format input for initial JSON generation", zap.Error(err))
-				return err
-			}
-			payloadToSend = &sharedMessaging.GenerationTaskPayload{
-				TaskID:           uuid.New().String(),
-				UserID:           userID.String(),
-				PublishedStoryID: storyID.String(),
-				PromptType:       promptType,
-				UserInput:        userInput,
-				Language:         story.Language,
-			}
-			log.Info("Prepared payload for InitialJsonGeneration retry")
+		}
 
+		var payloadToSend interface{}
+		var directPublishError error
+		var promptTypeForLog models.PromptType
+
+		switch step {
+		case models.StepModeration:
+			payloadToSend, err = s.prepareModerationRetryPayload(log, story, storyConfig, userID)
+			promptTypeForLog = models.PromptTypeContentModeration
+		case models.StepProtagonistGoal:
+			payloadToSend, err = s.prepareProtagonistGoalRetryPayload(log, story, storyConfig, userID)
+			promptTypeForLog = models.PromptTypeProtagonistGoal
+		case models.StepScenePlanner:
+			payloadToSend, err = s.prepareScenePlannerRetryPayload(log, story, storyConfig, setupMap, userID)
+			promptTypeForLog = models.PromptTypeScenePlanner
+		case models.StepCharacterGeneration:
+			if initialSceneContent == nil && (step == models.StepCharacterGeneration) { // Ensure it's loaded if needed by this step specifically
+				log.Error("Initial scene content is unexpectedly nil for CharacterGeneration step")
+				return fmt.Errorf("initial scene content nil for CharacterGeneration retry for story %s", storyID)
+			}
+			payloadToSend, err = s.prepareCharacterGenerationRetryPayload(log, story, storyConfig, setupMap, initialSceneContent, userID)
+			promptTypeForLog = models.PromptTypeCharacterGeneration
+		case models.StepSetupGeneration:
+			payloadToSend, err = s.prepareSetupGenerationRetryPayload(log, story, storyConfig, setupMap, userID)
+			promptTypeForLog = models.PromptTypeStorySetup
+		case models.StepInitialSceneJSON:
+			if initialSceneContent == nil || initialSceneContent.SceneFocus == "" {
+				log.Error("Initial scene content or its SceneFocus is missing for JSON generation retry", zap.String("storyID", story.ID.String()))
+				err = fmt.Errorf("SceneFocus missing in InitialSceneContent for story %s retry", story.ID.String())
+			} else {
+				payloadToSend, err = s.prepareInitialSceneJSONRetryPayload(log, story, storyConfig, setupMap, deserializedSetup, initialSceneContent, userID)
+			}
+			promptTypeForLog = models.PromptTypeJsonGeneration
 		case models.StepCoverImageGeneration:
-			promptType = models.PromptTypeStoryPreviewImage // Используем этот тип для обложки
-			basePrompt, okPrompt := setupMap["story_preview_image_prompt"].(string)
-			if !okPrompt || basePrompt == "" {
-				log.Error("story_preview_image_prompt missing or empty in setupMap for CoverImage retry")
-				return errors.New("cannot retry cover image generation: story_preview_image_prompt missing")
-			}
-			// TODO: Получить style и suffix, если они используются для обложки
-			style := ""  // Пример
-			suffix := "" // Пример
-			userInput, err = utils.FormatInputForCoverImage(basePrompt, style, suffix)
-			if err != nil {
-				log.Error("Failed to format input for CoverImage retry", zap.Error(err))
-				return err
-			}
-			payloadToSend = &sharedMessaging.CharacterImageTaskPayload{
-				UserID:           userID.String(),
-				PublishedStoryID: storyID,
-				TaskID:           uuid.New().String(),
-				Prompt:           userInput,
-			}
-			log.Info("Prepared payload for CoverImage retry")
-
+			payloadToSend, err = s.prepareCoverImageRetryPayload(log, story, setupMap, userID)
+			promptTypeForLog = models.PromptTypeStoryPreviewImage
 		case models.StepCardImageGeneration:
-			promptType = models.PromptTypeImageGeneration
-			log.Warn("Retrying CardImages step - this will republish tasks for ALL initial card images")
-
-			// Читаем карточки из InitialSceneContent
-			if initialSceneContent == nil || len(initialSceneContent.Cards) == 0 {
-				log.Warn("No initial cards found in InitialSceneContent, cannot retry card images")
-				return nil // Ничего для ретрая
+			if initialSceneContent == nil {
+				log.Error("Initial scene content is unexpectedly nil for CardImageGeneration step")
+				return fmt.Errorf("initial scene content nil for CardImageGeneration retry for story %s", storyID)
 			}
-
-			var publishErrors []error
-			for i, card := range initialSceneContent.Cards { // <<< Используем initialSceneContent.Cards
-				if card.ImagePromptDescriptor == "" || card.ImageReferenceName == "" {
-					log.Warn("Skipping card image generation due to missing prompt/ref", zap.Int("cardIndex", i), zap.String("cardName", card.Title))
-					continue
-				}
-
-				// Формируем payload. ID персонажа для карточки обычно Nil.
-				cardPayload := sharedMessaging.CharacterImageTaskPayload{
-					UserID:           userID.String(),
-					PublishedStoryID: storyID,
-					TaskID:           uuid.New().String(),
-					Prompt:           card.ImagePromptDescriptor,
-					CharacterName:    card.Title,
-					ImageReference:   card.ImageReferenceName, // <<< Добавлено ImageReference
-					CharacterID:      uuid.Nil,                // <<< ID персонажа Nil для карточек
-					Ratio:            "3:2",                   // <<< Уточнить Ratio для карточек
-				}
-
-				if errPub := s.imagePublisher.PublishCharacterImageTask(ctx, cardPayload); errPub != nil {
-					log.Error("Failed to publish card image task during retry", zap.Error(errPub), zap.Int("cardIndex", i), zap.String("cardName", card.Title))
-					if publishErrors == nil {
-						publishErrors = []error{}
-					}
-					publishErrors = append(publishErrors, errPub)
-				} else {
-					log.Info("Published card image task payload for retry", zap.Int("cardIndex", i), zap.String("cardName", card.Title))
-				}
-			}
-			if len(publishErrors) > 0 {
-				err = fmt.Errorf("encountered %d errors during card image task publishing retry: %v", len(publishErrors), publishErrors[0])
-				return err // Stop processing and rollback if any card image task fails to publish
-			}
-			log.Info("Finished publishing all initial card image tasks for retry")
-			payloadToSend = nil // No single payload, tasks published individually
-
+			directPublishError = s.publishRetryCardImageTasks(ctx, log, story, initialSceneContent, userID)
+			err = directPublishError // Assign to err to handle it below
 		case models.StepCharacterImageGeneration:
-			log.Warn("Retrying CharacterImages step - this will republish tasks for ALL generated characters")
-
-			// Читаем персонажей из InitialSceneContent
-			if initialSceneContent == nil || len(initialSceneContent.Characters) == 0 {
-				log.Warn("No characters found in InitialSceneContent, cannot retry character images")
-				return nil // Ничего для ретрая
+			if initialSceneContent == nil {
+				log.Error("Initial scene content is unexpectedly nil for CharacterImageGeneration step")
+				return fmt.Errorf("initial scene content nil for CharacterImageGeneration retry for story %s", storyID)
 			}
-
-			var publishErrors []error
-			for i, char := range initialSceneContent.Characters { // <<< Используем initialSceneContent.Characters
-				if char.Prompt == "" || char.ImageRef == "" { // <<< Используем поля CharacterDefinition
-					log.Warn("Skipping character image generation due to missing prompt/ref", zap.Int("charIndex", i), zap.String("charName", char.Name))
-					continue
-				}
-
-				// Формируем payload, используя поля CharacterDefinition
-				// ID персонажа не хранится в CharacterDefinition, его нужно будет найти иначе, если он нужен издателю.
-				// Пока отправляем Nil UUID.
-				charPayload := sharedMessaging.CharacterImageTaskPayload{
-					TaskID:           uuid.New().String(),
-					UserID:           story.UserID.String(),
-					PublishedStoryID: storyID,
-					CharacterID:      uuid.Nil, // <<< ID персонажа неизвестен из CharacterDefinition
-					CharacterName:    char.Name,
-					ImageReference:   char.ImageRef,
-					Prompt:           char.Prompt,
-					NegativePrompt:   "",    // Add if needed
-					Ratio:            "2:3", // Or get from config/setup if variable
-				}
-
-				if errPub := s.imagePublisher.PublishCharacterImageTask(ctx, charPayload); errPub != nil {
-					log.Error("Failed to publish character image task during retry", zap.Error(errPub), zap.Int("charIndex", i), zap.String("charName", char.Name))
-					publishErrors = append(publishErrors, errPub)
-				} else {
-					log.Info("Published character image task payload for retry", zap.Int("charIndex", i), zap.String("charName", char.Name))
-				}
-			}
-			if len(publishErrors) > 0 {
-				// Combine errors or handle them as needed
-				err = fmt.Errorf("encountered %d errors during character image task publishing retry: %v", len(publishErrors), publishErrors[0])
-				return err // Stop processing and rollback if any character image task fails to publish
-			}
-			log.Info("Finished publishing all character image tasks for retry")
-			payloadToSend = nil // No single payload, tasks published individually
-
+			directPublishError = s.publishRetryCharacterImageTasks(ctx, log, story, initialSceneContent)
+			err = directPublishError // Assign to err to handle it below
 		default:
 			log.Error("Unsupported generation step for retry", zap.String("step", string(step)))
 			return fmt.Errorf("unsupported step for initial generation retry: %s", string(step))
 		}
 
+		if err != nil {
+			// Error already logged by helper or a check before switch
+			return err // Return the error from helper or pre-switch check
+		}
+
 		if payloadToSend != nil {
 			switch p := payloadToSend.(type) {
 			case *sharedMessaging.GenerationTaskPayload:
-				err = s.publisher.PublishGenerationTask(ctx, *p)
-				if err != nil {
-					log.Error("Failed to publish generation task", zap.Error(err), zap.String("promptType", string(p.PromptType)))
-					return fmt.Errorf("failed to publish generation task (%s): %w", string(p.PromptType), err)
+				if pubErr := s.publisher.PublishGenerationTask(ctx, *p); pubErr != nil {
+					log.Error("Failed to publish generation task", zap.Error(pubErr), zap.String("promptType", string(p.PromptType)))
+					return fmt.Errorf("failed to publish generation task (%s): %w", string(p.PromptType), pubErr)
 				}
 				log.Info("Successfully published generation task for retry", zap.String("promptType", string(p.PromptType)))
 			case *sharedMessaging.CharacterImageTaskPayload:
-				if errPub := s.imagePublisher.PublishCharacterImageTask(ctx, *p); errPub != nil {
-					log.Error("Failed to publish cover image task during retry", zap.Error(errPub))
-					return fmt.Errorf("failed to publish cover image task: %w", errPub)
-				} else {
-					log.Info("Successfully published cover image task for retry")
+				if pubErr := s.imagePublisher.PublishCharacterImageTask(ctx, *p); pubErr != nil {
+					log.Error("Failed to publish cover/character image task during retry", zap.Error(pubErr))
+					return fmt.Errorf("failed to publish cover/character image task: %w", pubErr)
 				}
+				log.Info("Successfully published cover/character image task for retry", zap.String("taskType", string(promptTypeForLog)))
 			default:
-				log.Error("Unknown payload type prepared for retry")
+				log.Error("Unknown payload type prepared for retry", zap.Any("payload", payloadToSend))
 				return fmt.Errorf("internal error: unknown payload type for retry")
 			}
 		}
 
 		if story.Status == models.StatusError {
-			err = s.publishedRepo.UpdateStatusAndError(ctx, tx, storyID, models.StatusGenerating, nil)
-			if err != nil {
-				log.Error("Failed to update story status to Generating", zap.Error(err))
-				return fmt.Errorf("failed to update story status to Generating: %w", err)
+			updateErr := s.publishedRepo.UpdateStatusAndError(ctx, tx, storyID, models.StatusGenerating, nil)
+			if updateErr != nil {
+				log.Error("Failed to update story status to Generating", zap.Error(updateErr))
+				return fmt.Errorf("failed to update story status to Generating: %w", updateErr)
 			}
 			log.Info("Updated story status from Error to Generating")
 		}
 
-		log.Info("RetryInitialGeneration completed successfully")
+		log.Info("RetryInitialGeneration completed successfully for step", zap.String("step", string(step)))
 		return nil
 	})
 	return err
+}
+
+func (s *gameLoopServiceImpl) prepareModerationRetryPayload(log *zap.Logger, story *models.PublishedStory, storyConfig models.Config, userID uuid.UUID) (*sharedMessaging.GenerationTaskPayload, error) {
+	userInput, err := utils.FormatInputForModeration(storyConfig)
+	if err != nil {
+		log.Error("Failed to format input for Moderation retry", zap.Error(err))
+		return nil, err
+	}
+	payload := &sharedMessaging.GenerationTaskPayload{
+		TaskID:           uuid.New().String(),
+		UserID:           userID.String(),
+		PublishedStoryID: story.ID.String(),
+		PromptType:       models.PromptTypeContentModeration,
+		UserInput:        userInput,
+		Language:         story.Language,
+	}
+	log.Info("Prepared payload for Moderation retry")
+	return payload, nil
+}
+
+func (s *gameLoopServiceImpl) prepareProtagonistGoalRetryPayload(log *zap.Logger, story *models.PublishedStory, storyConfig models.Config, userID uuid.UUID) (*sharedMessaging.GenerationTaskPayload, error) {
+	userInput := utils.FormatConfigForGoalPrompt(storyConfig, story.IsAdultContent)
+	payload := &sharedMessaging.GenerationTaskPayload{
+		TaskID:           uuid.New().String(),
+		UserID:           userID.String(),
+		PublishedStoryID: story.ID.String(),
+		PromptType:       models.PromptTypeProtagonistGoal,
+		UserInput:        userInput,
+		Language:         story.Language,
+	}
+	log.Info("Prepared payload for ProtagonistGoal retry")
+	return payload, nil
+}
+
+func (s *gameLoopServiceImpl) prepareScenePlannerRetryPayload(log *zap.Logger, story *models.PublishedStory, storyConfig models.Config, setupMap map[string]interface{}, userID uuid.UUID) (*sharedMessaging.GenerationTaskPayload, error) {
+	goal, ok := setupMap["protagonist_goal"].(string)
+	if !ok || goal == "" {
+		log.Error("Protagonist goal missing or invalid in setupMap for scene planner retry")
+		return nil, fmt.Errorf("protagonist_goal missing/invalid in setup for story %s", story.ID.String())
+	}
+	userInput, err := utils.FormatConfigAndGoalForScenePlanner(storyConfig, goal, story.IsAdultContent)
+	if err != nil {
+		log.Error("Failed to format input for scene planner", zap.Error(err))
+		return nil, err
+	}
+	payload := &sharedMessaging.GenerationTaskPayload{
+		TaskID:           uuid.New().String(),
+		UserID:           userID.String(),
+		PublishedStoryID: story.ID.String(),
+		PromptType:       models.PromptTypeScenePlanner,
+		UserInput:        userInput,
+		Language:         story.Language,
+	}
+	log.Info("Prepared payload for ScenePlanner retry")
+	return payload, nil
+}
+
+func (s *gameLoopServiceImpl) prepareCharacterGenerationRetryPayload(log *zap.Logger, story *models.PublishedStory, storyConfig models.Config, setupMap map[string]interface{}, initialSceneContent *models.InitialSceneContent, userID uuid.UUID) (*sharedMessaging.GenerationTaskPayload, error) {
+	if initialSceneContent == nil {
+		log.Error("InitialSceneContent is nil for CharacterGeneration retry")
+		return nil, fmt.Errorf("initialSceneContent is nil for CharacterGeneration retry, story %s", story.ID.String())
+	}
+
+	charSetupMap := make(map[string]interface{})
+	if goal, ok := setupMap["protagonist_goal"]; ok {
+		charSetupMap["protagonist_goal"] = goal
+	}
+	var suggestions []interface{}
+	for _, charDef := range initialSceneContent.Characters {
+		m := map[string]interface{}{"role": charDef.Name, "reason": charDef.Description}
+		suggestions = append(suggestions, m)
+	}
+	charSetupMap["characters_to_generate_list"] = suggestions
+
+	userInput, err := utils.FormatInputForCharacterGen(storyConfig, charSetupMap, story.IsAdultContent)
+	if err != nil {
+		log.Error("Failed to format input for CharacterGen retry", zap.Error(err))
+		return nil, err
+	}
+	payload := &sharedMessaging.GenerationTaskPayload{
+		TaskID:           uuid.New().String(),
+		UserID:           userID.String(),
+		PublishedStoryID: story.ID.String(),
+		PromptType:       models.PromptTypeCharacterGeneration,
+		UserInput:        userInput,
+		Language:         story.Language,
+	}
+	log.Info("Prepared payload for CharacterGeneration retry")
+	return payload, nil
+}
+
+func (s *gameLoopServiceImpl) prepareSetupGenerationRetryPayload(log *zap.Logger, story *models.PublishedStory, storyConfig models.Config, setupMap map[string]interface{}, userID uuid.UUID) (*sharedMessaging.GenerationTaskPayload, error) {
+	userInput, err := utils.FormatInputForSetupGen(storyConfig, setupMap, story.IsAdultContent)
+	if err != nil {
+		log.Error("Failed to format input for setup generation", zap.Error(err))
+		return nil, err
+	}
+	payload := &sharedMessaging.GenerationTaskPayload{
+		TaskID:           uuid.New().String(),
+		UserID:           userID.String(),
+		PublishedStoryID: story.ID.String(),
+		PromptType:       models.PromptTypeStorySetup,
+		UserInput:        userInput,
+		Language:         story.Language,
+	}
+	log.Info("Prepared payload for SetupGeneration retry")
+	return payload, nil
+}
+
+func (s *gameLoopServiceImpl) prepareInitialSceneJSONRetryPayload(log *zap.Logger, story *models.PublishedStory, storyConfig models.Config, setupMap map[string]interface{}, deserializedSetup models.NovelSetupContent, initialSceneContent *models.InitialSceneContent, userID uuid.UUID) (*sharedMessaging.GenerationTaskPayload, error) {
+	if initialSceneContent == nil || initialSceneContent.SceneFocus == "" {
+		log.Error("Initial scene content or its SceneFocus is missing in prepareInitialSceneJSONRetryPayload")
+		return nil, fmt.Errorf("SceneFocus missing or initialSceneContent is nil for story %s", story.ID.String())
+	}
+	initialNarrativeText := initialSceneContent.SceneFocus
+
+	userInput, err := utils.FormatInputForJsonGeneration(storyConfig, deserializedSetup, setupMap, initialNarrativeText)
+	if err != nil {
+		log.Error("Failed to format input for initial JSON generation", zap.Error(err))
+		return nil, err
+	}
+	payload := &sharedMessaging.GenerationTaskPayload{
+		TaskID:           uuid.New().String(),
+		UserID:           userID.String(),
+		PublishedStoryID: story.ID.String(),
+		PromptType:       models.PromptTypeJsonGeneration,
+		UserInput:        userInput,
+		StateHash:        models.InitialStateHash,
+		Language:         story.Language,
+	}
+	log.Info("Prepared payload for InitialJsonGeneration retry")
+	return payload, nil
+}
+
+func (s *gameLoopServiceImpl) prepareCoverImageRetryPayload(log *zap.Logger, story *models.PublishedStory, setupMap map[string]interface{}, userID uuid.UUID) (*sharedMessaging.CharacterImageTaskPayload, error) {
+	basePrompt, okPrompt := setupMap["story_preview_image_prompt"].(string)
+	if !okPrompt || basePrompt == "" {
+		log.Error("story_preview_image_prompt missing or empty in setupMap for CoverImage retry")
+		return nil, errors.New("cannot retry cover image generation: story_preview_image_prompt missing")
+	}
+	userInput, err := utils.FormatInputForCoverImage(basePrompt, "", "")
+	if err != nil {
+		log.Error("Failed to format input for CoverImage retry", zap.Error(err))
+		return nil, err
+	}
+	payload := &sharedMessaging.CharacterImageTaskPayload{
+		TaskID:           uuid.New().String(),
+		UserID:           userID.String(),
+		PublishedStoryID: story.ID,
+		Prompt:           userInput,
+		ImageReference:   fmt.Sprintf("history_preview_%s", story.ID.String()),
+		CharacterID:      uuid.Nil,
+		CharacterName:    "Story Cover",
+		Ratio:            "3:2",
+	}
+	log.Info("Prepared payload for CoverImage retry")
+	return payload, nil
+}
+
+func (s *gameLoopServiceImpl) publishRetryCardImageTasks(ctx context.Context, log *zap.Logger, story *models.PublishedStory, initialSceneContent *models.InitialSceneContent, userID uuid.UUID) error {
+	log.Warn("Retrying CardImages step - this will republish tasks for ALL initial card images")
+	if initialSceneContent == nil || len(initialSceneContent.Cards) == 0 {
+		log.Warn("No initial cards found in InitialSceneContent, cannot retry card images")
+		return nil // Nothing to retry
+	}
+
+	var publishErrors []error
+	for i, card := range initialSceneContent.Cards {
+		if card.Pr == "" || card.Ir == "" {
+			log.Warn("Skipping card image generation due to missing prompt/ref", zap.Int("cardIndex", i), zap.String("cardName", card.Title))
+			continue
+		}
+		cardPayload := sharedMessaging.CharacterImageTaskPayload{
+			UserID:           userID.String(),
+			PublishedStoryID: story.ID,
+			TaskID:           uuid.New().String(),
+			Prompt:           card.Pr,
+			CharacterName:    card.Title,
+			ImageReference:   fmt.Sprintf("card_%s", card.Ir),
+			CharacterID:      uuid.Nil,
+			Ratio:            "2:3",
+		}
+		if errPub := s.imagePublisher.PublishCharacterImageTask(ctx, cardPayload); errPub != nil {
+			log.Error("Failed to publish card image task during retry", zap.Error(errPub), zap.Int("cardIndex", i), zap.String("cardName", card.Title))
+			publishErrors = append(publishErrors, errPub)
+		} else {
+			log.Info("Published card image task payload for retry", zap.Int("cardIndex", i), zap.String("cardName", card.Title))
+		}
+	}
+	if len(publishErrors) > 0 {
+		// Return the first error, or a combined error
+		return fmt.Errorf("encountered %d errors during card image task publishing retry: %w", len(publishErrors), publishErrors[0])
+	}
+	log.Info("Finished publishing all initial card image tasks for retry")
+	return nil
+}
+
+func (s *gameLoopServiceImpl) publishRetryCharacterImageTasks(ctx context.Context, log *zap.Logger, story *models.PublishedStory, initialSceneContent *models.InitialSceneContent) error {
+	log.Warn("Retrying CharacterImages step - this will republish tasks for ALL generated characters")
+	if initialSceneContent == nil || len(initialSceneContent.Characters) == 0 {
+		log.Warn("No characters found in InitialSceneContent, cannot retry character images")
+		return nil // Nothing to retry
+	}
+
+	var publishErrors []error
+	for i, char := range initialSceneContent.Characters {
+		if char.Prompt == "" || char.ImageRef == "" {
+			log.Warn("Skipping character image generation due to missing prompt/ref", zap.Int("charIndex", i), zap.String("charName", char.Name))
+			continue
+		}
+		charPayload := sharedMessaging.CharacterImageTaskPayload{
+			TaskID:           uuid.New().String(),
+			UserID:           story.UserID.String(),
+			PublishedStoryID: story.ID,
+			CharacterID:      uuid.Nil, // Assuming CharacterID is not readily available here or needed by publisher as Nil
+			CharacterName:    char.Name,
+			ImageReference:   fmt.Sprintf("ch_%s", char.ImageRef),
+			Prompt:           char.Prompt,
+			NegativePrompt:   "", // Add if needed
+			Ratio:            "2:3",
+		}
+		if errPub := s.imagePublisher.PublishCharacterImageTask(ctx, charPayload); errPub != nil {
+			log.Error("Failed to publish character image task during retry", zap.Error(errPub), zap.Int("charIndex", i), zap.String("charName", char.Name))
+			publishErrors = append(publishErrors, errPub)
+		} else {
+			log.Info("Published character image task payload for retry", zap.Int("charIndex", i), zap.String("charName", char.Name))
+		}
+	}
+	if len(publishErrors) > 0 {
+		return fmt.Errorf("encountered %d errors during character image task publishing retry: %w", len(publishErrors), publishErrors[0])
+	}
+	log.Info("Finished publishing all character image tasks for retry")
+	return nil
 }

@@ -23,8 +23,8 @@ import (
 
 // SetupPromptResult - структура для разбора JSON результата от PromptTypeStorySetup
 type SetupPromptResult struct {
-	Result        string `json:"result"` // Текст первой сцены (повествование)
-	PreviewPrompt string `json:"pr"`     // Промпт для генерации превью-изображения
+	Result        string `json:"res"` // Текст первой сцены (повествование)
+	PreviewPrompt string `json:"prv"` // Промпт для генерации превью-изображения
 }
 
 func (p *NotificationProcessor) publishStoryUpdateViaRabbitMQ(ctx context.Context, story *sharedModels.PublishedStory, eventType string, errorMsg *string) {
@@ -174,8 +174,13 @@ func (p *NotificationProcessor) handleNovelSetupNotification(ctx context.Context
 	}
 
 	// Проверка статуса истории
-	if publishedStory.Status != sharedModels.StatusSetupPending {
-		log.Warn("PublishedStory not in SetupPending status, Setup Success update cancelled.", zap.String("current_status", string(publishedStory.Status)))
+	if publishedStory.Status == sharedModels.StatusGenerating && publishedStory.InternalGenerationStep != nil && *publishedStory.InternalGenerationStep == sharedModels.StepSetupGeneration {
+		log.Info("Story status is 'generating' and InternalGenerationStep is 'setup_generation'. Proceeding for retry scenario.")
+	} else if publishedStory.Status != sharedModels.StatusSetupPending {
+		log.Warn("PublishedStory not in SetupPending status (or not a valid retry for generating/setup_generation), Setup Success update cancelled.",
+			zap.String("current_status", string(publishedStory.Status)),
+			zap.Any("internal_step", publishedStory.InternalGenerationStep),
+		)
 		// Не делаем ничего, просто коммитим (err == nil)
 		return nil // Вызовет Commit
 	}

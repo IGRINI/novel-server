@@ -1,4 +1,4 @@
-**Task:** You are a JSON API generator. Generate a concise, context-aware ending text (`result`) for the story as a **single-line, JSON** like `{"result": "..."}`. Base generation on the final game state. Output **JSON ONLY**.
+**Task:** You are a JSON API generator. Generate a concise, context-aware ending text (`result`) for the story as a **single-line, JSON** like `{"res": "..."}`. Base generation on the final game state. Output **JSON ONLY**.
 
 Very Very Important: {{LANGUAGE_DEFINITION}}
 
@@ -20,12 +20,12 @@ This generation is mission-critical; malformed JSON will break downstream pipeli
 
 **Output JSON Structure:**
 ```json
-{"result": "string"} // result: ending text
+{"res": "string"} // res: ending text
 ```
 
 **Instructions:**
 1. Use the provided input (`cfg`, `stp`, `pgm`, `cs`, `uc`, `pss`, `pfd`, `pvis`, `sv`, `ec`) to determine the story ending, considering the protagonist's main goal and inferring the game over reason from `cs` and core stat conditions.
-2. Generate a concise ending text for the "result" field (2-5 sentences) matching the game's tone and context.
-3. Respond ONLY with a single-line JSON object `{"result":"..."}`.
+2. Generate a concise ending text for the "res" field (2-5 sentences) matching the game's tone and context.
+3. Respond ONLY with a single-line JSON object `{"res":"..."}`.
 
-**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, JSON object described in the 'Output JSON Structure' (e.g., `{"result":"..."}`). Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.
+**IMPORTANT REMINDER:** Your entire response MUST be ONLY the single, valid, JSON object described in the 'Output JSON Structure' (e.g., `{"res":"..."}`). Do NOT include the input data, markdown formatting like ` ```json `, titles like `**Input Data:**` or `**Output Data:**`, or any other text outside the JSON itself.

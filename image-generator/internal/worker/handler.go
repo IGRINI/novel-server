@@ -52,7 +52,9 @@ var (
 
 // Function to check image reference prefix
 func isValidImageReference(ref string) bool {
-	return (len(ref) > 3 && ref[:3] == "ch_") || (len(ref) > 16 && ref[:16] == "history_preview_")
+	return (len(ref) > 3 && ref[:3] == "ch_") ||
+		(len(ref) > 16 && ref[:16] == "history_preview_") ||
+		(len(ref) > 5 && ref[:5] == "card_") // Added "card_" prefix check
 }
 
 // Handler обрабатывает входящие сообщения.
@@ -354,9 +356,12 @@ func determinePromptTypeFromReference(imageReference string) models.PromptType {
 		return models.PromptTypeCharacterImage
 	} else if len(imageReference) > 16 && imageReference[:16] == "history_preview_" {
 		return models.PromptTypeStoryPreviewImage
+	} else if len(imageReference) > 5 && imageReference[:5] == "card_" {
+		return models.PromptTypeCardImage
 	}
 	// Этот блок не должен вызываться, если isValidImageReference отработала корректно перед вызовом.
 	// Оставим как fallback, но по идее это ошибка логики, если мы сюда попали.
-	zap.L().Warn("determinePromptTypeFromReference called with invalid reference, should have been caught by validation", zap.String("reference", imageReference))
-	return models.PromptType("unknown_image_type")
+	// Также изменим общий тип на более конкретный, если он используется где-то еще.
+	zap.L().Warn("determinePromptTypeFromReference called with unhandled reference prefix, returning generic image_generation_prompt", zap.String("reference", imageReference))
+	return models.PromptTypeImageGeneration
 }

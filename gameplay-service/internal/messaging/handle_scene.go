@@ -26,6 +26,8 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 	gameStateID, err := parseUUIDField(notification.GameStateID, "GameStateID")
 	if err != nil {
 		p.logger.Error("Invalid GameStateID in scene notification", zap.Error(err))
+		// Уведомляем клиента об ошибке сцены
+		p.handleStoryError(ctx, publishedStoryID, notification.UserID, fmt.Sprintf("invalid GameStateID: %v", err), constants.WSEventSceneError)
 		return fmt.Errorf("invalid GameStateID: %w", err)
 	}
 
@@ -46,7 +48,8 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 	gameStateCheckCancel()
 	if errGetState != nil {
 		logWithState.Error("Failed to get PlayerGameState for status check", zap.Error(errGetState))
-		// Если не найдено, это странно, но может быть обработано дальше как ошибка. Вернем ошибку.
+		// Уведомляем клиента об ошибке игрового состояния
+		p.handleGameStateError(ctx, gameStateID, notification.UserID, fmt.Sprintf("failed to get PlayerGameState: %v", errGetState))
 		return fmt.Errorf("failed to get PlayerGameState %s for status check: %w", gameStateID, errGetState) // NACK
 	}
 	if gameState.PlayerStatus != sharedModels.PlayerStatusGeneratingScene {
@@ -77,20 +80,20 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 		} else {
 			// Строгая проверка и парсинг JSON
 			var payload struct {
-				Result string `json:"result"`
+				Res string `json:"res"`
 			}
 			payload, err = decodeStrictJSON[struct {
-				Result string `json:"result"`
+				Res string `json:"res"`
 			}](genResult.GeneratedText)
 			if err != nil {
-				logWithState.Error("UNMARSHAL ERROR: Failed to unmarshal {\"result\": \"...\"} from genResult.GeneratedText",
+				logWithState.Error("UNMARSHAL ERROR: Failed to unmarshal {\"res\": \"...\"} from genResult.GeneratedText",
 					zap.Error(err),
 					zap.String("json_snippet", utils.StringShort(genResult.GeneratedText, 200)),
 				)
 				fetchErr = fmt.Errorf("failed to unmarshal scene/gameover result JSON: %w", err)
 				genResultError = fetchErr.Error()
 			} else {
-				rawNarrativeText = payload.Result // Извлекаем текст
+				rawNarrativeText = payload.Res // Извлекаем текст
 				logWithState.Debug("Successfully fetched and extracted NarrativeText from DB result")
 			}
 		}

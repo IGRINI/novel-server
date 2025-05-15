@@ -68,9 +68,9 @@ type PublishedStory struct {
 	IsFirstScenePending bool `json:"is_first_scene_pending" db:"is_first_scene_pending"` // Флаг, что первая сцена еще не сгенерирована/не обработана
 	AreImagesPending    bool `json:"are_images_pending" db:"are_images_pending"`         // Флаг, что есть ожидающие генерации изображения (общий)
 
-	PendingCharGenTasks bool `json:"pending_char_gen_tasks" db:"pending_char_gen_tasks"`
-	PendingCardImgTasks int  `json:"pending_card_img_tasks" db:"pending_card_img_tasks"`
-	PendingCharImgTasks int  `json:"pending_char_img_tasks" db:"pending_char_img_tasks"`
+	PendingCharGenTasks int `json:"pending_char_gen_tasks" db:"pending_char_gen_tasks"`
+	PendingCardImgTasks int `json:"pending_card_img_tasks" db:"pending_card_img_tasks"`
+	PendingCharImgTasks int `json:"pending_char_img_tasks" db:"pending_char_img_tasks"`
 }
 
 // CharacterDefinition represents a character described in the setup JSON.

@@ -25,6 +25,7 @@ const (
 	PromptTypeNovelGameOverCreator PromptType = "novel_gameover_creator"      // from novel_gameover_creator.md
 	PromptTypeCharacterImage       PromptType = "character_image"             // Генерация изображения персонажа
 	PromptTypeStoryPreviewImage    PromptType = "story_preview_image"         // Генерация превью-изображения истории
+	PromptTypeCardImage            PromptType = "card_image"                  // Генерация изображения для карточки выбора/события
 	PromptTypeImageGeneration      PromptType = "image_generation_prompt"     // Общая генерация изображений по тексту (например, для карточек)
 	// Другие типы, не основанные на предоставленных файлах, были удалены согласно запросу.
 )
@@ -63,6 +64,7 @@ func IsValidPromptType(pt PromptType) bool {
 		PromptTypeNovelGameOverCreator,
 		PromptTypeCharacterImage,
 		PromptTypeStoryPreviewImage,
+		PromptTypeCardImage,
 		PromptTypeImageGeneration:
 		return true
 	default:

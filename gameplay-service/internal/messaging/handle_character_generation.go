@@ -14,6 +14,7 @@ import (
 	"novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
+	"novel-server/shared/utils"
 
 	"github.com/google/uuid"
 	// "novel-server/shared/utils" // Может понадобиться позже
@@ -51,21 +52,30 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 	dbCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	// Загружаем историю для доступа к флагу IsAdultContent и проверки статуса
-	publishedStory, err := p.publishedRepo.GetByID(dbCtx, p.db, publishedStoryID)
+	// <<< НАЧАЛО: Проверка статуса с использованием ensureStoryStatus >>>
+	publishedStory, err := p.ensureStoryStatus(dbCtx, publishedStoryID, sharedModels.StatusSubTasksPending)
 	if err != nil {
-		log.Error("Failed to get PublishedStory for character generation", zap.Error(err))
-		return fmt.Errorf("error getting PublishedStory %s: %w", publishedStoryID, err)
+		// ensureStoryStatus уже залогировал ошибку получения или несоответствие (если err != nil)
+		return err // Если была ошибка получения истории (не просто несоответствие статуса), NACK
+	}
+	if publishedStory == nil {
+		// Статус не StatusSubTasksPending ИЛИ (статус StatusGenerating, но InternalStep не StepCharacterGeneration/StepCardImageGeneration/StepCharacterImageGeneration)
+		// В этом случае ensureStoryStatus уже залогировал "Story status mismatch, skipping handler"
+		return nil // ACK и выход
 	}
 
-	// <<< НАЧАЛО: Проверка статуса >>>
-	if publishedStory.Status != sharedModels.StatusSubTasksPending || !publishedStory.PendingCharGenTasks {
-		errMsg := fmt.Sprintf("unexpected character generation state for story %s: status=%s, pendingTasks=%t",
-			publishedStoryID, string(publishedStory.Status), publishedStory.PendingCharGenTasks,
+	// Дополнительная проверка: если мы здесь для CharacterGeneration, флаг PendingCharGenTasks должен быть true.
+	// ensureStoryStatus с StatusSubTasksPending мог пропустить, если, например, InternalStep был StepCardImageGeneration (что валидно для SubTasksPending).
+	// Но для этого конкретного обработчика нам нужен именно PendingCharGenTasks.
+	if publishedStory.PendingCharGenTasks == 0 {
+		errMsg := fmt.Sprintf("unexpected state for CharacterGeneration handler: story %s in status %s (InternalStep: %s) but PendingCharGenTasks is 0 (expected > 0)",
+			publishedStoryID, string(publishedStory.Status), PtrToString(publishedStory.InternalGenerationStep),
 		)
+		log.Warn(errMsg)
 		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
-		return nil
+		return nil // Ack, это не та подзадача, которую мы ждем
 	}
+	log.Info("Story status and PendingCharGenTasks flag are valid for CharacterGeneration.")
 	// <<< КОНЕЦ: Проверка статуса >>>
 
 	// Получаем результат генерации
@@ -99,16 +109,16 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 	generatedCharacters := make([]sharedModels.CharacterDefinition, 0, len(chars))
 	for _, charMap := range chars {
 		charDef := sharedModels.CharacterDefinition{}
-		if nameVal, ok := charMap["name"].(string); ok {
+		if nameVal, ok := charMap["n"].(string); ok {
 			charDef.Name = nameVal
 		}
-		if traitsVal, ok := charMap["traits"].(string); ok {
+		if traitsVal, ok := charMap["d"].(string); ok {
 			charDef.Description = traitsVal
 		}
-		if ipdVal, ok := charMap["image_prompt_descriptor"].(string); ok {
+		if ipdVal, ok := charMap["pr"].(string); ok {
 			charDef.Prompt = ipdVal
 		}
-		if irnVal, ok := charMap["image_reference_name"].(string); ok {
+		if irnVal, ok := charMap["ir"].(string); ok {
 			charDef.ImageRef = irnVal
 		}
 		generatedCharacters = append(generatedCharacters, charDef)
@@ -123,25 +133,25 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 			return nil // Ack
 		}
 		// Проверка остальных обязательных полей
-		if name, ok := c["name"].(string); !ok || strings.TrimSpace(name) == "" {
+		if name, ok := c["n"].(string); !ok || strings.TrimSpace(name) == "" {
 			errMsg := fmt.Sprintf("missing or invalid 'name' field in character at index %d", i)
 			log.Error(errMsg)
 			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
-		if role, ok := c["role"].(string); !ok || strings.TrimSpace(role) == "" {
+		if role, ok := c["ro"].(string); !ok || strings.TrimSpace(role) == "" {
 			errMsg := fmt.Sprintf("missing or invalid 'role' field in character at index %d", i)
 			log.Error(errMsg)
 			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
-		if traits, ok := c["traits"].(string); !ok || strings.TrimSpace(traits) == "" {
+		if traits, ok := c["d"].(string); !ok || strings.TrimSpace(traits) == "" {
 			errMsg := fmt.Sprintf("missing or invalid 'traits' field in character at index %d", i)
 			log.Error(errMsg)
 			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
-		relRaw, ok := c["relationship"].(map[string]interface{})
+		relRaw, ok := c["rp"].(map[string]interface{})
 		if !ok {
 			errMsg := fmt.Sprintf("missing or invalid 'relationship' object in character at index %d", i)
 			log.Error(errMsg)
@@ -154,25 +164,25 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
-		if mem, ok := c["memories"].(string); !ok || strings.TrimSpace(mem) == "" {
+		if mem, ok := c["m"].(string); !ok || strings.TrimSpace(mem) == "" {
 			errMsg := fmt.Sprintf("missing or invalid 'memories' field in character at index %d", i)
 			log.Error(errMsg)
 			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
-		if hook, ok := c["plotHook"].(string); !ok || strings.TrimSpace(hook) == "" {
+		if hook, ok := c["ph"].(string); !ok || strings.TrimSpace(hook) == "" {
 			errMsg := fmt.Sprintf("missing or invalid 'plotHook' field in character at index %d", i)
 			log.Error(errMsg)
 			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
-		if ipd, ok := c["image_prompt_descriptor"].(string); !ok || strings.TrimSpace(ipd) == "" {
+		if ipd, ok := c["pr"].(string); !ok || strings.TrimSpace(ipd) == "" {
 			errMsg := fmt.Sprintf("missing or invalid 'image_prompt_descriptor' field in character at index %d", i)
 			log.Error(errMsg)
 			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 			return nil // Ack
 		}
-		if irn, ok := c["image_reference_name"].(string); !ok || strings.TrimSpace(irn) == "" {
+		if irn, ok := c["ir"].(string); !ok || strings.TrimSpace(irn) == "" {
 			errMsg := fmt.Sprintf("missing or invalid 'image_reference_name' field in character at index %d", i)
 			log.Error(errMsg)
 			p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
@@ -202,7 +212,7 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 	*/
 
 	// Обновляем флаг задачи генерации персонажей
-	publishedStory.PendingCharGenTasks = false
+	publishedStory.PendingCharGenTasks = 0
 	publishedStory.PendingCharImgTasks += len(chars)
 
 	// Атомарно сохраняем контент начальной сцены и флаги
@@ -229,11 +239,15 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 			return err
 		}
 		step := sharedModels.StepCharacterImageGeneration
+		newStatus := sharedModels.StatusImageGenerationPending
 		if err := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, tx,
 			publishedStory.ID,
-			publishedStory.Status,
+			newStatus,
 			false,
 			publishedStory.PendingCardImgTasks > 0 || publishedStory.PendingCharImgTasks > 0,
+			0,
+			publishedStory.PendingCardImgTasks,
+			publishedStory.PendingCharImgTasks,
 			nil,
 			&step,
 		); err != nil {
@@ -244,21 +258,24 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 	})
 	if errTx != nil {
 		log.Error("Transaction failed during character generation update", zap.Error(errTx))
-		return nil // Ack
+		// Устанавливаем статус Error и уведомляем клиента
+		errDetails := fmt.Sprintf("transaction failed during character generation update: %v", errTx)
+		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errDetails, constants.WSEventStoryError)
+		return nil // Ack после уведомления об ошибке
 	}
 
 	// Публикуем задачи генерации изображений для новых персонажей
 	for _, c := range chars {
-		refName := c["image_reference_name"].(string)
-		prompt := c["image_prompt_descriptor"].(string)
+		refName := c["ir"].(string)
+		prompt := c["pr"].(string)
 		charTaskID := uuid.New()
 		imgPayload := sharedMessaging.CharacterImageTaskPayload{
 			TaskID:           charTaskID.String(),
 			UserID:           publishedStory.UserID.String(),
 			PublishedStoryID: publishedStoryID,
 			CharacterID:      charTaskID,
-			CharacterName:    c["name"].(string),
-			ImageReference:   refName,
+			CharacterName:    c["n"].(string),
+			ImageReference:   fmt.Sprintf("ch_%s", refName),
 			Prompt:           prompt,
 			NegativePrompt:   "",
 			Ratio:            "2:3",
@@ -287,7 +304,7 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 		} else if postCommitStory.PendingCharImgTasks > 0 {
 			step := sharedModels.StepCharacterImageGeneration
 			finalNextStep = &step
-		} else if !postCommitStory.PendingCharGenTasks { // Убедимся, что и CharGen завершен
+		} else if postCommitStory.PendingCharGenTasks == 0 {
 			step := sharedModels.StepSetupGeneration
 			finalNextStep = &step
 		} // Если еще есть PendingCharGenTasks (маловероятно здесь), шаг не меняем
@@ -295,7 +312,17 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 		if finalNextStep != nil {
 			updateStepCtx, cancelStep := context.WithTimeout(context.Background(), 10*time.Second)
 			// Обновляем только шаг, статус и флаги были установлены ранее (хотя статус мог быть SubTasksPending)
-			if errUpdateStep := p.publishedRepo.UpdateStatusFlagsAndDetails(updateStepCtx, p.db, publishedStoryID, postCommitStory.Status, postCommitStory.IsFirstScenePending, postCommitStory.AreImagesPending, nil, finalNextStep); errUpdateStep != nil {
+			if errUpdateStep := p.publishedRepo.UpdateStatusFlagsAndDetails(updateStepCtx, p.db,
+				publishedStoryID,
+				postCommitStory.Status,
+				postCommitStory.IsFirstScenePending,
+				postCommitStory.AreImagesPending,
+				postCommitStory.PendingCharGenTasks,
+				postCommitStory.PendingCardImgTasks,
+				postCommitStory.PendingCharImgTasks,
+				nil,
+				finalNextStep,
+			); errUpdateStep != nil {
 				log.Error("Failed to update InternalGenerationStep after character generation task dispatch", zap.Error(errUpdateStep), zap.Any("step_to_set", finalNextStep))
 			} else {
 				log.Info("InternalGenerationStep updated successfully after character generation", zap.Any("new_step", finalNextStep))
@@ -306,9 +333,52 @@ func (p *NotificationProcessor) handleCharacterGenerationResult(ctx context.Cont
 		}
 		// Отправляем клиентское обновление о новых задачах
 		// Используем postCommitStory, так как он содержит актуальные флаги/статус
-		p.publishClientStoryUpdateOnReady(postCommitStory)
+		// Уведомляем клиента об обновлении статуса истории после генерации персонажей
+		if uid, perr := parseUUIDField(postCommitStory.UserID.String(), "UserID"); perr == nil {
+			p.notifyClient(publishedStoryID, uid, sharedModels.UpdateTypeStory, string(postCommitStory.Status), nil)
+		}
+
+		// После генерации персонажей, если это первая сцена, публикуем задачу StorySetup с полным списком персонажей
+		if publishedStory.IsFirstScenePending {
+			// Подготавливаем ввод: объединяем конфиг и список персонажей
+			var cfg sharedModels.Config
+			if errUn := json.Unmarshal(publishedStory.Config, &cfg); errUn != nil {
+				log.Error("Failed to unmarshal config for Setup prompt", zap.Error(errUn))
+			} else {
+				// Передаем сырые данные персонажей
+				setupData := map[string]interface{}{"chars": chars}
+				userInput, errFmt := utils.FormatConfigAndSetupDataToString(cfg, setupData, publishedStory.IsAdultContent)
+				if errFmt != nil {
+					log.Error("Failed to format config and setup data for Setup prompt", zap.Error(errFmt))
+					// fallback к чистому конфику
+					userInput = utils.FormatConfigToString(cfg, publishedStory.IsAdultContent)
+				}
+				setupTaskID := uuid.New().String()
+				setupPayload := sharedMessaging.GenerationTaskPayload{
+					TaskID:           setupTaskID,
+					UserID:           publishedStory.UserID.String(),
+					PromptType:       sharedModels.PromptTypeStorySetup,
+					UserInput:        userInput,
+					PublishedStoryID: publishedStoryID.String(),
+					Language:         publishedStory.Language,
+				}
+				if errPub := p.publishTask(setupPayload); errPub != nil {
+					log.Error("Failed to publish Setup task after character generation", zap.Error(errPub))
+				} else {
+					log.Info("Setup task published after character generation", zap.String("task_id", setupTaskID))
+				}
+			}
+		}
 	}
 	// <<< КОНЕЦ: Определение и установка следующего шага >>>
 
 	return nil // Ack
+}
+
+// Вспомогательная функция для разыменования указателя на строку для логгирования
+func PtrToString(s *sharedModels.InternalGenerationStep) string {
+	if s == nil {
+		return "<nil>"
+	}
+	return string(*s)
 }

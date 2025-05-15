@@ -187,6 +187,7 @@ func NewNotificationProcessor(
 	p.handlers[sharedModels.PromptTypeCharacterGeneration] = NotificationHandlerFunc(p.handleCharacterGenerationResult)
 	p.handlers[sharedModels.PromptTypeCharacterImage] = NotificationHandlerFunc(p.handleImageNotification)
 	p.handlers[sharedModels.PromptTypeStoryPreviewImage] = NotificationHandlerFunc(p.handleImageNotification)
+	p.handlers[sharedModels.PromptTypeCardImage] = NotificationHandlerFunc(p.handleImageNotification)
 	p.handlers[sharedModels.PromptTypeJsonGeneration] = NotificationHandlerFunc(p.handleJsonGenerationResult)
 	return p
 }
@@ -307,7 +308,7 @@ func (p *NotificationProcessor) handleInitialSceneGenerated(ctx context.Context,
 	// 1. Обработка ошибки
 	if notification.Status == sharedMessaging.NotificationStatusError {
 		log.Error("Initial scene generation failed", zap.String("error_details", notification.ErrorDetails))
-		err := p.publishedRepo.UpdateStatusFlagsAndDetails(ctx, p.db, publishedStoryID, sharedModels.StatusError, false, false, &notification.ErrorDetails, nil)
+		err := p.publishedRepo.UpdateStatusFlagsAndDetails(ctx, p.db, publishedStoryID, sharedModels.StatusError, false, false, 0, 0, 0, &notification.ErrorDetails, nil)
 		if err != nil {
 			log.Error("Failed to update published story status to Error after initial scene generation failure", zap.Error(err))
 		}
@@ -391,7 +392,7 @@ func (p *NotificationProcessor) handleInitialSceneGenerated(ctx context.Context,
 			log.Error("Failed to begin transaction for updating AreImagesPending flag", zap.Error(errTxImg))
 			return fmt.Errorf("failed to begin transaction for updating AreImagesPending flag: %w", errTxImg)
 		}
-		if errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(ctx, txImg, publishedStoryID, newStatus, storyBeforeUpdate.IsFirstScenePending, false, nil, nil); errUpdate != nil {
+		if errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(ctx, txImg, publishedStoryID, newStatus, storyBeforeUpdate.IsFirstScenePending, false, storyBeforeUpdate.PendingCharGenTasks, storyBeforeUpdate.PendingCardImgTasks, storyBeforeUpdate.PendingCharImgTasks, nil, nil); errUpdate != nil {
 			log.Error("Failed to update status and AreImagesPending flag in transaction", zap.Error(errUpdate))
 			_ = txImg.Rollback(ctx)
 			return fmt.Errorf("failed to update status and AreImagesPending flag: %w", errUpdate)
@@ -545,54 +546,36 @@ func (p *NotificationProcessor) handleImageNotification(ctx context.Context, not
 		p.logger.Info("Image URL saved successfully for reference", logFields...)
 
 		// 2. Определяем, какой счетчик декрементировать и проверяем готовность истории
-		var opDecCharGen, opIncCharImg, opDecCardImg, opDecCharImg int
-		var determinedDecrement bool = false // Флаг, что мы определили, какой счетчик уменьшать
+		var opDecCardImg, opDecCharImg int // opDecCharGen и opIncCharImg здесь не используются, они для других этапов
 
-		// Загружаем историю, чтобы проверить счетчики Pending
-		publishedStory, errGetStory := p.publishedRepo.GetByID(dbCtx, p.db, publishedStoryID)
-		if errGetStory != nil {
-			p.logger.Error("Failed to get PublishedStory to determine image type based on counters", append(logFields, zap.Error(errGetStory))...)
-			// Не можем определить тип, Nack-аем
-			return fmt.Errorf("failed to get story %s to determine image type: %w", publishedStoryID, errGetStory)
-		}
-
-		if imageReference == "cover" {
-			p.logger.Info("Image identified as cover image.", logFields...)
+		switch notification.PromptType {
+		case sharedModels.PromptTypeCardImage:
+			p.logger.Info("Image identified as CardImage by PromptType.", logFields...)
 			opDecCardImg = 1
-			logFields = append(logFields, zap.String("decrementing", "PendingCardImgTasks (for cover)"))
-			determinedDecrement = true
-		} else {
-			// Если не обложка, пытаемся определить по счетчикам
-			if publishedStory.PendingCharImgTasks > 0 {
-				p.logger.Info("Image assumed to be character image based on PendingCharImgTasks > 0.", logFields...)
-				opDecCharImg = 1
-				logFields = append(logFields, zap.String("decrementing", "PendingCharImgTasks"))
-				determinedDecrement = true
-			} else if publishedStory.PendingCardImgTasks > 0 {
-				p.logger.Info("Image assumed to be card image based on PendingCharImgTasks = 0 and PendingCardImgTasks > 0.", logFields...)
-				opDecCardImg = 1
-				logFields = append(logFields, zap.String("decrementing", "PendingCardImgTasks (for card)"))
-				determinedDecrement = true
-			} else {
-				// Оба счетчика 0, но результат пришел? Странно.
-				p.logger.Warn("Received image result, but both PendingCharImgTasks and PendingCardImgTasks are 0. Assuming it's a late card image.", append(logFields, zap.Int("pending_char_img", publishedStory.PendingCharImgTasks), zap.Int("pending_card_img", publishedStory.PendingCardImgTasks))...)
-				opDecCardImg = 1 // По умолчанию декрементируем счетчик карт
-				logFields = append(logFields, zap.String("decrementing", "PendingCardImgTasks (assumed late card)"))
-				determinedDecrement = true // Считаем, что определили
-			}
-		}
-
-		// Проверяем, что хотя бы один счетчик был выбран для декремента
-		if !determinedDecrement {
-			// Этого не должно произойти при текущей логике, но на всякий случай
-			p.logger.Error("CRITICAL: Failed to determine which counter to decrement for image result.", logFields...)
-			// Не знаем, что делать, Nack
-			return fmt.Errorf("failed to determine counter decrement for image %s (story %s)", imageReference, publishedStoryID)
+			logFields = append(logFields, zap.String("decrementing", "PendingCardImgTasks (due to PromptTypeCardImage)"))
+		case sharedModels.PromptTypeCharacterImage:
+			p.logger.Info("Image identified as CharacterImage by PromptType.", logFields...)
+			opDecCharImg = 1
+			logFields = append(logFields, zap.String("decrementing", "PendingCharImgTasks (due to PromptTypeCharacterImage)"))
+		case sharedModels.PromptTypeStoryPreviewImage:
+			p.logger.Info("Image identified as StoryPreviewImage by PromptType.", logFields...)
+			// Превью обрабатывается как "card-like" изображение для счетчика
+			opDecCardImg = 1
+			logFields = append(logFields, zap.String("decrementing", "PendingCardImgTasks (due to PromptTypeStoryPreviewImage)"))
+		default:
+			// Неизвестный PromptType для изображения. Этого не должно происходить.
+			p.logger.Error("CRITICAL: Received image notification with unknown PromptType for image handling.",
+				append(logFields, zap.String("prompt_type", string(notification.PromptType)))...)
+			// Не знаем, какой счетчик уменьшать. Отправляем ошибку, чтобы предотвратить зависание.
+			errMsg := fmt.Sprintf("internal error: unknown image prompt type %s for task %s", notification.PromptType, notification.TaskID)
+			go p.handleStoryError(context.Background(), publishedStoryID, notification.UserID, errMsg, constants.WSEventStoryError)
+			return nil // Ack, т.к. обработали как ошибку.
 		}
 
 		p.logger.Info("Triggering story readiness check after image notification", logFields...)
-		// Вызываем checkStoryReadinessAfterImage с определенными НОВОЙ логикой opDec... значениями
-		go p.checkStoryReadinessAfterImage(context.Background(), publishedStoryID, opDecCharGen, opIncCharImg, opDecCardImg, opDecCharImg)
+		// Вызываем checkStoryReadinessAfterImage с определенными операциями декремента.
+		// opDecCharGen и opIncCharImg равны 0, так как этот обработчик только для результатов генерации изображений.
+		go p.checkStoryReadinessAfterImage(context.Background(), publishedStoryID, opDecCardImg, opDecCharImg)
 
 		// Если дошли сюда без ошибок сохранения URL, подтверждаем сообщение
 		return nil // Ack
@@ -694,41 +677,37 @@ func (p *NotificationProcessor) publishPushOnError(ctx context.Context, storyID 
 // <<< НАЧАЛО: Функция проверки готовности после генерации изображения >>>
 // checkStoryReadinessAfterImage проверяет, все ли необходимые изображения и первая сцена для истории готовы.
 // Если да, обновляет статус истории на Ready и отправляет Push-уведомление.
-func (p *NotificationProcessor) checkStoryReadinessAfterImage(ctx context.Context, publishedStoryID uuid.UUID, opDecCharGen, opIncCharImg, opDecCardImg, opDecCharImg int) {
+func (p *NotificationProcessor) checkStoryReadinessAfterImage(ctx context.Context, publishedStoryID uuid.UUID, opDecCardImg, opDecCharImg int) {
 	log := p.logger.With(
 		zap.Stringer("publishedStoryID", publishedStoryID),
-		zap.Int("opDecCharGen", opDecCharGen),
-		zap.Int("opIncCharImg", opIncCharImg),
 		zap.Int("opDecCardImg", opDecCardImg),
 		zap.Int("opDecCharImg", opDecCharImg),
 	)
 	log.Info("Checking story readiness after image task completion...")
 
-	// Используем UpdateCountersAndMaybeStatus для атомарного обновления счетчиков и статуса.
-	// Значения opDecCardImg и opDecCharImg передаются из handleImageNotification
-	// и уже учитывают тип сгенерированного изображения.
-
 	// Используем временный контекст для обновления счетчиков/статуса
 	updateCtx, cancelUpdate := context.WithTimeout(ctx, 15*time.Second)
 	defer cancelUpdate()
 
-	// Вызываем метод репозитория, который атомарно обновит счетчики (если передать > 0) и статус
-	allTasksComplete, finalStatus, errUpdate := p.publishedRepo.UpdateCountersAndMaybeStatus(
+	// Атомарно обновляем счетчики и проверяем, не стал ли статус Ready.
+	// Передаем 0 для opDecCharGen и opIncCharImg, так как они не изменяются на этом шаге.
+	// UpdateCountersAndMaybeStatus возвращает: allTasksComplete, finalStatus, error
+	allTasksComplete, finalStatus, errUpdateCounters := p.publishedRepo.UpdateCountersAndMaybeStatus(
 		updateCtx,
-		p.db, // Используем основной pool, т.к. метод должен быть атомарным
+		p.db,
 		publishedStoryID,
-		opDecCharGen,             // Используем переданные значения
-		opIncCharImg,             // Используем переданные значения
-		opDecCardImg,             // Используем переданные значения
-		opDecCharImg,             // Используем переданные значения
-		sharedModels.StatusReady, // newStatusIfComplete
+		0,
+		0,
+		opDecCardImg,
+		opDecCharImg,
+		sharedModels.StatusReady,
 	)
 
-	if errUpdate != nil {
-		if errors.Is(errUpdate, sharedModels.ErrNotFound) {
+	if errUpdateCounters != nil {
+		if errors.Is(errUpdateCounters, sharedModels.ErrNotFound) {
 			log.Warn("PublishedStory not found during counter update check, maybe deleted?")
 		} else {
-			log.Error("Failed to update counters and potentially status for story", zap.Error(errUpdate))
+			log.Error("Failed to update counters and potentially status for story", zap.Error(errUpdateCounters))
 		}
 		return // Ничего не делаем дальше при ошибке
 	}
@@ -748,7 +727,7 @@ func (p *NotificationProcessor) checkStoryReadinessAfterImage(ctx context.Contex
 		defer cancelStep()
 
 		// Обновляем только шаг, статус уже Ready. Устанавливаем флаги в false.
-		if errUpdateStep := p.publishedRepo.UpdateStatusFlagsAndDetails(stepCtx, p.db, publishedStoryID, sharedModels.StatusReady, false, false, nil, &stepComplete); errUpdateStep != nil {
+		if errUpdateStep := p.publishedRepo.UpdateStatusFlagsAndDetails(stepCtx, p.db, publishedStoryID, sharedModels.StatusReady, false, false, 0, 0, 0, nil, &stepComplete); errUpdateStep != nil {
 			log.Error("Failed to update InternalGenerationStep to Complete after all tasks finished", zap.Error(errUpdateStep))
 			// Не критично, но логируем
 		}
@@ -919,8 +898,10 @@ func (p *NotificationProcessor) updateStorySetupAndCounters(ctx context.Context,
 	// Затем обновляем счётчики
 	// Преобразуем булев флаг PendingCharGenTasks в int
 	var pendingCharGenCount int
-	if story.PendingCharGenTasks {
+	if story.PendingCharGenTasks > 0 {
 		pendingCharGenCount = 1
+	} else {
+		pendingCharGenCount = 0
 	}
 	if err := p.publishedRepo.UpdateSetupStatusAndCounters(ctx, tx,
 		story.ID,

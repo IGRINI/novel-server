@@ -95,19 +95,92 @@ func mergeSetup(existing json.RawMessage, updates map[string]interface{}) (json.
 	return newBytes, err
 }
 
-// ensureStoryStatus получает историю по ID и проверяет, что её статус равен expected.
+// ensureStoryStatus получает историю по ID и проверяет, что её статус равен expected
+// или, если текущий статус "generating", то InternalGenerationStep соответствует ожидаемому шагу.
 // Возвращает nil, nil если статус не совпал (пропуск дальнейшей логики). Ошибку если проблема доступа.
-func (p *NotificationProcessor) ensureStoryStatus(ctx context.Context, storyID uuid.UUID, expected sharedModels.StoryStatus) (*sharedModels.PublishedStory, error) {
+func (p *NotificationProcessor) ensureStoryStatus(ctx context.Context, storyID uuid.UUID, expectedStatus sharedModels.StoryStatus) (*sharedModels.PublishedStory, error) {
 	story, err := p.publishedRepo.GetByID(ctx, p.db, storyID)
 	if err != nil {
-		p.logger.Error("Failed to load story for status check", zap.Error(err))
+		p.logger.Error("Failed to load story for status check", zap.Error(err), zap.Stringer("storyID", storyID))
 		return nil, err
 	}
-	if story.Status != expected {
-		p.logger.Warn("Story status mismatch, skipping handler", zap.String("current", string(story.Status)), zap.String("expected", string(expected)))
-		return nil, nil
+
+	if story.Status == expectedStatus {
+		return story, nil // Статус точно совпадает
 	}
-	return story, nil
+
+	// Если текущий статус 'generating', проверяем, не ретрай ли это для ожидаемого шага
+	if story.Status == sharedModels.StatusGenerating {
+		var correspondingStep sharedModels.InternalGenerationStep
+		switch expectedStatus {
+		case sharedModels.StatusModerationPending:
+			correspondingStep = sharedModels.StepModeration
+		case sharedModels.StatusProtagonistGoalPending:
+			correspondingStep = sharedModels.StepProtagonistGoal
+		case sharedModels.StatusScenePlannerPending:
+			correspondingStep = sharedModels.StepScenePlanner
+		case sharedModels.StatusSubTasksPending: // Этот статус более общий, может покрывать несколько шагов
+			// Если SubTasksPending, это обычно CharacterGeneration или ImageGeneration этапы.
+			// Для CharacterGeneration, InternalGenerationStep будет StepCharacterGeneration.
+			// Для ImageGeneration (карт), InternalGenerationStep будет StepCardImageGeneration.
+			// Для ImageGeneration (персонажей), InternalGenerationStep будет StepCharacterImageGeneration.
+			// Мы можем проверить, является ли InternalGenerationStep одним из этих.
+			if story.InternalGenerationStep != nil &&
+				(*story.InternalGenerationStep == sharedModels.StepCharacterGeneration ||
+					*story.InternalGenerationStep == sharedModels.StepCardImageGeneration ||
+					*story.InternalGenerationStep == sharedModels.StepCharacterImageGeneration) {
+				p.logger.Info("Story status is 'generating', but InternalGenerationStep matches a sub_task type for expected 'sub_tasks_pending'. Proceeding.",
+					zap.Stringer("storyID", storyID),
+					zap.String("current_internal_step", string(*story.InternalGenerationStep)),
+					zap.String("expected_status", string(expectedStatus))) // Log expected status instead of specific step here
+				return story, nil
+			}
+		case sharedModels.StatusSetupPending:
+			correspondingStep = sharedModels.StepSetupGeneration
+		case sharedModels.StatusFirstScenePending: // Обычно это StepInitialSceneJSON
+			correspondingStep = sharedModels.StepInitialSceneJSON
+		case sharedModels.StatusImageGenerationPending: // Может быть StepCoverImageGeneration, StepCardImageGeneration, StepCharacterImageGeneration
+			if story.InternalGenerationStep != nil &&
+				(*story.InternalGenerationStep == sharedModels.StepCoverImageGeneration ||
+					*story.InternalGenerationStep == sharedModels.StepCardImageGeneration ||
+					*story.InternalGenerationStep == sharedModels.StepCharacterImageGeneration) {
+				p.logger.Info("Story status is 'generating', but InternalGenerationStep matches an image generation type for expected 'image_generation_pending'. Proceeding.",
+					zap.Stringer("storyID", storyID),
+					zap.String("current_internal_step", string(*story.InternalGenerationStep)),
+					zap.String("expected_status", string(expectedStatus)))
+				return story, nil
+			}
+		case sharedModels.StatusJsonGenerationPending: // Обычно это StepInitialSceneJSON
+			correspondingStep = sharedModels.StepInitialSceneJSON
+		// StatusInitialGeneration не обрабатывается здесь т.к. он сам по себе generating
+		// StatusReady и StatusError не должны быть expected здесь для генерационных шагов.
+		default:
+			// Для других expectedStatus, если текущий 'generating', это, вероятно, несоответствие.
+			p.logger.Warn("Story status is 'generating', but expected status does not have a direct retry step mapping for this check.",
+				zap.Stringer("storyID", storyID),
+				zap.String("current_status", string(story.Status)),
+				zap.String("expected_status", string(expectedStatus)),
+				zap.Any("internal_step", story.InternalGenerationStep))
+			return nil, nil
+		}
+
+		if correspondingStep != "" && story.InternalGenerationStep != nil && *story.InternalGenerationStep == correspondingStep {
+			p.logger.Info("Story status is 'generating', but InternalGenerationStep matches the expected step. Proceeding.",
+				zap.Stringer("storyID", storyID),
+				zap.String("current_status", string(story.Status)),
+				zap.String("expected_status", string(expectedStatus)),
+				zap.String("internal_step", string(*story.InternalGenerationStep)))
+			return story, nil
+		}
+	}
+
+	// Если ни одно из условий не выполнено, это несоответствие статуса
+	p.logger.Warn("Story status mismatch, skipping handler",
+		zap.Stringer("storyID", storyID),
+		zap.String("current_status", string(story.Status)),
+		zap.String("expected_status", string(expectedStatus)),
+		zap.Any("internal_step", story.InternalGenerationStep))
+	return nil, nil
 }
 
 // ensureGameStateStatus получает PlayerGameState по ID и проверяет ожидаемый статус.

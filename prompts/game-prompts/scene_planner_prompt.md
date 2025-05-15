@@ -1,9 +1,9 @@
 **Task:** AI Scene Planner. Analyze current game state and output a single JSON object with directives for the next scene.
 
-All strings, except `image_prompt_descriptor` and `image_reference_name`, are output in `{{LANGUAGE_DEFINITION}}`; both of these fields are always in English.
+All strings, except `pr` and `ir`, are output in `{{LANGUAGE_DEFINITION}}`; both of these fields are always in English.
 
 # Objective:
-Output a JSON with directives for the next scene, including new NPCs, potential new cards (implied by `new_card_suggestions`), NPC updates/removals, and scene focus.
+Output a JSON with directives for the next scene, including new NPCs, potential new cards (implied by `ncds`), NPC updates/removals, and scene focus.
 
 # Input:
 A multi-line plain text describing the current game state and general game configuration.
@@ -11,69 +11,69 @@ The AI should parse this input text to extract values for general context (like 
 
 # Instructions:
 1.  Parse the input text to extract game state information and analyze all extracted fields.
-2.  **New NPCs (`need_new_character` & `new_character_suggestions`):**
-    *   Set `need_new_character`: true if an NPC is CRITICAL for plot progression and existing NPCs cannot fulfill the role. Prioritize using/updating existing NPCs.
-    *   If `need_new_character` is true, provide 1-2 `new_character_suggestions` (each with `role`, `reason`). Otherwise, `new_character_suggestions` is an empty array or omitted.
-3.  **New Scene Cards (`new_card_suggestions`):**
-    *   Analyze `scene_focus` and `current_scene_cards`.
-    *   If new visual cards are CRITICAL to represent `scene_focus` or key actions/elements, and suitable cards are not in `current_scene_cards`, provide 1-3 `new_card_suggestions`. Prioritize existing cards. Each suggestion includes:
-        *   `image_prompt_descriptor` (string): A short, precise visual description for the new card image. This description MUST be consistent with the overall application style: "A moody, high-contrast digital illustration with dark tones, soft neon accents, and a focused central composition blending fantasy and minimalism, using a palette of deep blues, teals, cyan glow, and occasional purples for atmosphere."
-        *   `image_reference_name` (string): A unique and descriptive name or identifier for the card's generated image (e.g., 'abandoned_library_clue', 'city_marketplace_encounter'). This should be in snake_case and suitable for use as a filename or asset ID. It can be based on the card's title or its narrative purpose in the scene.
+2.  **New NPCs (`nnc` & `ncs`):**
+    *   Set `nnc`: true if an NPC is CRITICAL for plot progression and existing NPCs cannot fulfill the role. Prioritize using/updating existing NPCs.
+    *   If `nnc` is true, provide 1-2 `ncs` (each with `role`, `reason`). Otherwise, `ncs` is an empty array or omitted.
+3.  **New Scene Cards (`ncds`):**
+    *   Analyze `sf` and `current_scene_cards`.
+    *   If new visual cards are CRITICAL to represent `sf` or key actions/elements, and suitable cards are not in `current_scene_cards`, provide 1-3 `ncds`. Prioritize existing cards. Each suggestion includes:
+        *   `pr` (string): A short, precise visual description for the new card image. This description MUST be consistent with the overall application style: "A moody, high-contrast digital illustration with dark tones, soft neon accents, and a focused central composition blending fantasy and minimalism, using a palette of deep blues, teals, cyan glow, and occasional purples for atmosphere."
+        *   `ir` (string): A unique and descriptive name or identifier for the card's generated image (e.g., 'abandoned_library_clue', 'city_marketplace_encounter'). This should be in snake_case and suitable for use as a filename or asset ID. It can be based on the card's title or its narrative purpose in the scene.
         *   `title` (string): Card title/caption.
         *   `reason` (string): Justification for the card.
-    *   Otherwise, `new_card_suggestions` should be an empty array or omitted.
-4.  **NPC Updates (`character_updates`):** For NPCs affected by recent events:
+    *   Otherwise, `ncds` should be an empty array or omitted.
+4.  **NPC Updates (`cus`):** For NPCs affected by recent events:
     *   `id`: NPC's string ID.
-    *   `memory_update` (optional): NPC's new complete memory, integrating recent events with existing memories.
-    *   `relationship_update` (optional): Patch object for relationships (keys are stringified character IDs, values are new descriptive strings).
-    *   Include NPC in `character_updates` only if memory or relationships changed.
-5.  **NPC Removal (`characters_to_remove`):**
-    *   List `characters_to_remove` (e.g., irrelevant, plot purpose fulfilled) with `id` and `reason`.
-6.  **Card Removal (`cards_to_remove`):**
-    *   List `cards_to_remove` (e.g., outdated or irrelevant cards) with `ref_name` and `reason`.
-7.  **Scene Focus (`scene_focus`):**
-    *   `scene_focus`: 1-2 sentence narrative direction/objective for the next scene.
+    *   `mu` (optional): NPC's new complete memory, integrating recent events with existing memories.
+    *   `ru` (optional): Patch object for relationships (keys are stringified character IDs, values are new descriptive strings).
+    *   Include NPC in `cus` only if memory or relationships changed.
+5.  **NPC Removal (`crs`):**
+    *   List `crs` (e.g., irrelevant, plot purpose fulfilled) with `id` and `reason`.
+6.  **Card Removal (`cdrs`):**
+    *   List `cdrs` (e.g., outdated or irrelevant cards) with `ref_name` and `reason`.
+7.  **Scene Focus (`sf`):**
+    *   `sf`: 1-2 sentence narrative direction/objective for the next scene.
 
 # Output JSON Structure:
 Output ONLY a single, valid JSON object as described below.
 ```json
 {
-  "need_new_character": "boolean",
-  "new_character_suggestions": [
+  "nnc": "boolean",
+  "ncs": [
     {
       "role": "string",
       "reason": "string"
     }
   ],
-  "new_card_suggestions": [
+  "ncds": [
     {
-      "image_prompt_descriptor": "string",
-      "image_reference_name": "string",
+      "pr": "string",
+      "ir": "string",
       "title": "string",
       "reason": "string"
     }
   ],
-  "character_updates": [
+  "cus": [
     {
       "id": "string",
-      "memory_update": "string",
-      "relationship_update": {
+      "mu": "string",
+      "ru": {
         "/* character_id */": "string"
       }
     }
   ],
-  "characters_to_remove": [
+  "crs": [
     {
       "id": "string",
       "reason": "string"
     }
   ],
-  "cards_to_remove": [
+  "cdrs": [
     {
       "ref_name": "string",
       "reason": "string"
     }
   ],
-  "scene_focus": "string"
+  "sf": "string"
 }
 ```

@@ -499,6 +499,7 @@ func (r *pgPlayerProgressRepository) UpsertInitial(ctx context.Context, querier 
 	err := querier.QueryRow(ctx, query,
 		progress.ID, progress.UserID, progress.PublishedStoryID, progress.CurrentStateHash,
 		coreStatsJSON,
+		[]byte(`{}`), // current_story_variables: пустой JSON объект
 		progress.SceneIndex,
 	).Scan(&returnedID)
 

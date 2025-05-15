@@ -47,27 +47,23 @@ The output must be a valid JSON object matching the following structure:
 
 ```json
 {
-  "location": "string", // Current location or scene of the protagonist
-  "ch": [
-    // {{CHOICE_COUNT}} choice blocks
-    {
-      "scene": "string", // Reference for image generation, derived from the overall situation
-      "name": "string",  // Name for the card/situation (e.g., situation title, character, location)
-      "desc": "string", // Situation text leading to this specific choice (Markdown OK)
-      "opts": [         // Exactly 2 options
-        {
-          "txt": "string", // Text for Option A
-          "cons": {"cs": {"0": 10, "1": -5}, "rt": ""} // Example: Stat at index "0" increases by 10, stat at index "1" decreases by 5. Other stats might be unchanged or have a value of 0.
+  "lc": "string", // Current location or scene of the protagonist
+  "ch": [ // {{CHOICE_COUNT}} choice blocks
+    {  "sc": "string", // Reference for image generation, derived from the overall situation
+      "nm": "string", // Name for the card/situation (e.g., situation title, character, location)
+      "dc": "string", // Situation text leading to this specific choice (Markdown OK)
+      "op": [         // Exactly 2 options
+        {  "tx": "string", // Text for Option A
+           "csn": {"cs": {"0": 10, "1": -5}, "rt": ""} // Example: Stat at index "0" increases by 10, stat at index "1" decreases by 5. Other stats might be unchanged or have a value of 0.
         },
-        {
-          "txt": "string", // Text for Option B
-          "cons": {"cs": {"2": 15}, "rt": ""} // Example: Stat at index "2" increases by 15. Other stats might be unchanged or have a value of 0.
+        {  "tx": "string", // Text for Option B
+           "csn": {"cs": {"2": 15}, "rt": ""} // Example: Stat at index "2" increases by 15. Other stats might be unchanged or have a value of 0.
         }
       ]
     }
-    // ... more choice blocks if {{CHOICE_COUNT}} > 1 ...
+   // ... more choice blocks if {{CHOICE_COUNT}} > 1 ...
   ]
 }
 ```
 
-The `scene` field should be a general description for the entire set of choices if the narrative implies a single overarching scene for all `{{CHOICE_COUNT}}` choices. If each choice happens in a distinctly new scene, then `scene` can be more specific to that choice block, but generally, it's intended to be a broader context. Prioritize a single, relevant `scene` string for the first choice block, and subsequent blocks can either reuse it if the context remains the same or define a new one if the narrative clearly shifts. For simplicity in this initial version, you can try to define `scene` once based on the initial overall context of the input narrative.
+The `scene` field should be a general description for the entire set of choices if the narrative implies a single overarching scene for all `{{CHOICE_COUNT}}`

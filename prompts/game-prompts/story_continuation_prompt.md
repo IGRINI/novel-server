@@ -43,13 +43,13 @@ You will receive a textual description of the current game state and context. Th
     a.  **JSON Structure:** The output MUST be a single, valid JSON object with the following structure:
         ```json
         {
-          "result": "string"
+          "res": "string"
         }
         ```
-    b.  **`result` Field Content:** This field must contain the complete narrative text for the continuation of the story. This includes:
+    b.  **`res` Field Content:** This field must contain the complete narrative text for the continuation of the story. This includes:
         i.   Initial paragraphs establishing the current state resulting from previous choices.
         ii.  Exactly {{CHOICE_COUNT}} distinct situations, each structured with a setup, development, and a choice point.
         iii. Natural transitions between these situations.
         iv.  Each situation must conclude with a binary choice formatted as: "[Option A] / [Option B]".
-    c.  **Language and Length:** The textual content within the `result` field must maintain the specified language (`{{LANGUAGE_DEFINITION}}`) and adhere to the overall word limit.
-    d.  **No Meta-Commentary:** The JSON output should not contain any technical meta-comments or explanations outside the defined string value for `result`.
+    c.  **Language and Length:** The textual content within the `res` field must maintain the specified language (`{{LANGUAGE_DEFINITION}}`) and adhere to the overall word limit.
+    d.  **No Meta-Commentary:** The JSON output should not contain any technical meta-comments or explanations outside the defined string value for `res`.

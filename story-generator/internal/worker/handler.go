@@ -44,15 +44,15 @@ type NarratorPPValidation struct {
 
 // NarratorValidation используется для проверки базовой структуры ответа Narrator
 type NarratorValidation struct {
-	Title             *string               `json:"t"`  // required, non-empty
-	Description       *string               `json:"sd"` // required, non-empty
-	Genre             *string               `json:"gn"` // required, non-empty
-	ProtagonistName   *string               `json:"pn"` // required, non-empty
-	ProtagonistDesc   *string               `json:"pd"` // required, non-empty
-	WorldContext      *string               `json:"wc"` // required, non-empty
-	StorySummary      *string               `json:"ss"` // required, non-empty
-	CoreStats         json.RawMessage       `json:"cs"` // required, must contain exactly 4 stats
-	PlayerPreferences *NarratorPPValidation `json:"pp"` // required
+	Title             *string               `json:"t"`
+	Description       *string               `json:"sd"`
+	Genre             *string               `json:"gn"`
+	ProtagonistName   *string               `json:"pn"`
+	ProtagonistDesc   *string               `json:"pd"`
+	WorldContext      *string               `json:"wc"`
+	StorySummary      *string               `json:"ss"`
+	CoreStats         json.RawMessage       `json:"cs"`
+	PlayerPreferences *NarratorPPValidation `json:"pp"`
 	// fr (Franchise) is optional
 }
 
@@ -63,9 +63,9 @@ type CoreStatItemValidation struct {
 	GameOver    *string `json:"go"` // required, "min", "max", or "both"
 }
 
-// ResultStringValidation используется для промптов, возвращающих {"result": "string"}
+// ResultStringValidation используется для промптов, возвращающих {"res": "string"}
 type ResultStringValidation struct {
-	Result *string `json:"result"` // required, non-empty
+	Result *string `json:"res"` // required, non-empty
 }
 
 // ContentModerationValidation используется для проверки ответа ContentModeration
@@ -75,15 +75,15 @@ type ContentModerationValidation struct {
 
 // CharacterGenerationItemValidation используется для проверки каждого объекта NPC
 type CharacterGenerationItemValidation struct {
-	ID              *string         `json:"id"`                      // required, non-empty
-	Name            *string         `json:"name"`                    // required, non-empty
-	Role            *string         `json:"role"`                    // required, non-empty
-	Traits          *string         `json:"traits"`                  // required, non-empty
-	Relationship    json.RawMessage `json:"relationship"`            // required, must contain "protaghonist" key
-	Memories        *string         `json:"memories"`                // required, non-empty
-	PlotHook        *string         `json:"plotHook"`                // required, non-empty
-	ImagePromptDesc *string         `json:"image_prompt_descriptor"` // required, non-empty
-	ImageRefName    *string         `json:"image_reference_name"`    // required, non-empty
+	ID              *string         `json:"id"` // required, non-empty
+	Name            *string         `json:"n"`  // required, non-empty
+	Role            *string         `json:"ro"` // required, non-empty
+	Traits          *string         `json:"d"`  // required, non-empty
+	Relationship    json.RawMessage `json:"rp"` // required, must contain "protaghonist" key
+	Memories        *string         `json:"m"`  // required, non-empty
+	PlotHook        *string         `json:"ph"` // required, non-empty
+	ImagePromptDesc *string         `json:"pr"` // required, non-empty
+	ImageRefName    *string         `json:"ir"` // required, non-empty
 }
 
 // JsonGenerationChoiceOptionConsequenceValidation используется для проверки "cons" в JsonGeneration
@@ -94,22 +94,22 @@ type JsonGenerationChoiceOptionConsequenceValidation struct {
 
 // JsonGenerationChoiceOptionValidation используется для проверки каждой опции в JsonGeneration
 type JsonGenerationChoiceOptionValidation struct {
-	Txt  *string                                          `json:"txt"`  // required, non-empty
-	Cons *JsonGenerationChoiceOptionConsequenceValidation `json:"cons"` // required
+	Txt  *string                                          `json:"tx"`  // required, non-empty
+	Cons *JsonGenerationChoiceOptionConsequenceValidation `json:"csn"` // required
 }
 
 // JsonGenerationChoiceValidation используется для проверки каждого блока выбора в JsonGeneration
 type JsonGenerationChoiceValidation struct {
-	SceneName *string                                `json:"scene"` // required, non-empty
-	Name      *string                                `json:"name"`  // required, non-empty
-	Desc      *string                                `json:"desc"`  // required, non-empty (markdown ok)
-	Opts      []JsonGenerationChoiceOptionValidation `json:"opts"`  // required, must have exactly 2 options
+	SceneName *string                                `json:"sc"` // required, non-empty
+	Name      *string                                `json:"nm"` // required, non-empty
+	Desc      *string                                `json:"dc"` // required, non-empty (markdown ok)
+	Opts      []JsonGenerationChoiceOptionValidation `json:"op"` // required, must have exactly 2 options
 }
 
 // JsonGenerationValidation используется для проверки ответа JsonGeneration
 type JsonGenerationValidation struct {
-	Location *string                          `json:"location"` // required, non-empty
-	Choices  []JsonGenerationChoiceValidation `json:"ch"`       // required, non-empty array
+	Location *string                          `json:"lc"` // required, non-empty
+	Choices  []JsonGenerationChoiceValidation `json:"ch"` // required, non-empty array
 }
 
 // ScenePlannerCharacterSuggestionValidation ...
@@ -120,16 +120,17 @@ type ScenePlannerCharacterSuggestionValidation struct {
 
 // ScenePlannerCardSuggestionValidation ...
 type ScenePlannerCardSuggestionValidation struct {
-	ImagePromptDesc *string `json:"image_prompt_descriptor"` // required, non-empty
-	ImageRefName    *string `json:"image_reference_name"`    // required, non-empty
-	Title           *string `json:"title"`                   // required, non-empty
-	Reason          *string `json:"reason"`                  // required, non-empty
+	ImagePromptDesc *string `json:"pr"`     // required, non-empty
+	ImageRefName    *string `json:"ir"`     // required, non-empty
+	Title           *string `json:"title"`  // required, non-empty
+	Reason          *string `json:"reason"` // required, non-empty
 }
 
 // ScenePlannerCharacterUpdateValidation ...
 type ScenePlannerCharacterUpdateValidation struct {
-	ID *string `json:"id"` // required, non-empty
-	// memory_update, relationship_update are optional
+	ID                 *string         `json:"id"` // required, non-empty
+	MemoryUpdate       *string         `json:"mu,omitempty"`
+	RelationshipUpdate json.RawMessage `json:"ru,omitempty"` // Assuming this is a map[string]string or similar, keeping as RawMessage for flexibility
 }
 
 // ScenePlannerCharacterToRemoveValidation ...
@@ -140,12 +141,12 @@ type ScenePlannerCharacterToRemoveValidation struct {
 
 // ScenePlannerValidation используется для проверки ответа ScenePlanner
 type ScenePlannerValidation struct {
-	NeedNewCharacter        *bool                                       `json:"need_new_character"`        // required
-	NewCharacterSuggestions []ScenePlannerCharacterSuggestionValidation `json:"new_character_suggestions"` // optional array
-	NewCardSuggestions      []ScenePlannerCardSuggestionValidation      `json:"new_card_suggestions"`      // optional array
-	CharacterUpdates        []ScenePlannerCharacterUpdateValidation     `json:"character_updates"`         // optional array
-	CharactersToRemove      []ScenePlannerCharacterToRemoveValidation   `json:"characters_to_remove"`      // optional array
-	SceneFocus              *string                                     `json:"scene_focus"`               // required, non-empty
+	NeedNewCharacter        *bool                                       `json:"nnc"`  // required
+	NewCharacterSuggestions []ScenePlannerCharacterSuggestionValidation `json:"ncs"`  // optional array
+	NewCardSuggestions      []ScenePlannerCardSuggestionValidation      `json:"ncds"` // optional array
+	CharacterUpdates        []ScenePlannerCharacterUpdateValidation     `json:"cus"`  // optional array
+	CharactersToRemove      []ScenePlannerCharacterToRemoveValidation   `json:"crs"`  // optional array
+	SceneFocus              *string                                     `json:"sf"`   // required, non-empty
 }
 
 // SetupValidation используется для проверки структуры ответа NovelSetup
@@ -727,22 +728,22 @@ func validateAIResponseJSON(promptType sharedModels.PromptType, jsonData []byte)
 			return fmt.Errorf("failed to unmarshal into ResultStringValidation for %s: %w", promptType, err)
 		}
 		if v.Result == nil || *v.Result == "" {
-			return fmt.Errorf("ResultStringValidation for %s: missing or empty required field 'result'", promptType)
+			return fmt.Errorf("ResultStringValidation for %s: missing or empty required field 'res'", promptType)
 		}
 
 	case sharedModels.PromptTypeStorySetup:
 		var v struct {
-			Result *string `json:"result"`
-			PR     *string `json:"pr"`
+			Result *string `json:"res"`
+			PR     *string `json:"prv"`
 		}
 		if err := json.Unmarshal(jsonData, &v); err != nil {
 			return fmt.Errorf("StorySetupValidation: failed to unmarshal into validation struct: %w", err)
 		}
 		if v.Result == nil || *v.Result == "" {
-			return errors.New("StorySetupValidation: missing or empty required field 'result'")
+			return errors.New("StorySetupValidation: missing or empty required field 'res'")
 		}
 		if v.PR == nil || *v.PR == "" {
-			return errors.New("StorySetupValidation: missing or empty required field 'pr'")
+			return errors.New("StorySetupValidation: missing or empty required field 'prv'")
 		}
 
 	case sharedModels.PromptTypeContentModeration:
@@ -811,43 +812,36 @@ func validateAIResponseJSON(promptType sharedModels.PromptType, jsonData []byte)
 			return fmt.Errorf("failed to unmarshal into JsonGenerationValidation: %w", err)
 		}
 		if v.Location == nil || *v.Location == "" {
-			return errors.New("JsonGenerationValidation: missing or empty 'location'")
+			return errors.New("JsonGenerationValidation: missing or empty 'lc'")
 		}
-		if v.Choices == nil || len(v.Choices) == 0 {
-			// TODO: Validate against {{CHOICE_COUNT}} if available
+		if len(v.Choices) == 0 {
 			return errors.New("JsonGenerationValidation: 'ch' (choices) is missing or empty")
 		}
 		for i, choice := range v.Choices {
 			if choice.SceneName == nil || *choice.SceneName == "" {
-				return fmt.Errorf("JsonGenerationValidation choice %d: missing or empty 'scene'", i)
+				return fmt.Errorf("JsonGenerationValidation choice %d: missing or empty 'sc'", i)
 			}
 			if choice.Name == nil || *choice.Name == "" {
-				return fmt.Errorf("JsonGenerationValidation choice %d: missing or empty 'name'", i)
+				return fmt.Errorf("JsonGenerationValidation choice %d: missing or empty 'nm'", i)
 			}
 			if choice.Desc == nil || *choice.Desc == "" {
-				// Markdown is OK, so empty is fine if allowed by prompt, but prompt implies situation text.
-				return fmt.Errorf("JsonGenerationValidation choice %d: missing or empty 'desc'", i)
+				return fmt.Errorf("JsonGenerationValidation choice %d: missing or empty 'dc'", i)
 			}
 			if choice.Opts == nil || len(choice.Opts) != 2 {
-				return fmt.Errorf("JsonGenerationValidation choice %d: 'opts' must contain exactly 2 options, got %d", i, len(choice.Opts))
+				return fmt.Errorf("JsonGenerationValidation choice %d: 'op' must contain exactly 2 options, got %d", i, len(choice.Opts))
 			}
 			for j, opt := range choice.Opts {
 				if opt.Txt == nil || *opt.Txt == "" {
-					return fmt.Errorf("JsonGenerationValidation choice %d, option %d: missing or empty 'txt'", i, j)
+					return fmt.Errorf("JsonGenerationValidation choice %d, option %d: missing or empty 'tx'", i, j)
 				}
 				if opt.Cons == nil {
-					return fmt.Errorf("JsonGenerationValidation choice %d, option %d: missing 'cons'", i, j)
+					return fmt.Errorf("JsonGenerationValidation choice %d, option %d: missing 'csn'", i, j)
 				}
-				if len(opt.Cons.CS) == 0 || string(opt.Cons.CS) == "null" { // "cs" itself can be an empty object {}
-					return fmt.Errorf("JsonGenerationValidation choice %d, option %d: missing 'cons.cs'", i, j)
+				if len(opt.Cons.CS) == 0 || string(opt.Cons.CS) == "null" {
+					return fmt.Errorf("JsonGenerationValidation choice %d, option %d: missing 'csn.cs'", i, j)
 				}
-				// Validate cs is a map
-				var csMap map[string]interface{}
-				if err := json.Unmarshal(opt.Cons.CS, &csMap); err != nil {
-					return fmt.Errorf("JsonGenerationValidation choice %d, option %d: 'cons.cs' is not a valid JSON object: %w", i, j, err)
-				}
-				if opt.Cons.RT == nil { // rt can be an empty string ""
-					return fmt.Errorf("JsonGenerationValidation choice %d, option %d: missing 'cons.rt'", i, j)
+				if opt.Cons.RT == nil {
+					return fmt.Errorf("JsonGenerationValidation choice %d, option %d: missing 'csn.rt'", i, j)
 				}
 			}
 		}
@@ -858,10 +852,10 @@ func validateAIResponseJSON(promptType sharedModels.PromptType, jsonData []byte)
 			return fmt.Errorf("failed to unmarshal into ScenePlannerValidation: %w", err)
 		}
 		if v.NeedNewCharacter == nil {
-			return errors.New("ScenePlannerValidation: missing 'need_new_character'")
+			return errors.New("ScenePlannerValidation: missing 'nnc'")
 		}
 		if v.SceneFocus == nil || *v.SceneFocus == "" {
-			return errors.New("ScenePlannerValidation: missing or empty 'scene_focus'")
+			return errors.New("ScenePlannerValidation: missing or empty 'sf'")
 		}
 		// Validate NewCharacterSuggestions if present
 		if v.NewCharacterSuggestions != nil {

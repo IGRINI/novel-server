@@ -80,10 +80,14 @@ func (p *NotificationProcessor) handleContentModerationResult(ctx context.Contex
 	dbCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	publishedStory, err := p.publishedRepo.GetByID(dbCtx, p.db, publishedStoryID)
+	publishedStory, err := p.ensureStoryStatus(dbCtx, publishedStoryID, sharedModels.StatusModerationPending)
 	if err != nil {
-		log.Error("Failed to get PublishedStory for moderation update", zap.Error(err))
-		return fmt.Errorf("error getting PublishedStory %s: %w", publishedStoryID, err)
+		// ensureStoryStatus уже логирует ошибку получения истории
+		// или несоответствие статуса (и возвращает nil, nil в этом случае)
+		return err // Если была ошибка получения истории, NACK
+	}
+	if publishedStory == nil {
+		return nil // Статус не совпал (или generating с неверным шагом), ACK и выход
 	}
 
 	if publishedStory.Status != sharedModels.StatusModerationPending {
@@ -157,7 +161,7 @@ func (p *NotificationProcessor) handleContentModerationResult(ctx context.Contex
 						errMsg = fmt.Sprintf("%s (%v)", errMsg, errFormat)
 					}
 					// Передаем nil для internalStep при ошибке
-					if errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, false, false, &errMsg, nil); errUpdate != nil {
+					if errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, false, false, 0, 0, 0, &errMsg, nil); errUpdate != nil {
 						log.Error("Failed to update story status to Error due to empty/invalid config for goal task", zap.Error(errUpdate))
 					}
 					processingError = errors.New(errMsg)
@@ -171,10 +175,6 @@ func (p *NotificationProcessor) handleContentModerationResult(ctx context.Contex
 						Language:         publishedStory.Language,
 					}
 					nextTaskPayload = &payload
-				}
-				// Уведомляем клиента об успешной публикации предыдущего шага
-				if _, perr2 := parseUUIDField(notification.UserID, "UserID"); perr2 == nil {
-					p.publishClientStoryUpdateOnReady(publishedStory)
 				}
 			}
 		}
@@ -211,6 +211,10 @@ func (p *NotificationProcessor) handleContentModerationResult(ctx context.Contex
 		return fmt.Errorf("failed to update story after moderation: %w", errUpdate) // NACK
 	}
 	log.Info("PublishedStory updated after moderation", zap.Bool("is_adult", publishedStory.IsAdultContent), zap.String("new_status", string(publishedStory.Status)), zap.Any("internal_step", finalInternalStep))
+	// Уведомляем клиента об обновлении статуса истории после модерации
+	if uid, perr := parseUUIDField(notification.UserID, "UserID"); perr == nil {
+		p.notifyClient(publishedStory.ID, uid, sharedModels.UpdateTypeStory, string(publishedStory.Status), nil)
+	}
 
 	// === Публикация следующей задачи (только если payload был успешно создан) ===
 	if nextTaskPayload != nil {

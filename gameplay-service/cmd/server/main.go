@@ -252,9 +252,24 @@ func main() {
 
 	// --- Запуск периодической проверки зависших задач --- //
 	logger.Info("Starting periodic checks for stuck tasks...")
-	go markStuckDraftsAsError(storyConfigRepo, 1*time.Hour, logger)
-	go markStuckPublishedStoriesAsError(publishedRepo, dbPool, 1*time.Hour, logger)
-	go markStuckPlayerGameStatesAsError(playerGameStateRepo, dbPool, 30*time.Minute, logger)
+	go func() {
+		for {
+			markStuckDraftsAsError(storyConfigRepo, 1*time.Hour, logger)
+			time.Sleep(1 * time.Hour)
+		}
+	}()
+	go func() {
+		for {
+			markStuckPublishedStoriesAsError(publishedRepo, dbPool, 1*time.Hour, logger)
+			time.Sleep(1 * time.Hour)
+		}
+	}()
+	go func() {
+		for {
+			markStuckPlayerGameStatesAsError(playerGameStateRepo, dbPool, 30*time.Minute, logger)
+			time.Sleep(30 * time.Minute)
+		}
+	}()
 
 	// --- Инициализация консьюмера уведомлений --- //
 	notificationConsumer, err := messaging.NewNotificationConsumer(

@@ -74,15 +74,15 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 	}
 
 	initialSceneContent := sharedModels.InitialSceneContent{
-		SceneFocus: plannerOutcome.SceneFocus,
-		Cards:      make([]sharedModels.SceneCard, len(plannerOutcome.NewCardSuggestions)),
+		SceneFocus: plannerOutcome.Sf,
+		Cards:      make([]sharedModels.SceneCard, len(plannerOutcome.Ncds)),
 		Characters: []sharedModels.CharacterDefinition{},
 	}
-	for i, sug := range plannerOutcome.NewCardSuggestions {
+	for i, sug := range plannerOutcome.Ncds {
 		initialSceneContent.Cards[i] = sharedModels.SceneCard{
-			ImagePromptDescriptor: sug.ImagePromptDescriptor,
-			ImageReferenceName:    sug.ImageReferenceName,
-			Title:                 sug.Title,
+			Pr:    sug.Pr,
+			Ir:    sug.Ir,
+			Title: sug.Title,
 		}
 	}
 
@@ -93,28 +93,50 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 		return nil
 	}
 
-	charTasksToLaunch := len(plannerOutcome.NewCharacterSuggestions)
-	cardImgTasksToLaunch := len(plannerOutcome.NewCardSuggestions)
+	charTasksToLaunch := len(plannerOutcome.Ncs)
+	cardImgTasksToLaunch := len(plannerOutcome.Ncds)
 
-	newStatus := publishedStory.Status
 	pendingCharGenTasksFlag := (charTasksToLaunch > 0)
 	pendingCardImgTasksCount := cardImgTasksToLaunch
 
-	if pendingCharGenTasksFlag || pendingCardImgTasksCount > 0 {
+	// Определяем новый статус после scene planner: субзадачи -> изображения -> setup
+	var newStatus sharedModels.StoryStatus
+	if pendingCharGenTasksFlag {
 		newStatus = sharedModels.StatusSubTasksPending
+	} else if pendingCardImgTasksCount > 0 {
+		newStatus = sharedModels.StatusImageGenerationPending
 	} else {
 		newStatus = sharedModels.StatusSetupPending
+	}
+	// Определяем следующий шаг и флаг ожидания изображений
+	var nextInternalStep sharedModels.InternalGenerationStep
+	var areImagesPendingFlag bool
+	if pendingCharGenTasksFlag {
+		nextInternalStep = sharedModels.StepCharacterGeneration
+		areImagesPendingFlag = (pendingCardImgTasksCount > 0)
+	} else if pendingCardImgTasksCount > 0 {
+		nextInternalStep = sharedModels.StepCardImageGeneration
+		areImagesPendingFlag = true
+	} else {
+		nextInternalStep = sharedModels.StepSetupGeneration
+		areImagesPendingFlag = false
 	}
 
 	tx, errTx := p.db.Begin(ctx)
 	if errTx != nil {
 		log.Error("Failed to begin transaction for story update after scene planner", zap.Error(errTx))
+		// Устанавливаем статус Error и уведомляем клиента
+		errMsg := fmt.Sprintf("failed to begin transaction for scene planner: %v", errTx)
+		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 		return fmt.Errorf("failed to begin transaction: %w", errTx)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, errLock := tx.Exec(ctx, "SELECT 1 FROM published_stories WHERE id=$1 FOR UPDATE", publishedStoryID); errLock != nil {
 		log.Error("Failed to lock story row for scene planner update", zap.Error(errLock))
+		// Уведомляем об ошибке и устанавливаем статус Error
+		errMsg := fmt.Sprintf("failed to lock story row: %v", errLock)
+		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 		return fmt.Errorf("failed to lock story row: %w", errLock)
 	}
 
@@ -126,38 +148,29 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 	}
 	if errCreateScene := p.sceneRepo.Create(ctx, tx, &initialScene); errCreateScene != nil {
 		log.Error("Failed to create initial story scene in transaction", zap.Error(errCreateScene))
+		// Устанавливаем статус Error и уведомляем клиента
+		errMsg := fmt.Sprintf("failed to create initial scene: %v", errCreateScene)
+		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 		return fmt.Errorf("failed to create initial scene: %w", errCreateScene)
 	}
 	log.Info("Initial story scene created successfully", zap.Stringer("scene_id", initialScene.ID))
 
-	// Определяем следующий шаг и флаг ожидания изображений
-	var nextInternalStep sharedModels.InternalGenerationStep
-	var areImagesPendingFlag bool
-
-	if pendingCharGenTasksFlag {
-		nextInternalStep = sharedModels.StepCharacterGeneration
-		// Флаг areImagesPending будет true, если нужны ЕЩЕ и изображения карт
-		areImagesPendingFlag = (pendingCardImgTasksCount > 0)
-	} else if pendingCardImgTasksCount > 0 {
-		nextInternalStep = sharedModels.StepCardImageGeneration
-		areImagesPendingFlag = true // Нужны только изображения карт
-	} else {
-		// Если не нужны ни персонажи, ни изображения карт, переходим к генерации Setup
-		// (Хотя статус newStatus должен был стать StatusSetupPending в этом случае)
-		nextInternalStep = sharedModels.StepSetupGeneration
-		areImagesPendingFlag = false
-	}
-
 	// Обновляем статус, флаг ожидания изображений (только карт!) и ШАГ
 	if errUpdateStory := p.publishedRepo.UpdateStatusFlagsAndDetails(ctx, tx,
 		publishedStoryID,
-		newStatus,                          // Рассчитанный статус
-		publishedStory.IsFirstScenePending, // Сохраняем существующий флаг
-		areImagesPendingFlag,               // True, если запускаем генерацию изображений КАРТ
-		nil,                                // Ошибок нет
-		&nextInternalStep,                  // Передаем указатель на рассчитанный шаг
+		newStatus,
+		publishedStory.IsFirstScenePending,
+		areImagesPendingFlag,
+		boolToInt(pendingCharGenTasksFlag),
+		pendingCardImgTasksCount,
+		0,
+		nil,
+		&nextInternalStep,
 	); errUpdateStory != nil {
 		log.Error("Failed to update PublishedStory (status/flags/step) in transaction after scene planner", zap.Error(errUpdateStory))
+		// Устанавливаем статус Error и уведомляем клиента
+		errMsg := fmt.Sprintf("failed to update story (status/flags/step) after scene planner: %v", errUpdateStory)
+		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 		return fmt.Errorf("failed to update story (status/flags/step) after scene planner: %w", errUpdateStory)
 	}
 	log.Info("PublishedStory status, flags, and step updated (transaction pending commit)",
@@ -170,9 +183,31 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 
 	if errCommit := tx.Commit(ctx); errCommit != nil {
 		log.Error("Failed to commit transaction for story update after scene planner", zap.Error(errCommit))
+		// Устанавливаем статус Error и уведомляем клиента
+		errMsg := fmt.Sprintf("failed to commit transaction for scene planner: %v", errCommit)
+		p.handleStoryError(ctx, publishedStoryID, publishedStory.UserID.String(), errMsg, constants.WSEventStoryError)
 		return fmt.Errorf("failed to commit transaction: %w", errCommit)
 	}
 	log.Info("Transaction committed: PublishedStory updated and initial scene created.", zap.Stringer("initial_scene_id", initialScene.ID))
+
+	// После коммита, если это первая сцена, публикуем задачу генерации Setup
+	if publishedStory.IsFirstScenePending {
+		cfgInput := utils.FormatConfigToString(storyCfg, publishedStory.IsAdultContent)
+		setupTaskID := uuid.New().String()
+		setupPayload := sharedMessaging.GenerationTaskPayload{
+			TaskID:           setupTaskID,
+			UserID:           publishedStory.UserID.String(),
+			PromptType:       sharedModels.PromptTypeStorySetup,
+			UserInput:        cfgInput,
+			PublishedStoryID: publishedStory.ID.String(),
+			Language:         publishedStory.Language,
+		}
+		if errPub := p.taskPub.PublishGenerationTask(ctx, setupPayload); errPub != nil {
+			log.Error("Failed to publish setup generation task", zap.Error(errPub))
+		} else {
+			log.Info("Setup generation task published successfully", zap.String("task_id", setupTaskID))
+		}
+	}
 
 	var protagonistGoalMap map[string]interface{}
 	if len(publishedStory.Setup) > 0 && string(publishedStory.Setup) != "null" && string(publishedStory.Setup) != "{}" {
@@ -193,8 +228,8 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 		log.Warn("protagonist_goal not found in PublishedStory.Setup for char gen input.")
 	}
 	tempSetupForCharGen["chars"] = nil
-	if len(plannerOutcome.NewCharacterSuggestions) > 0 {
-		tempSetupForCharGen["characters_to_generate_list"] = plannerOutcome.NewCharacterSuggestions
+	if len(plannerOutcome.Ncs) > 0 {
+		tempSetupForCharGen["characters_to_generate_list"] = plannerOutcome.Ncs
 	}
 
 	if charTasksToLaunch > 0 {
@@ -228,14 +263,14 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 
 	if cardImgTasksToLaunch > 0 {
 		log.Info("Dispatching image generation tasks for cards.", zap.Int("count", cardImgTasksToLaunch))
-		for _, cardSuggestion := range plannerOutcome.NewCardSuggestions {
+		for _, cardSuggestion := range plannerOutcome.Ncds {
 			imgGenTaskID := uuid.New().String()
 			cardPayload := sharedMessaging.CharacterImageTaskPayload{
 				TaskID:           imgGenTaskID,
 				PublishedStoryID: publishedStoryID,
 				UserID:           publishedStory.UserID.String(),
-				Prompt:           cardSuggestion.ImagePromptDescriptor,
-				ImageReference:   cardSuggestion.ImageReferenceName,
+				Prompt:           cardSuggestion.Pr,
+				ImageReference:   fmt.Sprintf("card_%s", cardSuggestion.Ir),
 				CharacterID:      uuid.Nil,
 				CharacterName:    cardSuggestion.Title,
 				NegativePrompt:   "",
@@ -253,6 +288,9 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 		}
 	}
 
-	p.publishClientStoryUpdateOnReady(publishedStory)
+	// Уведомляем клиента об обновлении статуса истории после планирования сцены
+	if uid, perr := parseUUIDField(publishedStory.UserID.String(), "UserID"); perr == nil {
+		p.notifyClient(publishedStory.ID, uid, sharedModels.UpdateTypeStory, string(newStatus), nil)
+	}
 	return nil
 }

@@ -2,7 +2,8 @@
 Your primary objective is to output a valid JSON array of character objects, based on the provided game configuration.
 
 **Language Instructions:**
-*   The fields `id`, `image_prompt_descriptor`, and `image_reference_name` MUST always be generated in English. The `id` should be in `snake_case`.
+*   The fields `id` and `image_reference_name` MUST always be generated in English. The `id` should be in `snake_case`.
+*   The field `image_prompt_descriptor` MUST always be generated in English, regardless of the language specified by `{{LANGUAGE_DEFINITION}}`.
 *   All other generated textual content (specifically for `name`, `role`, `traits`, `memories`, `plotHook`, and the descriptive strings within the `relationship` object) MUST adhere to the language specified by `{{LANGUAGE_DEFINITION}}`.
 
 # Role and Objective:
@@ -40,14 +41,14 @@ Additionally, `UserInput` may contain information about pre-existing characters 
 3.  **Assign IDs:** Assign a unique string `id` (e.g., "bar_owner_boris", "mysterious_stranger_01") to each NPC you generate. These IDs must be in snake_case and must not conflict with the protagonist (ID "protaghonist") or any pre-existing characters mentioned in `UserInput`.
 4.  **Character Attributes:** For each NPC, create a JSON object with the fields defined in the "Output JSON Structure" section below. This includes:
     *   `id` (string)
-    *   `name` (string)
-    *   `role` (string)
-    *   `traits` (string)
-    *   `relationship` (object)
-    *   `memories` (string)
-    *   `plotHook` (string)
-    *   `image_prompt_descriptor` (string): A concise visual description of the NPC, suitable as a prompt for an image generation model. This description MUST be consistent with the character's `role`, `traits`, the overall `Player Preferences.Visual Style` from `UserInput`, AND the core application style: "A moody, high-contrast digital illustration with dark tones, soft neon accents, and a focused central composition blending fantasy and minimalism, using a palette of deep blues, teals, cyan glow, and occasional purples for atmosphere."
-    *   `image_reference_name` (string): A unique and descriptive name or identifier for the character's generated image (e.g., "max_the_adventurer_portrait", "elara_shopkeeper_neutral"). This should be suitable for use as a filename or asset ID. It can be based on the character's name and role.
+    *   `n` (string) - name
+    *   `ro` (string) - role
+    *   `d` (string) - traits (description)
+    *   `rp` (object) - relationship
+    *   `m` (string) - memories
+    *   `ph` (string) - plotHook
+    *   `pr` (string) - image_prompt_descriptor: A concise visual description of the NPC, suitable as a prompt for an image generation model. This description MUST be consistent with the character's `role`, `traits`, the overall `Player Preferences.Visual Style` from `UserInput`, AND the core application style: "A moody, high-contrast digital illustration with dark tones, soft neon accents, and a focused central composition blending fantasy and minimalism, using a palette of deep blues, teals, cyan glow, and occasional purples for atmosphere." This field MUST be in English.
+    *   `ir` (string) - image_reference_name: A unique and descriptive name or identifier for the character's generated image, suitable for use as a filename or asset ID. It MUST be in English and in snake_case, following the format: [gender]_[age]_[theme_tag]_[feature1]_[feature2]. The `[age]` component must be one of the following enum values: "child", "teen", "adult", or "elder". (e.g., "male_adult_fighter_scarred_face_stoic_gaze", "female_elder_mage_glowing_staff_wise_eyes"). It should be derived from the character's visual tags, name, or role to ensure uniqueness and descriptiveness.
 5.  **Relationship Definition:**
     *   For each generated NPC, the `relationship` object MUST include a key `"protaghonist"` (as a string), indicating the NPC's relationship to the protagonist.
     *   The `relationship` object MAY also include entries for other characters, using their string `id` (in snake_case, e.g., `"bar_owner_boris"`, `"mysterious_stranger_01"`) as the key. These can be relationships to other NPCs generated in the current batch or to pre-existing NPCs if their IDs are known from `UserInput`.
@@ -59,20 +60,20 @@ The output must be a single, valid JSON array. Each element in the array is an o
 [ // Array of NPC objects
   {
     "id": "string",        // Unique NPC ID.
-    "name": "string",       // Character's full name.
-    "role": "string",       // Character's role or archetype.
-    "traits": "string",     // Comma-separated personality traits.
-    "relationship": {       // Defines relationships to other characters.
+    "n": "string",         // Character's full name.
+    "ro": "string",        // Character's role or archetype.
+    "d": "string",         // Comma-separated personality traits.
+    "rp": {                  // Defines relationships to other characters.
                             // Keys: Target character's string ID.
                             // Values: Description of the relationship status.
       "protaghonist": "string", // Mandatory relationship to protagonist.
       // "other_npc_id": "string", // Optional relationship to another NPC.
       // ...etc.
     },
-    "memories": "string",   // Key memories or knowledge.
-    "plotHook": "string",    // Plot hook or reason for interaction.
-    "image_prompt_descriptor": "string", // Prompt for image generation.
-    "image_reference_name": "string" // Unique reference for character's image.
+    "m": "string",         // Key memories or knowledge.
+    "ph": "string",        // Plot hook or reason for interaction.
+    "pr": "string",        // Prompt for image generation.
+    "ir": "string"         // Unique reference for character's image.
   }
   // ... potentially more NPC objects
 ]

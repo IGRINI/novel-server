@@ -33,12 +33,12 @@ You will receive the following details to craft the protagonist's main goal:
     a.  **JSON Structure:** The output MUST be a single, valid JSON object with the following structure:
         ```json
         {
-          "result": "string"
+          "res": "string"
         }
         ```
-    b.  **`result` Field Content:** This field must contain the narrative text defining the protagonist's main goal. This includes:
+    b.  **`res` Field Content:** This field must contain the narrative text defining the protagonist's main goal. This includes:
         i.  The text "Protagonist's Main Goal:"
         ii. Followed by the defined goal (1-2 sentences).
         iii. Followed by the motivation (1-2 sentences).
-        The textual content within the `result` field must be in the language specified by `{{LANGUAGE_DEFINITION}}` and adhere to the overall word limit.
-    c.  **No Meta-Commentary:** The JSON output should not contain any technical meta-comments or explanations outside the defined string value for `result`.
+        The textual content within the `res` field must be in the language specified by `{{LANGUAGE_DEFINITION}}` and adhere to the overall word limit.
+    c.  **No Meta-Commentary:** The JSON output should not contain any technical meta-comments or explanations outside the defined string value for `res`.
