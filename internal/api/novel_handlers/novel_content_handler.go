@@ -2,10 +2,10 @@ package novel_handlers
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"novel-server/internal/auth"
 	"novel-server/internal/domain"
+	"novel-server/internal/logger"
 
 	"github.com/google/uuid"
 )
@@ -21,11 +21,11 @@ func (h *NovelHandler) GenerateNovelContent(w http.ResponseWriter, r *http.Reque
 	// --- Получаем UserID из контекста (добавлено middleware) ---
 	userID, ok := r.Context().Value(auth.UserIDKey).(string)
 	if !ok || userID == "" {
-		log.Println("GenerateNovelContent: ERROR - UserID not found in context. This should not happen if AuthMiddleware is applied correctly.")
+		logger.Logger.Error("GenerateNovelContent: userID not found in context")
 		respondWithError(w, http.StatusInternalServerError, "Internal server error: User ID missing")
 		return
 	}
-	log.Printf("GenerateNovelContent: Handling request for UserID: %s", userID)
+	logger.Logger.Info("GenerateNovelContent: handling request", "userID", userID)
 	// ---------------------------------------------------------
 
 	// Декодируем упрощенный запрос от клиента
@@ -54,7 +54,7 @@ func (h *NovelHandler) GenerateNovelContent(w http.ResponseWriter, r *http.Reque
 	// Генерируем контент новеллы
 	fullResponse, err := h.novelContentService.GenerateNovelContent(r.Context(), fullRequest)
 	if err != nil {
-		log.Printf("Error generating novel content: %v", err)
+		logger.Logger.Error("Error generating novel content", "err", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to generate novel content")
 		return
 	}

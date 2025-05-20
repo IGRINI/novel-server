@@ -2,8 +2,8 @@ package novel_handlers
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
+	"novel-server/internal/logger"
 	"novel-server/internal/service"
 )
 
@@ -51,7 +51,7 @@ func respondWithError(w http.ResponseWriter, code int, message string) {
 func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	response, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("Error marshaling JSON: %v", err)
+		logger.Logger.Error("Error marshaling JSON", "err", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}

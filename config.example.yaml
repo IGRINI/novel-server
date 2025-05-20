@@ -1,0 +1,10 @@
+deepseek:
+  api_key: YOUR_DEEPSEEK_API_KEY
+  model_name: deepseek/deepseek-chat-v3-0324:free
+
+server:
+  host: localhost
+  port: 8080
+
+api:
+  base_path: /api

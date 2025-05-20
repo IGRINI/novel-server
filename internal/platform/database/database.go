@@ -3,13 +3,13 @@ package database
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"novel-server/internal/logger"
 )
 
 const (
@@ -43,7 +43,7 @@ func NewDBPool(ctx context.Context) (*pgxpool.Pool, error) {
 	}
 
 	// --- Шаг 1: Проверка и создание БД (если необходимо) ---
-	log.Printf("Checking if target database '%s' exists...", targetDBName)
+	logger.Logger.Info("Checking if target database exists", "db", targetDBName)
 	// Подключаемся к административной БД (например, postgres)
 	adminDsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
 		user, password, host, port, adminDBName)
@@ -62,29 +62,29 @@ func NewDBPool(ctx context.Context) (*pgxpool.Pool, error) {
 	}
 
 	if !exists {
-		log.Printf("Database '%s' does not exist. Attempting to create...", targetDBName)
+		logger.Logger.Info("Database does not exist, attempting create", "db", targetDBName)
 		// ВАЖНО: Пользователь %s должен иметь права CREATEDB!
-		log.Printf("IMPORTANT: User '%s' must have CREATEDB privileges in PostgreSQL!", user)
+		logger.Logger.Warn("User must have CREATEDB privileges", "user", user)
 		createQuery := fmt.Sprintf("CREATE DATABASE \"%s\"", targetDBName) // Используем кавычки на случай спецсимволов
 		_, err = adminConn.Exec(ctx, createQuery)
 		if err != nil {
 			// Проверяем на ошибку 'permission denied'
 			if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "42501" { // 42501 = insufficient_privilege
-				log.Printf("ERROR: User '%s' does not have permission to create database '%s'. Please grant CREATEDB privilege or create the database manually.", user, targetDBName)
+				logger.Logger.Error("User lacks permission to create database", "user", user, "db", targetDBName)
 				return nil, fmt.Errorf("user '%s' lacks permission to create database '%s': %w", user, targetDBName, err)
 			}
 			return nil, fmt.Errorf("failed to create database '%s': %w", targetDBName, err)
 		}
-		log.Printf("Database '%s' created successfully.", targetDBName)
+		logger.Logger.Info("Database created", "db", targetDBName)
 	} else {
-		log.Printf("Database '%s' already exists.", targetDBName)
+		logger.Logger.Info("Database already exists", "db", targetDBName)
 	}
 	// Закрываем админское соединение после проверки/создания
 	adminConn.Close(ctx)
 	// ---------------------------------------------------------
 
 	// --- Шаг 2: Подключение к целевой БД с использованием пула ---
-	log.Printf("Connecting to target database '%s' using connection pool...", targetDBName)
+	logger.Logger.Info("Connecting to target database", "db", targetDBName)
 	targetDsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable",
 		user, password, host, port, targetDBName)
 

@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"novel-server/internal/domain"
+	"novel-server/internal/logger"
 
 	"strings"
 	"time"
@@ -27,22 +27,23 @@ type PostgresNovelRepository struct {
 // NewPostgresNovelRepository создает новый экземпляр PostgresNovelRepository.
 func NewPostgresNovelRepository(db *pgxpool.Pool) *PostgresNovelRepository {
 	if db == nil {
-		log.Panic("database connection provided to repository is nil")
+		logger.Logger.Error("database connection provided to repository is nil")
+		panic("nil db")
 	}
 	return &PostgresNovelRepository{db: db}
 }
 
 // CreateNovel создает новую запись о новелле в хранилище.
 func (r *PostgresNovelRepository) CreateNovel(ctx context.Context, userID string, config *domain.NovelConfig) (uuid.UUID, error) {
-	log.Printf("[Repo] CreateNovel called for UserID: %s", userID)
+	logger.Logger.Info("CreateNovel called", "userID", userID)
 	if userID == "" {
-		log.Println("[Repo] CreateNovel - Error: userID is empty")
+		logger.Logger.Warn("CreateNovel - empty userID")
 		return uuid.Nil, fmt.Errorf("userID cannot be empty")
 	}
 
 	configData, err := json.Marshal(config)
 	if err != nil {
-		log.Printf("[Repo] CreateNovel - Error marshaling config: %v", err)
+		logger.Logger.Error("CreateNovel - error marshaling config", "err", err)
 		return uuid.Nil, fmt.Errorf("failed to marshal novel config: %w", err)
 	}
 
@@ -54,17 +55,17 @@ func (r *PostgresNovelRepository) CreateNovel(ctx context.Context, userID string
 
 	_, err = r.db.Exec(ctx, query, novelID, userID, config.Title, config.ShortDescription, configData, config.IsAdultContent)
 	if err != nil {
-		log.Printf("[Repo] CreateNovel - Error executing insert for novel %s: %v", novelID, err)
+		logger.Logger.Error("CreateNovel - insert error", "novelID", novelID, "err", err)
 		return uuid.Nil, fmt.Errorf("failed to insert novel: %w", err)
 	}
 
-	log.Printf("[Repo] CreateNovel - Successfully created novel with ID: %s for UserID: %s (IsAdult: %t)", novelID, userID, config.IsAdultContent)
+	logger.Logger.Info("CreateNovel success", "novelID", novelID, "userID", userID, "isAdult", config.IsAdultContent)
 	return novelID, nil
 }
 
 // GetNovelMetadataByID возвращает краткую информацию (метаданные) о новелле по ID.
 func (r *PostgresNovelRepository) GetNovelMetadataByID(ctx context.Context, novelID uuid.UUID, userID string) (*domain.NovelMetadata, error) {
-	log.Printf("[Repo] GetNovelMetadataByID called for NovelID: %s, UserID: %s", novelID, userID)
+	logger.Logger.Info("GetNovelMetadataByID", "novelID", novelID, "userID", userID)
 	query := `SELECT novel_id, user_id, title, COALESCE(short_description, '') as short_description, created_at, updated_at
 			  FROM novels
 			  WHERE novel_id = $1 AND user_id = $2`
@@ -74,13 +75,13 @@ func (r *PostgresNovelRepository) GetNovelMetadataByID(ctx context.Context, nove
 	err := row.Scan(&meta.NovelID, &meta.UserID, &meta.Title, &meta.ShortDescription, &meta.CreatedAt, &meta.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			log.Printf("[Repo] GetNovelMetadataByID - Novel not found or access denied for NovelID: %s, UserID: %s", novelID, userID)
+			logger.Logger.Warn("GetNovelMetadataByID - not found or access denied", "novelID", novelID, "userID", userID)
 			return nil, fmt.Errorf("novel not found or not owned by user")
 		}
-		log.Printf("[Repo] GetNovelMetadataByID - Error querying novel metadata: %v", err)
+		logger.Logger.Error("GetNovelMetadataByID - query error", "err", err)
 		return nil, fmt.Errorf("failed to get novel metadata: %w", err)
 	}
-	log.Printf("[Repo] GetNovelMetadataByID - Found metadata for novel: %s", meta.Title)
+	logger.Logger.Info("GetNovelMetadataByID - found", "title", meta.Title)
 	return &meta, nil
 }
 
@@ -120,24 +121,23 @@ func (r *PostgresNovelRepository) GetNovelConfigByID(ctx context.Context, novelI
 			// Сетап не найден, возвращаем только конфиг
 		} else {
 			// Другая ошибка при загрузке сетапа
-			log.Printf("[Repo] GetNovelConfigByID - Error getting setup state for novel %s: %v", novelID, err)
+			logger.Logger.Error("GetNovelConfigByID - setup state error", "novelID", novelID, "err", err)
 			// Можно вернуть ошибку или только конфиг, зависит от требований
 		}
 	} else {
 		// Сетап загружен, логируем размер
-		log.Printf("[Repo] GetNovelConfigByID - Loaded setup state data (length: %d) for novel %s",
-			len(setupStateData), novelID)
+		logger.Logger.Info("GetNovelConfigByID - loaded setup state", "length", len(setupStateData), "novelID", novelID)
 	}
 
 	// TODO: Решить, как интегрировать данные сетапа в ответ (если нужно)
 
-	log.Printf("[Repo] GetNovelConfigByID - Successfully retrieved config for NovelID: %s", novelID)
+	logger.Logger.Info("GetNovelConfigByID success", "novelID", novelID)
 	return &config, nil
 }
 
 // ListNovelsByUser возвращает список метаданных новелл для указанного пользователя.
 func (r *PostgresNovelRepository) ListNovelsByUser(ctx context.Context, userID string, limit, offset int) ([]domain.NovelMetadata, error) {
-	log.Printf("[Repo] ListNovelsByUser called for UserID: %s, Limit: %d, Offset: %d", userID, limit, offset)
+	logger.Logger.Info("ListNovelsByUser called", "userID", userID, "limit", limit, "offset", offset)
 	query := `SELECT novel_id, user_id, title, COALESCE(short_description, '') as short_description, created_at, updated_at
 			  FROM novels
 			  WHERE user_id = $1
@@ -146,7 +146,7 @@ func (r *PostgresNovelRepository) ListNovelsByUser(ctx context.Context, userID s
 
 	rows, err := r.db.Query(ctx, query, userID, limit, offset)
 	if err != nil {
-		log.Printf("[Repo] ListNovelsByUser - Error querying novels: %v", err)
+		logger.Logger.Error("ListNovelsByUser - query error", "err", err)
 		return nil, fmt.Errorf("failed to list novels: %w", err)
 	}
 	defer rows.Close()
@@ -155,18 +155,18 @@ func (r *PostgresNovelRepository) ListNovelsByUser(ctx context.Context, userID s
 	for rows.Next() {
 		var meta domain.NovelMetadata
 		if err := rows.Scan(&meta.NovelID, &meta.UserID, &meta.Title, &meta.ShortDescription, &meta.CreatedAt, &meta.UpdatedAt); err != nil {
-			log.Printf("[Repo] ListNovelsByUser - Error scanning row: %v", err)
+			logger.Logger.Error("ListNovelsByUser - scan error", "err", err)
 			return nil, fmt.Errorf("failed to process novel list: %w", err)
 		}
 		novels = append(novels, meta)
 	}
 
 	if err := rows.Err(); err != nil {
-		log.Printf("[Repo] ListNovelsByUser - Error after iterating rows: %v", err)
+		logger.Logger.Error("ListNovelsByUser - rows error", "err", err)
 		return nil, fmt.Errorf("error reading novel list: %w", err)
 	}
 
-	log.Printf("[Repo] ListNovelsByUser - Found %d novels for UserID: %s", len(novels), userID)
+	logger.Logger.Info("ListNovelsByUser success", "count", len(novels), "userID", userID)
 	return novels, nil
 }
 
