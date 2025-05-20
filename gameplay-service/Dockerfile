@@ -21,12 +21,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /gameplay-service ./ga
 FROM alpine:latest
 
 # Устанавливаем корневые сертификаты (на всякий случай)
-RUN apk --no-cache add ca-certificates wget
+RUN apk --no-cache add ca-certificates wget \
+    && addgroup -S app && adduser -S app -G app
 
 WORKDIR /app
 
 # Копируем собранный бинарник из стадии сборки
-COPY --from=builder /gameplay-service .
+COPY --from=builder --chown=app:app /gameplay-service .
+
+USER app
 
 # Порт, который будет слушать сервис (для информации)
 # EXPOSE 8082 - порт определяется переменной окружения

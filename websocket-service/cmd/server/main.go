@@ -56,8 +56,8 @@ func main() {
 	// Создание сервиса аутентификации
 	authService := service.NewAuthService(&cfg.AuthService, logger)
 
-	// Создание обработчика WebSocket
-	wsHandler := handler.NewWebSocketHandler(connManager, authService, logger)
+	// Создание обработчика WebSocket с проверкой Origin
+	wsHandler := handler.NewWebSocketHandler(connManager, authService, cfg.Server.AllowedOrigins, logger)
 
 	// Настройка основного HTTP-сервера
 	mainMux := http.NewServeMux()

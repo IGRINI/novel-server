@@ -23,30 +23,54 @@ const (
 	maxMessageSize = 512
 )
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	// Проверяем origin запроса (в продакшене здесь должна быть проверка)
-	CheckOrigin: func(r *http.Request) bool {
-		// TODO: Добавить проверку Origin для безопасности
-		return true
-	},
-}
+// upgrader по умолчанию будет настраиваться в NewWebSocketHandler
+// чтобы можно было использовать динамическую проверку Origin.
 
 // WebSocketHandler обрабатывает запросы на установку WebSocket соединения.
 type WebSocketHandler struct {
-	manager     *ConnectionManager
-	authService *service.AuthService // Добавляем зависимость от AuthService
-	logger      zerolog.Logger       // Добавляем логгер
+	manager        *ConnectionManager
+	authService    *service.AuthService // Добавляем зависимость от AuthService
+	logger         zerolog.Logger       // Добавляем логгер
+	allowedOrigins map[string]struct{}
+	upgrader       websocket.Upgrader
+}
+
+// checkOrigin проверяет Origin исходя из списка разрешенных.
+func (h *WebSocketHandler) checkOrigin(r *http.Request) bool {
+	if len(h.allowedOrigins) == 0 {
+		return true
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		h.logger.Warn().Msg("Missing Origin header")
+		return false
+	}
+	if _, ok := h.allowedOrigins[origin]; ok {
+		return true
+	}
+	h.logger.Warn().Str("origin", origin).Msg("Origin not allowed")
+	return false
 }
 
 // NewWebSocketHandler создает новый обработчик WebSocket.
-func NewWebSocketHandler(manager *ConnectionManager, authService *service.AuthService, logger zerolog.Logger) *WebSocketHandler {
-	return &WebSocketHandler{
-		manager:     manager,
-		authService: authService,
-		logger:      logger.With().Str("component", "WebSocketHandler").Logger(),
+func NewWebSocketHandler(manager *ConnectionManager, authService *service.AuthService, allowedOrigins []string, logger zerolog.Logger) *WebSocketHandler {
+	originMap := make(map[string]struct{})
+	for _, o := range allowedOrigins {
+		originMap[o] = struct{}{}
 	}
+
+	h := &WebSocketHandler{
+		manager:        manager,
+		authService:    authService,
+		logger:         logger.With().Str("component", "WebSocketHandler").Logger(),
+		allowedOrigins: originMap,
+	}
+	h.upgrader = websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin:     h.checkOrigin,
+	}
+	return h
 }
 
 // ServeWS обрабатывает входящий HTTP запрос для WebSocket.
@@ -75,7 +99,7 @@ func (h *WebSocketHandler) ServeWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Обновляем соединение до WebSocket
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		h.logger.Error().Err(err).Str("userID", userID).Msg("Failed to upgrade connection")
 		// Не пишем ошибку в http.ResponseWriter, так как upgrader уже это сделал

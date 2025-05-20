@@ -19,15 +19,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /notification-service 
 FROM alpine:latest
 
 # Устанавливаем корневые сертификаты (могут понадобиться для внешних API)
-RUN apk --no-cache add ca-certificates
-
-# Устанавливаем wget для healthcheck в docker-compose
-RUN apk --no-cache add wget
+RUN apk --no-cache add ca-certificates wget \
+    && addgroup -S app && adduser -S app -G app
 
 WORKDIR /app
 
 # Копируем бинарник из этапа сборки
-COPY --from=builder /notification-service .
+COPY --from=builder --chown=app:app /notification-service .
+
+USER app
 
 # Копируем конфигурацию (если используется файл config.yml)
 # COPY config.yml .

@@ -19,8 +19,9 @@ type Config struct {
 
 // ServerConfig содержит настройки HTTP сервера.
 type ServerConfig struct {
-	Port        string `envconfig:"PORT" default:"8083"`         // Основной порт для WebSocket
-	MetricsPort string `envconfig:"METRICS_PORT" default:"9092"` // Порт для Prometheus метрик
+	Port           string   `envconfig:"PORT" default:"8083"`         // Основной порт для WebSocket
+	MetricsPort    string   `envconfig:"METRICS_PORT" default:"9092"` // Порт для Prometheus метрик
+	AllowedOrigins []string `envconfig:"ALLOWED_ORIGINS"`             // Разрешенные Origins для WebSocket
 }
 
 // RabbitMQConfig содержит настройки для подключения к RabbitMQ.
@@ -53,6 +54,7 @@ func LoadConfig() (*Config, error) {
 	log.Printf("  Port: %s", cfg.Server.Port)
 	log.Printf("  RabbitMQ URL: %s", cfg.RabbitMQ.URL)
 	log.Printf("  Client Updates Queue Name: %s", cfg.RabbitMQ.QueueName)
+	log.Printf("  Allowed Origins: %v", cfg.Server.AllowedOrigins)
 	log.Println("  JWT Secret: [ЗАГРУЖЕН]")
 
 	return &cfg, nil

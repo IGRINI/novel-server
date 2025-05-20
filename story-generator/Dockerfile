@@ -25,12 +25,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /story-worker ./story-
 FROM alpine:latest
 
 # Устанавливаем корневые сертификаты (могут понадобиться для внешних API)
-RUN apk --no-cache add ca-certificates
+RUN apk --no-cache add ca-certificates \
+    && addgroup -S app && adduser -S app -G app
 
 WORKDIR /app
 
 # Копируем собранный бинарник из builder stage
-COPY --from=builder /story-worker .
+COPY --from=builder --chown=app:app /story-worker .
+
+USER app
 # ----------------------------------------------------
 
 # Копируем .env файл, если используется godotenv (не рекомендуется для production)
