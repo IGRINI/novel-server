@@ -2,9 +2,9 @@ package novel_handlers
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"novel-server/internal/auth"
+	"novel-server/internal/logger"
 )
 
 // Authenticate генерирует JWT токен для пользователя
@@ -30,11 +30,11 @@ func (h *NovelHandler) Authenticate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Здесь в будущем может быть проверка пароля или другие методы аутентификации
-	log.Printf("Generating token for UserID: %s", req.UserID)
+	logger.Logger.Info("Generating token", "userID", req.UserID)
 
 	tokenString, err := auth.GenerateToken(req.UserID)
 	if err != nil {
-		log.Printf("Error generating token for user %s: %v", req.UserID, err)
+		logger.Logger.Error("Error generating token", "userID", req.UserID, "err", err)
 		respondWithError(w, http.StatusInternalServerError, "Failed to generate token")
 		return
 	}

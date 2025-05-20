@@ -30,7 +30,8 @@ This Go server provides an API for generating visual novel configurations and co
 
 ## Configuration
 
-Create a `config.yaml` file in the root directory (or use environment variables). See `config.example.yaml` for structure.
+Copy `.env.example` to `.env` and adjust values for your environment.
+Create a `config.yaml` file (optional) based on `config.example.yaml`.
 
 Key configuration options:
 

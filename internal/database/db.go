@@ -3,7 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
-	"log"
+	"novel-server/internal/logger"
 	"os"
 	"path/filepath"
 
@@ -13,7 +13,7 @@ import (
 // InitDB инициализирует подключение к базе данных и выполняет миграции
 func InitDB(ctx context.Context) (*pgxpool.Pool, error) {
 	config := NewConfig()
-	log.Printf("[DB] Connecting to database at %s:%d", config.Host, config.Port)
+	logger.Logger.Info("Connecting to database", "host", config.Host, "port", config.Port)
 
 	// Создаем пул соединений
 	db, err := pgxpool.New(ctx, config.ConnectionString())
@@ -26,12 +26,12 @@ func InitDB(ctx context.Context) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	log.Printf("[DB] Successfully connected to database")
+	logger.Logger.Info("Successfully connected to database")
 
 	// Получаем путь к директории с миграциями
 	migrationsDir := filepath.Join("migrations")
 	if _, err := os.Stat(migrationsDir); os.IsNotExist(err) {
-		log.Printf("[DB] Migrations directory not found: %s", migrationsDir)
+		logger.Logger.Warn("Migrations directory not found", "dir", migrationsDir)
 		return db, nil
 	}
 
@@ -40,7 +40,7 @@ func InitDB(ctx context.Context) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
 
-	log.Printf("[DB] Database initialization completed successfully")
+	logger.Logger.Info("Database initialization completed")
 	return db, nil
 }
 
@@ -48,6 +48,6 @@ func InitDB(ctx context.Context) (*pgxpool.Pool, error) {
 func CloseDB(db *pgxpool.Pool) {
 	if db != nil {
 		db.Close()
-		log.Printf("[DB] Database connection closed")
+		logger.Logger.Info("Database connection closed")
 	}
 }
