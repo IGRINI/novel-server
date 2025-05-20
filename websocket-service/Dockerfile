@@ -24,11 +24,16 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /websocket-server ./we
 # --- Final Stage ---
 FROM alpine:latest
 
+RUN apk --no-cache add ca-certificates \
+    && addgroup -S app && adduser -S app -G app
+
 # Устанавливаем рабочую директорию
 WORKDIR /app
 
 # Копируем собранный бинарник из builder stage
-COPY --from=builder /websocket-server .
+COPY --from=builder --chown=app:app /websocket-server .
+
+USER app
 
 # Копируем возможные необходимые файлы конфигурации или статики (если они появятся)
 # COPY ./config /app/config

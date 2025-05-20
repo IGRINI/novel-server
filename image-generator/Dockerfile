@@ -27,12 +27,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /image-worker ./image-
 FROM alpine:latest
 
 # Устанавливаем корневые сертификаты (могут понадобиться для HTTPS к SANA серверу или S3)
-RUN apk --no-cache add ca-certificates
+RUN apk --no-cache add ca-certificates \
+    && addgroup -S app && adduser -S app -G app
 
 WORKDIR /app
 
 # Копируем собранный бинарник из builder stage
-COPY --from=builder /image-worker .
+COPY --from=builder --chown=app:app /image-worker .
+
+USER app
 
 # Копируем .env файл, если используется godotenv (не рекомендуется для production)
 # COPY .env .env

@@ -24,12 +24,15 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /auth-service ./auth/c
 # Этап 2: Создание минимального образа
 FROM alpine:latest
 
-RUN apk --no-cache add ca-certificates wget
+RUN apk --no-cache add ca-certificates wget \
+    && addgroup -S app && adduser -S app -G app
 
 WORKDIR /app
 
 # Копируем бинарный файл из этапа сборки
-COPY --from=builder /auth-service .
+COPY --from=builder --chown=app:app /auth-service .
+
+USER app
 
 # Копируем .env файл (если он не будет монтироваться как volume)
 # COPY .env .env
