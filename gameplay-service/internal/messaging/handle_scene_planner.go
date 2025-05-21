@@ -190,8 +190,8 @@ func (p *NotificationProcessor) handleScenePlannerResult(ctx context.Context, no
 	}
 	log.Info("Transaction committed: PublishedStory updated and initial scene created.", zap.Stringer("initial_scene_id", initialScene.ID))
 
-	// После коммита, если это первая сцена, публикуем задачу генерации Setup
-	if publishedStory.IsFirstScenePending {
+	// После коммита, если статус SetupPending, публикуем задачу генерации Setup
+	if newStatus == sharedModels.StatusSetupPending {
 		cfgInput := utils.FormatConfigToString(storyCfg, publishedStory.IsAdultContent)
 		setupTaskID := uuid.New().String()
 		setupPayload := sharedMessaging.GenerationTaskPayload{
