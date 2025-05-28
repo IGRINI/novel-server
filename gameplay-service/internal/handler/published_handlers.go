@@ -272,7 +272,7 @@ func (h *GameplayHandler) getPublishedStoryScene(c *gin.Context) {
 // <<< ДОБАВЛЕНО: Вспомогательная функция для парсинга блока 'ch' >>>
 // <<< ИЗМЕНЕНА СИГНАТУРА: Принимает маппинги индексов >>>
 func parseChoicesBlock(chJSON json.RawMessage, responseDTO *GameSceneResponseDTO, sceneID string, log *zap.Logger, charIdxToName map[int]string, statIdxToName map[int]string) {
-	// Временная структура для парсинга блока 'ch'
+	// Структура для парсинга блока 'ch' из JSON
 	type rawChoiceBlock struct {
 		CharIndex   int    `json:"char"` // <<< ПОЛЕ ДЛЯ ПАРСИНГА - ИНДЕКС
 		Description string `json:"desc"`

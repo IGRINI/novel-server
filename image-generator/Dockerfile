@@ -35,6 +35,8 @@ WORKDIR /app
 # Копируем собранный бинарник из builder stage
 COPY --from=builder --chown=app:app /image-worker .
 
+RUN mkdir -p /app/generated_images && chown app:app /app/generated_images
+
 USER app
 
 # Копируем .env файл, если используется godotenv (не рекомендуется для production)

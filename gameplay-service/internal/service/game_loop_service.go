@@ -297,10 +297,6 @@ func (s *gameLoopServiceImpl) DispatchNextGenerationTask(
 		log.Warn("Unhandled status for dispatching task", zap.String("status", string(publishedStory.Status)))
 		return nil
 	}
-
-	// Placeholder: remove when TODOs are implemented (Should be unreachable now if all cases return)
-	// log.Warn("Dispatch logic not fully implemented yet")
-	// return nil
 }
 
 // Ensure gameLoopServiceImpl implements GameLoopService

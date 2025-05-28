@@ -11,10 +11,12 @@ import (
 // GameLoopService defines the operations for managing the core game loop.
 // Moved from gameplay-service/internal/service to shared/interfaces to break import cycle.
 type GameLoopService interface {
-	// GetStoryScene retrieves the scene associated with a specific game state ID.
+	// GetStoryScene retrieves the current scene for a specific game state.
+	// It uses the game state ID to find the appropriate scene for the player.
 	GetStoryScene(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID) (*models.StoryScene, error)
 
 	// MakeChoice applies player choices to a specific game state.
+	// It uses the game state ID to find the appropriate state for the player.
 	MakeChoice(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID, selectedOptionIndices []int) error
 
 	// ListGameStates lists all active game states (save slots) for a player and a story.
@@ -25,7 +27,7 @@ type GameLoopService interface {
 	CreateNewGameState(ctx context.Context, playerID uuid.UUID, publishedStoryID uuid.UUID) (*models.PlayerGameState, error)
 
 	// DeletePlayerGameState deletes a specific game state (save slot) by its ID.
-	DeletePlayerGameState(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID) error
+	DeletePlayerGameState(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
 
 	// RetryGenerationForGameState handles retrying generation for a specific game state.
 	// It determines if setup or scene generation failed and triggers the appropriate task.
@@ -34,7 +36,8 @@ type GameLoopService interface {
 	// UpdateSceneInternal updates the content of a specific scene (internal admin func).
 	UpdateSceneInternal(ctx context.Context, sceneID uuid.UUID, contentJSON string) error
 
-	// GetPlayerProgress retrieves the progress node linked to a specific game state ID.
+	// GetPlayerProgress retrieves the progress node for a specific game state.
+	// It uses the game state ID to find the appropriate progress for the player.
 	GetPlayerProgress(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID) (*models.PlayerProgress, error)
 
 	// DeleteSceneInternal deletes a scene (internal admin func).

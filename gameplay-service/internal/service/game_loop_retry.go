@@ -53,6 +53,30 @@ func (s *gameLoopServiceImpl) buildRetryGenerationForGameStatePayload(
 		return nil, wrapErr
 	}
 
+	// Валидация состояния игры для retry
+	if err := s.validateBasicGameStateForRetry(ctx, tx, gs, story, log); err != nil {
+		log.Error("Game state validation failed for retry", zap.Error(err))
+		return nil, err
+	}
+
+	// Восстановление состояния игры для retry
+	if err := s.prepareBasicGameStateForRetry(ctx, tx, gs, story, log); err != nil {
+		log.Error("Failed to prepare game state for retry", zap.Error(err))
+		return nil, err
+	}
+
+	// Валидация и восстановление порядка шагов для retry игровых состояний
+	if err := s.validateGameStateRetryStep(ctx, tx, gs, story, log); err != nil {
+		log.Error("Game state retry step validation failed", zap.Error(err))
+		return nil, err
+	}
+
+	// Восстановление правильного порядка шагов для retry игровых состояний
+	if err := s.prepareGameStateRetrySteps(ctx, tx, gs, story, log); err != nil {
+		log.Error("Failed to prepare game state retry steps", zap.Error(err))
+		return nil, err
+	}
+
 	// Retry setup if missing
 	if story.Setup == nil || string(story.Setup) == "null" {
 		if story.Config == nil {
@@ -131,24 +155,51 @@ func (s *gameLoopServiceImpl) buildRetryGenerationForGameStatePayload(
 }
 
 // RetryGenerationForGameState handles retrying generation for a specific game state.
-func (s *gameLoopServiceImpl) RetryGenerationForGameState(
-	ctx context.Context,
-	userID, storyID, gameStateID uuid.UUID,
-) error {
-	return s.doRetryWithTx(
-		ctx,
-		userID,
-		storyID,
-		func(ctx context.Context, tx pgx.Tx) (*sharedMessaging.GenerationTaskPayload, error) {
-			return s.buildRetryGenerationForGameStatePayload(ctx, tx, userID, storyID, gameStateID)
-		},
-		func(ctx context.Context, tx pgx.Tx, payload *sharedMessaging.GenerationTaskPayload) error {
-			if payload != nil {
-				return s.publisher.PublishGenerationTask(ctx, *payload)
+func (s *gameLoopServiceImpl) RetryGenerationForGameState(ctx context.Context, userID, storyID, gameStateID uuid.UUID) error {
+	return WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		payload, err := s.buildRetryGenerationForGameStatePayload(ctx, tx, userID, storyID, gameStateID)
+		if err != nil {
+			return err
+		}
+
+		// Отправляем WebSocket уведомление о начале retry
+		if s.clientPub != nil {
+			retryStartNotification := models.ClientStoryUpdate{
+				ID:           gameStateID.String(),
+				UserID:       userID.String(),
+				UpdateType:   models.UpdateTypeGameState,
+				Status:       "retry_started",
+				ErrorDetails: nil,
 			}
-			return nil
-		},
-	)
+			if pubErr := s.clientPub.PublishClientUpdate(ctx, retryStartNotification); pubErr != nil {
+				s.logger.Warn("Failed to send retry start WebSocket notification",
+					zap.String("gameStateID", gameStateID.String()),
+					zap.Error(pubErr))
+			}
+		}
+
+		if err := s.publisher.PublishGenerationTask(ctx, *payload); err != nil {
+			// При ошибке отправки задачи, отправляем WebSocket уведомление об ошибке
+			if s.clientPub != nil {
+				errorMsg := "Failed to publish retry task"
+				errorNotification := models.ClientStoryUpdate{
+					ID:           gameStateID.String(),
+					UserID:       userID.String(),
+					UpdateType:   models.UpdateTypeGameState,
+					Status:       "retry_error",
+					ErrorDetails: &errorMsg,
+				}
+				if pubErr := s.clientPub.PublishClientUpdate(ctx, errorNotification); pubErr != nil {
+					s.logger.Warn("Failed to send retry error WebSocket notification",
+						zap.String("gameStateID", gameStateID.String()),
+						zap.Error(pubErr))
+				}
+			}
+			return err
+		}
+
+		return nil
+	})
 }
 
 // RetryInitialGeneration handles retrying generation for a published story based on its InternalGenerationStep.
@@ -170,6 +221,22 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 		if story.UserID != userID {
 			log.Warn("User ID mismatch", zap.Stringer("storyUserID", story.UserID))
 			return models.ErrForbidden
+		}
+
+		// Отправляем WebSocket уведомление о начале retry
+		if s.clientPub != nil {
+			retryStartNotification := models.ClientStoryUpdate{
+				ID:           storyID.String(),
+				UserID:       userID.String(),
+				UpdateType:   models.UpdateTypeStory,
+				Status:       "retry_started",
+				ErrorDetails: nil,
+			}
+			if pubErr := s.clientPub.PublishClientUpdate(ctx, retryStartNotification); pubErr != nil {
+				s.logger.Warn("Failed to send retry start WebSocket notification",
+					zap.String("storyID", storyID.String()),
+					zap.Error(pubErr))
+			}
 		}
 
 		if story.InternalGenerationStep == nil {
@@ -202,6 +269,18 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 		}
 		step := *stepPtr
 		log.Info("Starting retry from step", zap.String("step", string(step)))
+
+		// Проверяем что шаг соответствует текущему состоянию истории
+		if err := s.validateRetryStep(ctx, tx, story, step, log); err != nil {
+			log.Error("Retry step validation failed", zap.Error(err))
+			return err
+		}
+
+		// Восстанавливаем состояние для retry если необходимо
+		if err := s.prepareStoryStateForRetry(ctx, tx, story, step, log); err != nil {
+			log.Error("Failed to prepare story state for retry", zap.Error(err))
+			return err
+		}
 
 		var initialSceneContent *models.InitialSceneContent
 		if step == models.StepCardImageGeneration || step == models.StepCharacterImageGeneration || step == models.StepCharacterGeneration || step == models.StepInitialSceneJSON {
@@ -291,6 +370,22 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 		}
 
 		if err != nil {
+			// При ошибке отправляем WebSocket уведомление об ошибке
+			if s.clientPub != nil {
+				errorMsg := fmt.Sprintf("Failed to prepare retry payload: %v", err)
+				errorNotification := models.ClientStoryUpdate{
+					ID:           storyID.String(),
+					UserID:       userID.String(),
+					UpdateType:   models.UpdateTypeStory,
+					Status:       "retry_error",
+					ErrorDetails: &errorMsg,
+				}
+				if pubErr := s.clientPub.PublishClientUpdate(ctx, errorNotification); pubErr != nil {
+					s.logger.Warn("Failed to send retry error WebSocket notification",
+						zap.String("storyID", storyID.String()),
+						zap.Error(pubErr))
+				}
+			}
 			// Error already logged by helper or a check before switch
 			return err // Return the error from helper or pre-switch check
 		}
@@ -300,12 +395,48 @@ func (s *gameLoopServiceImpl) RetryInitialGeneration(ctx context.Context, userID
 			case *sharedMessaging.GenerationTaskPayload:
 				if pubErr := s.publisher.PublishGenerationTask(ctx, *p); pubErr != nil {
 					log.Error("Failed to publish generation task", zap.Error(pubErr), zap.String("promptType", string(p.PromptType)))
+
+					// При ошибке публикации отправляем WebSocket уведомление об ошибке
+					if s.clientPub != nil {
+						errorMsg := fmt.Sprintf("Failed to publish generation task: %v", pubErr)
+						errorNotification := models.ClientStoryUpdate{
+							ID:           storyID.String(),
+							UserID:       userID.String(),
+							UpdateType:   models.UpdateTypeStory,
+							Status:       "retry_error",
+							ErrorDetails: &errorMsg,
+						}
+						if pubErr2 := s.clientPub.PublishClientUpdate(ctx, errorNotification); pubErr2 != nil {
+							s.logger.Warn("Failed to send retry error WebSocket notification",
+								zap.String("storyID", storyID.String()),
+								zap.Error(pubErr2))
+						}
+					}
+
 					return fmt.Errorf("failed to publish generation task (%s): %w", string(p.PromptType), pubErr)
 				}
 				log.Info("Successfully published generation task for retry", zap.String("promptType", string(p.PromptType)))
 			case *sharedMessaging.CharacterImageTaskPayload:
 				if pubErr := s.imagePublisher.PublishCharacterImageTask(ctx, *p); pubErr != nil {
 					log.Error("Failed to publish cover/character image task during retry", zap.Error(pubErr))
+
+					// При ошибке публикации отправляем WebSocket уведомление об ошибке
+					if s.clientPub != nil {
+						errorMsg := fmt.Sprintf("Failed to publish image task: %v", pubErr)
+						errorNotification := models.ClientStoryUpdate{
+							ID:           storyID.String(),
+							UserID:       userID.String(),
+							UpdateType:   models.UpdateTypeStory,
+							Status:       "retry_error",
+							ErrorDetails: &errorMsg,
+						}
+						if pubErr2 := s.clientPub.PublishClientUpdate(ctx, errorNotification); pubErr2 != nil {
+							s.logger.Warn("Failed to send retry error WebSocket notification",
+								zap.String("storyID", storyID.String()),
+								zap.Error(pubErr2))
+						}
+					}
+
 					return fmt.Errorf("failed to publish cover/character image task: %w", pubErr)
 				}
 				log.Info("Successfully published cover/character image task for retry", zap.String("taskType", string(promptTypeForLog)))
@@ -560,5 +691,524 @@ func (s *gameLoopServiceImpl) publishRetryCharacterImageTasks(ctx context.Contex
 		return fmt.Errorf("encountered %d errors during character image task publishing retry: %w", len(publishErrors), publishErrors[0])
 	}
 	log.Info("Finished publishing all character image tasks for retry")
+	return nil
+}
+
+// validateRetryStep проверяет что шаг retry соответствует текущему состоянию истории
+func (s *gameLoopServiceImpl) validateRetryStep(ctx context.Context, tx pgx.Tx, story *models.PublishedStory, step models.InternalGenerationStep, log *zap.Logger) error {
+	// Проверяем что история находится в подходящем статусе для retry
+	if story.Status != models.StatusError && story.Status != models.StatusGenerating {
+		log.Warn("Story is not in Error or Generating status, cannot retry", zap.String("status", string(story.Status)))
+		return fmt.Errorf("story status %s does not allow retry", string(story.Status))
+	}
+
+	// Проверяем зависимости для каждого шага
+	switch step {
+	case models.StepModeration:
+		// Moderation всегда можно повторить если есть Config
+		if story.Config == nil || len(story.Config) == 0 {
+			return fmt.Errorf("cannot retry moderation: story config is missing")
+		}
+	case models.StepProtagonistGoal:
+		// ProtagonistGoal требует успешной модерации
+		if story.Config == nil || len(story.Config) == 0 {
+			return fmt.Errorf("cannot retry protagonist goal: story config is missing")
+		}
+	case models.StepScenePlanner:
+		// ScenePlanner требует Setup
+		if story.Setup == nil || string(story.Setup) == "null" {
+			return fmt.Errorf("cannot retry scene planner: story setup is missing")
+		}
+	case models.StepCharacterGeneration:
+		// CharacterGeneration требует Setup и начальную сцену
+		if story.Setup == nil || string(story.Setup) == "null" {
+			return fmt.Errorf("cannot retry character generation: story setup is missing")
+		}
+		sceneRepo := database.NewPgStorySceneRepository(tx, s.logger)
+		_, errScene := sceneRepo.FindByStoryAndHash(ctx, tx, story.ID, models.InitialStateHash)
+		if errScene != nil {
+			return fmt.Errorf("cannot retry character generation: initial scene is missing")
+		}
+	case models.StepSetupGeneration:
+		// SetupGeneration требует Config
+		if story.Config == nil || len(story.Config) == 0 {
+			return fmt.Errorf("cannot retry setup generation: story config is missing")
+		}
+	case models.StepInitialSceneJSON:
+		// InitialSceneJSON требует Setup и начальную сцену с контентом
+		if story.Setup == nil || string(story.Setup) == "null" {
+			return fmt.Errorf("cannot retry initial scene JSON: story setup is missing")
+		}
+		sceneRepo := database.NewPgStorySceneRepository(tx, s.logger)
+		initialScene, errScene := sceneRepo.FindByStoryAndHash(ctx, tx, story.ID, models.InitialStateHash)
+		if errScene != nil {
+			return fmt.Errorf("cannot retry initial scene JSON: initial scene is missing")
+		}
+		if initialScene.Content == nil {
+			return fmt.Errorf("cannot retry initial scene JSON: initial scene content is missing")
+		}
+	case models.StepCoverImageGeneration:
+		// CoverImageGeneration требует Setup
+		if story.Setup == nil || string(story.Setup) == "null" {
+			return fmt.Errorf("cannot retry cover image generation: story setup is missing")
+		}
+	case models.StepCardImageGeneration, models.StepCharacterImageGeneration:
+		// Image generation требует начальную сцену с контентом
+		sceneRepo := database.NewPgStorySceneRepository(tx, s.logger)
+		initialScene, errScene := sceneRepo.FindByStoryAndHash(ctx, tx, story.ID, models.InitialStateHash)
+		if errScene != nil {
+			return fmt.Errorf("cannot retry %s: initial scene is missing", string(step))
+		}
+		if initialScene.Content == nil {
+			return fmt.Errorf("cannot retry %s: initial scene content is missing", string(step))
+		}
+	}
+
+	log.Info("Retry step validation passed", zap.String("step", string(step)))
+	return nil
+}
+
+// prepareStoryStateForRetry восстанавливает состояние истории для корректного retry
+func (s *gameLoopServiceImpl) prepareStoryStateForRetry(ctx context.Context, tx pgx.Tx, story *models.PublishedStory, step models.InternalGenerationStep, log *zap.Logger) error {
+	publishedRepo := database.NewPgPublishedStoryRepository(tx, s.logger)
+
+	// Сбрасываем флаги генерации в зависимости от шага
+	var resetFlags bool
+	var setupGenerated, scenePlanGenerated, characterGenerated, initialSceneGenerated, coverImageGenerated bool
+
+	switch step {
+	case models.StepModeration:
+		// При retry модерации сбрасываем все флаги
+		resetFlags = true
+		setupGenerated = false
+		scenePlanGenerated = false
+		characterGenerated = false
+		initialSceneGenerated = false
+		coverImageGenerated = false
+	case models.StepProtagonistGoal:
+		// При retry protagonist goal сбрасываем флаги после этого шага
+		resetFlags = true
+		setupGenerated = false
+		scenePlanGenerated = false
+		characterGenerated = false
+		initialSceneGenerated = false
+		coverImageGenerated = false
+	case models.StepScenePlanner:
+		// При retry scene planner сбрасываем флаги после этого шага
+		resetFlags = true
+		setupGenerated = true
+		scenePlanGenerated = false
+		characterGenerated = false
+		initialSceneGenerated = false
+		coverImageGenerated = false
+	case models.StepCharacterGeneration:
+		// При retry character generation сбрасываем флаги после этого шага
+		resetFlags = true
+		setupGenerated = true
+		scenePlanGenerated = true
+		characterGenerated = false
+		initialSceneGenerated = false
+		coverImageGenerated = false
+	case models.StepSetupGeneration:
+		// При retry setup generation сбрасываем флаги после этого шага
+		resetFlags = true
+		setupGenerated = false
+		scenePlanGenerated = false
+		characterGenerated = false
+		initialSceneGenerated = false
+		coverImageGenerated = false
+	case models.StepInitialSceneJSON:
+		// При retry initial scene JSON сбрасываем флаги после этого шага
+		resetFlags = true
+		setupGenerated = true
+		scenePlanGenerated = true
+		characterGenerated = true
+		initialSceneGenerated = false
+		coverImageGenerated = false
+	case models.StepCoverImageGeneration:
+		// При retry cover image generation сбрасываем только этот флаг
+		resetFlags = true
+		setupGenerated = true
+		scenePlanGenerated = true
+		characterGenerated = true
+		initialSceneGenerated = true
+		coverImageGenerated = false
+	case models.StepCardImageGeneration, models.StepCharacterImageGeneration:
+		// При retry image generation не сбрасываем основные флаги
+		resetFlags = false
+	}
+
+	if resetFlags {
+		err := publishedRepo.UpdateStatusFlagsAndDetails(
+			ctx, tx, story.ID,
+			models.StatusGenerating, // Устанавливаем статус Generating
+			setupGenerated,
+			scenePlanGenerated,
+			0,     // pendingCharGenTasks
+			0,     // pendingCardImgTasks
+			0,     // pendingCharImgTasks
+			nil,   // errorDetails
+			&step, // currentStep
+		)
+		if err != nil {
+			log.Error("Failed to reset story flags for retry", zap.Error(err))
+			return fmt.Errorf("failed to reset story flags for retry: %w", err)
+		}
+		log.Info("Reset story generation flags for retry",
+			zap.String("step", string(step)),
+			zap.Bool("setupGenerated", setupGenerated),
+			zap.Bool("scenePlanGenerated", scenePlanGenerated),
+			zap.Bool("characterGenerated", characterGenerated),
+			zap.Bool("initialSceneGenerated", initialSceneGenerated),
+			zap.Bool("coverImageGenerated", coverImageGenerated),
+		)
+	}
+
+	return nil
+}
+
+// validateBasicGameStateForRetry проверяет базовые требования для retry игрового состояния
+func (s *gameLoopServiceImpl) validateBasicGameStateForRetry(ctx context.Context, tx pgx.Tx, gs *models.PlayerGameState, story *models.PublishedStory, log *zap.Logger) error {
+	// Проверяем что история готова для игры
+	if story.Status != models.StatusReady && story.Status != models.StatusError {
+		log.Warn("Story is not in Ready or Error status, cannot retry game state", zap.String("status", string(story.Status)))
+		return fmt.Errorf("story status %s does not allow game state retry", string(story.Status))
+	}
+
+	// Проверяем что у истории есть Setup
+	if story.Setup == nil || string(story.Setup) == "null" {
+		log.Warn("Story setup is missing, cannot retry game state")
+		return fmt.Errorf("cannot retry game state: story setup is missing")
+	}
+
+	// Проверяем что у игрового состояния есть прогресс
+	if gs.PlayerProgressID == uuid.Nil {
+		log.Warn("Game state has no progress ID, cannot retry")
+		return fmt.Errorf("cannot retry game state: progress ID is missing")
+	}
+
+	// Проверяем что прогресс существует
+	progressRepo := database.NewPgPlayerProgressRepository(tx, s.logger)
+	_, err := progressRepo.GetByID(ctx, tx, gs.PlayerProgressID)
+	if err != nil {
+		log.Warn("Game state progress not found, cannot retry", zap.Error(err))
+		return fmt.Errorf("cannot retry game state: progress not found")
+	}
+
+	log.Info("Basic game state validation passed for retry")
+	return nil
+}
+
+// prepareBasicGameStateForRetry выполняет базовую подготовку игрового состояния для retry
+func (s *gameLoopServiceImpl) prepareBasicGameStateForRetry(ctx context.Context, tx pgx.Tx, gs *models.PlayerGameState, story *models.PublishedStory, log *zap.Logger) error {
+	// Сбрасываем ошибки в игровом состоянии
+	gs.ErrorDetails = nil
+	gs.LastActivityAt = time.Now().UTC()
+
+	// Если это retry сцены, проверяем что сцена действительно отсутствует
+	if gs.CurrentSceneID.Valid {
+		sceneRepo := database.NewPgStorySceneRepository(tx, s.logger)
+		progressRepo := database.NewPgPlayerProgressRepository(tx, s.logger)
+
+		// Получаем прогресс для проверки хеша состояния
+		progress, err := progressRepo.GetByID(ctx, tx, gs.PlayerProgressID)
+		if err != nil {
+			log.Error("Failed to get progress for scene validation", zap.Error(err))
+			return fmt.Errorf("failed to get progress for retry preparation: %w", err)
+		}
+
+		// Проверяем что сцена для текущего хеша состояния действительно отсутствует
+		_, sceneErr := sceneRepo.FindByStoryAndHash(ctx, tx, story.ID, progress.CurrentStateHash)
+		if sceneErr == nil {
+			// Сцена существует, это не должно быть retry
+			log.Warn("Scene exists for current state hash, retry not needed")
+			gs.PlayerStatus = models.PlayerStatusPlaying
+			return nil
+		}
+
+		// Сцена отсутствует, сбрасываем CurrentSceneID для корректной генерации
+		gs.CurrentSceneID = uuid.NullUUID{Valid: false}
+		log.Info("Reset CurrentSceneID for scene retry")
+	}
+
+	// Если история была в ошибке, восстанавливаем её статус для retry
+	if story.Status == models.StatusError {
+		publishedRepo := database.NewPgPublishedStoryRepository(tx, s.logger)
+		err := publishedRepo.UpdateStatusFlagsAndDetails(
+			ctx, tx, story.ID,
+			models.StatusReady, // Восстанавливаем статус Ready
+			false, false,       // Сбрасываем флаги ожидания
+			0, 0, 0, // Сбрасываем счетчики задач
+			nil, // Убираем детали ошибки
+			nil, // Не меняем шаг генерации
+		)
+		if err != nil {
+			log.Error("Failed to restore story status for retry", zap.Error(err))
+			return fmt.Errorf("failed to restore story status for retry: %w", err)
+		}
+		log.Info("Restored story status to Ready for game state retry")
+	}
+
+	log.Info("Basic game state prepared for retry")
+	return nil
+}
+
+// validateGameStateRetryStep проверяет что retry игрового состояния соответствует правильному порядку шагов
+func (s *gameLoopServiceImpl) validateGameStateRetryStep(ctx context.Context, tx pgx.Tx, gs *models.PlayerGameState, story *models.PublishedStory, log *zap.Logger) error {
+	// Проверяем что история готова для игры
+	if story.Status != models.StatusReady && story.Status != models.StatusError {
+		log.Warn("Story is not in Ready or Error status for game state retry", zap.String("status", string(story.Status)))
+		return fmt.Errorf("story status %s does not allow game state retry", string(story.Status))
+	}
+
+	// Проверяем что все необходимые компоненты истории готовы
+	if story.Setup == nil || string(story.Setup) == "null" {
+		log.Warn("Story setup is missing for game state retry")
+		return fmt.Errorf("cannot retry game state: story setup is missing")
+	}
+
+	// Проверяем что начальная сцена существует
+	sceneRepo := database.NewPgStorySceneRepository(tx, s.logger)
+	_, errInitialScene := sceneRepo.FindByStoryAndHash(ctx, tx, story.ID, models.InitialStateHash)
+	if errInitialScene != nil {
+		log.Warn("Initial scene is missing for game state retry", zap.Error(errInitialScene))
+		return fmt.Errorf("cannot retry game state: initial scene is missing")
+	}
+
+	// Проверяем что прогресс игрока корректен
+	if gs.PlayerProgressID == uuid.Nil {
+		log.Warn("Game state has no progress ID for retry")
+		return fmt.Errorf("cannot retry game state: progress ID is missing")
+	}
+
+	progressRepo := database.NewPgPlayerProgressRepository(tx, s.logger)
+	progress, err := progressRepo.GetByID(ctx, tx, gs.PlayerProgressID)
+	if err != nil {
+		log.Warn("Game state progress not found for retry", zap.Error(err))
+		return fmt.Errorf("cannot retry game state: progress not found")
+	}
+
+	// Проверяем что хеш состояния корректен
+	if progress.CurrentStateHash == "" {
+		log.Warn("Game state progress has empty state hash for retry")
+		return fmt.Errorf("cannot retry game state: progress state hash is empty")
+	}
+
+	// Проверяем что индекс сцены корректен
+	if progress.SceneIndex < 0 {
+		log.Warn("Game state progress has invalid scene index for retry", zap.Int("sceneIndex", progress.SceneIndex))
+		return fmt.Errorf("cannot retry game state: progress scene index is invalid")
+	}
+
+	log.Info("Game state retry step validation passed")
+	return nil
+}
+
+// prepareGameStateRetrySteps восстанавливает правильный порядок шагов для retry игровых состояний
+func (s *gameLoopServiceImpl) prepareGameStateRetrySteps(ctx context.Context, tx pgx.Tx, gs *models.PlayerGameState, story *models.PublishedStory, log *zap.Logger) error {
+	progressRepo := database.NewPgPlayerProgressRepository(tx, s.logger)
+	sceneRepo := database.NewPgStorySceneRepository(tx, s.logger)
+
+	// Получаем прогресс для анализа состояния
+	progress, err := progressRepo.GetByID(ctx, tx, gs.PlayerProgressID)
+	if err != nil {
+		log.Error("Failed to get progress for retry steps preparation", zap.Error(err))
+		return fmt.Errorf("failed to get progress for retry steps: %w", err)
+	}
+
+	// Проверяем что сцена для текущего хеша состояния действительно отсутствует
+	_, sceneErr := sceneRepo.FindByStoryAndHash(ctx, tx, story.ID, progress.CurrentStateHash)
+	if sceneErr == nil {
+		// Сцена существует, проверяем что она корректно связана с игровым состоянием
+		log.Info("Scene exists for current state hash, updating game state to Playing")
+		gs.PlayerStatus = models.PlayerStatusPlaying
+		gs.ErrorDetails = nil
+		gs.LastActivityAt = time.Now().UTC()
+
+		// Находим сцену и связываем её с игровым состоянием
+		scene, _ := sceneRepo.FindByStoryAndHash(ctx, tx, story.ID, progress.CurrentStateHash)
+		if scene != nil {
+			gs.CurrentSceneID = uuid.NullUUID{UUID: scene.ID, Valid: true}
+		}
+
+		gameStateRepo := database.NewPgPlayerGameStateRepository(tx, s.logger)
+		if _, saveErr := gameStateRepo.Save(ctx, tx, gs); saveErr != nil {
+			log.Error("Failed to update game state to Playing after finding existing scene", zap.Error(saveErr))
+			return fmt.Errorf("failed to update game state: %w", saveErr)
+		}
+
+		log.Info("Game state updated to Playing, retry not needed")
+		return nil
+	}
+
+	// Сцена отсутствует, проверяем что это корректное состояние для генерации
+	if progress.CurrentStateHash == models.InitialStateHash {
+		// Это начальная сцена, проверяем что история готова
+		if story.Status != models.StatusReady {
+			log.Warn("Story is not ready for initial scene generation retry", zap.String("status", string(story.Status)))
+			return fmt.Errorf("story status %s does not allow initial scene retry", string(story.Status))
+		}
+	} else {
+		// Это продолжение истории, проверяем что предыдущие сцены существуют
+		if progress.SceneIndex > 0 {
+			// Проверяем что есть предыдущий прогресс
+			prevProgress, errPrev := progressRepo.GetByStoryIDAndHash(ctx, tx, story.ID, progress.CurrentStateHash)
+			if errPrev != nil && !errors.Is(errPrev, models.ErrNotFound) {
+				log.Error("Failed to check previous progress for retry", zap.Error(errPrev))
+				return fmt.Errorf("failed to validate progress chain for retry: %w", errPrev)
+			}
+
+			if prevProgress == nil {
+				log.Warn("Previous progress not found for scene retry", zap.Int("sceneIndex", progress.SceneIndex))
+				return fmt.Errorf("cannot retry scene: previous progress not found")
+			}
+		}
+	}
+
+	// Сбрасываем CurrentSceneID для корректной генерации
+	gs.CurrentSceneID = uuid.NullUUID{Valid: false}
+	gs.PlayerStatus = models.PlayerStatusGeneratingScene
+	gs.ErrorDetails = nil
+	gs.LastActivityAt = time.Now().UTC()
+
+	log.Info("Game state retry steps prepared successfully")
+	return nil
+}
+
+// centralizedStatusUpdate централизованно обновляет статус истории с WebSocket уведомлением
+func (s *gameLoopServiceImpl) centralizedStatusUpdate(
+	ctx context.Context,
+	tx pgx.Tx,
+	storyID uuid.UUID,
+	userID uuid.UUID,
+	status models.StoryStatus,
+	isFirstScenePending bool,
+	areImagesPending bool,
+	pendingCharGenTasks int,
+	pendingCardImgTasks int,
+	pendingCoverImgTasks int,
+	errorDetails *string,
+	internalStep *models.InternalGenerationStep,
+	log *zap.Logger,
+) error {
+	publishedRepo := database.NewPgPublishedStoryRepository(tx, s.logger)
+
+	// Обновляем статус в базе данных
+	err := publishedRepo.UpdateStatusFlagsAndDetails(
+		ctx, tx, storyID, status,
+		isFirstScenePending, areImagesPending,
+		pendingCharGenTasks, pendingCardImgTasks, pendingCoverImgTasks,
+		errorDetails, internalStep,
+	)
+	if err != nil {
+		log.Error("Failed to update story status in database",
+			zap.String("storyID", storyID.String()),
+			zap.String("status", string(status)),
+			zap.Error(err))
+		return fmt.Errorf("failed to update story status: %w", err)
+	}
+
+	// Отправляем WebSocket уведомление
+	if s.clientPub != nil {
+		statusStr := string(status)
+		clientUpdate := models.ClientStoryUpdate{
+			ID:           storyID.String(),
+			UserID:       userID.String(),
+			UpdateType:   models.UpdateTypeStory,
+			Status:       statusStr,
+			ErrorDetails: errorDetails,
+		}
+
+		if pubErr := s.clientPub.PublishClientUpdate(ctx, clientUpdate); pubErr != nil {
+			log.Warn("Failed to send status update WebSocket notification",
+				zap.String("storyID", storyID.String()),
+				zap.String("status", statusStr),
+				zap.Error(pubErr))
+		} else {
+			log.Info("Successfully sent status update WebSocket notification",
+				zap.String("storyID", storyID.String()),
+				zap.String("status", statusStr))
+		}
+	}
+
+	log.Info("Centralized status update completed successfully",
+		zap.String("storyID", storyID.String()),
+		zap.String("status", string(status)))
+
+	return nil
+}
+
+// centralizedGameStateStatusUpdate централизованно обновляет статус игрового состояния с WebSocket уведомлением
+func (s *gameLoopServiceImpl) centralizedGameStateStatusUpdate(
+	ctx context.Context,
+	tx pgx.Tx,
+	gameStateID uuid.UUID,
+	userID uuid.UUID,
+	status models.PlayerStatus,
+	errorDetails *string,
+	currentSceneID *uuid.UUID,
+	log *zap.Logger,
+) error {
+	gameStateRepo := database.NewPgPlayerGameStateRepository(tx, s.logger)
+
+	// Получаем текущее состояние
+	gs, err := gameStateRepo.GetByID(ctx, tx, gameStateID)
+	if err != nil {
+		log.Error("Failed to get game state for status update",
+			zap.String("gameStateID", gameStateID.String()),
+			zap.Error(err))
+		return fmt.Errorf("failed to get game state: %w", err)
+	}
+
+	// Обновляем статус
+	gs.PlayerStatus = status
+	gs.ErrorDetails = errorDetails
+	gs.LastActivityAt = time.Now().UTC()
+
+	if currentSceneID != nil {
+		gs.CurrentSceneID = uuid.NullUUID{UUID: *currentSceneID, Valid: true}
+	}
+
+	// Сохраняем в базе данных
+	if _, saveErr := gameStateRepo.Save(ctx, tx, gs); saveErr != nil {
+		log.Error("Failed to save game state status update",
+			zap.String("gameStateID", gameStateID.String()),
+			zap.String("status", string(status)),
+			zap.Error(saveErr))
+		return fmt.Errorf("failed to save game state status: %w", saveErr)
+	}
+
+	// Отправляем WebSocket уведомление
+	if s.clientPub != nil {
+		statusStr := string(status)
+		clientUpdate := models.ClientStoryUpdate{
+			ID:           gameStateID.String(),
+			UserID:       userID.String(),
+			UpdateType:   models.UpdateTypeGameState,
+			Status:       statusStr,
+			ErrorDetails: errorDetails,
+		}
+
+		if currentSceneID != nil {
+			sceneIDStr := currentSceneID.String()
+			clientUpdate.SceneID = &sceneIDStr
+		}
+
+		if pubErr := s.clientPub.PublishClientUpdate(ctx, clientUpdate); pubErr != nil {
+			log.Warn("Failed to send game state status update WebSocket notification",
+				zap.String("gameStateID", gameStateID.String()),
+				zap.String("status", statusStr),
+				zap.Error(pubErr))
+		} else {
+			log.Info("Successfully sent game state status update WebSocket notification",
+				zap.String("gameStateID", gameStateID.String()),
+				zap.String("status", statusStr))
+		}
+	}
+
+	log.Info("Centralized game state status update completed successfully",
+		zap.String("gameStateID", gameStateID.String()),
+		zap.String("status", string(status)))
+
 	return nil
 }

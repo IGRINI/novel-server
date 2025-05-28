@@ -3,15 +3,14 @@ package messaging
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"novel-server/shared/constants"
+	"novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
 	"novel-server/shared/utils"
@@ -27,166 +26,185 @@ type protagonistGoalResultPayload struct {
 
 func (p *NotificationProcessor) handleProtagonistGoalResult(ctx context.Context, notification sharedMessaging.NotificationPayload, publishedStoryID uuid.UUID) error {
 	taskID := notification.TaskID
-	log := p.logger.With(zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()), zap.String("prompt_type", string(notification.PromptType)))
-
+	log := p.logger.With(
+		zap.String("task_id", taskID),
+		zap.String("published_story_id", publishedStoryID.String()),
+		zap.String("prompt_type", string(notification.PromptType)),
+	)
 	log.Info("Processing protagonist goal result")
 
-	dbCtx, cancel := context.WithTimeout(ctx, 20*time.Second) // Увеличим таймаут для потенциально более сложной логики
-	defer cancel()
-
-	publishedStory, err := p.ensureStoryStatus(dbCtx, publishedStoryID, sharedModels.StatusProtagonistGoalPending)
+	// Проверяем статус истории
+	publishedStory, err := p.ensureStoryStatus(ctx, publishedStoryID, sharedModels.StatusProtagonistGoalPending)
 	if err != nil {
-		return err // Ошибка получения или несоответствие уже залогировано в ensureStoryStatus
+		return err
 	}
 	if publishedStory == nil {
-		return nil // Статус не совпал, ACK и выход
+		return nil // История не в нужном статусе
 	}
 
-	// Переменная для хранения payload следующей задачи
-	var scenePlannerPayload *sharedMessaging.GenerationTaskPayload
-	var processingError error // Для обработки ошибок и предотвращения запуска задачи
-
+	// Обработка ошибки
 	if notification.Status == sharedMessaging.NotificationStatusError {
-		// Ошибка протагониста — используем обёртку
-		p.handleStoryError(ctx, publishedStoryID, notification.UserID, notification.ErrorDetails, constants.WSEventStoryError)
-		return nil
-	} else if notification.Status == sharedMessaging.NotificationStatusSuccess {
+		userID, _ := uuid.Parse(notification.UserID)
+		return p.errorHandler.HandleStoryError(ctx, p.db, publishedStoryID, userID, notification.ErrorDetails, constants.WSEventStoryError)
+	}
+
+	// Обработка успешного результата
+	if notification.Status == sharedMessaging.NotificationStatusSuccess {
 		log.Info("Protagonist goal task successful, processing results.")
 
-		genResult, genErr := p.genResultRepo.GetByTaskID(dbCtx, taskID)
+		// Получаем результат генерации
+		genResult, genErr := p.genResultRepo.GetByTaskID(ctx, taskID)
 		if genErr != nil {
+			userID, _ := uuid.Parse(notification.UserID)
 			errMsg := fmt.Sprintf("failed to fetch protagonist goal result: %v", genErr)
-			p.handleStoryError(ctx, publishedStoryID, notification.UserID, errMsg, constants.WSEventStoryError)
-			return nil
-		} else if genResult.Error != "" {
+			return p.errorHandler.HandleStoryError(ctx, p.db, publishedStoryID, userID, errMsg, constants.WSEventStoryError)
+		}
+
+		if genResult.Error != "" {
 			log.Warn("GenerationResult for protagonist goal indicates an error", zap.String("gen_error", genResult.Error))
+			userID, _ := uuid.Parse(notification.UserID)
 			errDetails := fmt.Sprintf("protagonist goal generation error: %s", genResult.Error)
-			p.handleStoryError(ctx, publishedStoryID, notification.UserID, errDetails, constants.WSEventStoryError)
-			return nil
-		} else {
-			genResultText := genResult.GeneratedText
-			// Строгая проверка и парсинг JSON цели протагониста
-			goalOutcome, err := decodeStrictJSON[protagonistGoalResultPayload](genResultText)
+			return p.errorHandler.HandleStoryError(ctx, p.db, publishedStoryID, userID, errDetails, constants.WSEventStoryError)
+		}
+
+		// Сохраняем результат цели протагониста в конфиге
+		protagonistGoal := genResult.GeneratedText
+		log.Info("Protagonist goal generated successfully", zap.String("goal_preview", protagonistGoal[:min(100, len(protagonistGoal))]))
+
+		// Используем атомарную операцию для обновления состояния
+		return p.txHelper.WithTransaction(ctx, func(ctx context.Context, tx interfaces.DBTX) error {
+			// Обновляем конфиг с целью протагониста
+			err := p.updateConfigWithProtagonistGoal(ctx, publishedStory, protagonistGoal)
 			if err != nil {
-				log.Error("Failed to parse protagonist goal result JSON", zap.Error(err), zap.String("json_text", genResultText))
-				errMsg := fmt.Sprintf("failed to parse protagonist goal result: %v", err)
-				p.handleStoryError(ctx, publishedStoryID, notification.UserID, errMsg, constants.WSEventStoryError)
-				return nil
+				return fmt.Errorf("failed to update config with protagonist goal: %w", err)
 			}
 
-			if processingError == nil && strings.TrimSpace(goalOutcome.Result) == "" {
-				errMsg := "empty 'result' field in protagonist goal JSON"
-				p.handleStoryError(ctx, publishedStoryID, notification.UserID, errMsg, constants.WSEventStoryError)
-				return nil
+			// Атомарно обновляем шаг и статус
+			expectedStep := sharedModels.StepProtagonistGoal
+			nextStep := sharedModels.StepScenePlanner
+			nextStatus := sharedModels.StatusScenePlannerPending
+
+			updatedStory, err := p.stepManager.AtomicUpdateStepAndStatus(
+				ctx, tx, publishedStoryID,
+				&expectedStep, // ожидаемый текущий шаг
+				&nextStep,     // новый шаг
+				nextStatus,    // новый статус
+			)
+			if err != nil {
+				return fmt.Errorf("failed to update story step and status: %w", err)
 			}
 
-			if processingError == nil { // Продолжаем, только если ошибок не было
-				currentSetup := make(map[string]interface{})
-				if len(publishedStory.Setup) > 0 && string(publishedStory.Setup) != "null" && string(publishedStory.Setup) != "{}" {
-					if err := json.Unmarshal(publishedStory.Setup, &currentSetup); err != nil {
-						log.Error("Failed to unmarshal existing PublishedStory.Setup, will overwrite", zap.Error(err), zap.String("existing_setup", string(publishedStory.Setup)))
-						currentSetup = make(map[string]interface{}) // Сбрасываем, если не можем распарсить
-					}
-				}
-				// Обновляем или добавляем только цель протагониста
-				currentSetup["protagonist_goal"] = goalOutcome.Result
+			// Отправляем задачу планирования сцены
+			return p.dispatchScenePlannerTask(ctx, updatedStory)
+		})
+	}
 
-				newSetupBytes, errMarshalSetup := json.Marshal(currentSetup)
-				if errMarshalSetup != nil {
-					log.Error("Failed to marshal updated Setup JSON for protagonist goal", zap.Error(errMarshalSetup))
-					errMsg := fmt.Sprintf("failed to rebuild setup with protagonist goal: %v", errMarshalSetup)
-					// Передаем nil для internalStep при ошибке
-					if errUpdate := p.publishedRepo.UpdateAfterModeration(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpdate != nil {
-						log.Error("Failed to update PublishedStory to Error status after setup marshal failure", zap.Error(errUpdate))
-						processingError = fmt.Errorf("failed to update story status to Error: %w", errUpdate)
-					} else {
-						processingError = errors.New(errMsg)
-					}
-				} else {
-					publishedStory.Setup = newSetupBytes // Обновляем Setup для сохранения
-					publishedStory.Status = sharedModels.StatusScenePlannerPending
-					publishedStory.ErrorDetails = nil // Сбрасываем ошибки
-					publishedStory.UpdatedAt = time.Now().UTC()
+	log.Warn("Received protagonist goal notification with unexpected status",
+		zap.String("status", string(notification.Status)))
+	return nil
+}
 
-					// --- ФОРМИРОВАНИЕ PAYLOAD ДЛЯ СЛЕДУЮЩЕЙ ЗАДАЧИ ---
-					scenePlannerTaskID := uuid.New().String()
-					var finalConfigForTask sharedModels.Config
-					if errCfg := json.Unmarshal(publishedStory.Config, &finalConfigForTask); errCfg != nil {
-						log.Error("Failed to unmarshal publishedStory.Config for ScenePlanner task", zap.Error(errCfg), zap.String("config_json", string(publishedStory.Config)))
-					}
-					protagonistGoalString := goalOutcome.Result
-					userInputForScenePlanner, errFormat := utils.FormatConfigAndGoalForScenePlanner(finalConfigForTask, protagonistGoalString, publishedStory.IsAdultContent)
-					if errFormat != nil {
-						log.Error("Failed to format UserInput for ScenePlanner task using FormatConfigAndGoalForScenePlanner", zap.Error(errFormat))
-						errMsg := fmt.Sprintf("internal error preparing scene planner task input: %v", errFormat)
-						// Передаем nil для internalStep при ошибке
-						if errUpdate := p.publishedRepo.UpdateAfterModeration(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, publishedStory.IsAdultContent, &errMsg, nil); errUpdate != nil {
-							log.Error("Failed to update PublishedStory to Error status after UserInput formatting failure for scene planner", zap.Error(errUpdate))
-						}
-						processingError = errors.New(errMsg)
-					} else {
-						// Сохраняем готовый payload в переменную
-						payload := sharedMessaging.GenerationTaskPayload{
-							TaskID:           scenePlannerTaskID,
-							UserID:           publishedStory.UserID.String(),
-							PromptType:       sharedModels.PromptTypeScenePlanner,
-							UserInput:        userInputForScenePlanner,
-							PublishedStoryID: publishedStory.ID.String(),
-							Language:         publishedStory.Language,
-						}
-						scenePlannerPayload = &payload // Устанавливаем указатель на payload
-					}
-					// --- КОНЕЦ ФОРМИРОВАНИЯ PAYLOAD ---
-				}
-			}
-		}
+// updateConfigWithProtagonistGoal обновляет конфиг истории с целью протагониста
+func (p *NotificationProcessor) updateConfigWithProtagonistGoal(ctx context.Context, story *sharedModels.PublishedStory, protagonistGoal string) error {
+	if story.Config == nil {
+		return fmt.Errorf("cannot update config: config is nil")
+	}
+
+	// Декодируем существующий конфиг
+	config, err := decodeStrictJSON[sharedModels.Config](string(story.Config))
+	if err != nil {
+		return fmt.Errorf("failed to decode existing config: %w", err)
+	}
+
+	// Обновляем конфиг с целью протагониста
+	// Цель протагониста может быть добавлена в PlayerPrefs или как отдельное поле
+	// Пока добавим в WorldLore как дополнительную информацию
+	if config.PlayerPrefs.WorldLore == "" {
+		config.PlayerPrefs.WorldLore = fmt.Sprintf("Protagonist Goal: %s", protagonistGoal)
 	} else {
-		log.Warn("Unknown notification status for ProtagonistGoal. Ignoring.", zap.String("status", string(notification.Status)))
-		return nil // Ack
+		config.PlayerPrefs.WorldLore = fmt.Sprintf("%s\n\nProtagonist Goal: %s", config.PlayerPrefs.WorldLore, protagonistGoal)
 	}
 
-	// Если на каком-то этапе возникла ошибка, НЕ обновляем статус и НЕ запускаем задачу
-	if processingError != nil {
-		log.Error("Error occurred during protagonist goal processing, final DB update and task publish aborted.", zap.Error(processingError))
-		// Возвращаем nil, так как ошибка уже обработана (статус Error установлен)
-		// Если обновление статуса на Error само по себе упало, то processingError будет содержать ту ошибку,
-		// и мы должны вернуть её, чтобы NACK-нуть сообщение.
-		if strings.Contains(processingError.Error(), "failed to update story status to Error") {
-			return processingError // NACK
+	// Кодируем обновленный конфиг
+	updatedConfigBytes, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal updated config: %w", err)
+	}
+
+	// Обновляем конфиг в БД (используем существующий метод)
+	if err := p.publishedRepo.UpdateConfigAndSetupAndStatus(ctx, p.db, story.ID, json.RawMessage(updatedConfigBytes), story.Setup, story.Status); err != nil {
+		return fmt.Errorf("failed to update config in database: %w", err)
+	}
+
+	p.logger.Info("Config updated with protagonist goal",
+		zap.String("story_id", story.ID.String()),
+		zap.String("protagonist_goal", protagonistGoal))
+
+	return nil
+}
+
+// dispatchScenePlannerTask отправляет задачу планирования сцены
+func (p *NotificationProcessor) dispatchScenePlannerTask(ctx context.Context, story *sharedModels.PublishedStory) error {
+	if story.Config == nil {
+		return fmt.Errorf("cannot dispatch scene planner task: config is nil")
+	}
+
+	config, err := decodeStrictJSON[sharedModels.Config](string(story.Config))
+	if err != nil {
+		return fmt.Errorf("failed to decode config for scene planner task: %w", err)
+	}
+
+	// Извлекаем цель протагониста из WorldLore
+	protagonistGoal := extractProtagonistGoalFromConfig(config)
+
+	// Используем существующий форматтер
+	userInput, err := utils.FormatConfigAndGoalForScenePlanner(config, protagonistGoal, story.IsAdultContent)
+	if err != nil {
+		return fmt.Errorf("failed to format config for scene planner: %w", err)
+	}
+
+	taskID := uuid.New().String()
+	payload := sharedMessaging.GenerationTaskPayload{
+		TaskID:           taskID,
+		UserID:           story.UserID.String(),
+		PromptType:       sharedModels.PromptTypeScenePlanner,
+		UserInput:        userInput,
+		PublishedStoryID: story.ID.String(),
+		Language:         story.Language,
+	}
+
+	if err := p.publishTask(payload); err != nil {
+		return fmt.Errorf("failed to publish scene planner task: %w", err)
+	}
+
+	p.logger.Info("Scene planner task dispatched successfully",
+		zap.String("story_id", story.ID.String()),
+		zap.String("task_id", taskID))
+
+	return nil
+}
+
+// extractProtagonistGoalFromConfig извлекает цель протагониста из конфига
+func extractProtagonistGoalFromConfig(config sharedModels.Config) string {
+	// Ищем цель протагониста в WorldLore
+	if strings.Contains(config.PlayerPrefs.WorldLore, "Protagonist Goal:") {
+		parts := strings.Split(config.PlayerPrefs.WorldLore, "Protagonist Goal:")
+		if len(parts) > 1 {
+			goal := strings.TrimSpace(parts[1])
+			// Если есть еще текст после цели, берем только первую строку
+			if idx := strings.Index(goal, "\n"); idx != -1 {
+				goal = strings.TrimSpace(goal[:idx])
+			}
+			return goal
 		}
-		return nil // ACK, т.к. статус Error уже установлен
 	}
+	return ""
+}
 
-	// === Финальное обновление статуса, Setup и InternalStep ===
-	nextStep := sharedModels.StepScenePlanner
-	if errUpdate := p.publishedRepo.UpdateStatusFlagsAndSetup(dbCtx, p.db, publishedStory.ID, publishedStory.Status, publishedStory.Setup, publishedStory.IsFirstScenePending, publishedStory.AreImagesPending, &nextStep); errUpdate != nil {
-		log.Error("FINAL DB ERROR: Failed to update PublishedStory after protagonist goal processing", zap.Error(errUpdate))
-		// Устанавливаем статус Error и уведомляем клиента
-		errMsg := fmt.Sprintf("failed to update story after protagonist goal: %v", errUpdate)
-		p.handleStoryError(ctx, publishedStoryID, notification.UserID, errMsg, constants.WSEventStoryError)
-		return fmt.Errorf("failed to update story after protagonist goal: %w", errUpdate) // NACK после уведомления
+// min возвращает минимальное из двух чисел
+func min(a, b int) int {
+	if a < b {
+		return a
 	}
-	log.Info("PublishedStory updated after protagonist goal processing", zap.String("new_status", string(publishedStory.Status)), zap.Any("internal_step", nextStep))
-
-	// === Публикация следующей задачи (только если payload был успешно создан) ===
-	if scenePlannerPayload != nil {
-		taskCtx, taskCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer taskCancel()
-		if errPub := p.taskPub.PublishGenerationTask(taskCtx, *scenePlannerPayload); errPub != nil {
-			p.logger.Error("CRITICAL: Failed to publish scene planner task AFTER DB COMMIT", zap.Error(errPub), zap.String("task_id", scenePlannerPayload.TaskID))
-			// Ошибка после коммита. Требуется мониторинг.
-			// Не возвращаем ошибку, чтобы не NACK-нуть успешно обработанное сообщение.
-		} else {
-			p.logger.Info("Scene planner task published successfully AFTER DB COMMIT", zap.String("task_id", scenePlannerPayload.TaskID))
-		}
-	} else {
-		log.Warn("Scene planner task payload was not generated, task not published.")
-	}
-
-	// Уведомляем клиента об обновлении статуса истории после обработки цели протагониста
-	if uid, perr := parseUUIDField(notification.UserID, "UserID"); perr == nil {
-		p.notifyClient(publishedStory.ID, uid, sharedModels.UpdateTypeStory, string(publishedStory.Status), nil)
-	}
-
-	return nil // Ack
+	return b
 }

@@ -74,8 +74,8 @@ type GameplayService interface {
 	GetPublishedStoryDetailsWithProgress(ctx context.Context, userID, publishedStoryID uuid.UUID) (*sharedModels.PublishedStorySummary, error)
 
 	// Core Gameplay methods
-	GetStoryScene(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error)
-	MakeChoice(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID, selectedOptionIndices []int) error
+	GetStoryScene(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID) (*sharedModels.StoryScene, error)
+	MakeChoice(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID, selectedOptionIndices []int) error
 	DeletePlayerGameState(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) error
 	RetryInitialGeneration(ctx context.Context, userID, storyID uuid.UUID) error
 	RetryGenerationForGameState(ctx context.Context, userID, storyID, gameStateID uuid.UUID) error
@@ -117,7 +117,7 @@ type GameplayService interface {
 	ListMyStoriesWithProgress(ctx context.Context, userID uuid.UUID, cursor string, limit int, filterAdult bool) ([]sharedModels.PublishedStorySummary, string, error)
 
 	// <<< ДОБАВЛЕНО: Метод для получения прогресса игрока >>>
-	GetPlayerProgress(ctx context.Context, userID, storyID uuid.UUID) (*sharedModels.PlayerProgress, error)
+	GetPlayerProgress(ctx context.Context, userID, gameStateID uuid.UUID) (*sharedModels.PlayerProgress, error)
 
 	// <<< ДОБАВЛЕНО: Метод для получения распарсенного Setup >>>
 	GetParsedSetup(ctx context.Context, storyID uuid.UUID) (*sharedModels.NovelSetupContent, error)
@@ -318,13 +318,13 @@ func (s *gameplayServiceImpl) GetParsedSetup(ctx context.Context, storyID uuid.U
 // === Методы, делегированные GameLoopService ===
 
 // GetStoryScene delegates to GameLoopService.
-func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID) (*sharedModels.StoryScene, error) {
-	return s.gameLoopService.GetStoryScene(ctx, userID, publishedStoryID)
+func (s *gameplayServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID) (*sharedModels.StoryScene, error) {
+	return s.gameLoopService.GetStoryScene(ctx, userID, gameStateID)
 }
 
 // MakeChoice delegates to GameLoopService.
-func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, publishedStoryID uuid.UUID, selectedOptionIndices []int) error {
-	return s.gameLoopService.MakeChoice(ctx, userID, publishedStoryID, selectedOptionIndices)
+func (s *gameplayServiceImpl) MakeChoice(ctx context.Context, userID uuid.UUID, gameStateID uuid.UUID, selectedOptionIndices []int) error {
+	return s.gameLoopService.MakeChoice(ctx, userID, gameStateID, selectedOptionIndices)
 }
 
 // DeletePlayerGameState delegates to GameLoopService.
@@ -343,8 +343,8 @@ func (s *gameplayServiceImpl) RetryGenerationForGameState(ctx context.Context, u
 }
 
 // GetPlayerProgress delegates to GameLoopService.
-func (s *gameplayServiceImpl) GetPlayerProgress(ctx context.Context, userID, storyID uuid.UUID) (*sharedModels.PlayerProgress, error) {
-	return s.gameLoopService.GetPlayerProgress(ctx, userID, storyID)
+func (s *gameplayServiceImpl) GetPlayerProgress(ctx context.Context, userID, gameStateID uuid.UUID) (*sharedModels.PlayerProgress, error) {
+	return s.gameLoopService.GetPlayerProgress(ctx, userID, gameStateID)
 }
 
 // UpdateSceneInternal delegates to GameLoopService.

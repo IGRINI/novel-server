@@ -17,79 +17,103 @@ func (s *gameLoopServiceImpl) GetStoryScene(ctx context.Context, userID uuid.UUI
 	log := s.logger.With(zap.String("gameStateID", gameStateID.String()), zap.Stringer("userID", userID))
 	log.Info("GetStoryScene called")
 
-	gameState, err := s.fetchAndAuthorizeGameState(ctx, userID, gameStateID)
-	if err != nil {
-		if errors.Is(err, models.ErrPlayerGameStateNotFound) {
-			log.Warn("Player game state not found by ID", zap.Error(err))
+	var scene *models.StoryScene
+	err := WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		gameStateRepo := database.NewPgPlayerGameStateRepository(tx, s.logger)
+
+		// Получаем игровое состояние по ID
+		gameState, err := gameStateRepo.GetByID(ctx, tx, gameStateID)
+		if wrapErr := WrapRepoError(s.logger, err, "PlayerGameState"); wrapErr != nil {
+			if errors.Is(wrapErr, models.ErrNotFound) {
+				log.Warn("Player game state not found")
+				return models.ErrPlayerGameStateNotFound
+			}
+			return wrapErr
 		}
+
+		// Проверяем права доступа
+		if gameState.PlayerID != userID {
+			log.Warn("User attempted to access game state they do not own", zap.Stringer("ownerID", gameState.PlayerID))
+			return models.ErrForbidden
+		}
+
+		log = log.With(zap.String("publishedStoryID", gameState.PublishedStoryID.String()))
+
+		// Проверяем статус игрового состояния перед генерацией
+		switch gameState.PlayerStatus {
+		case models.PlayerStatusGeneratingScene:
+			log.Info("Player is waiting for scene generation")
+			return models.ErrSceneNeedsGeneration
+		case models.PlayerStatusGameOverPending:
+			log.Info("Player is waiting for game over generation or game is over")
+			if !gameState.CurrentSceneID.Valid {
+				log.Info("Player is waiting for game over scene generation (CurrentSceneID is nil)")
+				return models.ErrGameOverPending
+			}
+			// Fetch the final scene (ending text)
+			finalScene, errScene := s.sceneRepo.GetByID(ctx, tx, gameState.CurrentSceneID.UUID)
+			if errScene != nil {
+				if errors.Is(errScene, models.ErrNotFound) || errors.Is(errScene, pgx.ErrNoRows) {
+					log.Error("Could not find final scene for completed game state", zap.Stringer("sceneID", gameState.CurrentSceneID.UUID), zap.Error(errScene))
+					return models.ErrInternalServer // Scene should exist
+				}
+				log.Error("Failed to get final scene by ID for completed game", zap.Stringer("sceneID", gameState.CurrentSceneID.UUID), zap.Error(errScene))
+				return models.ErrInternalServer
+			}
+			log.Info("Returning final scene for completed game")
+			scene = finalScene
+			return nil
+		case models.PlayerStatusCompleted:
+			log.Info("Player has finished the game, attempting to fetch final scene")
+			if !gameState.CurrentSceneID.Valid {
+				log.Error("Player game state is Finished, but CurrentSceneID is nil", zap.Stringer("gameStateID", gameState.ID))
+				return models.ErrInternalServer // Should not happen if game over was processed correctly
+			}
+			// Fetch the final scene (ending text)
+			finalScene, errScene := s.sceneRepo.GetByID(ctx, tx, gameState.CurrentSceneID.UUID)
+			if errScene != nil {
+				if errors.Is(errScene, models.ErrNotFound) || errors.Is(errScene, pgx.ErrNoRows) {
+					log.Error("Could not find final scene for completed game state", zap.Stringer("sceneID", gameState.CurrentSceneID.UUID), zap.Error(errScene))
+					return models.ErrInternalServer // Scene should exist
+				}
+				log.Error("Failed to get final scene by ID for completed game", zap.Stringer("sceneID", gameState.CurrentSceneID.UUID), zap.Error(errScene))
+				return models.ErrInternalServer
+			}
+			log.Info("Returning final scene for completed game")
+			scene = finalScene
+			return nil
+		case models.PlayerStatusError:
+			log.Error("Player game state is in error", zap.Stringp("errorDetails", gameState.ErrorDetails))
+			return models.ErrPlayerStateInError
+		case models.PlayerStatusPlaying:
+			log.Debug("Player status is Playing, fetching current scene")
+		default:
+			log.Error("Unknown player status in game state", zap.String("status", string(gameState.PlayerStatus)))
+			return models.ErrInternalServer
+		}
+
+		if !gameState.CurrentSceneID.Valid {
+			log.Error("CRITICAL: PlayerStatus is Playing, but CurrentSceneID is NULL", zap.String("gameStateID", gameState.ID.String()))
+			return models.ErrSceneNotFound
+		}
+
+		currentScene, err := s.sceneRepo.GetByID(ctx, tx, gameState.CurrentSceneID.UUID)
+		if wrapErr := WrapRepoError(s.logger, err, "StoryScene"); wrapErr != nil {
+			if errors.Is(wrapErr, models.ErrNotFound) {
+				log.Error("CRITICAL: CurrentSceneID from game state not found in scene repository", zap.String("sceneID", gameState.CurrentSceneID.UUID.String()), zap.Error(err))
+				return models.ErrSceneNotFound
+			}
+			return wrapErr
+		}
+
+		log.Info("Scene found and returned", zap.String("sceneID", currentScene.ID.String()))
+		scene = currentScene
+		return nil
+	})
+
+	if err != nil {
 		return nil, err
 	}
-
-	switch gameState.PlayerStatus {
-	case models.PlayerStatusGeneratingScene:
-		log.Info("Player is waiting for scene generation")
-		return nil, models.ErrSceneNeedsGeneration
-	case models.PlayerStatusGameOverPending:
-		log.Info("Player is waiting for game over generation or game is over")
-		if !gameState.CurrentSceneID.Valid {
-			log.Info("Player is waiting for game over scene generation (CurrentSceneID is nil)")
-			return nil, models.ErrGameOverPending
-		}
-		// Fetch the final scene (ending text)
-		finalScene, errScene := s.sceneRepo.GetByID(ctx, s.pool, gameState.CurrentSceneID.UUID)
-		if errScene != nil {
-			if errors.Is(errScene, models.ErrNotFound) || errors.Is(errScene, pgx.ErrNoRows) {
-				log.Error("Could not find final scene for completed game state", zap.Stringer("sceneID", gameState.CurrentSceneID.UUID), zap.Error(errScene))
-				return nil, models.ErrInternalServer // Scene should exist
-			}
-			log.Error("Failed to get final scene by ID for completed game", zap.Stringer("sceneID", gameState.CurrentSceneID.UUID), zap.Error(errScene))
-			return nil, models.ErrInternalServer
-		}
-		log.Info("Returning final scene for completed game")
-		return finalScene, nil // Return the final scene containing the ending text
-	case models.PlayerStatusCompleted:
-		log.Info("Player has finished the game, attempting to fetch final scene")
-		if !gameState.CurrentSceneID.Valid {
-			log.Error("Player game state is Finished, but CurrentSceneID is nil", zap.Stringer("gameStateID", gameStateID))
-			return nil, models.ErrInternalServer // Should not happen if game over was processed correctly
-		}
-		// Fetch the final scene (ending text)
-		finalScene, errScene := s.sceneRepo.GetByID(ctx, s.pool, gameState.CurrentSceneID.UUID)
-		if errScene != nil {
-			if errors.Is(errScene, models.ErrNotFound) || errors.Is(errScene, pgx.ErrNoRows) {
-				log.Error("Could not find final scene for completed game state", zap.Stringer("sceneID", gameState.CurrentSceneID.UUID), zap.Error(errScene))
-				return nil, models.ErrInternalServer // Scene should exist
-			}
-			log.Error("Failed to get final scene by ID for completed game", zap.Stringer("sceneID", gameState.CurrentSceneID.UUID), zap.Error(errScene))
-			return nil, models.ErrInternalServer
-		}
-		log.Info("Returning final scene for completed game")
-		return finalScene, nil // Return the final scene containing the ending text
-	case models.PlayerStatusError:
-		log.Error("Player game state is in error", zap.Stringp("errorDetails", gameState.ErrorDetails))
-		return nil, models.ErrPlayerStateInError
-	case models.PlayerStatusPlaying:
-		log.Debug("Player status is Playing, fetching current scene")
-	default:
-		log.Error("Unknown player status in game state", zap.String("status", string(gameState.PlayerStatus)))
-		return nil, models.ErrInternalServer
-	}
-
-	if !gameState.CurrentSceneID.Valid {
-		log.Error("CRITICAL: PlayerStatus is Playing, but CurrentSceneID is NULL", zap.String("gameStateID", gameState.ID.String()))
-		return nil, models.ErrSceneNotFound
-	}
-
-	scene, err := s.sceneRepo.GetByID(ctx, s.pool, gameState.CurrentSceneID.UUID)
-	if wrapErr := WrapRepoError(s.logger, err, "StoryScene"); wrapErr != nil {
-		if errors.Is(wrapErr, models.ErrNotFound) {
-			log.Error("CRITICAL: CurrentSceneID from game state not found in scene repository", zap.String("sceneID", gameState.CurrentSceneID.UUID.String()), zap.Error(err))
-			return nil, models.ErrSceneNotFound
-		}
-		return nil, wrapErr
-	}
-
-	log.Info("Scene found and returned", zap.String("sceneID", scene.ID.String()))
 	return scene, nil
 }
 
@@ -123,34 +147,49 @@ func (s *gameLoopServiceImpl) GetPlayerProgress(ctx context.Context, userID uuid
 	log := s.logger.With(zap.String("gameStateID", gameStateID.String()), zap.Stringer("userID", userID))
 	log.Debug("GetPlayerProgress called")
 
-	gameState, err := s.playerGameStateRepo.GetByID(ctx, s.pool, gameStateID)
-	if wrapErr := WrapRepoError(s.logger, err, "PlayerGameState"); wrapErr != nil {
-		if errors.Is(wrapErr, models.ErrNotFound) {
-			log.Warn("Player game state not found for GetPlayerProgress")
-			return nil, models.ErrPlayerGameStateNotFound
+	var progress *models.PlayerProgress
+	err := WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		gameStateRepo := database.NewPgPlayerGameStateRepository(tx, s.logger)
+
+		// Получаем игровое состояние по ID
+		gameState, err := gameStateRepo.GetByID(ctx, tx, gameStateID)
+		if wrapErr := WrapRepoError(s.logger, err, "PlayerGameState"); wrapErr != nil {
+			if errors.Is(wrapErr, models.ErrNotFound) {
+				log.Warn("Player game state not found")
+				return models.ErrPlayerGameStateNotFound
+			}
+			return wrapErr
 		}
-		return nil, wrapErr
-	}
 
-	if gameState.PlayerID != userID {
-		log.Warn("User attempted to access progress from game state they do not own", zap.Stringer("ownerID", gameState.PlayerID))
-		return nil, models.ErrForbidden
-	}
-
-	if gameState.PlayerProgressID == uuid.Nil {
-		log.Warn("Player game state exists but has no associated PlayerProgressID", zap.String("gameStateID", gameState.ID.String()))
-		return nil, models.ErrNotFound
-	}
-
-	progress, err := s.playerProgressRepo.GetByID(ctx, s.pool, gameState.PlayerProgressID)
-	if wrapErr := WrapRepoError(s.logger, err, "PlayerProgress"); wrapErr != nil {
-		if errors.Is(wrapErr, models.ErrNotFound) {
-			return nil, models.ErrNotFound
+		// Проверяем права доступа
+		if gameState.PlayerID != userID {
+			log.Warn("User attempted to access game state they do not own", zap.Stringer("ownerID", gameState.PlayerID))
+			return models.ErrForbidden
 		}
-		return nil, wrapErr
-	}
 
-	log.Debug("Player progress node retrieved successfully", zap.String("progressID", progress.ID.String()))
+		log = log.With(zap.String("publishedStoryID", gameState.PublishedStoryID.String()))
+
+		if gameState.PlayerProgressID == uuid.Nil {
+			log.Warn("Player game state exists but has no associated PlayerProgressID", zap.String("gameStateID", gameState.ID.String()))
+			return models.ErrNotFound
+		}
+
+		playerProgress, err := s.playerProgressRepo.GetByID(ctx, tx, gameState.PlayerProgressID)
+		if wrapErr := WrapRepoError(s.logger, err, "PlayerProgress"); wrapErr != nil {
+			if errors.Is(wrapErr, models.ErrNotFound) {
+				return models.ErrNotFound
+			}
+			return wrapErr
+		}
+
+		log.Debug("Player progress node retrieved successfully", zap.String("progressID", playerProgress.ID.String()))
+		progress = playerProgress
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
 	return progress, nil
 }
 
@@ -224,6 +263,20 @@ func (s *gameLoopServiceImpl) makeChoiceApplyConsequences(cp *models.PlayerProgr
 		s.logger.Warn("Player sent more choices than available", append(logFields, zap.Int("sceneChoices", len(sceneData.Choices)), zap.Int("playerChoices", len(selected)))...)
 		return nil, nil, false, "", fmt.Errorf("%w: received %d choice indices, but scene only has %d choice blocks", models.ErrBadRequest, len(selected), len(sceneData.Choices))
 	}
+
+	// Валидация индексов выборов для каждого блока
+	for i, idx := range selected {
+		if i >= len(sceneData.Choices) {
+			s.logger.Warn("Choice block index out of range", append(logFields, zap.Int("blockIndex", i), zap.Int("totalBlocks", len(sceneData.Choices)))...)
+			return nil, nil, false, "", fmt.Errorf("%w: choice block index %d is out of range (max: %d)", models.ErrBadRequest, i, len(sceneData.Choices)-1)
+		}
+		block := sceneData.Choices[i]
+		if idx < 0 || idx >= len(block.Options) {
+			s.logger.Warn("Option index out of range for choice block", append(logFields, zap.Int("blockIndex", i), zap.Int("optionIndex", idx), zap.Int("totalOptions", len(block.Options)))...)
+			return nil, nil, false, "", fmt.Errorf("%w: option index %d is out of range for choice block %d (max: %d)", models.ErrBadRequest, idx, i, len(block.Options)-1)
+		}
+	}
+
 	next := &models.PlayerProgress{
 		UserID:                cp.UserID,
 		PublishedStoryID:      cp.PublishedStoryID,

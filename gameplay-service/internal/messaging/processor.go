@@ -17,7 +17,6 @@ import (
 	interfaces "novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
 	sharedModels "novel-server/shared/models"
-	"novel-server/shared/notifications"
 	"novel-server/shared/utils"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -99,6 +98,9 @@ type NotificationProcessor struct {
 	db                         *pgxpool.Pool                                   // <<< На pgxpool.Pool
 	handlers                   map[sharedModels.PromptType]NotificationHandler // мапа PromptType->Handler
 	gameLoopService            interfaces.GameLoopService                      // <<< ДОБАВЛЕНО
+	stepManager                *GenerationStepManager                          // <<< ДОБАВЛЕНО: Менеджер шагов генерации
+	errorHandler               *ErrorHandler                                   // <<< ДОБАВЛЕНО: Централизованный обработчик ошибок
+	txHelper                   *TransactionHelper                              // <<< ДОБАВЛЕНО: Помощник транзакций
 }
 
 // NewNotificationProcessor создает новый экземпляр NotificationProcessor.
@@ -165,6 +167,9 @@ func NewNotificationProcessor(
 		db:                         db,
 		handlers:                   make(map[sharedModels.PromptType]NotificationHandler),
 		gameLoopService:            gameLoopService,
+		stepManager:                NewGenerationStepManager(publishedRepo, logger),
+		errorHandler:               NewErrorHandler(publishedRepo, playerGameStateRepo, clientPub, pushPub, logger),
+		txHelper:                   NewTransactionHelper(db, logger),
 	}
 	// Регистрируем стандартные обработчики
 	p.handlers[sharedModels.PromptTypeNarrator] = NotificationHandlerFunc(p.handleNarratorNotification)
@@ -816,70 +821,6 @@ func (p *NotificationProcessor) publishFirstSceneTaskInternal(ctx context.Contex
 }
 
 // <<< КОНЕЦ: Логика отправки задачи первой сцены >>>
-
-// <<< НАЧАЛО: Добавленный метод publishPushNotificationForStoryReady >>>
-func (p *NotificationProcessor) publishPushNotificationForStoryReady(ctx context.Context, story *sharedModels.PublishedStory) {
-	if story == nil {
-		p.logger.Error("Cannot send push for story ready: story is nil")
-		return
-	}
-
-	getAuthorName := func(userID uuid.UUID) string {
-		authorName := "Unknown Author"
-		if p.authClient != nil {
-			authCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			userInfoMap, errAuth := p.authClient.GetUsersInfo(authCtx, []uuid.UUID{userID})
-			cancel()
-			if errAuth != nil {
-				p.logger.Error("Failed to get author info map for push notification (story ready)", zap.Stringer("userID", userID), zap.Error(errAuth))
-			} else if userInfo, ok := userInfoMap[userID]; ok {
-				if userInfo.DisplayName != "" {
-					authorName = userInfo.DisplayName
-				} else if userInfo.Username != "" {
-					authorName = userInfo.Username
-				}
-			} else {
-				p.logger.Warn("Author info not found in map from auth service for push notification (story ready)", zap.Stringer("userID", userID))
-			}
-		} else {
-			p.logger.Warn("authClient is nil in NotificationProcessor, cannot fetch author name for push notification")
-		}
-		return authorName
-	}
-
-	// Используем хелпер из shared/notifications
-	payload, err := notifications.BuildStoryReadyPushPayload(story, getAuthorName)
-	if err != nil {
-		p.logger.Error("Failed to build push notification payload for story ready", zap.Error(err))
-		return
-	}
-
-	if payload == nil {
-		p.logger.Error("Push notification payload for story ready is nil, cannot publish", zap.String("publishedStoryID", story.ID.String()))
-		return
-	}
-
-	pushCtx, pushCancel := context.WithTimeout(context.Background(), 15*time.Second) // Используем context.Background()
-	defer pushCancel()
-	if err := p.pushPub.PublishPushNotification(pushCtx, *payload); err != nil {
-		p.logger.Error("Failed to publish push notification event for story ready",
-			zap.String("userID", payload.UserID.String()),
-			zap.String("publishedStoryID", story.ID.String()),
-			zap.Error(err),
-		)
-	} else {
-		p.logger.Info("Push notification event for story ready published successfully",
-			zap.String("userID", payload.UserID.String()),
-			zap.String("publishedStoryID", story.ID.String()),
-		)
-	}
-}
-
-// <<< КОНЕЦ: Добавленный метод publishPushNotificationForStoryReady >>>
-
-// Note: Methods handleNarratorNotification, handleNovelSetupNotification, handleSceneGenerationNotification,
-// handleImageNotification should be defined in their respective handle_*.go files.
-// Removed placeholder/duplicate definitions from here.
 
 // updateStorySetupAndCounters обновляет атомарно Setup, статус, флаги ожидания и счётчики задач для истории.
 func (p *NotificationProcessor) updateStorySetupAndCounters(ctx context.Context, tx interfaces.DBTX, story *sharedModels.PublishedStory) error {

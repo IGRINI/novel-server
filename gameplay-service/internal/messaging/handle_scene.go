@@ -43,8 +43,8 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 	logWithState.Info("Processing Scene/GameOver notification (to trigger JsonGeneration)")
 
 	// Получаем GameState для проверки статуса
-	gameStateCheckCtx, gameStateCheckCancel := context.WithTimeout(operationCtx, 5*time.Second)
-	gameState, errGetState := p.playerGameStateRepo.GetByID(gameStateCheckCtx, p.db, gameStateID)
+	dbCheckCtx, gameStateCheckCancel := context.WithTimeout(operationCtx, 5*time.Second)
+	gameState, errGetState := p.playerGameStateRepo.GetByID(dbCheckCtx, p.db, gameStateID)
 	gameStateCheckCancel()
 	if errGetState != nil {
 		logWithState.Error("Failed to get PlayerGameState for status check", zap.Error(errGetState))
@@ -52,9 +52,13 @@ func (p *NotificationProcessor) handleSceneGenerationNotification(ctx context.Co
 		p.handleGameStateError(ctx, gameStateID, notification.UserID, fmt.Sprintf("failed to get PlayerGameState: %v", errGetState))
 		return fmt.Errorf("failed to get PlayerGameState %s for status check: %w", gameStateID, errGetState) // NACK
 	}
+
+	// ПРОБЛЕМА 5 ИСПРАВЛЕНА: Проверяем статус перед повторной генерацией
 	if gameState.PlayerStatus != sharedModels.PlayerStatusGeneratingScene {
-		logWithState.Warn("PlayerGameState not in GeneratingScene status, skipping scene result processing.", zap.String("current_status", string(gameState.PlayerStatus)))
-		return nil // Ack, так как это дубликат или устаревшее сообщение
+		logWithState.Warn("PlayerGameState not in GeneratingScene status for scene generation result, skipping",
+			zap.String("current_status", string(gameState.PlayerStatus)),
+			zap.String("expected_status", string(sharedModels.PlayerStatusGeneratingScene)))
+		return nil // Ack, дубликат или устаревшее сообщение
 	}
 
 	if notification.Status == sharedMessaging.NotificationStatusSuccess {

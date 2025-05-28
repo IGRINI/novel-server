@@ -3,17 +3,14 @@ package messaging
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"novel-server/shared/constants"
+	"novel-server/shared/interfaces"
 	sharedMessaging "novel-server/shared/messaging"
-	"novel-server/shared/models"
 	sharedModels "novel-server/shared/models"
 	"novel-server/shared/utils"
 	// "novel-server/shared/utils" // Пока не используется, но может понадобиться
@@ -63,177 +60,137 @@ func (b *BoolFromInt) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("cannot unmarshal %s into BoolFromInt (tried bool, number, and string representations '0','1','true','false')", string(data))
 }
 
-// moderationResultPayload - ожидаемая структура JSON ответа от AI для модерации
-// Это внутреннее определение, т.к. структура специфична для этого шага.
+// moderationResultPayload представляет результат модерации контента
 type moderationResultPayload struct {
-	IsAdult BoolFromInt `json:"ac"` // Используем кастомный тип
-	Reasons []string    `json:"reasons,omitempty"`
-	// Можно добавить другие поля, если AI их возвращает, например, confidence score
+	IsAppropriate bool   `json:"is_appropriate"`
+	Reason        string `json:"reason,omitempty"`
 }
 
 func (p *NotificationProcessor) handleContentModerationResult(ctx context.Context, notification sharedMessaging.NotificationPayload, publishedStoryID uuid.UUID) error {
 	taskID := notification.TaskID
-	log := p.logger.With(zap.String("task_id", taskID), zap.String("published_story_id", publishedStoryID.String()), zap.String("prompt_type", string(notification.PromptType)))
-
+	log := p.logger.With(
+		zap.String("task_id", taskID),
+		zap.String("published_story_id", publishedStoryID.String()),
+		zap.String("prompt_type", string(notification.PromptType)),
+	)
 	log.Info("Processing content moderation result")
 
-	dbCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	publishedStory, err := p.ensureStoryStatus(dbCtx, publishedStoryID, sharedModels.StatusModerationPending)
+	// Проверяем статус истории
+	publishedStory, err := p.ensureStoryStatus(ctx, publishedStoryID, sharedModels.StatusModerationPending)
 	if err != nil {
-		// ensureStoryStatus уже логирует ошибку получения истории
-		// или несоответствие статуса (и возвращает nil, nil в этом случае)
-		return err // Если была ошибка получения истории, NACK
+		return err
 	}
 	if publishedStory == nil {
-		return nil // Статус не совпал (или generating с неверным шагом), ACK и выход
+		return nil // История не в нужном статусе
 	}
 
-	if publishedStory.Status != sharedModels.StatusModerationPending {
-		log.Warn("PublishedStory not in ModerationPending status, moderation update skipped.", zap.String("current_status", string(publishedStory.Status)))
-		return nil // Это может быть дублирующее или запоздавшее сообщение
-	}
-
-	var nextTaskPayload *sharedMessaging.GenerationTaskPayload
-	var processingError error
-
+	// Обработка ошибки модерации
 	if notification.Status == sharedMessaging.NotificationStatusError {
-		// Ошибка модерации контента
-		p.handleStoryError(ctx, publishedStoryID, notification.UserID, notification.ErrorDetails, constants.WSEventStoryError)
-		return nil
-	} else if notification.Status == sharedMessaging.NotificationStatusSuccess {
+		userID, _ := uuid.Parse(notification.UserID)
+		return p.errorHandler.HandleStoryError(ctx, p.db, publishedStoryID, userID, notification.ErrorDetails, constants.WSEventStoryError)
+	}
+
+	// Обработка успешной модерации
+	if notification.Status == sharedMessaging.NotificationStatusSuccess {
 		log.Info("Content moderation task successful, processing results.")
 
-		var genResultText string
-		genResult, genErr := p.genResultRepo.GetByTaskID(dbCtx, taskID)
+		// Получаем результат генерации
+		genResult, genErr := p.genResultRepo.GetByTaskID(ctx, taskID)
 		if genErr != nil {
 			log.Error("Failed to get GenerationResult by TaskID for moderation", zap.Error(genErr))
+			userID, _ := uuid.Parse(notification.UserID)
 			errMsg := fmt.Sprintf("failed to fetch moderation result: %v", genErr)
-			p.handleStoryError(ctx, publishedStoryID, notification.UserID, errMsg, constants.WSEventStoryError)
-			return nil
-		} else if genResult.Error != "" {
+			return p.errorHandler.HandleStoryError(ctx, p.db, publishedStoryID, userID, errMsg, constants.WSEventStoryError)
+		}
+
+		if genResult.Error != "" {
 			log.Warn("GenerationResult for moderation indicates an error", zap.String("gen_error", genResult.Error))
+			userID, _ := uuid.Parse(notification.UserID)
 			errDetails := fmt.Sprintf("moderation result error: %s", genResult.Error)
-			p.handleStoryError(ctx, publishedStoryID, notification.UserID, errDetails, constants.WSEventStoryError)
-			return nil
-		} else {
-			genResultText = genResult.GeneratedText
-			// Строгая проверка и парсинг JSON результата модерации
-			moderationOutcome, err := decodeStrictJSON[moderationResultPayload](genResultText)
+			return p.errorHandler.HandleStoryError(ctx, p.db, publishedStoryID, userID, errDetails, constants.WSEventStoryError)
+		}
+
+		// Парсим результат модерации
+		moderationOutcome, err := decodeStrictJSON[moderationResultPayload](genResult.GeneratedText)
+		if err != nil {
+			log.Error("Failed to unmarshal moderation result JSON", zap.Error(err), zap.String("json_text", genResult.GeneratedText))
+			userID, _ := uuid.Parse(notification.UserID)
+			errMsg := fmt.Sprintf("failed to parse moderation result: %v", err)
+			return p.errorHandler.HandleStoryError(ctx, p.db, publishedStoryID, userID, errMsg, constants.WSEventStoryError)
+		}
+
+		// Проверяем результат модерации
+		if !moderationOutcome.IsAppropriate {
+			log.Warn("Content moderation failed - content deemed inappropriate",
+				zap.String("reason", moderationOutcome.Reason))
+			userID, _ := uuid.Parse(notification.UserID)
+			errMsg := fmt.Sprintf("content moderation failed: %s", moderationOutcome.Reason)
+			return p.errorHandler.HandleStoryError(ctx, p.db, publishedStoryID, userID, errMsg, constants.WSEventStoryError)
+		}
+
+		log.Info("Content moderation passed, proceeding to protagonist goal generation")
+
+		// Используем атомарную операцию для обновления состояния
+		return p.txHelper.WithTransaction(ctx, func(ctx context.Context, tx interfaces.DBTX) error {
+			// Атомарно обновляем шаг и статус
+			expectedStep := sharedModels.StepModeration
+			nextStep := sharedModels.StepProtagonistGoal
+			nextStatus := sharedModels.StatusProtagonistGoalPending
+
+			updatedStory, err := p.stepManager.AtomicUpdateStepAndStatus(
+				ctx, tx, publishedStoryID,
+				&expectedStep, // ожидаемый текущий шаг
+				&nextStep,     // новый шаг
+				nextStatus,    // новый статус
+			)
 			if err != nil {
-				log.Error("Failed to unmarshal moderation result JSON", zap.Error(err), zap.String("json_text", genResultText))
-				errMsg := fmt.Sprintf("failed to parse moderation result: %v", err)
-				p.handleStoryError(ctx, publishedStoryID, notification.UserID, errMsg, constants.WSEventStoryError)
-				return nil
-			} else {
-				publishedStory.IsAdultContent = bool(moderationOutcome.IsAdult) // Преобразуем обратно в bool
-				publishedStory.Status = sharedModels.StatusProtagonistGoalPending
-				publishedStory.ErrorDetails = nil // Сбрасываем предыдущие ошибки, если были
-				publishedStory.UpdatedAt = time.Now().UTC()
-				// Устанавливаем следующий шаг (больше не нужно, определяется при финальном обновлении)
-				// nextStep := sharedModels.StepProtagonistGoal
-
-				// Формируем payload для следующей задачи
-				protagonistGoalTaskID := uuid.New().String()
-				var formattedUserInput string
-				var errFormat error
-
-				if publishedStory.Config != nil {
-					var configStruct models.Config
-					if errUnmarshal := json.Unmarshal(publishedStory.Config, &configStruct); errUnmarshal != nil {
-						log.Error("Failed to unmarshal publishedStory.Config for goal prompt formatting", zap.Error(errUnmarshal))
-						errFormat = fmt.Errorf("failed to unmarshal config: %w", errUnmarshal)
-						// configContentForGoal останется пустой строкой
-					} else {
-						// Теперь форматируем с помощью правильной функции
-						formattedUserInput = utils.FormatConfigForGoalPrompt(configStruct, publishedStory.IsAdultContent)
-					}
-				}
-
-				// Проверяем, удалось ли получить/отформатировать ввод
-				if formattedUserInput == "" || errFormat != nil {
-					log.Error("CRITICAL: Cannot create protagonist goal task because UserInput could not be formatted",
-						zap.String("publishedStoryID", publishedStoryID.String()),
-						zap.Error(errFormat))
-					errMsg := "Cannot create protagonist goal task: failed to format config"
-					if errFormat != nil {
-						errMsg = fmt.Sprintf("%s (%v)", errMsg, errFormat)
-					}
-					// Передаем nil для internalStep при ошибке
-					if errUpdate := p.publishedRepo.UpdateStatusFlagsAndDetails(dbCtx, p.db, publishedStoryID, sharedModels.StatusError, false, false, 0, 0, 0, &errMsg, nil); errUpdate != nil {
-						log.Error("Failed to update story status to Error due to empty/invalid config for goal task", zap.Error(errUpdate))
-					}
-					processingError = errors.New(errMsg)
-				} else {
-					payload := sharedMessaging.GenerationTaskPayload{
-						TaskID:           protagonistGoalTaskID,
-						UserID:           publishedStory.UserID.String(),
-						PromptType:       sharedModels.PromptTypeProtagonistGoal,
-						UserInput:        formattedUserInput,
-						PublishedStoryID: publishedStory.ID.String(),
-						Language:         publishedStory.Language,
-					}
-					nextTaskPayload = &payload
-				}
+				return fmt.Errorf("failed to update story step and status: %w", err)
 			}
-		}
-	} else {
-		log.Warn("Unknown notification status for ContentModeration. Ignoring.", zap.String("status", string(notification.Status)))
-		return nil // Ack
+
+			// Отправляем задачу генерации цели протагониста
+			return p.dispatchProtagonistGoalTask(ctx, updatedStory)
+		})
 	}
 
-	if processingError != nil {
-		log.Error("Error occurred during content moderation processing, final DB update and task publish aborted.", zap.Error(processingError))
-		if strings.Contains(processingError.Error(), "failed to update story status to Error") {
-			return processingError // NACK
-		}
-		return nil // ACK, т.к. статус Error уже установлен
+	log.Warn("Received moderation notification with unexpected status",
+		zap.String("status", string(notification.Status)))
+	return nil
+}
+
+// dispatchProtagonistGoalTask отправляет задачу генерации цели протагониста
+func (p *NotificationProcessor) dispatchProtagonistGoalTask(ctx context.Context, story *sharedModels.PublishedStory) error {
+	if story.Config == nil {
+		return fmt.Errorf("cannot dispatch protagonist goal task: config is nil")
 	}
 
-	// === Финальное обновление статуса, IsAdultContent и InternalStep ===
-	var errorDetailsForUpdate *string
-	if publishedStory.ErrorDetails != nil && *publishedStory.ErrorDetails != "" {
-		errorDetailsForUpdate = publishedStory.ErrorDetails
-	}
-	// Определяем следующий шаг в зависимости от статуса
-	var finalInternalStep *sharedModels.InternalGenerationStep
-	if publishedStory.Status == sharedModels.StatusProtagonistGoalPending {
-		step := sharedModels.StepProtagonistGoal
-		finalInternalStep = &step
-	} else if publishedStory.Status == sharedModels.StatusError {
-		// Если статус Error, шаг не меняем (оставляем nil или предыдущее значение, если бы мы его читали)
-		finalInternalStep = nil // Явно устанавливаем nil
-	}
-	// Используем обновленный UpdateAfterModeration
-	if errUpdate := p.publishedRepo.UpdateAfterModeration(dbCtx, p.db, publishedStory.ID, publishedStory.Status, publishedStory.IsAdultContent, errorDetailsForUpdate, finalInternalStep); errUpdate != nil {
-		log.Error("FINAL DB ERROR: Failed to update PublishedStory after moderation", zap.Error(errUpdate))
-		return fmt.Errorf("failed to update story after moderation: %w", errUpdate) // NACK
-	}
-	log.Info("PublishedStory updated after moderation", zap.Bool("is_adult", publishedStory.IsAdultContent), zap.String("new_status", string(publishedStory.Status)), zap.Any("internal_step", finalInternalStep))
-	// Уведомляем клиента об обновлении статуса истории после модерации
-	if uid, perr := parseUUIDField(notification.UserID, "UserID"); perr == nil {
-		p.notifyClient(publishedStory.ID, uid, sharedModels.UpdateTypeStory, string(publishedStory.Status), nil)
+	config, err := decodeStrictJSON[sharedModels.Config](string(story.Config))
+	if err != nil {
+		return fmt.Errorf("failed to decode config for protagonist goal task: %w", err)
 	}
 
-	// === Публикация следующей задачи (только если payload был успешно создан) ===
-	if nextTaskPayload != nil {
-		taskCtx, taskCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer taskCancel()
-		if errPub := p.taskPub.PublishGenerationTask(taskCtx, *nextTaskPayload); errPub != nil {
-			p.logger.Error("CRITICAL: Failed to publish protagonist goal task AFTER DB COMMIT",
-				zap.String("publishedStoryID", nextTaskPayload.PublishedStoryID),
-				zap.String("taskID", nextTaskPayload.TaskID),
-				zap.Error(errPub))
-			// Ошибка после коммита. Требуется мониторинг.
-		} else {
-			p.logger.Info("Protagonist goal task published successfully AFTER DB COMMIT",
-				zap.String("publishedStoryID", nextTaskPayload.PublishedStoryID),
-				zap.String("taskID", nextTaskPayload.TaskID))
-		}
-	} else {
-		log.Warn("Protagonist goal task payload was not generated (e.g. due to empty config), task not published.")
+	// Используем существующий форматтер
+	userInput := utils.FormatConfigForGoalPrompt(config, story.IsAdultContent)
+	if userInput == "" {
+		return fmt.Errorf("generated empty user input for protagonist goal task")
 	}
 
-	return nil // Ack
+	taskID := uuid.New().String()
+	payload := sharedMessaging.GenerationTaskPayload{
+		TaskID:           taskID,
+		UserID:           story.UserID.String(),
+		PromptType:       sharedModels.PromptTypeProtagonistGoal,
+		UserInput:        userInput,
+		PublishedStoryID: story.ID.String(),
+		Language:         story.Language,
+	}
+
+	if err := p.publishTask(payload); err != nil {
+		return fmt.Errorf("failed to publish protagonist goal task: %w", err)
+	}
+
+	p.logger.Info("Protagonist goal task dispatched successfully",
+		zap.String("story_id", story.ID.String()),
+		zap.String("task_id", taskID))
+
+	return nil
 }
