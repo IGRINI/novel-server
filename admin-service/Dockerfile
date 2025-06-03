@@ -1,21 +1,34 @@
 # --- Стадия сборки ---
 FROM golang:1.24-alpine AS builder
 
-# Устанавливаем рабочую директорию в корень модуля
+# Игнорируем go.work внутри сборки
+ENV GOWORK=off
+
+# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копируем ТОЛЬКО корневые go.mod и go.sum
-COPY go.mod go.sum ./
+# Копируем go.mod и go.sum для admin-service
+COPY admin-service/go.mod admin-service/go.sum ./admin-service/
 
-# Загружаем ВСЕ зависимости проекта
+# Копируем go.mod и go.sum для shared модуля
+COPY shared/go.mod shared/go.sum ./shared/
+
+# Загружаем зависимости для admin-service
+WORKDIR /app/admin-service
 RUN go mod download
 
-# Копируем ВЕСЬ исходный код проекта
-COPY . .
+# Возвращаемся в корень
+WORKDIR /app
+
+# Копируем исходный код shared модуля
+COPY shared/ ./shared/
+
+# Копируем исходный код admin-service
+COPY admin-service/ ./admin-service/
 
 # Собираем приложение admin-service
-# Команда выполняется из корня /app
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /admin-server ./admin-service/cmd/server/main.go
+WORKDIR /app/admin-service
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /admin-server ./cmd/server/main.go
 
 # --- Этап выполнения ---
 FROM alpine:latest
@@ -37,8 +50,6 @@ RUN mkdir -p /app/web/static
 # Копируем общий 404 из shared/static в /app/web/static/
 COPY --from=builder --chown=app:app /app/shared/static/404.html /app/web/static/404.html
 
-# Порт, который будет слушать приложение (для информации)
-# EXPOSE 8084 - порт определяется переменной окружения
 # Порт для метрик Prometheus
 EXPOSE 9094
 

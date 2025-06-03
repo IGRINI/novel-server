@@ -4,22 +4,31 @@ FROM golang:1.24-alpine AS builder
 # Игнорируем go.work внутри сборки
 ENV GOWORK=off
 
-# Устанавливаем рабочую директорию в корень модуля
+# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копируем ТОЛЬКО корневые go.mod и go.sum
-COPY go.mod go.sum ./
+# Копируем go.mod и go.sum для auth сервиса
+COPY auth/go.mod auth/go.sum ./auth/
 
-# Загружаем ВСЕ зависимости проекта
+# Копируем go.mod и go.sum для shared модуля
+COPY shared/go.mod shared/go.sum ./shared/
+
+# Загружаем зависимости для auth сервиса
+WORKDIR /app/auth
 RUN go mod download
 
-# Копируем ВЕСЬ исходный код проекта
-COPY . .
+# Возвращаемся в корень
+WORKDIR /app
+
+# Копируем исходный код shared модуля
+COPY shared/ ./shared/
+
+# Копируем исходный код auth сервиса
+COPY auth/ ./auth/
 
 # Собираем приложение auth
-# Команда выполняется из корня /app
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /auth-service ./auth/cmd/auth/main.go
-
+WORKDIR /app/auth
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /auth-service ./cmd/auth/main.go
 
 # Этап 2: Создание минимального образа
 FROM alpine:latest

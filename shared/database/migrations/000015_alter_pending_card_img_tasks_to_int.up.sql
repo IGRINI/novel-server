@@ -1,5 +1,5 @@
 ALTER TABLE published_stories
-ALTER COLUMN pending_card_img_tasks DROP DEFAULT IF EXISTS;
+ALTER COLUMN pending_card_img_tasks DROP DEFAULT;
 
 -- Тип уже INTEGER, поэтому ALTER COLUMN TYPE ... USING ... не нужен.
 -- Просто убедимся, что колонка NOT NULL и установим DEFAULT.

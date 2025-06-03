@@ -1,5 +1,5 @@
 ALTER TABLE published_stories
-ALTER COLUMN pending_char_gen_tasks DROP DEFAULT IF EXISTS;
+ALTER COLUMN pending_char_gen_tasks DROP DEFAULT;
 
 ALTER TABLE published_stories
 ALTER COLUMN pending_char_gen_tasks TYPE INTEGER

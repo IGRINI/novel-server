@@ -20,6 +20,6 @@ Write-Host "Загрузка переменных из .env..."
 
 # Запускаем деплой стека
 Write-Host "Запуск docker stack deploy..."
-docker stack deploy -c docker-compose.yml novel_stack --with-registry-auth
+docker stack deploy -c docker-compose.yml novel-server --with-registry-auth
 
 Write-Host "Deployment started." 

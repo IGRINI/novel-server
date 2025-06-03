@@ -1,3 +1,29 @@
+// Package main Novel Server Gameplay API
+//
+//	@title			Novel Server Gameplay API
+//	@version		1.0
+//	@description	API для игрового сервиса Novel Server - создание, управление и игра в интерактивных историях
+//	@termsOfService	http://swagger.io/terms/
+//
+//	@contact.name	API Support
+//	@contact.url	http://www.swagger.io/support
+//	@contact.email	support@swagger.io
+//
+//	@license.name	Apache 2.0
+//	@license.url	http://www.apache.org/licenses/LICENSE-2.0.html
+//
+//	@host		localhost:8080
+//	@BasePath	/api/v1
+//
+//	@securityDefinitions.apikey	BearerAuth
+//	@in							header
+//	@name						Authorization
+//	@description				Type "Bearer" followed by a space and JWT token.
+//
+//	@securityDefinitions.apikey	InternalAuth
+//	@in							header
+//	@name						X-Internal-Token
+//	@description				Internal service authentication token
 package main
 
 import (
@@ -5,6 +31,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"novel-server/gameplay-service/docs"
 	"novel-server/gameplay-service/internal/config"
 	"novel-server/gameplay-service/internal/handler"
 	"novel-server/gameplay-service/internal/messaging"
@@ -31,10 +58,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	amqp "github.com/rabbitmq/amqp091-go"
+	ginSwagger "github.com/swaggo/gin-swagger"
 	"go.uber.org/zap" // Импорт zap
 
 	// <<< Rate Limit Imports >>>
 	rateli "github.com/JGLTechnologies/gin-rate-limit"
+
+	// Swagger imports
+	_ "novel-server/gameplay-service/docs"
+
+	swaggerFiles "github.com/swaggo/files"
 )
 
 func main() {
@@ -435,6 +468,24 @@ func main() {
 	}
 	router.GET("/health", healthHandler) // <<< Регистрируем на Gin роутере
 	router.HEAD("/health", healthHandler)
+
+	// --- Swagger UI --- //
+	if cfg.Env == "development" {
+		// Swagger UI доступен только в development режиме
+		router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+		logger.Info("Swagger UI enabled at /swagger/index.html")
+	}
+
+	// --- OpenAPI JSON endpoint (всегда доступен для machine-readable документации) --- //
+	router.GET("/api/openapi.json", func(c *gin.Context) {
+		c.Header("Content-Type", "application/json")
+		c.Data(http.StatusOK, "application/json", []byte(docs.SwaggerInfo.ReadDoc()))
+	})
+	router.GET("/api/openapi.yaml", func(c *gin.Context) {
+		c.Header("Content-Type", "application/yaml")
+		// Конвертируем JSON в YAML или возвращаем заглушку
+		c.String(http.StatusOK, "# OpenAPI YAML not available, use JSON endpoint")
+	})
 
 	logger.Info("Gameplay сервер готов к запуску", zap.String("port", cfg.Port))
 

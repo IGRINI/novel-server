@@ -69,12 +69,27 @@ var (
 	ErrInvalidInput   = errors.New("invalid input data")
 )
 
-// ErrorResponse defines the structure for API error responses.
-// It's placed here to be shared across services if needed.
+// ErrorResponse represents a standard error response
+// @Description Standard error response structure
 type ErrorResponse struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
+	Code    string `json:"code" example:"VALIDATION_ERROR"`
+	Message string `json:"message" example:"Invalid input data"`
+} // @name ErrorResponse
+
+// ValidationError represents validation error details
+// @Description Validation error with field-specific details
+type ValidationError struct {
+	Field   string `json:"field" example:"email"`
+	Message string `json:"message" example:"Invalid email format"`
+} // @name ValidationError
+
+// ErrorWithDetails represents error response with additional details
+// @Description Error response with validation details
+type ErrorWithDetails struct {
+	Code    string            `json:"code" example:"VALIDATION_ERROR"`
+	Message string            `json:"message" example:"Validation failed"`
+	Details []ValidationError `json:"details,omitempty"`
+} // @name ErrorWithDetails
 
 // --- API Error Codes ---
 // These are string codes used in the ErrorResponse struct.

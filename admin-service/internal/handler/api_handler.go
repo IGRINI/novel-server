@@ -79,8 +79,16 @@ func (h *ApiHandler) UpsertPrompt(c *gin.Context) {
 	c.JSON(status, prompt)
 }
 
-// ListPromptsByKey возвращает все языковые версии для указанного ключа.
-// GET /api/v1/prompts?key=...
+// @Summary Получение промптов по ключу
+// @Description Возвращает все языковые версии для указанного ключа
+// @Tags prompts
+// @Accept json
+// @Produce json
+// @Param key query string true "Ключ промпта"
+// @Success 200 {object} map[string]interface{} "Список промптов"
+// @Failure 400 {object} map[string]interface{} "Неверные параметры"
+// @Failure 500 {object} map[string]interface{} "Внутренняя ошибка"
+// @Router /api/v1/prompts [get]
 func (h *ApiHandler) ListPromptsByKey(c *gin.Context) {
 	key := c.Query("key")
 
@@ -124,8 +132,16 @@ func (h *ApiHandler) GetPrompt(c *gin.Context) {
 	c.JSON(http.StatusOK, prompt)
 }
 
-// DeletePromptByKey удаляет все языковые версии промпта по ключу.
-// DELETE /api/v1/prompts/:key
+// @Summary Удаление промпта по ключу
+// @Description Удаляет все языковые версии промпта по ключу
+// @Tags prompts
+// @Accept json
+// @Produce json
+// @Param key path string true "Ключ промпта"
+// @Success 204 "Промпт удален"
+// @Failure 400 {object} map[string]interface{} "Неверные параметры"
+// @Failure 500 {object} map[string]interface{} "Внутренняя ошибка"
+// @Router /api/v1/prompts/{key} [delete]
 func (h *ApiHandler) DeletePromptByKey(c *gin.Context) {
 	key := c.Param("key")
 

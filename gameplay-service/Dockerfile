@@ -1,21 +1,34 @@
 # --- Стадия сборки ---
-FROM golang:1.24-alpine as builder
+FROM golang:1.24-alpine AS builder
 
-# Устанавливаем рабочую директорию в корень модуля
+# Игнорируем go.work внутри сборки
+ENV GOWORK=off
+
+# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копируем ТОЛЬКО корневые go.mod и go.sum
-COPY go.mod go.sum ./
+# Копируем go.mod и go.sum для gameplay-service
+COPY gameplay-service/go.mod gameplay-service/go.sum ./gameplay-service/
 
-# Загружаем ВСЕ зависимости проекта
+# Копируем go.mod и go.sum для shared модуля
+COPY shared/go.mod shared/go.sum ./shared/
+
+# Загружаем зависимости для gameplay-service
+WORKDIR /app/gameplay-service
 RUN go mod download
 
-# Копируем ВЕСЬ исходный код проекта
-COPY . .
+# Возвращаемся в корень
+WORKDIR /app
+
+# Копируем исходный код shared модуля
+COPY shared/ ./shared/
+
+# Копируем исходный код gameplay-service
+COPY gameplay-service/ ./gameplay-service/
 
 # Собираем приложение gameplay-service
-# Команда выполняется из корня /app
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /gameplay-service ./gameplay-service/cmd/server/main.go
+WORKDIR /app/gameplay-service
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /gameplay-service ./cmd/server/main.go
 
 # --- Финальная стадия ---
 FROM alpine:latest

@@ -9,6 +9,16 @@ import (
 	"go.uber.org/zap"
 )
 
+// @Summary Получение информации о текущем пользователе
+// @Description Возвращает информацию о пользователе по токену
+// @Tags user
+// @Accept json
+// @Produce json
+// @Success 200 {object} meResponse "Информация о пользователе"
+// @Failure 401 {object} ErrorResponse "Неавторизован"
+// @Failure 404 {object} ErrorResponse "Пользователь не найден"
+// @Security BearerAuth
+// @Router /me [get]
 func (h *AuthHandler) getMe(c *gin.Context) {
 	userID, err := getUserIDFromContext(c)
 	if err != nil {

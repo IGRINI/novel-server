@@ -1,0 +1,285 @@
+basePath: /api/v1
+definitions:
+  handler.ErrorResponse:
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+    type: object
+  handler.TokenDetails:
+    properties:
+      access_token:
+        type: string
+      expires_in:
+        type: integer
+      refresh_token:
+        type: string
+    type: object
+  handler.loginRequest:
+    properties:
+      password:
+        type: string
+      username:
+        type: string
+    required:
+    - password
+    - username
+    type: object
+  handler.logoutRequest:
+    properties:
+      refresh_token:
+        type: string
+    required:
+    - refresh_token
+    type: object
+  handler.meResponse:
+    properties:
+      display_name:
+        type: string
+      email:
+        type: string
+      id:
+        type: string
+      is_banned:
+        type: boolean
+      roles:
+        items:
+          type: string
+        type: array
+      username:
+        type: string
+    type: object
+  handler.refreshRequest:
+    properties:
+      refresh_token:
+        type: string
+    required:
+    - refresh_token
+    type: object
+  handler.registerRequest:
+    properties:
+      email:
+        type: string
+      password:
+        type: string
+      username:
+        type: string
+    required:
+    - email
+    - password
+    - username
+    type: object
+  handler.tokenVerifyRequest:
+    properties:
+      token:
+        type: string
+    required:
+    - token
+    type: object
+host: localhost:8081
+info:
+  contact:
+    email: support@swagger.io
+    name: API Support
+    url: http://www.swagger.io/support
+  description: API для аутентификации и авторизации пользователей Novel Server
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: http://swagger.io/terms/
+  title: Novel Server Auth API
+  version: "1.0"
+paths:
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Аутентификация пользователя и получение токенов
+      parameters:
+      - description: Данные для входа
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.loginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Токены доступа
+          schema:
+            $ref: '#/definitions/handler.TokenDetails'
+        "400":
+          description: Неверные данные запроса
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Неверные учетные данные
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      summary: Вход в систему
+      tags:
+      - auth
+  /auth/logout:
+    post:
+      consumes:
+      - application/json
+      description: Отзыв токенов пользователя
+      parameters:
+      - description: Refresh токен для отзыва
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.logoutRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Успешный выход
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Неверные данные запроса
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Неверный токен
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Выход из системы
+      tags:
+      - auth
+  /auth/refresh:
+    post:
+      consumes:
+      - application/json
+      description: Получение новых токенов по refresh токену
+      parameters:
+      - description: Refresh токен
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.refreshRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Новые токены
+          schema:
+            $ref: '#/definitions/handler.TokenDetails'
+        "400":
+          description: Неверные данные запроса
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Неверный или истекший токен
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      summary: Обновление токенов
+      tags:
+      - auth
+  /auth/register:
+    post:
+      consumes:
+      - application/json
+      description: Создает новый аккаунт пользователя
+      parameters:
+      - description: Данные для регистрации
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.registerRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Успешная регистрация
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Неверные данные запроса
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "409":
+          description: Пользователь уже существует
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      summary: Регистрация нового пользователя
+      tags:
+      - auth
+  /auth/token/verify:
+    post:
+      consumes:
+      - application/json
+      description: Проверка валидности access токена
+      parameters:
+      - description: Токен для проверки
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handler.tokenVerifyRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Результат проверки
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Неверные данные запроса
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "401":
+          description: Неверный токен
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      summary: Проверка токена
+      tags:
+      - auth
+  /me:
+    get:
+      consumes:
+      - application/json
+      description: Возвращает информацию о пользователе по токену
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Информация о пользователе
+          schema:
+            $ref: '#/definitions/handler.meResponse'
+        "401":
+          description: Неавторизован
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+        "404":
+          description: Пользователь не найден
+          schema:
+            $ref: '#/definitions/handler.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Получение информации о текущем пользователе
+      tags:
+      - user
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer" followed by a space and JWT token.
+    in: header
+    name: Authorization
+    type: apiKey
+  InternalAuth:
+    description: Internal service authentication token
+    in: header
+    name: X-Internal-Service-Token
+    type: apiKey
+swagger: "2.0"

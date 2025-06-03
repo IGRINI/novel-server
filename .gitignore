@@ -34,3 +34,13 @@ generator.log
 taleshift-a9967-ef0b8dd9f529.json
 
 new_api_key.secret
+
+firebase_credentials.txt
+
+ai_api_key.txt
+
+password_pepper.txt
+
+jwt_secret.txt
+
+inter_service_secret.txt

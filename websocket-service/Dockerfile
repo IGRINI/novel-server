@@ -5,21 +5,31 @@ FROM golang:${GO_VERSION}-alpine AS builder
 # Игнорируем go.work внутри сборки
 ENV GOWORK=off
 
-# Устанавливаем рабочую директорию в корень модуля
+# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копируем ТОЛЬКО корневые go.mod и go.sum
-COPY go.mod go.sum ./
+# Копируем go.mod и go.sum для websocket-service
+COPY websocket-service/go.mod websocket-service/go.sum ./websocket-service/
 
-# Загружаем ВСЕ зависимости проекта
+# Копируем go.mod и go.sum для shared модуля
+COPY shared/go.mod shared/go.sum ./shared/
+
+# Загружаем зависимости для websocket-service
+WORKDIR /app/websocket-service
 RUN go mod download
 
-# Копируем ВЕСЬ исходный код проекта
-COPY . .
+# Возвращаемся в корень
+WORKDIR /app
+
+# Копируем исходный код shared модуля
+COPY shared/ ./shared/
+
+# Копируем исходный код websocket-service
+COPY websocket-service/ ./websocket-service/
 
 # Собираем приложение websocket-service
-# Команда выполняется из корня /app
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /websocket-server ./websocket-service/cmd/server/main.go
+WORKDIR /app/websocket-service
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /websocket-server ./cmd/server/main.go
 
 # --- Final Stage ---
 FROM alpine:latest

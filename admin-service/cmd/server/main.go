@@ -1,3 +1,29 @@
+// Package main Admin Service
+//
+//	@title			Novel Server Admin API
+//	@version		1.0
+//	@description	Административная панель для управления Novel Server
+//	@termsOfService	http://swagger.io/terms/
+//
+//	@contact.name	API Support
+//	@contact.url	http://www.swagger.io/support
+//	@contact.email	support@swagger.io
+//
+//	@license.name	Apache 2.0
+//	@license.url	http://www.apache.org/licenses/LICENSE-2.0.html
+//
+//	@host		localhost:8084
+//	@BasePath	/admin
+//
+//	@securityDefinitions.apikey	BearerAuth
+//	@in							header
+//	@name						Authorization
+//	@description				Type "Bearer" followed by a space and JWT token.
+//
+//	@securityDefinitions.apikey	InternalAuth
+//	@in							header
+//	@name						X-Internal-Service-Token
+//	@description				Internal service authentication token
 package main
 
 import (
@@ -6,6 +32,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"novel-server/admin-service/docs"
 	"novel-server/admin-service/internal/client"
 	"novel-server/admin-service/internal/config"
 	"novel-server/admin-service/internal/handler"
@@ -30,6 +57,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	amqp "github.com/rabbitmq/amqp091-go"
+	swaggerFiles "github.com/swaggo/files"
+	ginSwagger "github.com/swaggo/gin-swagger"
 	"go.uber.org/zap"
 
 	// Добавляем импорт для Prometheus
@@ -37,6 +66,8 @@ import (
 
 	// <<< Rate Limit Imports >>>
 	rateli "github.com/JGLTechnologies/gin-rate-limit"
+
+	_ "novel-server/admin-service/docs"
 )
 
 // <<< Начинаем определение кастомного рендерера >>>
@@ -592,6 +623,23 @@ func main() {
 	}
 	router.GET("/health", healthHandler)
 	router.HEAD("/health", healthHandler)
+
+	// OpenAPI JSON endpoint
+	router.GET("/api/openapi.json", func(c *gin.Context) {
+		c.Header("Content-Type", "application/json")
+		c.Data(http.StatusOK, "application/json", []byte(docs.SwaggerInfo.ReadDoc()))
+	})
+	router.GET("/api/openapi.yaml", func(c *gin.Context) {
+		c.Header("Content-Type", "application/yaml")
+		// Конвертируем JSON в YAML или возвращаем заглушку
+		c.String(http.StatusOK, "# OpenAPI YAML not available, use JSON endpoint")
+	})
+
+	// Swagger UI (только в development)
+	if cfg.Env == "development" {
+		router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+		sugar.Info("Swagger UI enabled at /swagger/index.html")
+	}
 
 	// --- Маршрут для метрик Prometheus ---
 	// Используем стандартный обработчик promhttp

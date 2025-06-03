@@ -12,6 +12,16 @@ import (
 	"go.uber.org/zap"
 )
 
+// @Summary Регистрация нового пользователя
+// @Description Создает новый аккаунт пользователя
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param request body registerRequest true "Данные для регистрации"
+// @Success 201 {object} map[string]interface{} "Успешная регистрация"
+// @Failure 400 {object} ErrorResponse "Неверные данные запроса"
+// @Failure 409 {object} ErrorResponse "Пользователь уже существует"
+// @Router /auth/register [post]
 func (h *AuthHandler) register(c *gin.Context) {
 	var req registerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -72,6 +82,16 @@ func (h *AuthHandler) register(c *gin.Context) {
 	})
 }
 
+// @Summary Вход в систему
+// @Description Аутентификация пользователя и получение токенов
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param request body loginRequest true "Данные для входа"
+// @Success 200 {object} TokenDetails "Токены доступа"
+// @Failure 400 {object} ErrorResponse "Неверные данные запроса"
+// @Failure 401 {object} ErrorResponse "Неверные учетные данные"
+// @Router /auth/login [post]
 func (h *AuthHandler) login(c *gin.Context) {
 	var req loginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -88,6 +108,17 @@ func (h *AuthHandler) login(c *gin.Context) {
 	c.JSON(http.StatusOK, tokens)
 }
 
+// @Summary Выход из системы
+// @Description Отзыв токенов пользователя
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param request body logoutRequest true "Refresh токен для отзыва"
+// @Success 200 {object} map[string]interface{} "Успешный выход"
+// @Failure 400 {object} ErrorResponse "Неверные данные запроса"
+// @Failure 401 {object} ErrorResponse "Неверный токен"
+// @Security BearerAuth
+// @Router /auth/logout [post]
 func (h *AuthHandler) logout(c *gin.Context) {
 	accessUUIDRaw, exists := c.Get("access_uuid")
 	if !exists {
@@ -146,6 +177,16 @@ func (h *AuthHandler) logout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Successfully logged out"})
 }
 
+// @Summary Обновление токенов
+// @Description Получение новых токенов по refresh токену
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param request body refreshRequest true "Refresh токен"
+// @Success 200 {object} TokenDetails "Новые токены"
+// @Failure 400 {object} ErrorResponse "Неверные данные запроса"
+// @Failure 401 {object} ErrorResponse "Неверный или истекший токен"
+// @Router /auth/refresh [post]
 func (h *AuthHandler) refresh(c *gin.Context) {
 	var req refreshRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -168,6 +209,16 @@ func (h *AuthHandler) refresh(c *gin.Context) {
 	c.JSON(http.StatusOK, tokens)
 }
 
+// @Summary Проверка токена
+// @Description Проверка валидности access токена
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param request body tokenVerifyRequest true "Токен для проверки"
+// @Success 200 {object} map[string]interface{} "Результат проверки"
+// @Failure 400 {object} ErrorResponse "Неверные данные запроса"
+// @Failure 401 {object} ErrorResponse "Неверный токен"
+// @Router /auth/token/verify [post]
 func (h *AuthHandler) verify(c *gin.Context) {
 	var req tokenVerifyRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

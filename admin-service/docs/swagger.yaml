@@ -1,0 +1,102 @@
+basePath: /admin
+host: localhost:8084
+info:
+  contact:
+    email: support@swagger.io
+    name: API Support
+    url: http://www.swagger.io/support
+  description: Административная панель для управления Novel Server
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: http://swagger.io/terms/
+  title: Novel Server Admin API
+  version: "1.0"
+paths:
+  /api/v1/prompts:
+    get:
+      consumes:
+      - application/json
+      description: Возвращает все языковые версии для указанного ключа
+      parameters:
+      - description: Ключ промпта
+        in: query
+        name: key
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Список промптов
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Неверные параметры
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Внутренняя ошибка
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Получение промптов по ключу
+      tags:
+      - prompts
+  /api/v1/prompts/{key}:
+    delete:
+      consumes:
+      - application/json
+      description: Удаляет все языковые версии промпта по ключу
+      parameters:
+      - description: Ключ промпта
+        in: path
+        name: key
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: Промпт удален
+        "400":
+          description: Неверные параметры
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Внутренняя ошибка
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Удаление промпта по ключу
+      tags:
+      - prompts
+  /health:
+    get:
+      description: Возвращает статус работы Admin Service
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Сервис работает
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Проверка состояния сервиса
+      tags:
+      - health
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer" followed by a space and JWT token.
+    in: header
+    name: Authorization
+    type: apiKey
+  InternalAuth:
+    description: Internal service authentication token
+    in: header
+    name: X-Internal-Service-Token
+    type: apiKey
+swagger: "2.0"

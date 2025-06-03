@@ -1,25 +1,35 @@
 # --- Build Stage ---
-ARG GO_VERSION=1.24 # Обновляем версию Go
+ARG GO_VERSION=1.24
 FROM golang:${GO_VERSION}-alpine AS builder
 
 # Игнорируем go.work внутри сборки
 ENV GOWORK=off
 
-# Устанавливаем рабочую директорию в корень модуля
+# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копируем ТОЛЬКО корневые go.mod и go.sum
-COPY go.mod go.sum ./
+# Копируем go.mod и go.sum для story-generator
+COPY story-generator/go.mod story-generator/go.sum ./story-generator/
 
-# Загружаем ВСЕ зависимости проекта
+# Копируем go.mod и go.sum для shared модуля
+COPY shared/go.mod shared/go.sum ./shared/
+
+# Загружаем зависимости для story-generator
+WORKDIR /app/story-generator
 RUN go mod download
 
-# Копируем ВЕСЬ исходный код проекта
-COPY . .
+# Возвращаемся в корень
+WORKDIR /app
+
+# Копируем исходный код shared модуля
+COPY shared/ ./shared/
+
+# Копируем исходный код story-generator
+COPY story-generator/ ./story-generator/
 
 # Собираем приложение story-generator (worker)
-# Команда выполняется из корня /app
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /story-worker ./story-generator/cmd/worker/main.go
+WORKDIR /app/story-generator
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /story-worker ./cmd/worker/main.go
 
 # --- Final Stage ---
 FROM alpine:latest

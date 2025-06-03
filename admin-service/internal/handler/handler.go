@@ -27,9 +27,17 @@ func (h *Handler) RegisterRoutes(api *gin.RouterGroup) {
 	// h.registerUserRoutes(api) // Пока закомментировано, т.к. метод не определен
 	// Здесь должна быть регистрация маршрутов, связанных с этим обработчиком
 	// Например, health check:
-	api.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok"})
-	})
+	api.GET("/health", h.healthCheck)
+}
+
+// @Summary Проверка состояния сервиса
+// @Description Возвращает статус работы Admin Service
+// @Tags health
+// @Produce json
+// @Success 200 {object} map[string]interface{} "Сервис работает"
+// @Router /health [get]
+func (h *Handler) healthCheck(c *gin.Context) {
+	c.JSON(200, gin.H{"status": "ok"})
 }
 
 // Место для других методов обработчика, например, registerUserRoutes, если он тут нужен

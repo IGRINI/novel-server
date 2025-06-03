@@ -1,19 +1,34 @@
 # Этап сборки
 FROM golang:1.24-alpine AS builder
 
+# Игнорируем go.work внутри сборки
+ENV GOWORK=off
+
+# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копируем файлы зависимостей и скачиваем их
-COPY go.mod go.sum ./
+# Копируем go.mod и go.sum для notification-service
+COPY notification-service/go.mod notification-service/go.sum ./notification-service/
+
+# Копируем go.mod и go.sum для shared модуля
+COPY shared/go.mod shared/go.sum ./shared/
+
+# Загружаем зависимости для notification-service
+WORKDIR /app/notification-service
 RUN go mod download
 
-# Копируем исходный код
-COPY . .
+# Возвращаемся в корень
+WORKDIR /app
+
+# Копируем исходный код shared модуля
+COPY shared/ ./shared/
+
+# Копируем исходный код notification-service
+COPY notification-service/ ./notification-service/
 
 # Собираем приложение
-# CGO_ENABLED=0 для статичной сборки без C зависимостей
-# -ldflags="-s -w" для уменьшения размера бинарника
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /notification-service ./notification-service/cmd/server
+WORKDIR /app/notification-service
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /notification-service ./cmd/server
 
 # Этап выполнения
 FROM alpine:latest

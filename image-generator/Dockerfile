@@ -5,23 +5,31 @@ FROM golang:${GO_VERSION}-alpine AS builder
 # Игнорируем go.work внутри сборки
 ENV GOWORK=off
 
-# Устанавливаем рабочую директорию в корень модуля
+# Устанавливаем рабочую директорию
 WORKDIR /app
 
-# Копируем ТОЛЬКО корневые go.mod и go.sum
-COPY go.mod go.sum ./
+# Копируем go.mod и go.sum для image-generator
+COPY image-generator/go.mod image-generator/go.sum ./image-generator/
 
-# Загружаем ВСЕ зависимости проекта
+# Копируем go.mod и go.sum для shared модуля
+COPY shared/go.mod shared/go.sum ./shared/
+
+# Загружаем зависимости для image-generator
+WORKDIR /app/image-generator
 RUN go mod download
 
-# Копируем ВЕСЬ исходный код проекта
-# Это не самый оптимальный вариант с точки зрения кеширования Docker,
-# но для монорепозитория это часто самый простой подход.
-COPY . .
+# Возвращаемся в корень
+WORKDIR /app
+
+# Копируем исходный код shared модуля
+COPY shared/ ./shared/
+
+# Копируем исходный код image-generator
+COPY image-generator/ ./image-generator/
 
 # Собираем приложение image-generator (worker)
-# Команда выполняется из корня /app
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /image-worker ./image-generator/cmd/worker/main.go
+WORKDIR /app/image-generator
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /image-worker ./cmd/worker/main.go
 
 # --- Final Stage ---
 FROM alpine:latest
